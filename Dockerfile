@@ -1,30 +1,18 @@
-FROM node:20-alpine
+FROM node:20
 
 WORKDIR /app
 
-# Copy package files
-COPY package.json package-lock.json ./
-COPY packages/shared/package.json packages/shared/
-COPY packages/server/package.json packages/server/
-COPY packages/dashboard/package.json packages/dashboard/
+COPY . .
 
-# Install all deps
-RUN npm install
+# Install everything including devDependencies
+RUN npm install --include=dev
+RUN cd packages/dashboard && npm install --include=dev
+RUN cd packages/server && npm install --include=dev
 
-# Copy source
-COPY packages/shared/ packages/shared/
-COPY packages/server/ packages/server/
-COPY packages/dashboard/ packages/dashboard/
-COPY tsconfig.base.json ./
-
-# Build shared types
+# Build
 RUN cd packages/shared && npx tsc
-
-# Build dashboard
-RUN cd packages/dashboard && npm install && npm run build
-
-# Build server
-RUN cd packages/server && npm install && npx tsc
+RUN cd packages/dashboard && npx vite build
+RUN cd packages/server && npx tsc
 
 ENV NODE_ENV=production
 EXPOSE 4100

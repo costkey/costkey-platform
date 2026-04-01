@@ -96,7 +96,7 @@ function AppShell() {
       <footer className="border-t border-border mt-8">
         <div className="max-w-[1400px] mx-auto px-6 py-4 flex items-center justify-between">
           <span className="font-mono text-[11px] text-text-muted">costkey v0.1.0</span>
-          <span className="font-mono text-[11px] text-text-muted">Sentry for AI costs</span>
+          <span className="font-mono text-[11px] text-text-muted">AI cost observability</span>
         </div>
       </footer>
     </div>

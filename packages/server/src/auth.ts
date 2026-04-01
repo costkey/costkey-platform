@@ -1,8 +1,10 @@
 import type { Router, Request, Response, NextFunction } from "express";
 import { Router as createRouter } from "express";
-import type Database from "better-sqlite3";
+import { eq } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
+import { getDb, getPool } from "./db.js";
+import { users, orgs, projects } from "./schema.js";
 
 const JWT_SECRET = process.env["COSTKEY_JWT_SECRET"] ?? "costkey-dev-secret-change-in-prod";
 const JWT_EXPIRES = "7d";
@@ -25,17 +27,24 @@ function slugify(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
 }
 
-export function createAuthRouter(db: Database.Database): Router {
-  const router = createRouter();
+function setTokenCookie(res: Response, token: string): void {
+  res.cookie("ck_token", token, {
+    httpOnly: true,
+    secure: process.env["NODE_ENV"] === "production",
+    sameSite: "lax",
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+  });
+}
 
-  // POST /auth/signup — create account + org + first project
+export function createAuthRouter(): Router {
+  const router = createRouter();
+  const db = getDb();
+
+  // POST /auth/signup
   router.post("/auth/signup", async (req: Request, res: Response) => {
     try {
       const { email, password, name, orgName } = req.body as {
-        email: string;
-        password: string;
-        name: string;
-        orgName?: string;
+        email: string; password: string; name: string; orgName?: string;
       };
 
       if (!email || !password || !name) {
@@ -47,9 +56,8 @@ export function createAuthRouter(db: Database.Database): Router {
         return;
       }
 
-      // Check if user exists
-      const existing = db.prepare("SELECT id FROM users WHERE email = ?").get(email);
-      if (existing) {
+      const existing = await db.select({ id: users.id }).from(users).where(eq(users.email, email));
+      if (existing.length > 0) {
         res.status(409).json({ error: "Email already registered" });
         return;
       }
@@ -60,35 +68,30 @@ export function createAuthRouter(db: Database.Database): Router {
       const projectId = `proj_${randomId()}`;
       const authKey = `ck_${randomId()}`;
       const orgSlug = slugify(orgName ?? name);
+      const displayOrgName = orgName ?? `${name}'s Org`;
 
-      const createAll = db.transaction(() => {
-        db.prepare("INSERT INTO orgs (id, name, slug) VALUES (?, ?, ?)").run(
-          orgId,
-          orgName ?? `${name}'s Org`,
-          orgSlug,
-        );
-        db.prepare("INSERT INTO users (id, email, password_hash, name, org_id, role) VALUES (?, ?, ?, ?, ?, ?)").run(
-          userId, email, passwordHash, name, orgId, "owner",
-        );
-        db.prepare("INSERT INTO projects (id, name, org_id, auth_key) VALUES (?, ?, ?, ?)").run(
-          projectId, "Default Project", orgId, authKey,
-        );
-      });
-
-      createAll();
+      // Transaction via raw pool (drizzle transactions need different setup)
+      const pool = getPool();
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query("INSERT INTO orgs (id, name, slug) VALUES ($1, $2, $3)", [orgId, displayOrgName, orgSlug]);
+        await client.query("INSERT INTO users (id, email, password_hash, name, org_id, role) VALUES ($1,$2,$3,$4,$5,$6)", [userId, email, passwordHash, name, orgId, "owner"]);
+        await client.query("INSERT INTO projects (id, name, org_id, auth_key) VALUES ($1,$2,$3,$4)", [projectId, "Default Project", orgId, authKey]);
+        await client.query("COMMIT");
+      } catch (err) {
+        await client.query("ROLLBACK");
+        throw err;
+      } finally {
+        client.release();
+      }
 
       const token = jwt.sign({ userId, orgId, role: "owner" }, JWT_SECRET, { expiresIn: JWT_EXPIRES });
-
-      res.cookie("ck_token", token, {
-        httpOnly: true,
-        secure: process.env["NODE_ENV"] === "production",
-        sameSite: "lax",
-        maxAge: 7 * 24 * 60 * 60 * 1000,
-      });
+      setTokenCookie(res, token);
 
       res.status(201).json({
         user: { id: userId, email, name, orgId, role: "owner" },
-        org: { id: orgId, name: orgName ?? `${name}'s Org`, slug: orgSlug },
+        org: { id: orgId, name: displayOrgName, slug: orgSlug },
         project: { id: projectId, name: "Default Project", authKey },
         dsn: `https://${authKey}@costkey.dev/${projectId}`,
         token,
@@ -103,49 +106,29 @@ export function createAuthRouter(db: Database.Database): Router {
   router.post("/auth/login", async (req: Request, res: Response) => {
     try {
       const { email, password } = req.body as { email: string; password: string };
-
       if (!email || !password) {
         res.status(400).json({ error: "Missing email or password" });
         return;
       }
 
-      const user = db.prepare(
-        "SELECT id, email, password_hash, name, org_id, role FROM users WHERE email = ?",
-      ).get(email) as {
-        id: string;
-        email: string;
-        password_hash: string;
-        name: string;
-        org_id: string;
-        role: string;
-      } | undefined;
-
-      if (!user) {
+      const result = await db.select().from(users).where(eq(users.email, email));
+      if (result.length === 0) {
         res.status(401).json({ error: "Invalid email or password" });
         return;
       }
 
-      const valid = await bcrypt.compare(password, user.password_hash);
+      const user = result[0];
+      const valid = await bcrypt.compare(password, user.passwordHash);
       if (!valid) {
         res.status(401).json({ error: "Invalid email or password" });
         return;
       }
 
-      const token = jwt.sign(
-        { userId: user.id, orgId: user.org_id, role: user.role },
-        JWT_SECRET,
-        { expiresIn: JWT_EXPIRES },
-      );
-
-      res.cookie("ck_token", token, {
-        httpOnly: true,
-        secure: process.env["NODE_ENV"] === "production",
-        sameSite: "lax",
-        maxAge: 7 * 24 * 60 * 60 * 1000,
-      });
+      const token = jwt.sign({ userId: user.id, orgId: user.orgId, role: user.role }, JWT_SECRET, { expiresIn: JWT_EXPIRES });
+      setTokenCookie(res, token);
 
       res.json({
-        user: { id: user.id, email: user.email, name: user.name, orgId: user.org_id, role: user.role },
+        user: { id: user.id, email: user.email, name: user.name, orgId: user.orgId, role: user.role },
         token,
       });
     } catch (err) {
@@ -160,78 +143,61 @@ export function createAuthRouter(db: Database.Database): Router {
     res.json({ ok: true });
   });
 
-  // GET /auth/me — get current user
-  router.get("/auth/me", (req: Request, res: Response) => {
-    const user = (req as unknown as { user?: AuthUser }).user;
-    if (!user) {
+  // GET /auth/me
+  router.get("/auth/me", async (req: Request, res: Response) => {
+    const authUser = (req as any).user as AuthUser | undefined;
+    if (!authUser) {
       res.status(401).json({ error: "Not authenticated" });
       return;
     }
 
-    const org = db.prepare("SELECT id, name, slug FROM orgs WHERE id = ?").get(user.orgId);
-    const projects = db.prepare("SELECT id, name, auth_key, created_at FROM projects WHERE org_id = ?").all(user.orgId);
+    const org = await db.select({ id: orgs.id, name: orgs.name, slug: orgs.slug }).from(orgs).where(eq(orgs.id, authUser.orgId));
+    const projs = await db.select({
+      id: projects.id, name: projects.name, authKey: projects.authKey, createdAt: projects.createdAt,
+    }).from(projects).where(eq(projects.orgId, authUser.orgId));
+    const members = await db.select({
+      id: users.id, email: users.email, name: users.name, role: users.role, createdAt: users.createdAt,
+    }).from(users).where(eq(users.orgId, authUser.orgId));
 
-    res.json({ user, org, projects });
+    res.json({
+      user: authUser,
+      org: org[0],
+      projects: projs,
+      members,
+    });
   });
 
   return router;
 }
 
-/**
- * Auth middleware — verifies JWT from cookie or Authorization header.
- * Sets req.user if valid, passes through if not (for public routes).
- */
-export function authMiddleware(db: Database.Database) {
-  return (req: Request, _res: Response, next: NextFunction): void => {
+/** Auth middleware */
+export function authMiddleware() {
+  const db = getDb();
+
+  return async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
     const token =
       req.cookies?.["ck_token"] ??
       req.headers.authorization?.replace("Bearer ", "");
 
-    if (!token) {
-      next();
-      return;
-    }
+    if (!token) { next(); return; }
 
     try {
-      const payload = jwt.verify(token, JWT_SECRET) as {
-        userId: string;
-        orgId: string;
-        role: string;
-      };
+      const payload = jwt.verify(token, JWT_SECRET) as { userId: string; orgId: string; role: string };
+      const result = await db.select({
+        id: users.id, email: users.email, name: users.name, orgId: users.orgId, role: users.role,
+      }).from(users).where(eq(users.id, payload.userId));
 
-      const user = db.prepare(
-        "SELECT id, email, name, org_id, role FROM users WHERE id = ?",
-      ).get(payload.userId) as {
-        id: string;
-        email: string;
-        name: string;
-        org_id: string;
-        role: string;
-      } | undefined;
-
-      if (user) {
-        (req as unknown as { user: AuthUser }).user = {
-          id: user.id,
-          email: user.email,
-          name: user.name,
-          orgId: user.org_id,
-          role: user.role,
-        };
+      if (result.length > 0) {
+        (req as any).user = result[0] as AuthUser;
       }
-    } catch {
-      // Invalid token — treat as unauthenticated
-    }
+    } catch { /* invalid token */ }
 
     next();
   };
 }
 
-/**
- * Require auth — returns 401 if not authenticated.
- */
 export function requireAuth(req: Request, res: Response, next: NextFunction): void {
-  const user = (req as unknown as { user?: AuthUser }).user;
-  if (!user) {
+  if (!(req as any).user) {
     res.status(401).json({ error: "Authentication required" });
     return;
   }

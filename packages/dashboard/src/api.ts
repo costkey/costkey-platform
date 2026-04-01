@@ -57,12 +57,12 @@ export interface EventRow {
   total_tokens: number | null;
   cost_usd: number | null;
   duration_ms: number;
-  streaming: number;
+  streaming: boolean;
   ttft: number | null;
   tps: number | null;
   call_site_raw: string | null;
-  call_site_frames: string | null;
-  context: string | null;
+  call_site_frames: unknown[] | string | null;
+  context: Record<string, unknown> | string | null;
   request_body?: string | null;
   response_body?: string | null;
 }

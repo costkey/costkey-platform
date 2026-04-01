@@ -65,7 +65,9 @@ export default function RecentEvents({ events, loading }: Props) {
 
       <div className="divide-y divide-border/40">
         {events.map((event) => {
-          const frames = event.call_site_frames ? JSON.parse(event.call_site_frames) : [];
+          const frames = event.call_site_frames
+            ? (typeof event.call_site_frames === "string" ? JSON.parse(event.call_site_frames) : event.call_site_frames)
+            : [];
           const topFrame = frames[0];
           const fnName = topFrame?.functionName ?? null;
           const dotColor = PROVIDER_DOT[event.provider] ?? "bg-text-muted";
@@ -109,7 +111,7 @@ export default function RecentEvents({ events, loading }: Props) {
               </span>
 
               {/* Streaming badge */}
-              {event.streaming === 1 && (
+              {event.streaming && (
                 <span className="text-[9px] font-mono px-1 py-0.5 rounded-sm bg-accent-muted text-accent uppercase">
                   sse
                 </span>

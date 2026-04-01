@@ -147,7 +147,7 @@ function TraceRow({ trace, projectId }: { trace: Trace; projectId: string }) {
 
                 return events.map((event, i) => {
                   const frames = event.call_site_frames
-                    ? JSON.parse(event.call_site_frames)
+                    ? (typeof event.call_site_frames === "string" ? JSON.parse(event.call_site_frames) : event.call_site_frames)
                     : [];
                   const fn = frames[0]?.functionName ?? "unknown";
                   const provider = event.provider;

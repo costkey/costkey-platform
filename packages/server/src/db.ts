@@ -1,137 +1,154 @@
-import Database from "better-sqlite3";
-import path from "node:path";
-import fs from "node:fs";
+import { drizzle } from "drizzle-orm/node-postgres";
+import pg from "pg";
+import * as schema from "./schema.js";
 
-const DATA_DIR = process.env["COSTKEY_DATA_DIR"] ?? path.join(process.cwd(), ".costkey-data");
+const DATABASE_URL =
+  process.env["DATABASE_URL"] ??
+  "postgresql://costkey:costkey@localhost:5432/costkey";
 
-export function createDatabase(): Database.Database {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  const dbPath = path.join(DATA_DIR, "costkey.db");
-  const db = new Database(dbPath);
+let pool: pg.Pool;
+let db: ReturnType<typeof drizzle<typeof schema>>;
 
-  // WAL mode for better concurrent read/write
-  db.pragma("journal_mode = WAL");
-  db.pragma("synchronous = NORMAL");
+export function getPool(): pg.Pool {
+  if (!pool) {
+    pool = new pg.Pool({
+      connectionString: DATABASE_URL,
+      max: 20,
+      idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 5000,
+    });
+    pool.on("error", (err) => {
+      console.error("[costkey] Postgres pool error:", err.message);
+    });
+  }
+  return pool;
+}
 
-  initSchema(db);
+export function getDb() {
+  if (!db) {
+    db = drizzle(getPool(), { schema });
+  }
   return db;
 }
 
-function initSchema(db: Database.Database): void {
-  db.exec(`
+export async function initDatabase(): Promise<void> {
+  const p = getPool();
+
+  // Create tables using raw SQL for initial setup
+  // Drizzle's push/migrate requires drizzle-kit CLI — for simplicity we create inline
+  await p.query(`
+    CREATE TABLE IF NOT EXISTS orgs (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      slug TEXT NOT NULL UNIQUE,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      email TEXT NOT NULL UNIQUE,
+      password_hash TEXT NOT NULL,
+      name TEXT NOT NULL,
+      org_id TEXT NOT NULL REFERENCES orgs(id),
+      role TEXT NOT NULL DEFAULT 'member',
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS projects (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      org_id TEXT NOT NULL REFERENCES orgs(id),
+      auth_key TEXT NOT NULL UNIQUE,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
     CREATE TABLE IF NOT EXISTS events (
       id TEXT PRIMARY KEY,
-      timestamp TEXT NOT NULL,
+      timestamp TIMESTAMPTZ NOT NULL,
       project_id TEXT NOT NULL,
       provider TEXT NOT NULL,
       model TEXT,
       url TEXT,
       method TEXT,
       status_code INTEGER,
-
       input_tokens INTEGER,
       output_tokens INTEGER,
       total_tokens INTEGER,
       reasoning_tokens INTEGER,
       cache_read_tokens INTEGER,
       cache_creation_tokens INTEGER,
-
-      cost_usd REAL,
-      duration_ms REAL,
-      streaming INTEGER DEFAULT 0,
-
-      ttft REAL,
-      tps REAL,
-      stream_duration REAL,
+      cost_usd DOUBLE PRECISION,
+      duration_ms DOUBLE PRECISION,
+      streaming BOOLEAN DEFAULT FALSE,
+      ttft DOUBLE PRECISION,
+      tps DOUBLE PRECISION,
+      stream_duration DOUBLE PRECISION,
       chunk_count INTEGER,
-
       call_site_raw TEXT,
-      call_site_frames TEXT,  -- JSON
-
-      trace_id TEXT,            -- groups events from same request/operation
-      trace_name TEXT,          -- human-readable trace label
-      context TEXT,           -- JSON
-      request_body TEXT,      -- JSON
-      response_body TEXT,     -- JSON
-
-      created_at TEXT DEFAULT (datetime('now'))
+      call_site_frames JSONB,
+      trace_id TEXT,
+      trace_name TEXT,
+      context JSONB,
+      request_body JSONB,
+      response_body JSONB,
+      created_at TIMESTAMPTZ DEFAULT NOW()
     );
+    CREATE INDEX IF NOT EXISTS idx_events_project_ts ON events(project_id, timestamp DESC);
+    CREATE INDEX IF NOT EXISTS idx_events_project_model ON events(project_id, model);
+    CREATE INDEX IF NOT EXISTS idx_events_trace ON events(project_id, trace_id);
 
-    CREATE INDEX IF NOT EXISTS idx_events_project_ts
-      ON events(project_id, timestamp DESC);
-
-    CREATE INDEX IF NOT EXISTS idx_events_project_model
-      ON events(project_id, model);
-
-    CREATE INDEX IF NOT EXISTS idx_events_project_provider
-      ON events(project_id, provider);
-
-    CREATE INDEX IF NOT EXISTS idx_events_trace
-      ON events(project_id, trace_id);
-  `);
-
-  // Aggregated call sites table (materialized view equivalent)
-  db.exec(`
     CREATE TABLE IF NOT EXISTS call_site_stats (
       project_id TEXT NOT NULL,
-      call_site_key TEXT NOT NULL,  -- fingerprint of file:function:line
+      call_site_key TEXT NOT NULL,
       file_name TEXT,
       function_name TEXT,
       line_number INTEGER,
       provider TEXT,
       model TEXT,
-
       total_calls INTEGER DEFAULT 0,
-      total_cost_usd REAL DEFAULT 0,
-      total_input_tokens INTEGER DEFAULT 0,
-      total_output_tokens INTEGER DEFAULT 0,
-      avg_duration_ms REAL DEFAULT 0,
-      avg_ttft REAL,
-      avg_tps REAL,
-
-      first_seen TEXT,
-      last_seen TEXT,
-
+      total_cost_usd DOUBLE PRECISION DEFAULT 0,
+      total_input_tokens BIGINT DEFAULT 0,
+      total_output_tokens BIGINT DEFAULT 0,
+      avg_duration_ms DOUBLE PRECISION DEFAULT 0,
+      avg_ttft DOUBLE PRECISION,
+      avg_tps DOUBLE PRECISION,
+      first_seen TIMESTAMPTZ,
+      last_seen TIMESTAMPTZ,
       PRIMARY KEY (project_id, call_site_key, model)
     );
+    CREATE INDEX IF NOT EXISTS idx_callsite_cost ON call_site_stats(project_id, total_cost_usd DESC);
 
-    CREATE INDEX IF NOT EXISTS idx_callsite_project_cost
-      ON call_site_stats(project_id, total_cost_usd DESC);
-  `);
-
-  // Users table
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS users (
+    CREATE TABLE IF NOT EXISTS team_invites (
       id TEXT PRIMARY KEY,
-      email TEXT NOT NULL UNIQUE,
-      password_hash TEXT NOT NULL,
-      name TEXT NOT NULL,
-      org_id TEXT NOT NULL,
+      org_id TEXT NOT NULL REFERENCES orgs(id),
+      email TEXT NOT NULL,
       role TEXT NOT NULL DEFAULT 'member',
-      created_at TEXT DEFAULT (datetime('now')),
-      FOREIGN KEY (org_id) REFERENCES orgs(id)
+      invited_by TEXT NOT NULL REFERENCES users(id),
+      token TEXT NOT NULL UNIQUE,
+      status TEXT NOT NULL DEFAULT 'pending',
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      expires_at TIMESTAMPTZ NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS alerts (
+      id TEXT PRIMARY KEY,
+      org_id TEXT NOT NULL REFERENCES orgs(id),
+      project_id TEXT REFERENCES projects(id),
+      type TEXT NOT NULL,
+      threshold DOUBLE PRECISION,
+      channel TEXT NOT NULL DEFAULT 'webhook',
+      webhook_url TEXT,
+      enabled BOOLEAN DEFAULT TRUE,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS alert_history (
+      id TEXT PRIMARY KEY,
+      alert_id TEXT NOT NULL REFERENCES alerts(id),
+      triggered_at TIMESTAMPTZ DEFAULT NOW(),
+      value DOUBLE PRECISION,
+      message TEXT
     );
   `);
 
-  // Organizations table
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS orgs (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      slug TEXT NOT NULL UNIQUE,
-      created_at TEXT DEFAULT (datetime('now'))
-    );
-  `);
+  console.log("[costkey] Database schema initialized");
+}
 
-  // Projects table (now belongs to an org)
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS projects (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      org_id TEXT NOT NULL,
-      auth_key TEXT NOT NULL UNIQUE,
-      created_at TEXT DEFAULT (datetime('now')),
-      FOREIGN KEY (org_id) REFERENCES orgs(id)
-    );
-  `);
+export async function shutdownDatabase(): Promise<void> {
+  if (pool) await pool.end();
 }

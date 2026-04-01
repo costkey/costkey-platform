@@ -10,6 +10,7 @@ import { createAuthRouter, authMiddleware } from "./auth.js";
 import { createTeamsRouter } from "./teams.js";
 import { createAlertsRouter, checkAlerts } from "./alerts.js";
 import { rateLimit } from "./middleware.js";
+import { initAnomalyTable, detectAnomalies } from "./anomaly.js";
 import { seedIfEmpty } from "./seed.js";
 
 const PORT = parseInt(process.env["PORT"] ?? "4100", 10);
@@ -52,8 +53,14 @@ async function main() {
     res.json({ status: "ok", version: "0.1.0" });
   });
 
-  // Alert check every 5 minutes
-  setInterval(() => { void checkAlerts(pool); }, 5 * 60 * 1000);
+  // Anomaly detection table
+  await initAnomalyTable(pool);
+
+  // Alert + anomaly checks every 5 minutes
+  setInterval(() => {
+    void checkAlerts(pool);
+    void detectAnomalies(pool);
+  }, 5 * 60 * 1000);
 
   // Serve dashboard in production
   const dashboardDist = path.resolve(__dirname, "../../dashboard/dist");

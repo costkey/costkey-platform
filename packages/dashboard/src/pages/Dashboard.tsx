@@ -1,3 +1,4 @@
+import AnomalyBanner from "../components/AnomalyBanner";
 import StatCards from "../components/StatCards";
 import CostTrend from "../components/CostTrend";
 import CallSitesTable from "../components/CallSitesTable";
@@ -21,6 +22,8 @@ export default function Dashboard() {
 
   return (
     <main className="max-w-[1400px] mx-auto px-6 py-6 flex flex-col gap-4">
+      <AnomalyBanner projectId={projectId} />
+
       <StatCards
         overview={overview.data?.overview ?? null}
         loading={overview.loading}

@@ -2,6 +2,7 @@ import type { Router } from "express";
 import { Router as createRouter } from "express";
 import type pg from "pg";
 import { groupIntoFeatures } from "./grouping.js";
+import { getAnomalies } from "./anomaly.js";
 import { orgScope } from "./middleware.js";
 import { requireAuth } from "./auth.js";
 
@@ -286,6 +287,19 @@ export function createApiRouter(pool: pg.Pool): Router {
 
       const features = groupIntoFeatures(callSiteStats.rows, parsedFrames);
       res.json({ features });
+    } catch (err) {
+      console.error("[costkey] API error:", err);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  // GET /api/v1/projects/:projectId/anomalies
+  router.get("/api/v1/projects/:projectId/anomalies", async (req, res) => {
+    try {
+      const { projectId } = req.params;
+      const includeResolved = req.query["resolved"] === "true";
+      const anomalies = await getAnomalies(pool, projectId, includeResolved);
+      res.json({ anomalies });
     } catch (err) {
       console.error("[costkey] API error:", err);
       res.status(500).json({ error: "Internal server error" });

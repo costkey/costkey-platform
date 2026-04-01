@@ -16,39 +16,41 @@ import { seedIfEmpty } from "./seed.js";
 
 const PORT = parseInt(process.env["PORT"] ?? "4100", 10);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const dashboardDist = path.resolve(__dirname, "../../dashboard/dist");
+const hasDashboard = fs.existsSync(path.join(dashboardDist, "index.html"));
 
 const app = express();
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: "5mb" }));
 app.use(cookieParser());
 
-// Health check — always works, even before DB is ready
+// 1. Health — always responds immediately
 app.get("/health", (_req, res) => {
   res.json({ status: "ok", version: "0.1.0" });
 });
 
-// Start HTTP server FIRST so healthcheck passes
+// 2. Dashboard static files — serve BEFORE auth middleware
+if (hasDashboard) {
+  app.use(express.static(dashboardDist));
+  console.log("[costkey] Dashboard static files from", dashboardDist);
+}
+
+// 3. Start HTTP server immediately (healthcheck + dashboard work instantly)
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`[costkey] Server listening on 0.0.0.0:${PORT}`);
-  // Then initialize everything else
-  initApp().catch((err) => {
-    console.error("[costkey] Init error:", err);
-  });
+  console.log(`[costkey] Listening on 0.0.0.0:${PORT}`);
+  initApp().catch((err) => console.error("[costkey] Init error:", err));
 });
 
+// 4. Async: connect DB, mount API routes
 async function initApp() {
   const pool = getPool();
-
-  console.log("[costkey] Connecting to Postgres...");
   console.log("[costkey] DATABASE_URL:", process.env["DATABASE_URL"]?.replace(/:[^@]+@/, ":***@") ?? "not set");
 
   await initDatabase();
   console.log("[costkey] Database ready");
 
-  // Auth middleware
   app.use(authMiddleware());
 
-  // Rate limiting
   app.use("/auth/login", rateLimit({ windowMs: 15 * 60 * 1000, max: 20 }));
   app.use("/auth/signup", rateLimit({ windowMs: 60 * 60 * 1000, max: 10 }));
   app.use("/api/v1/events", rateLimit({
@@ -56,33 +58,25 @@ async function initApp() {
     keyFn: (req) => req.headers.authorization?.slice(7) ?? req.ip ?? "unknown",
   }));
 
-  // Seed demo data
   await seedIfEmpty(pool);
 
-  // Routes
   app.use(createAuthRouter());
   app.use(createIngestRouter(pool));
   app.use(createTeamsRouter(pool));
   app.use(createAlertsRouter(pool));
   app.use(createApiRouter(pool));
 
-  // Anomaly detection
   await initAnomalyTable(pool);
   setInterval(() => {
     void checkAlerts(pool);
     void detectAnomalies(pool);
   }, 5 * 60 * 1000);
 
-  // Serve dashboard
-  const dashboardDist = path.resolve(__dirname, "../../dashboard/dist");
-  if (fs.existsSync(path.join(dashboardDist, "index.html"))) {
-    app.use(express.static(dashboardDist));
+  // SPA fallback — LAST route, after all API routes
+  if (hasDashboard) {
     app.get("/{*path}", (_req, res) => {
       res.sendFile(path.join(dashboardDist, "index.html"));
     });
-    console.log("[costkey] Dashboard served from", dashboardDist);
-  } else {
-    console.log("[costkey] No dashboard build found, API-only mode");
   }
 
   console.log("[costkey] Ready");

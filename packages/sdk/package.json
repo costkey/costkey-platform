@@ -1,0 +1,37 @@
+{
+  "name": "costkey",
+  "version": "0.0.1",
+  "description": "Sentry for AI costs. Track every LLM call's cost, tokens, and latency with one line of code.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "clean": "rm -rf dist .turbo *.tsbuildinfo"
+  },
+  "keywords": [
+    "ai",
+    "llm",
+    "cost",
+    "tracking",
+    "observability",
+    "openai",
+    "anthropic",
+    "gemini"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@costkey/shared": "*"
+  },
+  "devDependencies": {
+    "vitest": "^3.2.4"
+  }
+}

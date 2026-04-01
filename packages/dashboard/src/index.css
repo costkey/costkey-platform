@@ -1,0 +1,126 @@
+@import "tailwindcss";
+
+@theme {
+  --color-surface: #06060b;
+  --color-surface-raised: #0e0e16;
+  --color-surface-overlay: #15151f;
+  --color-surface-hover: #1a1a28;
+  --color-border: #1e1e2e;
+  --color-border-bright: #2a2a3e;
+  --color-text-primary: #e4e4ec;
+  --color-text-secondary: #7c7c96;
+  --color-text-muted: #484860;
+  --color-accent: #6366f1;
+  --color-accent-hover: #818cf8;
+  --color-accent-muted: rgba(99, 102, 241, 0.12);
+  --color-accent-glow: rgba(99, 102, 241, 0.25);
+  --color-green: #34d399;
+  --color-green-muted: rgba(52, 211, 153, 0.12);
+  --color-amber: #fbbf24;
+  --color-amber-muted: rgba(251, 191, 36, 0.12);
+  --color-red: #f87171;
+  --color-red-muted: rgba(248, 113, 113, 0.12);
+  --color-cyan: #22d3ee;
+  --color-cyan-muted: rgba(34, 211, 238, 0.12);
+  --color-violet: #a78bfa;
+  --color-violet-muted: rgba(167, 139, 250, 0.12);
+  --color-rose: #fb7185;
+  --color-rose-muted: rgba(251, 113, 133, 0.12);
+
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'Cascadia Code', monospace;
+  --font-sans: 'Outfit', system-ui, sans-serif;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border-bright) transparent;
+}
+
+body {
+  margin: 0;
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+/* Scan-line overlay for header */
+@keyframes scanline {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(100%); }
+}
+
+.scanline-effect::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(99, 102, 241, 0.015) 2px,
+    rgba(99, 102, 241, 0.015) 4px
+  );
+  pointer-events: none;
+}
+
+/* Glow pulse for live indicator */
+@keyframes glow-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.glow-dot {
+  animation: glow-pulse 2s ease-in-out infinite;
+}
+
+/* Table row hover */
+.row-hover {
+  transition: background-color 0.1s ease;
+}
+.row-hover:hover {
+  background-color: var(--color-surface-hover);
+}
+
+/* Cost bar animation */
+@keyframes bar-fill {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(1); }
+}
+
+.cost-bar {
+  transform-origin: left;
+  animation: bar-fill 0.6s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+/* Stagger animation for cards */
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-in {
+  animation: fade-up 0.4s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  opacity: 0;
+}
+
+/* Recharts overrides */
+.recharts-cartesian-grid-horizontal line,
+.recharts-cartesian-grid-vertical line {
+  stroke: var(--color-border) !important;
+}
+.recharts-text {
+  font-family: var(--font-mono) !important;
+  font-size: 11px !important;
+}

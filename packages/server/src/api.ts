@@ -2,9 +2,14 @@ import type { Router } from "express";
 import { Router as createRouter } from "express";
 import type pg from "pg";
 import { groupIntoFeatures } from "./grouping.js";
+import { orgScope } from "./middleware.js";
+import { requireAuth } from "./auth.js";
 
 export function createApiRouter(pool: pg.Pool): Router {
   const router = createRouter();
+
+  // Apply org-scoping to ALL /api/v1/projects/:projectId/* routes
+  router.use("/api/v1/projects/:projectId", requireAuth, orgScope(pool));
 
   // GET /api/v1/projects/:projectId/overview
   router.get("/api/v1/projects/:projectId/overview", async (req, res) => {
@@ -287,21 +292,19 @@ export function createApiRouter(pool: pg.Pool): Router {
     }
   });
 
-  // GET /api/v1/projects
-  router.get("/api/v1/projects", async (req, res) => {
+  // ── Project management (org-scoped, requires auth) ──
+
+  // GET /api/v1/projects — list user's org's projects
+  router.get("/api/v1/projects", requireAuth, async (req, res) => {
     try {
       const user = (req as any).user;
-      const orgFilter = user ? "WHERE p.org_id = $1" : "";
-      const params = user ? [user.orgId] : [];
-
       const result = await pool.query(
         `SELECT p.id, p.name, p.auth_key, p.created_at,
           (SELECT COUNT(*)::int FROM events e WHERE e.project_id = p.id) as event_count,
           (SELECT COALESCE(SUM(cost_usd), 0) FROM events e WHERE e.project_id = p.id) as total_cost
-        FROM projects p ${orgFilter} ORDER BY p.created_at DESC`,
-        params,
+        FROM projects p WHERE p.org_id = $1 ORDER BY p.created_at DESC`,
+        [user.orgId],
       );
-
       res.json({ projects: result.rows });
     } catch (err) {
       console.error("[costkey] API error:", err);
@@ -309,8 +312,8 @@ export function createApiRouter(pool: pg.Pool): Router {
     }
   });
 
-  // POST /api/v1/projects
-  router.post("/api/v1/projects", async (req, res) => {
+  // POST /api/v1/projects — create new project
+  router.post("/api/v1/projects", requireAuth, async (req, res) => {
     try {
       const user = (req as any).user;
       const { name } = req.body as { name: string };
@@ -319,21 +322,87 @@ export function createApiRouter(pool: pg.Pool): Router {
         return;
       }
 
-      const orgId = user?.orgId;
-      if (!orgId) {
-        res.status(401).json({ error: "Authentication required" });
-        return;
-      }
-
       const id = `proj_${randomId()}`;
       const authKey = `ck_${randomId()}`;
 
       await pool.query(
         "INSERT INTO projects (id, name, org_id, auth_key) VALUES ($1, $2, $3, $4)",
-        [id, name, orgId, authKey],
+        [id, name, user.orgId, authKey],
       );
 
       res.status(201).json({ id, name, authKey, dsn: `https://${authKey}@costkey.dev/${id}` });
+    } catch (err) {
+      console.error("[costkey] API error:", err);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  // PATCH /api/v1/projects/:projectId — rename project
+  router.patch("/api/v1/projects/:projectId", async (req, res) => {
+    try {
+      const { projectId } = req.params;
+      const { name } = req.body as { name?: string };
+      if (!name) {
+        res.status(400).json({ error: "Missing name" });
+        return;
+      }
+      await pool.query("UPDATE projects SET name = $1 WHERE id = $2", [name, projectId]);
+      res.json({ ok: true });
+    } catch (err) {
+      console.error("[costkey] API error:", err);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  // DELETE /api/v1/projects/:projectId — delete project and all its data
+  router.delete("/api/v1/projects/:projectId", async (req, res) => {
+    try {
+      const { projectId } = req.params;
+      const user = (req as any).user;
+      if (user.role !== "owner") {
+        res.status(403).json({ error: "Only org owners can delete projects" });
+        return;
+      }
+
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query("DELETE FROM call_site_stats WHERE project_id = $1", [projectId]);
+        await client.query("DELETE FROM events WHERE project_id = $1", [projectId]);
+        await client.query("DELETE FROM alerts WHERE project_id = $1", [projectId]);
+        await client.query("DELETE FROM projects WHERE id = $1", [projectId]);
+        await client.query("COMMIT");
+      } catch (err) {
+        await client.query("ROLLBACK");
+        throw err;
+      } finally {
+        client.release();
+      }
+
+      res.json({ ok: true });
+    } catch (err) {
+      console.error("[costkey] API error:", err);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  // POST /api/v1/projects/:projectId/rotate-key — generate new API key
+  router.post("/api/v1/projects/:projectId/rotate-key", async (req, res) => {
+    try {
+      const { projectId } = req.params;
+      const user = (req as any).user;
+      if (user.role !== "owner" && user.role !== "admin") {
+        res.status(403).json({ error: "Only owners and admins can rotate keys" });
+        return;
+      }
+
+      const newKey = `ck_${randomId()}`;
+      await pool.query("UPDATE projects SET auth_key = $1 WHERE id = $2", [newKey, projectId]);
+
+      res.json({
+        authKey: newKey,
+        dsn: `https://${newKey}@costkey.dev/${projectId}`,
+      });
     } catch (err) {
       console.error("[costkey] API error:", err);
       res.status(500).json({ error: "Internal server error" });

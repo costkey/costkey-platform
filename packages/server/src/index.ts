@@ -64,13 +64,19 @@ async function main() {
 
   // Serve dashboard in production
   const dashboardDist = path.resolve(__dirname, "../../dashboard/dist");
-  app.use(express.static(dashboardDist));
-  app.get("/{*path}", (_req, res) => {
-    res.sendFile(path.join(dashboardDist, "index.html"));
-  });
+  const fs = await import("node:fs");
+  if (fs.existsSync(path.join(dashboardDist, "index.html"))) {
+    app.use(express.static(dashboardDist));
+    app.get("/{*path}", (_req, res) => {
+      res.sendFile(path.join(dashboardDist, "index.html"));
+    });
+    console.log("[costkey] Serving dashboard from", dashboardDist);
+  } else {
+    console.log("[costkey] No dashboard build found, API-only mode");
+  }
 
-  app.listen(PORT, () => {
-    console.log(`[costkey] Server running on http://localhost:${PORT}`);
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`[costkey] Server running on 0.0.0.0:${PORT}`);
   });
 }
 

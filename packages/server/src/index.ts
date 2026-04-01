@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
 import path from "node:path";
+import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { getPool, initDatabase } from "./db.js";
 import { createIngestRouter } from "./ingest.js";
@@ -16,25 +17,42 @@ import { seedIfEmpty } from "./seed.js";
 const PORT = parseInt(process.env["PORT"] ?? "4100", 10);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-async function main() {
-  const app = express();
-  app.use(cors({ origin: true, credentials: true }));
-  app.use(express.json({ limit: "5mb" }));
-  app.use(cookieParser());
+const app = express();
+app.use(cors({ origin: true, credentials: true }));
+app.use(express.json({ limit: "5mb" }));
+app.use(cookieParser());
 
-  // Initialize Postgres + schema
+// Health check — always works, even before DB is ready
+app.get("/health", (_req, res) => {
+  res.json({ status: "ok", version: "0.1.0" });
+});
+
+// Start HTTP server FIRST so healthcheck passes
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`[costkey] Server listening on 0.0.0.0:${PORT}`);
+  // Then initialize everything else
+  initApp().catch((err) => {
+    console.error("[costkey] Init error:", err);
+  });
+});
+
+async function initApp() {
   const pool = getPool();
-  await initDatabase();
 
-  // Auth middleware (sets req.user from JWT)
+  console.log("[costkey] Connecting to Postgres...");
+  console.log("[costkey] DATABASE_URL:", process.env["DATABASE_URL"]?.replace(/:[^@]+@/, ":***@") ?? "not set");
+
+  await initDatabase();
+  console.log("[costkey] Database ready");
+
+  // Auth middleware
   app.use(authMiddleware());
 
   // Rate limiting
-  app.use("/auth/login", rateLimit({ windowMs: 15 * 60 * 1000, max: 20 }));      // 20 login attempts per 15 min
-  app.use("/auth/signup", rateLimit({ windowMs: 60 * 60 * 1000, max: 10 }));      // 10 signups per hour
-  app.use("/api/v1/events", rateLimit({                                             // 1000 event batches per min per key
-    windowMs: 60 * 1000,
-    max: 1000,
+  app.use("/auth/login", rateLimit({ windowMs: 15 * 60 * 1000, max: 20 }));
+  app.use("/auth/signup", rateLimit({ windowMs: 60 * 60 * 1000, max: 10 }));
+  app.use("/api/v1/events", rateLimit({
+    windowMs: 60 * 1000, max: 1000,
     keyFn: (req) => req.headers.authorization?.slice(7) ?? req.ip ?? "unknown",
   }));
 
@@ -42,45 +60,30 @@ async function main() {
   await seedIfEmpty(pool);
 
   // Routes
-  app.use(createAuthRouter());            // /auth/*
-  app.use(createIngestRouter(pool));      // /api/v1/events (SDK ingest, DSN auth)
-  app.use(createTeamsRouter(pool));       // /api/v1/team/*
-  app.use(createAlertsRouter(pool));      // /api/v1/alerts/*
-  app.use(createApiRouter(pool));         // /api/v1/projects/* (org-scoped)
+  app.use(createAuthRouter());
+  app.use(createIngestRouter(pool));
+  app.use(createTeamsRouter(pool));
+  app.use(createAlertsRouter(pool));
+  app.use(createApiRouter(pool));
 
-  // Health
-  app.get("/health", (_req, res) => {
-    res.json({ status: "ok", version: "0.1.0" });
-  });
-
-  // Anomaly detection table
+  // Anomaly detection
   await initAnomalyTable(pool);
-
-  // Alert + anomaly checks every 5 minutes
   setInterval(() => {
     void checkAlerts(pool);
     void detectAnomalies(pool);
   }, 5 * 60 * 1000);
 
-  // Serve dashboard in production
+  // Serve dashboard
   const dashboardDist = path.resolve(__dirname, "../../dashboard/dist");
-  const fs = await import("node:fs");
   if (fs.existsSync(path.join(dashboardDist, "index.html"))) {
     app.use(express.static(dashboardDist));
     app.get("/{*path}", (_req, res) => {
       res.sendFile(path.join(dashboardDist, "index.html"));
     });
-    console.log("[costkey] Serving dashboard from", dashboardDist);
+    console.log("[costkey] Dashboard served from", dashboardDist);
   } else {
     console.log("[costkey] No dashboard build found, API-only mode");
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`[costkey] Server running on 0.0.0.0:${PORT}`);
-  });
+  console.log("[costkey] Ready");
 }
-
-main().catch((err) => {
-  console.error("[costkey] Fatal:", err);
-  process.exit(1);
-});

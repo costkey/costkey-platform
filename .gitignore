@@ -5,3 +5,7 @@ dist/
 .env
 .env.*
 coverage/
+.costkey-data/
+*.db
+*.db-shm
+*.db-wal

@@ -11,6 +11,13 @@ export default defineConfig({
         target: 'http://localhost:4100',
         changeOrigin: true,
       },
+      '/auth': {
+        target: 'http://localhost:4100',
+        changeOrigin: true,
+      },
     },
+  },
+  build: {
+    outDir: 'dist',
   },
 })

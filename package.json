@@ -5,11 +5,12 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "turbo build",
-    "dev": "turbo dev",
-    "test": "turbo test",
-    "lint": "turbo lint",
-    "clean": "turbo clean"
+    "build": "cd packages/shared && npx tsc && cd ../server && npx tsc && cd ../dashboard && npm run build",
+    "build:server": "cd packages/shared && npx tsc && cd ../server && npx tsc",
+    "dev": "concurrently \"cd packages/server && npx tsx watch src/index.ts\" \"cd packages/dashboard && npx vite --port 5180\"",
+    "start": "node packages/server/dist/index.js",
+    "test": "cd packages/sdk && npx vitest run",
+    "clean": "rm -rf packages/*/dist packages/*/*.tsbuildinfo"
   },
   "devDependencies": {
     "@types/node": "^25.5.0",

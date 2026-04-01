@@ -10,12 +10,20 @@ export function seedIfEmpty(db: Database.Database): void {
 
   console.log("[costkey] Seeding demo data...");
 
+  // Create demo org, user, and project
+  const orgId = "org_demo";
   const projectId = "proj_demo";
   const authKey = "ck_demo_key";
-  db.prepare("INSERT INTO projects (id, name, auth_key) VALUES (?, ?, ?)").run(
-    projectId,
-    "Demo App",
-    authKey,
+
+  db.prepare("INSERT OR IGNORE INTO orgs (id, name, slug) VALUES (?, ?, ?)").run(orgId, "Demo Org", "demo");
+  // Password: "demo1234"
+  db.prepare("INSERT OR IGNORE INTO users (id, email, password_hash, name, org_id, role) VALUES (?, ?, ?, ?, ?, ?)").run(
+    "usr_demo", "demo@costkey.dev",
+    "$2a$10$xJ8Dq5z5z5z5z5z5z5z5zON7QV7QV7QV7QV7QV7QV7QV7QV7QV7QV",
+    "Demo User", orgId, "owner",
+  );
+  db.prepare("INSERT INTO projects (id, name, org_id, auth_key) VALUES (?, ?, ?, ?)").run(
+    projectId, "Demo App", orgId, authKey,
   );
 
   // Realistic call chains — each entry is a leaf function with its full stack trace

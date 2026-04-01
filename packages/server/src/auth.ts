@@ -93,7 +93,7 @@ export function createAuthRouter(): Router {
         user: { id: userId, email, name, orgId, role: "owner" },
         org: { id: orgId, name: displayOrgName, slug: orgSlug },
         project: { id: projectId, name: "Default Project", authKey },
-        dsn: `https://${authKey}@costkey.dev/${projectId}`,
+        dsn: `https://${authKey}@app.costkey.dev/${projectId}`,
         token,
       });
     } catch (err) {

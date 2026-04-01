@@ -87,7 +87,7 @@ function ProjectsTab({ projects, copied, copy, refresh }: {
   return (
     <div className="flex flex-col gap-4">
       {projects.map((project) => {
-        const dsn = `https://${project.authKey}@costkey.dev/${project.id}`;
+        const dsn = `https://${project.authKey}@app.costkey.dev/${project.id}`;
         return (
           <div key={project.id} className="bg-surface-raised border border-border rounded-sm p-5">
             <div className="flex items-center justify-between mb-4">

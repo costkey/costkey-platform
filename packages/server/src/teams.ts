@@ -69,7 +69,7 @@ export function createTeamsRouter(pool: pg.Pool): Router {
       );
 
       // In production: send email with invite link
-      const inviteUrl = `https://costkey.dev/invite/${token}`;
+      const inviteUrl = `https://app.costkey.dev/invite/${token}`;
 
       res.status(201).json({
         id,

@@ -344,7 +344,7 @@ export function createApiRouter(pool: pg.Pool): Router {
         [id, name, user.orgId, authKey],
       );
 
-      res.status(201).json({ id, name, authKey, dsn: `https://${authKey}@costkey.dev/${id}` });
+      res.status(201).json({ id, name, authKey, dsn: `https://${authKey}@app.costkey.dev/${id}` });
     } catch (err) {
       console.error("[costkey] API error:", err);
       res.status(500).json({ error: "Internal server error" });
@@ -415,7 +415,7 @@ export function createApiRouter(pool: pg.Pool): Router {
 
       res.json({
         authKey: newKey,
-        dsn: `https://${newKey}@costkey.dev/${projectId}`,
+        dsn: `https://${newKey}@app.costkey.dev/${projectId}`,
       });
     } catch (err) {
       console.error("[costkey] API error:", err);

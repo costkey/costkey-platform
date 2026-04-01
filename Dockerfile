@@ -4,10 +4,9 @@ WORKDIR /app
 
 COPY . .
 
-# Install everything including devDependencies
-RUN npm install --include=dev
-RUN cd packages/dashboard && npm install --include=dev
-RUN cd packages/server && npm install --include=dev
+# Fresh install for this platform (lockfile has macOS ARM binaries)
+RUN rm -rf node_modules packages/*/node_modules package-lock.json packages/*/package-lock.json
+RUN npm install
 
 # Build
 RUN cd packages/shared && npx tsc

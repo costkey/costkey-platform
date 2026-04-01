@@ -40,7 +40,7 @@ app.get("/health", (_req, res) => {
 const dashboardDist = path.resolve(__dirname, "../../dashboard/dist");
 app.use(express.static(dashboardDist));
 // SPA fallback — serve index.html for any non-API route
-app.get("*", (_req, res) => {
+app.get("/{*path}", (_req, res) => {
   res.sendFile(path.join(dashboardDist, "index.html"));
 });
 

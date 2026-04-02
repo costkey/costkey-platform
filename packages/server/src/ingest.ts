@@ -329,9 +329,9 @@ export function createIngestRouter(pool: pg.Pool): Router {
             const f = graph
               ? findBusinessLogicFrameWithGraph(cleanFrames, graph)
               : findBusinessLogicFrame(cleanFrames);
-            // Clean newlines from Python function names (traceback includes code lines)
             const cleanFn = (f.functionName ?? "anonymous").split("\n")[0].trim();
             const key = `${f.fileName ?? "unknown"}:${cleanFn}:${f.lineNumber ?? 0}`;
+            const eventModel = event.model ?? "unknown"; // model is part of PK, can't be null
 
             await client.query(
               `INSERT INTO call_site_stats (
@@ -355,7 +355,7 @@ export function createIngestRouter(pool: pg.Pool): Router {
                 last_seen = EXCLUDED.last_seen`,
               [
                 projectId, key, f.fileName, cleanFn, f.lineNumber,
-                event.provider, event.model,
+                event.provider, eventModel,
                 costUsd ?? 0,
                 event.usage?.inputTokens ?? 0, event.usage?.outputTokens ?? 0,
                 event.durationMs,

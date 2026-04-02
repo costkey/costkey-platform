@@ -98,45 +98,40 @@ export function filterFrames(frames: StackFrame[]): StackFrame[] {
 }
 
 /**
- * Find the most meaningful "business logic" frame from filtered user frames.
+ * Find the most meaningful "business logic" frame from in-app frames.
  *
- * Strategy: frame[0] is the direct API caller — often a thin wrapper like
- * `_messages_create_with_backoff` in `anthropic_client.py`. All wrapper
- * functions typically live in the SAME file. Walk up the stack until we
- * find a frame from a DIFFERENT file — that's the actual business logic.
+ * Codebases naturally layer like this:
+ *   frame[last]:  main / handle_request     ← entry point (too generic)
+ *   frame[...]:   process_claim             ← BUSINESS LOGIC (what we want)
+ *   frame[1]:     call_haiku                ← wrapper
+ *   frame[0]:     _create_with_backoff      ← thin wrapper (direct AI caller)
  *
- * Example:
- *   frame[0]: _messages_create_with_backoff  at anthropic_client.py:142
- *   frame[1]: call_haiku                     at anthropic_client.py:300  ← same file, skip
- *   frame[2]: _process_file_group            at stage2_haiku.py:241     ← different file! use this
+ * Rule: use the SECOND-TO-LAST in-app frame (skip useless names).
+ * - 1 in-app frame  → use it
+ * - 2 in-app frames → use outermost (index last)
+ * - 3+ in-app frames → use second-to-last (skip the generic entry point)
  *
- * This works universally without fragile function-name heuristics.
+ * No file-name heuristics. No function-name heuristics. Pure position.
+ * Works because business logic is always in the middle of the call stack.
  */
 export function findBusinessLogicFrame(frames: StackFrame[]): StackFrame {
-  if (frames.length <= 1) return frames[0];
+  if (frames.length === 0) return frames[0];
 
-  const innermostFile = frames[0].fileName ?? "";
-  const uselessNames = ["<module>", "<anonymous>", "anonymous", "", null, undefined];
+  // Filter to frames with meaningful names
+  const useless = new Set(["<module>", "<anonymous>", "anonymous", "main", ""]);
+  const meaningful = frames.filter((f) => {
+    const fn = (f.functionName ?? "").split("\n")[0].trim();
+    return fn && !useless.has(fn);
+  });
 
-  for (let i = 1; i < frames.length; i++) {
-    const file = frames[i].fileName ?? "";
-    const fn = frames[i].functionName ?? "";
-    // Skip frames with useless function names
-    if (uselessNames.includes(fn as string)) continue;
-    // Find first frame from a different file
-    if (file && file !== innermostFile) {
-      return frames[i];
-    }
-  }
+  // If no meaningful frames, fall back to raw frames
+  const pool = meaningful.length > 0 ? meaningful : frames;
 
-  // Fallback: find any frame with a real function name
-  for (const frame of frames) {
-    if (frame.functionName && !uselessNames.includes(frame.functionName)) {
-      return frame;
-    }
-  }
+  if (pool.length === 1) return pool[0];
+  if (pool.length === 2) return pool[pool.length - 1]; // outermost
 
-  return frames[0];
+  // 3+ frames: second-to-last (skip the entry point, get business logic)
+  return pool[pool.length - 2];
 }
 
 /** Max stored body size (100KB). Truncates large prompts/completions to avoid DB bloat. */

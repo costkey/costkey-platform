@@ -50,21 +50,26 @@ interface FrameLike {
 }
 
 /**
- * Find the business logic frame from a stack trace.
- * frame[0] is the direct API caller (often a wrapper in a client file).
- * Walk up until we find a frame from a DIFFERENT file — that's the
- * actual business logic.
+ * Find the business logic frame from in-app frames.
+ *
+ * Codebases layer: entry point → business logic → wrapper → SDK.
+ * - 1 frame  → use it
+ * - 2 frames → use outermost
+ * - 3+ frames → use second-to-last (skip generic entry point)
  */
 export function findBusinessFrame(frames: FrameLike[]): FrameLike | null {
   if (!frames || frames.length === 0) return null;
-  if (frames.length === 1) return frames[0];
 
-  const innerFile = frames[0].fileName ?? "";
-  for (let i = 1; i < frames.length; i++) {
-    const file = frames[i].fileName ?? "";
-    if (file && file !== innerFile) return frames[i];
-  }
-  return frames[0];
+  const useless = new Set(["<module>", "<anonymous>", "anonymous", "main", ""]);
+  const meaningful = frames.filter((f) => {
+    const fn = (f.functionName ?? "").split("\n")[0].trim();
+    return fn && !useless.has(fn);
+  });
+
+  const pool = meaningful.length > 0 ? meaningful : frames;
+  if (pool.length === 1) return pool[0];
+  if (pool.length === 2) return pool[pool.length - 1];
+  return pool[pool.length - 2];
 }
 
 /** Parse call_site_frames from an event (handles string or array) */

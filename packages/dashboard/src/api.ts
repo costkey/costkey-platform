@@ -94,6 +94,28 @@ export async function getProjects(): Promise<{ projects: Project[] }> {
   return get("/projects");
 }
 
+export interface SummaryTopFeature {
+  function_name: string | null;
+  file_name: string | null;
+  cost: number;
+  calls: number;
+  pct: number;
+}
+
+export interface Summary {
+  thisMonth: { cost: number; calls: number; tokens: number };
+  lastMonth: { cost: number; calls: number; tokens: number };
+  costChange: number;
+  callsChange: number;
+  topFeatures: SummaryTopFeature[];
+  dailyAvg: number;
+  projectedMonthly: number;
+}
+
+export async function getSummary(projectId: string): Promise<Summary> {
+  return get(`/projects/${projectId}/summary`);
+}
+
 export async function getOverview(
   projectId: string,
   from?: string,

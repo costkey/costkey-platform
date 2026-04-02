@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { BarChart3, Route, FileCode, Activity, Search } from "lucide-react";
 import AnomalyBanner from "../components/AnomalyBanner";
+import SummaryView from "../components/SummaryView";
 import StatCards from "../components/StatCards";
 import CostTrend from "../components/CostTrend";
 import CallSitesTable from "../components/CallSitesTable";
@@ -8,7 +9,7 @@ import ModelBreakdown from "../components/ModelBreakdown";
 import TracesView from "../components/TracesView";
 import RecentEvents from "../components/RecentEvents";
 import EmptyState from "../components/EmptyState";
-import { useOverview, useCallSites, useEvents, useTrends, useTraces } from "../hooks/useApi";
+import { useSummary, useOverview, useCallSites, useEvents, useTrends, useTraces } from "../hooks/useApi";
 import { useAuth } from "../contexts/AuthContext";
 
 type Tab = "overview" | "traces" | "call-sites" | "events";
@@ -26,6 +27,7 @@ export default function Dashboard() {
   const [activeTab, setActiveTab] = useState<Tab>("overview");
   const [search, setSearch] = useState("");
 
+  const summary = useSummary(projectId);
   const overview = useOverview(projectId);
   const callSites = useCallSites(projectId);
   const events = useEvents(projectId, 100);
@@ -78,6 +80,7 @@ export default function Dashboard() {
             ? <EmptyState tab="overview" />
             : (
               <div className="flex flex-col gap-4">
+                <SummaryView summary={summary.data} loading={summary.loading} />
                 <StatCards overview={overview.data?.overview ?? null} loading={overview.loading} />
                 <div className="grid grid-cols-[1fr_340px] gap-4">
                   <CostTrend trends={trends.data} loading={trends.loading} />

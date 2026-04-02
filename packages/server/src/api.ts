@@ -12,6 +12,91 @@ export function createApiRouter(pool: pg.Pool): Router {
   // Apply org-scoping to ALL /api/v1/projects/:projectId/* routes
   router.use("/api/v1/projects/:projectId", requireAuth, orgScope(pool));
 
+  // GET /api/v1/projects/:projectId/summary
+  router.get("/api/v1/projects/:projectId/summary", async (req, res) => {
+    try {
+      const { projectId } = req.params;
+
+      // This month totals
+      const thisMonthResult = await pool.query(
+        `SELECT
+          COALESCE(SUM(cost_usd), 0) as cost,
+          COUNT(*)::int as calls,
+          COALESCE(SUM(input_tokens + output_tokens), 0)::bigint as tokens
+        FROM events WHERE project_id = $1
+          AND timestamp >= date_trunc('month', NOW())`,
+        [projectId],
+      );
+
+      // Last month totals
+      const lastMonthResult = await pool.query(
+        `SELECT
+          COALESCE(SUM(cost_usd), 0) as cost,
+          COUNT(*)::int as calls,
+          COALESCE(SUM(input_tokens + output_tokens), 0)::bigint as tokens
+        FROM events WHERE project_id = $1
+          AND timestamp >= date_trunc('month', NOW() - INTERVAL '1 month')
+          AND timestamp < date_trunc('month', NOW())`,
+        [projectId],
+      );
+
+      // Top features by cost
+      const topFeaturesResult = await pool.query(
+        `SELECT function_name, file_name,
+          SUM(total_cost_usd) as cost,
+          SUM(total_calls)::int as calls
+        FROM call_site_stats WHERE project_id = $1
+        GROUP BY function_name, file_name
+        ORDER BY cost DESC LIMIT 5`,
+        [projectId],
+      );
+
+      const thisMonth = {
+        cost: parseFloat(thisMonthResult.rows[0].cost),
+        calls: thisMonthResult.rows[0].calls,
+        tokens: parseInt(thisMonthResult.rows[0].tokens),
+      };
+
+      const lastMonth = {
+        cost: parseFloat(lastMonthResult.rows[0].cost),
+        calls: lastMonthResult.rows[0].calls,
+        tokens: parseInt(lastMonthResult.rows[0].tokens),
+      };
+
+      const costChange = lastMonth.cost > 0
+        ? ((thisMonth.cost - lastMonth.cost) / lastMonth.cost) * 100
+        : 0;
+      const callsChange = lastMonth.calls > 0
+        ? ((thisMonth.calls - lastMonth.calls) / lastMonth.calls) * 100
+        : 0;
+
+      const dayOfMonth = new Date().getDate();
+      const dailyAvg = dayOfMonth > 0 ? thisMonth.cost / dayOfMonth : 0;
+      const projectedMonthly = dailyAvg * 30;
+
+      const topFeatures = topFeaturesResult.rows.map((row: { function_name: string | null; file_name: string | null; cost: string; calls: number }) => ({
+        function_name: row.function_name,
+        file_name: row.file_name,
+        cost: parseFloat(row.cost),
+        calls: row.calls,
+        pct: thisMonth.cost > 0 ? (parseFloat(row.cost) / thisMonth.cost) * 100 : 0,
+      }));
+
+      res.json({
+        thisMonth,
+        lastMonth,
+        costChange,
+        callsChange,
+        topFeatures,
+        dailyAvg,
+        projectedMonthly,
+      });
+    } catch (err) {
+      console.error("[costkey] API error:", err);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
   // GET /api/v1/projects/:projectId/overview
   router.get("/api/v1/projects/:projectId/overview", async (req, res) => {
     try {

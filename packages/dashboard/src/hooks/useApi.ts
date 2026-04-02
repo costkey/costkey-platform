@@ -1,11 +1,13 @@
 import { useState, useEffect } from "react";
 import {
+  getSummary,
   getOverview,
   getCallSites,
   getEvents,
   getTrends,
   getFeatures,
   getTraces,
+  type Summary,
   type Overview,
   type ModelBreakdown,
   type ProviderBreakdown,
@@ -47,6 +49,10 @@ function useAsync<T>(fn: () => Promise<T>, deps: unknown[]): AsyncState<T> {
   }, deps);
 
   return state;
+}
+
+export function useSummary(projectId: string) {
+  return useAsync(() => getSummary(projectId), [projectId]);
 }
 
 export function useOverview(projectId: string) {
@@ -97,6 +103,7 @@ export function useFeatures(projectId: string) {
 }
 
 export type {
+  Summary,
   Overview,
   ModelBreakdown,
   ProviderBreakdown,

@@ -184,7 +184,9 @@ export function createIngestRouter(pool: pg.Pool): Router {
           // Upsert call site stats — use LAST frame (outermost = business logic entry point)
           if (cleanFrames && cleanFrames.length > 0) {
             const f = cleanFrames[cleanFrames.length - 1];
-            const key = `${f.fileName ?? "unknown"}:${f.functionName ?? "anonymous"}:${f.lineNumber ?? 0}`;
+            // Clean newlines from Python function names (traceback includes code lines)
+            const cleanFn = (f.functionName ?? "anonymous").split("\n")[0].trim();
+            const key = `${f.fileName ?? "unknown"}:${cleanFn}:${f.lineNumber ?? 0}`;
 
             await client.query(
               `INSERT INTO call_site_stats (
@@ -207,7 +209,7 @@ export function createIngestRouter(pool: pg.Pool): Router {
                   ELSE call_site_stats.avg_tps END,
                 last_seen = EXCLUDED.last_seen`,
               [
-                projectId, key, f.fileName, f.functionName, f.lineNumber,
+                projectId, key, f.fileName, cleanFn, f.lineNumber,
                 event.provider, event.model,
                 costUsd ?? 0,
                 event.usage?.inputTokens ?? 0, event.usage?.outputTokens ?? 0,

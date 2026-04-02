@@ -300,7 +300,7 @@ async function rebuildCallSiteStats(pool: import("pg").Pool): Promise<void> {
         project_id, provider, model, cost_usd, input_tokens, output_tokens,
         duration_ms, streaming, ttft, tps, timestamp,
         call_site_frames->(jsonb_array_length(call_site_frames)-1)->>'fileName' as file_name,
-        call_site_frames->(jsonb_array_length(call_site_frames)-1)->>'functionName' as function_name,
+        SPLIT_PART(call_site_frames->(jsonb_array_length(call_site_frames)-1)->>'functionName', E'\n', 1) as function_name,
         CASE WHEN call_site_frames->(jsonb_array_length(call_site_frames)-1)->>'lineNumber' ~ '^\d+$'
           THEN (call_site_frames->(jsonb_array_length(call_site_frames)-1)->>'lineNumber')::int ELSE NULL END as line_number
       FROM events

@@ -95,6 +95,37 @@ function filterFrames(frames: StackFrame[]): StackFrame[] {
   return filtered.length > 0 ? filtered : frames;
 }
 
+/**
+ * Find the most meaningful "business logic" frame from filtered user frames.
+ *
+ * Strategy: frame[0] is the direct API caller — often a thin wrapper like
+ * `_messages_create_with_backoff` in `anthropic_client.py`. All wrapper
+ * functions typically live in the SAME file. Walk up the stack until we
+ * find a frame from a DIFFERENT file — that's the actual business logic.
+ *
+ * Example:
+ *   frame[0]: _messages_create_with_backoff  at anthropic_client.py:142
+ *   frame[1]: call_haiku                     at anthropic_client.py:300  ← same file, skip
+ *   frame[2]: _process_file_group            at stage2_haiku.py:241     ← different file! use this
+ *
+ * This works universally without fragile function-name heuristics.
+ */
+function findBusinessLogicFrame(frames: StackFrame[]): StackFrame {
+  if (frames.length <= 1) return frames[0];
+
+  const innermostFile = frames[0].fileName ?? "";
+
+  for (let i = 1; i < frames.length; i++) {
+    const file = frames[i].fileName ?? "";
+    if (file && file !== innermostFile) {
+      return frames[i];
+    }
+  }
+
+  // All frames from the same file — just use frame[0]
+  return frames[0];
+}
+
 export function createIngestRouter(pool: pg.Pool): Router {
   const router = createRouter();
 
@@ -181,9 +212,13 @@ export function createIngestRouter(pool: pg.Pool): Router {
             ],
           );
 
-          // Upsert call site stats — use LAST frame (outermost = business logic entry point)
+          // Upsert call site stats — find the best "business logic" frame
+          // Strategy: frame[0] is the direct API caller (usually a wrapper).
+          // Walk up until we find a frame from a DIFFERENT file — that's the
+          // business logic that actually matters. Works universally without
+          // fragile function-name heuristics.
           if (cleanFrames && cleanFrames.length > 0) {
-            const f = cleanFrames[cleanFrames.length - 1];
+            const f = findBusinessLogicFrame(cleanFrames);
             // Clean newlines from Python function names (traceback includes code lines)
             const cleanFn = (f.functionName ?? "anonymous").split("\n")[0].trim();
             const key = `${f.fileName ?? "unknown"}:${cleanFn}:${f.lineNumber ?? 0}`;

@@ -271,46 +271,99 @@ async function backfillFrames(pool: import("pg").Pool): Promise<void> {
   }
 }
 
+/**
+ * Find the business logic frame from a JSONB frames array.
+ * Same logic as findBusinessLogicFrame in ingest.ts:
+ * walk up from frame[0] until we find a frame from a different file.
+ */
+function pickBestFrame(frames: Array<{ fileName?: string | null; functionName?: string | null; lineNumber?: number | null }>): typeof frames[0] {
+  if (frames.length <= 1) return frames[0];
+  const innerFile = frames[0].fileName ?? "";
+  for (let i = 1; i < frames.length; i++) {
+    const file = frames[i].fileName ?? "";
+    if (file && file !== innerFile) return frames[i];
+  }
+  return frames[0];
+}
+
 async function rebuildCallSiteStats(pool: import("pg").Pool): Promise<void> {
   await pool.query("DELETE FROM call_site_stats");
 
-  await pool.query(`
-    INSERT INTO call_site_stats (
-      project_id, call_site_key, file_name, function_name, line_number,
-      provider, model,
-      total_calls, total_cost_usd, total_input_tokens, total_output_tokens,
-      avg_duration_ms, avg_ttft, avg_tps, first_seen, last_seen
-    )
-    SELECT
-      project_id,
-      CONCAT(COALESCE(file_name, 'unknown'), ':', COALESCE(function_name, 'anonymous'), ':', COALESCE(line_number::text, '0')),
-      file_name, function_name, line_number,
-      provider, model,
-      COUNT(*)::int,
-      COALESCE(SUM(cost_usd), 0),
-      COALESCE(SUM(input_tokens), 0),
-      COALESCE(SUM(output_tokens), 0),
-      COALESCE(AVG(duration_ms), 0),
-      AVG(CASE WHEN streaming THEN ttft END),
-      AVG(CASE WHEN streaming THEN tps END),
-      MIN(timestamp),
-      MAX(timestamp)
-    FROM (
-      SELECT
-        project_id, provider, model, cost_usd, input_tokens, output_tokens,
-        duration_ms, streaming, ttft, tps, timestamp,
-        call_site_frames->(jsonb_array_length(call_site_frames)-1)->>'fileName' as file_name,
-        SPLIT_PART(call_site_frames->(jsonb_array_length(call_site_frames)-1)->>'functionName', E'\n', 1) as function_name,
-        CASE WHEN call_site_frames->(jsonb_array_length(call_site_frames)-1)->>'lineNumber' ~ '^\d+$'
-          THEN (call_site_frames->(jsonb_array_length(call_site_frames)-1)->>'lineNumber')::int ELSE NULL END as line_number
-      FROM events
-      WHERE call_site_frames IS NOT NULL
-        AND call_site_frames != '[]'::jsonb
-        AND jsonb_array_length(call_site_frames) > 0
-    ) sub
-    WHERE file_name IS NOT NULL
-    GROUP BY project_id, file_name, function_name, line_number, provider, model
+  // Fetch all events with frames and rebuild in JS (so we can use the same
+  // business-logic-frame heuristic as ingest, which can't be expressed in SQL)
+  const result = await pool.query(`
+    SELECT id, project_id, provider, model, cost_usd, input_tokens, output_tokens,
+      duration_ms, streaming, ttft, tps, timestamp, call_site_frames
+    FROM events
+    WHERE call_site_frames IS NOT NULL
+      AND call_site_frames != '[]'::jsonb
+      AND jsonb_array_length(call_site_frames) > 0
   `);
 
-  console.log("[costkey] Rebuilt call_site_stats from clean frames");
+  // Aggregate in memory
+  const stats = new Map<string, {
+    projectId: string; key: string; fileName: string | null; functionName: string | null;
+    lineNumber: number | null; provider: string; model: string;
+    calls: number; cost: number; inputTokens: number; outputTokens: number;
+    durations: number[]; ttfts: number[]; tpss: number[];
+    firstSeen: string; lastSeen: string;
+  }>();
+
+  for (const row of result.rows) {
+    const frames = typeof row.call_site_frames === "string"
+      ? JSON.parse(row.call_site_frames) : row.call_site_frames;
+    if (!frames || frames.length === 0) continue;
+
+    const best = pickBestFrame(frames);
+    const fn = (best.functionName ?? "anonymous").split("\n")[0].trim();
+    const fileName = best.fileName ?? "unknown";
+    const lineNum = best.lineNumber ?? null;
+    const compositeKey = `${row.project_id}:${fileName}:${fn}:${lineNum}:${row.model}`;
+
+    const existing = stats.get(compositeKey);
+    if (existing) {
+      existing.calls++;
+      existing.cost += row.cost_usd ?? 0;
+      existing.inputTokens += row.input_tokens ?? 0;
+      existing.outputTokens += row.output_tokens ?? 0;
+      existing.durations.push(row.duration_ms ?? 0);
+      if (row.streaming && row.ttft != null) existing.ttfts.push(row.ttft);
+      if (row.streaming && row.tps != null) existing.tpss.push(row.tps);
+      if (row.timestamp < existing.firstSeen) existing.firstSeen = row.timestamp;
+      if (row.timestamp > existing.lastSeen) existing.lastSeen = row.timestamp;
+    } else {
+      stats.set(compositeKey, {
+        projectId: row.project_id, key: `${fileName}:${fn}:${lineNum ?? 0}`,
+        fileName, functionName: fn, lineNumber: lineNum,
+        provider: row.provider, model: row.model,
+        calls: 1, cost: row.cost_usd ?? 0,
+        inputTokens: row.input_tokens ?? 0, outputTokens: row.output_tokens ?? 0,
+        durations: [row.duration_ms ?? 0],
+        ttfts: row.streaming && row.ttft != null ? [row.ttft] : [],
+        tpss: row.streaming && row.tps != null ? [row.tps] : [],
+        firstSeen: row.timestamp, lastSeen: row.timestamp,
+      });
+    }
+  }
+
+  // Insert aggregated stats
+  const avg = (arr: number[]) => arr.length > 0 ? arr.reduce((a, b) => a + b, 0) / arr.length : null;
+
+  for (const s of stats.values()) {
+    await pool.query(`
+      INSERT INTO call_site_stats (
+        project_id, call_site_key, file_name, function_name, line_number,
+        provider, model, total_calls, total_cost_usd, total_input_tokens, total_output_tokens,
+        avg_duration_ms, avg_ttft, avg_tps, first_seen, last_seen
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+      ON CONFLICT (project_id, call_site_key, model) DO NOTHING`,
+      [
+        s.projectId, s.key, s.fileName, s.functionName, s.lineNumber,
+        s.provider, s.model, s.calls, s.cost, s.inputTokens, s.outputTokens,
+        avg(s.durations), avg(s.ttfts), avg(s.tpss), s.firstSeen, s.lastSeen,
+      ],
+    );
+  }
+
+  console.log(`[costkey] Rebuilt call_site_stats: ${stats.size} entries from ${result.rows.length} events`);
 }

@@ -23,8 +23,8 @@ export function createApiRouter(pool: pg.Pool): Router {
         `SELECT
           COUNT(*)::int as total_calls,
           COALESCE(SUM(cost_usd), 0) as total_cost,
-          COALESCE(SUM(input_tokens), 0)::bigint as total_input_tokens,
-          COALESCE(SUM(output_tokens), 0)::bigint as total_output_tokens,
+          COALESCE(SUM(input_tokens), 0)::int as total_input_tokens,
+          COALESCE(SUM(output_tokens), 0)::int as total_output_tokens,
           COALESCE(AVG(duration_ms), 0) as avg_duration_ms,
           COALESCE(AVG(CASE WHEN streaming THEN ttft END), 0) as avg_ttft,
           COALESCE(AVG(CASE WHEN streaming THEN tps END), 0) as avg_tps
@@ -35,8 +35,8 @@ export function createApiRouter(pool: pg.Pool): Router {
       const byModel = await pool.query(
         `SELECT model, provider, COUNT(*)::int as calls,
           COALESCE(SUM(cost_usd), 0) as cost,
-          COALESCE(SUM(input_tokens), 0)::bigint as input_tokens,
-          COALESCE(SUM(output_tokens), 0)::bigint as output_tokens,
+          COALESCE(SUM(input_tokens), 0)::int as input_tokens,
+          COALESCE(SUM(output_tokens), 0)::int as output_tokens,
           COALESCE(AVG(duration_ms), 0) as avg_duration_ms
         FROM events WHERE project_id = $1 ${clause}
         GROUP BY model, provider ORDER BY cost DESC`,
@@ -73,7 +73,7 @@ export function createApiRouter(pool: pg.Pool): Router {
       const result = await pool.query(
         `SELECT call_site_key, file_name, function_name, line_number,
           provider, model, total_calls::int, total_cost_usd,
-          total_input_tokens::bigint, total_output_tokens::bigint,
+          total_input_tokens::int, total_output_tokens::int,
           avg_duration_ms, avg_ttft, avg_tps, first_seen, last_seen
         FROM call_site_stats WHERE project_id = $1
         ORDER BY ${sort} DESC LIMIT $2`,
@@ -158,8 +158,8 @@ export function createApiRouter(pool: pg.Pool): Router {
         `SELECT date_trunc('${trunc}', timestamp) as bucket,
           COUNT(*)::int as calls,
           COALESCE(SUM(cost_usd), 0) as cost,
-          COALESCE(SUM(input_tokens), 0)::bigint as input_tokens,
-          COALESCE(SUM(output_tokens), 0)::bigint as output_tokens,
+          COALESCE(SUM(input_tokens), 0)::int as input_tokens,
+          COALESCE(SUM(output_tokens), 0)::int as output_tokens,
           COALESCE(AVG(duration_ms), 0) as avg_duration_ms
         FROM events WHERE project_id = $1 ${clause}
         GROUP BY bucket ORDER BY bucket ASC`,
@@ -183,8 +183,8 @@ export function createApiRouter(pool: pg.Pool): Router {
       const result = await pool.query(
         `SELECT trace_id, trace_name, COUNT(*)::int as call_count,
           COALESCE(SUM(cost_usd), 0) as total_cost,
-          COALESCE(SUM(input_tokens), 0)::bigint as total_input_tokens,
-          COALESCE(SUM(output_tokens), 0)::bigint as total_output_tokens,
+          COALESCE(SUM(input_tokens), 0)::int as total_input_tokens,
+          COALESCE(SUM(output_tokens), 0)::int as total_output_tokens,
           MIN(timestamp) as started_at, MAX(timestamp) as ended_at,
           COALESCE(SUM(duration_ms), 0) as total_duration_ms,
           STRING_AGG(DISTINCT model, ',') as models,
@@ -230,8 +230,8 @@ export function createApiRouter(pool: pg.Pool): Router {
       const summary = await pool.query(
         `SELECT trace_name, COUNT(*)::int as call_count,
           COALESCE(SUM(cost_usd), 0) as total_cost,
-          COALESCE(SUM(input_tokens), 0)::bigint as total_input_tokens,
-          COALESCE(SUM(output_tokens), 0)::bigint as total_output_tokens,
+          COALESCE(SUM(input_tokens), 0)::int as total_input_tokens,
+          COALESCE(SUM(output_tokens), 0)::int as total_output_tokens,
           MIN(timestamp) as started_at, MAX(timestamp) as ended_at,
           COALESCE(SUM(duration_ms), 0) as total_duration_ms
         FROM events WHERE project_id = $1 AND trace_id = $2
@@ -254,8 +254,8 @@ export function createApiRouter(pool: pg.Pool): Router {
       const callSiteStats = await pool.query(
         `SELECT call_site_key, file_name, function_name, line_number,
           SUM(total_calls)::int as total_calls, SUM(total_cost_usd) as total_cost_usd,
-          SUM(total_input_tokens)::bigint as total_input_tokens,
-          SUM(total_output_tokens)::bigint as total_output_tokens,
+          SUM(total_input_tokens)::int as total_input_tokens,
+          SUM(total_output_tokens)::int as total_output_tokens,
           AVG(avg_duration_ms) as avg_duration_ms,
           AVG(avg_ttft) as avg_ttft, AVG(avg_tps) as avg_tps
         FROM call_site_stats WHERE project_id = $1

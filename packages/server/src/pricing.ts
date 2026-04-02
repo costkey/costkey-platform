@@ -224,7 +224,7 @@ const INTERNAL_FILE_PATTERNS = [
   "/lib/python", "threading.py", "asyncio/", "concurrent/futures/",
   "_bootstrap", "importlib",
   "node_modules/openai/", "node_modules/@anthropic-ai/",
-  "node_modules/@google/generative-ai/", "node_modules/cohere-ai/",
+  "node_modules/@google/generative-ai/", "node_modules/@google/genai/", "node_modules/cohere-ai/",
   "node_modules/undici/", "node_modules/node-fetch/",
   "node:internal/", "node:async_hooks",
   "costkey/packages/sdk/", "node_modules/costkey/", "site-packages/costkey/",
@@ -244,7 +244,7 @@ const INTERNAL_FN_PATTERNS = [
 async function backfillFrames(pool: import("pg").Pool): Promise<void> {
   const { runOnce } = await import("./db.js");
 
-  await runOnce(pool, "backfill_frames_v2", async () => {
+  await runOnce(pool, "backfill_frames_v3", async () => {
     try {
       const result = await pool.query(
         "SELECT id, call_site_frames FROM events WHERE call_site_frames IS NOT NULL",
@@ -286,7 +286,7 @@ async function backfillFrames(pool: import("pg").Pool): Promise<void> {
   });
 
   // Rebuild call_site_stats (also runs once)
-  await runOnce(pool, "rebuild_callsite_stats_v4", async () => {
+  await runOnce(pool, "rebuild_callsite_stats_v5", async () => {
     await rebuildCallSiteStats(pool);
   });
 }

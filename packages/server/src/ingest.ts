@@ -38,6 +38,7 @@ const INTERNAL_FILE_PATTERNS = [
   "node_modules/openai/",
   "node_modules/@anthropic-ai/",
   "node_modules/@google/generative-ai/",
+  "node_modules/@google/genai/",
   "node_modules/cohere-ai/",
   // Node.js HTTP / runtime
   "node_modules/undici/",

@@ -201,19 +201,27 @@ export async function backfillCosts(pool: import("pg").Pool): Promise<void> {
   await backfillFrames(pool);
 }
 
-/** Patterns for internal/library frames that should be stripped */
-const INTERNAL_FRAME_PATTERNS = [
+const INTERNAL_FILE_PATTERNS = [
   "site-packages/anthropic/", "site-packages/openai/",
-  "site-packages/google/generativeai/", "site-packages/cohere/",
+  "site-packages/google/", "site-packages/cohere/",
   "site-packages/mistralai/", "site-packages/groq/",
+  "site-packages/together/", "site-packages/deepseek/",
   "site-packages/httpx/", "site-packages/httpcore/",
-  "site-packages/requests/", "site-packages/urllib3/",
-  "/lib/python", "threading.py", "asyncio/", "_bootstrap",
+  "site-packages/requests/", "site-packages/urllib3/", "site-packages/aiohttp/",
+  "/lib/python", "threading.py", "asyncio/", "concurrent/futures/",
+  "_bootstrap", "importlib",
   "node_modules/openai/", "node_modules/@anthropic-ai/",
   "node_modules/@google/generative-ai/", "node_modules/cohere-ai/",
   "node_modules/undici/", "node_modules/node-fetch/",
   "node:internal/", "node:async_hooks",
   "costkey/packages/sdk/", "node_modules/costkey/", "site-packages/costkey/",
+];
+
+const INTERNAL_FN_PATTERNS = [
+  "self._client.send", "self._post", "self._request", "self.__request",
+  "_base_client", "._post(", "._get(", "._request(",
+  "_send_single_request", "_send_handling", "_send",
+  "wrapper return func(",
 ];
 
 async function backfillFrames(pool: import("pg").Pool): Promise<void> {
@@ -233,7 +241,9 @@ async function backfillFrames(pool: import("pg").Pool): Promise<void> {
         const file = f.fileName ?? "";
         const fn = f.functionName ?? "";
         if (!file && !fn) return false;
-        return !INTERNAL_FRAME_PATTERNS.some((p) => file.includes(p) || fn.includes(p));
+        if (INTERNAL_FILE_PATTERNS.some((p) => file.includes(p))) return false;
+        if (INTERNAL_FN_PATTERNS.some((p) => fn.includes(p))) return false;
+        return true;
       });
 
       // Only update if we actually removed frames

@@ -27,8 +27,8 @@
   --color-rose: #fb7185;
   --color-rose-muted: rgba(251, 113, 133, 0.12);
 
-  --font-mono: 'IBM Plex Mono', ui-monospace, 'Cascadia Code', monospace;
-  --font-sans: 'Outfit', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'Cascadia Code', monospace;
+  --font-sans: 'DM Sans', system-ui, sans-serif;
 }
 
 * {

@@ -3,26 +3,13 @@ import { ChevronRight, Clock, Circle } from "lucide-react";
 import type { Trace } from "../hooks/useApi";
 import { getTrace, type TraceEvent } from "../api";
 import ProviderLogo, { ProviderDot } from "./ProviderLogo";
+import { truncateModel, timeAgo, formatDuration } from "../utils";
 
 interface Props {
   traces: Trace[] | null;
   loading: boolean;
   projectId: string;
   search?: string;
-}
-
-function truncateModel(model: string): string {
-  return model.replace(/-\d{4}[-\d]*/g, "").replace(/-$/, "");
-}
-
-function timeAgo(ts: string): string {
-  const diff = Date.now() - new Date(ts).getTime();
-  const min = Math.floor(diff / 60000);
-  if (min < 1) return "now";
-  if (min < 60) return `${min}m`;
-  const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr}h`;
-  return `${Math.floor(hr / 24)}d`;
 }
 
 const PROVIDER_BAR_COLORS: Record<string, string> = {
@@ -88,7 +75,7 @@ function TraceRow({ trace, projectId }: { trace: Trace; projectId: string }) {
         </span>
 
         <span className="font-mono text-[10px] text-text-muted w-14 text-right shrink-0">
-          {Math.round(trace.total_duration_ms)}ms
+          {formatDuration(trace.total_duration_ms)}
         </span>
 
         <span className="font-mono text-[10px] text-text-muted w-12 text-right shrink-0">
@@ -163,7 +150,7 @@ function TraceRow({ trace, projectId }: { trace: Trace; projectId: string }) {
                       </span>
 
                       <span className="font-mono text-[10px] text-text-secondary w-14 text-right shrink-0">
-                        {Math.round(event.duration_ms)}ms
+                        {formatDuration(event.duration_ms)}
                       </span>
 
                       <span className="font-mono text-[10px] font-medium text-green/80 w-14 text-right shrink-0">
@@ -188,7 +175,7 @@ function TraceRow({ trace, projectId }: { trace: Trace; projectId: string }) {
               <div className="flex items-center gap-2 px-1.5 pt-1.5 mt-0.5 border-t border-border/30">
                 <Clock size={10} className="text-text-muted" />
                 <span className="font-mono text-[10px] text-text-muted">
-                  {new Date(events[0].timestamp).toLocaleTimeString()} — {Math.round(trace.total_duration_ms)}ms total
+                  {new Date(events[0].timestamp).toLocaleTimeString()} — {formatDuration(trace.total_duration_ms)} total
                 </span>
                 <span className="font-mono text-[10px] text-text-muted ml-auto">
                   {trace.trace_id.slice(0, 16)}...

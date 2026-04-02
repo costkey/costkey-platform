@@ -9,26 +9,30 @@ import { computeCost } from "./pricing.js";
  * Strips AI SDK internals, HTTP clients, language runtime frames
  * so only user application code remains — works for ANY SDK language.
  */
-const INTERNAL_FRAME_PATTERNS = [
+/** File path patterns for internal/library frames */
+const INTERNAL_FILE_PATTERNS = [
   // Python AI SDK internals
   "site-packages/anthropic/",
   "site-packages/openai/",
-  "site-packages/google/generativeai/",
+  "site-packages/google/",
   "site-packages/cohere/",
   "site-packages/mistralai/",
   "site-packages/groq/",
+  "site-packages/together/",
+  "site-packages/deepseek/",
   // Python HTTP clients
   "site-packages/httpx/",
   "site-packages/httpcore/",
   "site-packages/requests/",
   "site-packages/urllib3/",
   "site-packages/aiohttp/",
-  // Python runtime
+  // Python runtime / stdlib
   "/lib/python",
   "threading.py",
   "asyncio/",
   "concurrent/futures/",
   "_bootstrap",
+  "importlib",
   // Node.js AI SDK internals
   "node_modules/openai/",
   "node_modules/@anthropic-ai/",
@@ -45,16 +49,37 @@ const INTERNAL_FRAME_PATTERNS = [
   "site-packages/costkey/",
 ];
 
+/** Function name patterns that indicate library internals (Python SDK methods) */
+const INTERNAL_FN_PATTERNS = [
+  "self._client.send",
+  "self._post",
+  "self._request",
+  "self.__request",
+  "_base_client",
+  "._post(",
+  "._get(",
+  "._put(",
+  "._patch(",
+  "._delete(",
+  "._request(",
+  "_send_single_request",
+  "_send_handling",
+  "_send",
+  "wrapper return func(",
+];
+
 function filterFrames(frames: StackFrame[]): StackFrame[] {
   const filtered = frames.filter((frame) => {
     const file = frame.fileName ?? "";
     const fn = frame.functionName ?? "";
-    // Keep if no file/function info at all
     if (!file && !fn) return false;
-    // Strip frames matching internal patterns
-    return !INTERNAL_FRAME_PATTERNS.some((p) => file.includes(p) || fn.includes(p));
+    // Check file path patterns
+    if (INTERNAL_FILE_PATTERNS.some((p) => file.includes(p))) return false;
+    // Check function name patterns
+    if (INTERNAL_FN_PATTERNS.some((p) => fn.includes(p))) return false;
+    return true;
   });
-  return filtered.length > 0 ? filtered : frames; // fallback to original if everything got filtered
+  return filtered.length > 0 ? filtered : frames;
 }
 
 export function createIngestRouter(pool: pg.Pool): Router {

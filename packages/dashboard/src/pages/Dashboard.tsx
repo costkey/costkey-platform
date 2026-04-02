@@ -1,24 +1,22 @@
 import { useState } from "react";
-import { BarChart3, GitBranch, Route, FileCode, Activity, Search } from "lucide-react";
+import { BarChart3, Route, FileCode, Activity, Search } from "lucide-react";
 import AnomalyBanner from "../components/AnomalyBanner";
 import StatCards from "../components/StatCards";
 import CostTrend from "../components/CostTrend";
 import CallSitesTable from "../components/CallSitesTable";
 import ModelBreakdown from "../components/ModelBreakdown";
-import FeatureTree from "../components/FeatureTree";
 import TracesView from "../components/TracesView";
 import RecentEvents from "../components/RecentEvents";
-import { useOverview, useCallSites, useEvents, useTrends, useFeatures, useTraces } from "../hooks/useApi";
+import { useOverview, useCallSites, useEvents, useTrends, useTraces } from "../hooks/useApi";
 import { useAuth } from "../contexts/AuthContext";
 
-type Tab = "overview" | "features" | "traces" | "call-sites" | "events";
+type Tab = "overview" | "traces" | "call-sites" | "events";
 
 const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
-  { id: "overview", label: "Overview", icon: <BarChart3 size={13} /> },
-  { id: "features", label: "Features", icon: <GitBranch size={13} /> },
-  { id: "traces", label: "Traces", icon: <Route size={13} /> },
-  { id: "call-sites", label: "Call Sites", icon: <FileCode size={13} /> },
-  { id: "events", label: "Events", icon: <Activity size={13} /> },
+  { id: "overview", label: "Overview", icon: <BarChart3 size={14} /> },
+  { id: "traces", label: "Traces", icon: <Route size={14} /> },
+  { id: "call-sites", label: "Call Sites", icon: <FileCode size={14} /> },
+  { id: "events", label: "Events", icon: <Activity size={14} /> },
 ];
 
 export default function Dashboard() {
@@ -31,23 +29,22 @@ export default function Dashboard() {
   const callSites = useCallSites(projectId);
   const events = useEvents(projectId, 100);
   const trends = useTrends(projectId);
-  const features = useFeatures(projectId);
   const traces = useTraces(projectId);
 
   const showSearch = activeTab !== "overview";
 
   return (
-    <main className="max-w-[1440px] mx-auto px-4 pt-2 pb-1 flex flex-col gap-0 min-h-[calc(100vh-56px)]">
+    <main className="max-w-[1440px] mx-auto px-5 pt-3 pb-2 flex flex-col gap-0 min-h-[calc(100vh-56px)]">
       <AnomalyBanner projectId={projectId} />
 
       {/* Tab bar */}
-      <div className="flex items-center gap-0 border-b border-border mb-3">
+      <div className="flex items-center gap-0 border-b border-border mb-4">
         <div className="flex items-center gap-0">
           {TABS.map((tab) => (
             <button
               key={tab.id}
               onClick={() => { setActiveTab(tab.id); setSearch(""); }}
-              className={`flex items-center gap-1.5 px-4 py-2.5 font-mono text-xs tracking-wide cursor-pointer transition-colors border-b-2 -mb-px ${
+              className={`flex items-center gap-2 px-5 py-3 text-sm font-medium cursor-pointer transition-colors border-b-2 -mb-px ${
                 activeTab === tab.id
                   ? "text-accent border-accent"
                   : "text-text-muted hover:text-text-secondary border-transparent"
@@ -59,16 +56,15 @@ export default function Dashboard() {
           ))}
         </div>
 
-        {/* Search */}
         {showSearch && (
-          <div className="ml-auto flex items-center gap-1.5 bg-surface-raised border border-border rounded-sm px-2.5 py-1.5 mb-1">
-            <Search size={12} className="text-text-muted" />
+          <div className="ml-auto flex items-center gap-2 bg-surface-raised border border-border rounded-sm px-3 py-2 mb-1">
+            <Search size={14} className="text-text-muted" />
             <input
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder={`Search ${activeTab.replace("-", " ")}...`}
-              className="bg-transparent text-xs font-mono text-text-primary placeholder:text-text-muted outline-none w-48"
+              className="bg-transparent text-sm text-text-primary placeholder:text-text-muted outline-none w-56"
             />
           </div>
         )}
@@ -77,18 +73,13 @@ export default function Dashboard() {
       {/* Tab content */}
       <div className="flex-1">
         {activeTab === "overview" && (
-          <div className="flex flex-col gap-3">
-            <StatCards
-              overview={overview.data?.overview ?? null}
-              loading={overview.loading}
-            />
-            <CostTrend trends={trends.data} loading={trends.loading} />
-            <ModelBreakdown models={overview.data?.byModel ?? null} loading={overview.loading} />
+          <div className="flex flex-col gap-4">
+            <StatCards overview={overview.data?.overview ?? null} loading={overview.loading} />
+            <div className="grid grid-cols-[1fr_340px] gap-4">
+              <CostTrend trends={trends.data} loading={trends.loading} />
+              <ModelBreakdown models={overview.data?.byModel ?? null} loading={overview.loading} />
+            </div>
           </div>
-        )}
-
-        {activeTab === "features" && (
-          <FeatureTree features={features.data} loading={features.loading} search={search} />
         )}
 
         {activeTab === "traces" && (
@@ -96,7 +87,7 @@ export default function Dashboard() {
         )}
 
         {activeTab === "call-sites" && (
-          <CallSitesTable callSites={callSites.data} loading={callSites.loading} search={search} />
+          <CallSitesTable callSites={callSites.data} loading={callSites.loading} search={search} projectId={projectId} />
         )}
 
         {activeTab === "events" && (

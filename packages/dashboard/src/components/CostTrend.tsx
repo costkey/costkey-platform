@@ -57,8 +57,8 @@ export default function CostTrend({ trends, loading }: Props) {
         </span>
       </div>
 
-      <ResponsiveContainer width="100%" height={190}>
-        <AreaChart data={data} margin={{ top: 4, right: 4, left: -10, bottom: 0 }}>
+      <ResponsiveContainer width="100%" height={200}>
+        <AreaChart data={data} margin={{ top: 4, right: 12, left: -10, bottom: 0 }}>
           <defs>
             <linearGradient id="costGradient" x1="0" y1="0" x2="0" y2="1">
               <stop offset="0%" stopColor="#6366f1" stopOpacity={0.3} />

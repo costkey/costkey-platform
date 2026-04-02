@@ -29,7 +29,7 @@ export default function Dashboard() {
 
   const overview = useOverview(projectId);
   const callSites = useCallSites(projectId);
-  const events = useEvents(projectId, 50);
+  const events = useEvents(projectId, 100);
   const trends = useTrends(projectId);
   const features = useFeatures(projectId);
   const traces = useTraces(projectId);
@@ -37,17 +37,17 @@ export default function Dashboard() {
   const showSearch = activeTab !== "overview";
 
   return (
-    <main className="max-w-[1440px] mx-auto px-4 py-3 flex flex-col gap-3">
+    <main className="max-w-[1440px] mx-auto px-4 pt-2 pb-1 flex flex-col gap-0 min-h-[calc(100vh-56px)]">
       <AnomalyBanner projectId={projectId} />
 
       {/* Tab bar */}
-      <div className="flex items-center gap-0 border-b border-border">
+      <div className="flex items-center gap-0 border-b border-border mb-3">
         <div className="flex items-center gap-0">
           {TABS.map((tab) => (
             <button
               key={tab.id}
               onClick={() => { setActiveTab(tab.id); setSearch(""); }}
-              className={`flex items-center gap-1.5 px-4 py-2 font-mono text-xs tracking-wide cursor-pointer transition-colors border-b-2 -mb-px ${
+              className={`flex items-center gap-1.5 px-4 py-2.5 font-mono text-xs tracking-wide cursor-pointer transition-colors border-b-2 -mb-px ${
                 activeTab === tab.id
                   ? "text-accent border-accent"
                   : "text-text-muted hover:text-text-secondary border-transparent"
@@ -61,7 +61,7 @@ export default function Dashboard() {
 
         {/* Search */}
         {showSearch && (
-          <div className="ml-auto flex items-center gap-1.5 bg-surface-raised border border-border rounded-sm px-2.5 py-1.5">
+          <div className="ml-auto flex items-center gap-1.5 bg-surface-raised border border-border rounded-sm px-2.5 py-1.5 mb-1">
             <Search size={12} className="text-text-muted" />
             <input
               type="text"
@@ -75,34 +75,34 @@ export default function Dashboard() {
       </div>
 
       {/* Tab content */}
-      {activeTab === "overview" && (
-        <div className="flex flex-col gap-3">
-          <StatCards
-            overview={overview.data?.overview ?? null}
-            loading={overview.loading}
-          />
-          <div className="grid grid-cols-[1fr_320px] gap-3">
+      <div className="flex-1">
+        {activeTab === "overview" && (
+          <div className="flex flex-col gap-3">
+            <StatCards
+              overview={overview.data?.overview ?? null}
+              loading={overview.loading}
+            />
             <CostTrend trends={trends.data} loading={trends.loading} />
             <ModelBreakdown models={overview.data?.byModel ?? null} loading={overview.loading} />
           </div>
-        </div>
-      )}
+        )}
 
-      {activeTab === "features" && (
-        <FeatureTree features={features.data} loading={features.loading} search={search} />
-      )}
+        {activeTab === "features" && (
+          <FeatureTree features={features.data} loading={features.loading} search={search} />
+        )}
 
-      {activeTab === "traces" && (
-        <TracesView traces={traces.data} loading={traces.loading} projectId={projectId} search={search} />
-      )}
+        {activeTab === "traces" && (
+          <TracesView traces={traces.data} loading={traces.loading} projectId={projectId} search={search} />
+        )}
 
-      {activeTab === "call-sites" && (
-        <CallSitesTable callSites={callSites.data} loading={callSites.loading} search={search} />
-      )}
+        {activeTab === "call-sites" && (
+          <CallSitesTable callSites={callSites.data} loading={callSites.loading} search={search} />
+        )}
 
-      {activeTab === "events" && (
-        <RecentEvents events={events.data} loading={events.loading} search={search} />
-      )}
+        {activeTab === "events" && (
+          <RecentEvents events={events.data} loading={events.loading} search={search} projectId={projectId} />
+        )}
+      </div>
     </main>
   );
 }

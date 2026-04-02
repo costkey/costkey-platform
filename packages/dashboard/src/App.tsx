@@ -28,7 +28,7 @@ function AppShell() {
   const currentProject = projects.find((p) => p.id === currentProjectId) ?? projects[0];
 
   return (
-    <div className="min-h-screen bg-surface">
+    <div className="min-h-screen bg-surface flex flex-col">
       {/* Header */}
       <header className="scanline-effect relative border-b border-border bg-surface-raised/50 backdrop-blur-sm sticky top-0 z-50">
         <div className="max-w-[1400px] mx-auto px-6 h-14 flex items-center gap-4">
@@ -91,12 +91,14 @@ function AppShell() {
         </div>
       </header>
 
-      <Outlet />
+      <div className="flex-1">
+        <Outlet />
+      </div>
 
-      <footer className="border-t border-border mt-8">
-        <div className="max-w-[1400px] mx-auto px-6 py-4 flex items-center justify-between">
-          <span className="font-mono text-[11px] text-text-muted">costkey v0.1.0</span>
-          <span className="font-mono text-[11px] text-text-muted">AI cost observability</span>
+      <footer className="border-t border-border/50">
+        <div className="max-w-[1440px] mx-auto px-4 py-1.5 flex items-center justify-between">
+          <span className="font-mono text-[9px] text-text-muted/50">costkey v0.2.0</span>
+          <span className="font-mono text-[9px] text-text-muted/50">AI cost observability</span>
         </div>
       </footer>
     </div>

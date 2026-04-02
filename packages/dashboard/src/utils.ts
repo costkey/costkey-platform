@@ -42,3 +42,42 @@ export function truncateFile(path: string | null): string {
   if (parts.length <= 2) return path;
   return ".../" + parts.slice(-2).join("/");
 }
+
+interface FrameLike {
+  functionName?: string | null;
+  fileName?: string | null;
+  lineNumber?: number | null;
+}
+
+/**
+ * Find the business logic frame from a stack trace.
+ * frame[0] is the direct API caller (often a wrapper in a client file).
+ * Walk up until we find a frame from a DIFFERENT file — that's the
+ * actual business logic.
+ */
+export function findBusinessFrame(frames: FrameLike[]): FrameLike | null {
+  if (!frames || frames.length === 0) return null;
+  if (frames.length === 1) return frames[0];
+
+  const innerFile = frames[0].fileName ?? "";
+  for (let i = 1; i < frames.length; i++) {
+    const file = frames[i].fileName ?? "";
+    if (file && file !== innerFile) return frames[i];
+  }
+  return frames[0];
+}
+
+/** Parse call_site_frames from an event (handles string or array) */
+export function parseFrames(raw: unknown): FrameLike[] {
+  if (!raw) return [];
+  if (typeof raw === "string") {
+    try { return JSON.parse(raw); } catch { return []; }
+  }
+  return raw as FrameLike[];
+}
+
+/** Get clean function name (strip newlines from Python traceback format) */
+export function cleanFunctionName(fn: string | null | undefined): string | null {
+  if (!fn) return null;
+  return fn.split("\n")[0].trim() || null;
+}

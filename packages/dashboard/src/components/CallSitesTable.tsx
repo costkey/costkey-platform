@@ -4,7 +4,10 @@ import type { CallSite, EventRow } from "../hooks/useApi";
 import { getEvents } from "../api";
 import ProviderLogo from "./ProviderLogo";
 import EventPanel from "./EventPanel";
-import { formatTokens, formatDuration, truncateFile, truncateModel, timeAgo } from "../utils";
+import {
+  formatTokens, formatDuration, truncateFile, truncateModel, timeAgo,
+  findBusinessFrame, parseFrames, cleanFunctionName,
+} from "../utils";
 
 interface Props {
   callSites: CallSite[] | null;
@@ -29,10 +32,7 @@ interface AggRow {
 }
 
 function CallSiteRow({ row, maxCost, projectId, onSelectEvent }: {
-  row: AggRow;
-  maxCost: number;
-  projectId: string;
-  onSelectEvent: (e: EventRow) => void;
+  row: AggRow; maxCost: number; projectId: string; onSelectEvent: (e: EventRow) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [events, setEvents] = useState<EventRow[] | null>(null);
@@ -44,18 +44,18 @@ function CallSiteRow({ row, maxCost, projectId, onSelectEvent }: {
     if (!events) {
       setLoadingEvents(true);
       try {
-        const data = await getEvents(projectId, { limit: 20 });
-        // Filter client-side by function name match
-        const fn = row.functionName ?? "";
+        // Fetch events and filter by matching business logic function
+        const data = await getEvents(projectId, { limit: 50 });
+        const targetFn = row.functionName ?? "";
+        const targetFile = row.fileName ?? "";
         const matching = data.events.filter((e) => {
-          const frames = e.call_site_frames
-            ? (typeof e.call_site_frames === "string" ? JSON.parse(e.call_site_frames) : e.call_site_frames)
-            : [];
-          return frames.some((f: { functionName?: string }) =>
-            (f.functionName ?? "").includes(fn)
-          );
+          const frames = parseFrames(e.call_site_frames);
+          const best = findBusinessFrame(frames);
+          const fn = cleanFunctionName(best?.functionName) ?? "";
+          const file = best?.fileName ?? "";
+          return fn === targetFn || file === targetFile;
         });
-        setEvents(matching.length > 0 ? matching : data.events.slice(0, 5));
+        setEvents(matching.length > 0 ? matching.slice(0, 20) : data.events.slice(0, 5));
       } catch { /* silent */ }
       setLoadingEvents(false);
     }
@@ -71,7 +71,6 @@ function CallSiteRow({ row, maxCost, projectId, onSelectEvent }: {
           size={14}
           className={`text-text-muted shrink-0 transition-transform duration-150 ${expanded ? "rotate-90" : ""}`}
         />
-
         <div className="flex flex-col gap-0.5 flex-1 min-w-0">
           <div className="flex items-center gap-2">
             <span className="font-mono text-sm font-semibold text-text-primary truncate">
@@ -86,23 +85,18 @@ function CallSiteRow({ row, maxCost, projectId, onSelectEvent }: {
             {row.lineNumber != null && `:${row.lineNumber}`}
           </span>
         </div>
-
         <span className="font-mono text-sm text-text-secondary w-16 text-right shrink-0">
           {row.totalCalls.toLocaleString()}
         </span>
-
         <span className="font-mono text-sm font-semibold text-green w-20 text-right shrink-0">
           ${row.totalCost.toFixed(2)}
         </span>
-
         <span className="font-mono text-xs text-text-muted w-20 text-right shrink-0">
           {formatTokens(row.totalInputTokens)} in
         </span>
-
         <span className="font-mono text-sm text-text-secondary w-20 text-right shrink-0">
           {formatDuration(row.avgDuration)}
         </span>
-
         <div className="w-24 shrink-0">
           <div className="relative h-2 bg-surface-overlay rounded-sm overflow-hidden">
             <div
@@ -113,7 +107,6 @@ function CallSiteRow({ row, maxCost, projectId, onSelectEvent }: {
         </div>
       </button>
 
-      {/* Expanded: show recent events from this call site */}
       {expanded && (
         <div className="bg-surface/50 border-t border-border/20">
           {loadingEvents && (
@@ -134,11 +127,8 @@ function CallSiteRow({ row, maxCost, projectId, onSelectEvent }: {
                 <div className="w-14 text-right">Cost</div>
               </div>
               {events.map((event) => {
-                const frames = event.call_site_frames
-                  ? (typeof event.call_site_frames === "string" ? JSON.parse(event.call_site_frames) : event.call_site_frames)
-                  : [];
-                const fn = frames[0]?.functionName ?? null;
-
+                const best = findBusinessFrame(parseFrames(event.call_site_frames));
+                const fn = cleanFunctionName(best?.functionName);
                 return (
                   <button
                     key={event.id}
@@ -148,25 +138,19 @@ function CallSiteRow({ row, maxCost, projectId, onSelectEvent }: {
                     <span className="font-mono text-xs text-text-muted w-10 shrink-0">
                       {timeAgo(event.timestamp)}
                     </span>
-
                     <ProviderLogo provider={event.provider} size={12} />
-
                     <span className="font-mono text-xs text-text-secondary w-40 truncate shrink-0">
                       {truncateModel(event.model)}
                     </span>
-
                     <span className="font-mono text-xs text-text-primary truncate flex-1">
                       {fn ? `${fn}()` : "—"}
                     </span>
-
                     <span className="font-mono text-xs text-text-muted w-16 text-right shrink-0">
                       {event.total_tokens?.toLocaleString() ?? "—"}
                     </span>
-
                     <span className="font-mono text-xs text-text-muted w-16 text-right shrink-0">
                       {formatDuration(event.duration_ms)}
                     </span>
-
                     <span className="font-mono text-xs font-medium text-green w-14 text-right shrink-0">
                       ${(event.cost_usd ?? 0).toFixed(2)}
                     </span>
@@ -201,7 +185,6 @@ export default function CallSitesTable({ callSites, loading, search = "", projec
   }
 
   const aggregated = new Map<string, AggRow>();
-
   for (const cs of callSites) {
     const base = `${cs.file_name}:${cs.function_name}:${cs.line_number}`;
     const existing = aggregated.get(base);
@@ -214,15 +197,10 @@ export default function CallSitesTable({ callSites, loading, search = "", projec
       existing.avgDuration = (existing.avgDuration + cs.avg_duration_ms) / 2;
     } else {
       aggregated.set(base, {
-        key: base,
-        fileName: cs.file_name,
-        functionName: cs.function_name,
-        lineNumber: cs.line_number,
-        providers: new Set([cs.provider]),
-        totalCalls: cs.total_calls,
-        totalCost: cs.total_cost_usd,
-        totalInputTokens: cs.total_input_tokens,
-        totalOutputTokens: cs.total_output_tokens,
+        key: base, fileName: cs.file_name, functionName: cs.function_name,
+        lineNumber: cs.line_number, providers: new Set([cs.provider]),
+        totalCalls: cs.total_calls, totalCost: cs.total_cost_usd,
+        totalInputTokens: cs.total_input_tokens, totalOutputTokens: cs.total_output_tokens,
         avgDuration: cs.avg_duration_ms,
       });
     }
@@ -231,8 +209,7 @@ export default function CallSitesTable({ callSites, loading, search = "", projec
   const q = search.toLowerCase();
   const rows = [...aggregated.values()]
     .filter((row) =>
-      !q ||
-      (row.functionName ?? "").toLowerCase().includes(q) ||
+      !q || (row.functionName ?? "").toLowerCase().includes(q) ||
       (row.fileName ?? "").toLowerCase().includes(q) ||
       [...row.providers].some((p) => p.includes(q))
     )
@@ -265,7 +242,6 @@ export default function CallSitesTable({ callSites, loading, search = "", projec
   return (
     <>
       <div className="bg-surface-raised border border-border rounded-sm">
-        {/* Column headers */}
         <div className="flex items-center gap-3 px-4 py-2.5 border-b border-border">
           <div className="w-3.5" />
           <div className="flex-1 text-xs uppercase tracking-wider font-medium text-text-muted">Call Site</div>
@@ -284,11 +260,8 @@ export default function CallSitesTable({ callSites, loading, search = "", projec
           )}
           {rows.map((row) => (
             <CallSiteRow
-              key={row.key}
-              row={row}
-              maxCost={maxCost}
-              projectId={projectId}
-              onSelectEvent={setSelectedEvent}
+              key={row.key} row={row} maxCost={maxCost}
+              projectId={projectId} onSelectEvent={setSelectedEvent}
             />
           ))}
         </div>

@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { EventRow } from "../hooks/useApi";
 import ProviderLogo from "./ProviderLogo";
 import EventPanel from "./EventPanel";
-import { truncateModel, timeAgo, formatDuration } from "../utils";
+import { truncateModel, timeAgo, formatDuration, findBusinessFrame, parseFrames, cleanFunctionName } from "../utils";
 
 interface Props {
   events: EventRow[] | null;
@@ -29,10 +29,8 @@ export default function RecentEvents({ events, loading, search = "", projectId }
   const q = search.toLowerCase();
   const filtered = q
     ? events.filter((e) => {
-        const frames = e.call_site_frames
-          ? (typeof e.call_site_frames === "string" ? JSON.parse(e.call_site_frames) : e.call_site_frames)
-          : [];
-        const fn = frames[0]?.functionName ?? "";
+        const best = findBusinessFrame(parseFrames(e.call_site_frames));
+        const fn = cleanFunctionName(best?.functionName) ?? "";
         return (
           e.model?.toLowerCase().includes(q) ||
           e.provider?.toLowerCase().includes(q) ||
@@ -61,10 +59,9 @@ export default function RecentEvents({ events, loading, search = "", projectId }
             </div>
           )}
           {filtered.map((event) => {
-            const frames = event.call_site_frames
-              ? (typeof event.call_site_frames === "string" ? JSON.parse(event.call_site_frames) : event.call_site_frames)
-              : [];
-            const fnName = frames[0]?.functionName ?? null;
+            const frames = parseFrames(event.call_site_frames);
+            const best = findBusinessFrame(frames);
+            const fnName = cleanFunctionName(best?.functionName);
 
             return (
               <button

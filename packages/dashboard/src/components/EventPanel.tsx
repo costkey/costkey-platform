@@ -3,7 +3,7 @@ import { ArrowDown, ArrowUp, Zap, X } from "lucide-react";
 import type { EventRow } from "../hooks/useApi";
 import { getEvent } from "../api";
 import ProviderLogo from "./ProviderLogo";
-import { truncateModel, formatDuration } from "../utils";
+import { truncateModel, formatDuration, findBusinessFrame, cleanFunctionName } from "../utils";
 
 interface Props {
   event: EventRow;
@@ -92,7 +92,8 @@ export default function EventPanel({ event, projectId, onClose }: Props) {
   const frames = event.call_site_frames
     ? (typeof event.call_site_frames === "string" ? JSON.parse(event.call_site_frames) : event.call_site_frames)
     : [];
-  const fnName = frames[0]?.functionName ?? "unknown";
+  const best = findBusinessFrame(frames);
+  const fnName = cleanFunctionName(best?.functionName) ?? "unknown";
   const prompt = detail ? extractPrompt(detail.request_body) : null;
   const completion = detail ? extractCompletion(detail.response_body) : null;
 

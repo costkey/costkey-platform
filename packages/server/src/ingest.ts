@@ -127,6 +127,17 @@ function findBusinessLogicFrame(frames: StackFrame[]): StackFrame {
   return frames[0];
 }
 
+/** Max stored body size (100KB). Truncates large prompts/completions to avoid DB bloat. */
+const MAX_BODY_BYTES = 100_000;
+
+function truncateBody(body: unknown): string | null {
+  if (!body) return null;
+  const json = JSON.stringify(body);
+  if (json.length <= MAX_BODY_BYTES) return json;
+  // Truncate and add marker
+  return json.slice(0, MAX_BODY_BYTES) + '..."[TRUNCATED]"}';
+}
+
 export function createIngestRouter(pool: pg.Pool): Router {
   const router = createRouter();
 
@@ -221,8 +232,8 @@ export function createIngestRouter(pool: pg.Pool): Router {
               event.context?.traceId ?? null,
               event.context?.traceName ?? null,
               event.context ? JSON.stringify(event.context) : null,
-              event.requestBody ? JSON.stringify(event.requestBody) : null,
-              event.responseBody ? JSON.stringify(event.responseBody) : null,
+              truncateBody(event.requestBody),
+              truncateBody(event.responseBody),
               release,
             ],
           );

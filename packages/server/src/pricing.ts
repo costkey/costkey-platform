@@ -55,12 +55,20 @@ const PRICING: [string, ModelPricing][] = [
   ["grok-3", { input: 3, output: 15 }],
   ["grok-4", { input: 3, output: 15 }],
 
-  // Groq
+  // Llama variants (Groq, Together, Fireworks, etc.)
   ["llama-3.3-70b", { input: 0.59, output: 0.79 }],
+  ["llama-v3p3-70b", { input: 0.59, output: 0.79 }],
+  ["llama-3.1-405b", { input: 3.5, output: 3.5 }],
+  ["llama-v3p1-405b", { input: 3.5, output: 3.5 }],
+  ["llama-3.1-70b", { input: 0.88, output: 0.88 }],
+  ["llama-v3p1-70b", { input: 0.88, output: 0.88 }],
   ["llama-3.1-8b", { input: 0.05, output: 0.08 }],
+  ["llama-v3p1-8b", { input: 0.05, output: 0.08 }],
   ["llama-3-70b", { input: 0.59, output: 0.79 }],
+  ["llama-3-8b", { input: 0.05, output: 0.08 }],
   ["mixtral-8x7b", { input: 0.24, output: 0.24 }],
   ["gemma2-9b", { input: 0.2, output: 0.2 }],
+  ["qwen", { input: 0.2, output: 0.2 }],
 
   // Mistral
   ["mistral-large", { input: 2, output: 6 }],

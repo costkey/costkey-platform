@@ -113,6 +113,10 @@ Custom providers: `CostKey.registerExtractor(extractor)`
 | `CostKey.shutdown()` | Flush and restore original fetch. |
 | `CostKey.registerExtractor(ext)` | Add custom AI provider. |
 
+## Known Limitations
+
+- **Async stack traces**: In heavily async environments (Cloudflare Workers, Next.js server components), stack traces may only show the async boundary rather than the full call chain. This is a runtime limitation — JavaScript engines discard stack frames across `await` points.
+
 ## License
 
 MIT

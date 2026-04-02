@@ -9,7 +9,6 @@ import { patchFetch, unpatchFetch } from "./fetch-patch.js";
 import { Transport } from "./transport.js";
 import { withContext, getCurrentContext, startTrace, getCurrentTraceId } from "./context.js";
 import { registerExtractor } from "./providers/registry.js";
-import { registerPricing } from "./pricing.js";
 
 export type { CostKeyOptions, EventContext, BeforeSendHook, ProviderExtractor };
 export { Provider } from "@costkey/shared";
@@ -107,7 +106,6 @@ export const CostKey = {
   getCurrentContext,
   getCurrentTraceId,
   registerExtractor,
-  registerPricing,
 } as const;
 
 // Default export for convenience

@@ -6,7 +6,7 @@ import type { ProviderExtractor, NormalizedUsage } from "./types.js";
  * Response format matches OpenAI (prompt_tokens, completion_tokens, etc.)
  */
 export const openrouterExtractor: ProviderExtractor = {
-  provider: Provider.OpenAI, // Reports as OpenAI since format is identical
+  provider: Provider.OpenRouter,
 
   match(url: URL): boolean {
     return url.hostname === "openrouter.ai";

@@ -1,125 +1,126 @@
-import { Activity } from "lucide-react";
 import type { EventRow } from "../hooks/useApi";
+import ProviderLogo from "./ProviderLogo";
 
 interface Props {
   events: EventRow[] | null;
   loading: boolean;
+  search?: string;
 }
-
-const PROVIDER_DOT: Record<string, string> = {
-  openai: "bg-green",
-  anthropic: "bg-amber",
-  google: "bg-cyan",
-};
 
 function truncateModel(model: string | null): string {
   if (!model) return "unknown";
-  const datePattern = /-\d{4}[-\d]*/;
-  return model.replace(datePattern, "").replace(/-$/, "");
+  return model.replace(/-\d{4}[-\d]*/g, "").replace(/-$/, "");
 }
 
 function timeAgo(timestamp: string): string {
   const diff = Date.now() - new Date(timestamp).getTime();
   const minutes = Math.floor(diff / 60000);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes}m ago`;
+  if (minutes < 1) return "now";
+  if (minutes < 60) return `${minutes}m`;
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  return `${days}d ago`;
+  if (hours < 24) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
 }
 
-function formatCost(cost: number | null): string {
-  if (cost == null) return "—";
-  if (cost >= 1) return `$${cost.toFixed(2)}`;
-  if (cost >= 0.001) return `$${cost.toFixed(4)}`;
-  return `$${cost.toFixed(6)}`;
-}
-
-export default function RecentEvents({ events, loading }: Props) {
+export default function RecentEvents({ events, loading, search = "" }: Props) {
   if (loading || !events) {
     return (
-      <div className="bg-surface-raised border border-border rounded-sm animate-in" style={{ animationDelay: "420ms" }}>
-        <div className="p-4">
-          <div className="h-4 w-32 bg-surface-overlay rounded-sm animate-pulse mb-3" />
-          {[...Array(5)].map((_, i) => (
-            <div key={i} className="h-8 bg-surface-overlay rounded-sm animate-pulse mb-1.5" />
+      <div className="bg-surface-raised border border-border rounded-sm">
+        <div className="p-3">
+          {[...Array(8)].map((_, i) => (
+            <div key={i} className="h-7 bg-surface-overlay rounded-sm animate-pulse mb-1" />
           ))}
         </div>
       </div>
     );
   }
 
+  const q = search.toLowerCase();
+  const filtered = q
+    ? events.filter((e) => {
+        const frames = e.call_site_frames
+          ? (typeof e.call_site_frames === "string" ? JSON.parse(e.call_site_frames) : e.call_site_frames)
+          : [];
+        const fn = frames[0]?.functionName ?? "";
+        return (
+          e.model?.toLowerCase().includes(q) ||
+          e.provider?.toLowerCase().includes(q) ||
+          fn.toLowerCase().includes(q)
+        );
+      })
+    : events;
+
   return (
-    <div className="bg-surface-raised border border-border rounded-sm animate-in" style={{ animationDelay: "420ms" }}>
-      <div className="flex items-center gap-2 p-4 border-b border-border">
-        <Activity size={14} className="text-accent" />
-        <h2 className="text-sm font-medium text-text-secondary tracking-wide uppercase">
-          Recent Events
-        </h2>
-        <div className="ml-auto flex items-center gap-1.5">
-          <div className="w-1.5 h-1.5 rounded-full bg-green glow-dot" />
-          <span className="text-[11px] text-text-muted font-mono">live</span>
-        </div>
+    <div className="bg-surface-raised border border-border rounded-sm">
+      {/* Header row */}
+      <div className="flex items-center gap-3 px-3 py-1.5 border-b border-border text-[10px] uppercase tracking-wider font-medium text-text-muted">
+        <div className="w-4" />
+        <div className="w-10">Time</div>
+        <div className="w-28">Model</div>
+        <div className="flex-1">Function</div>
+        <div className="w-16 text-right">Tokens</div>
+        <div className="w-14 text-right">Latency</div>
+        <div className="w-14 text-right">Cost</div>
+        <div className="w-8" />
       </div>
 
-      <div className="divide-y divide-border/40">
-        {events.map((event) => {
+      <div className="max-h-[calc(100vh-220px)] overflow-y-auto divide-y divide-border/30">
+        {filtered.length === 0 && (
+          <div className="px-3 py-6 text-center text-xs text-text-muted font-mono">
+            {q ? "No matching events" : "No events yet"}
+          </div>
+        )}
+        {filtered.map((event) => {
           const frames = event.call_site_frames
             ? (typeof event.call_site_frames === "string" ? JSON.parse(event.call_site_frames) : event.call_site_frames)
             : [];
-          const topFrame = frames[0];
-          const fnName = topFrame?.functionName ?? null;
-          const dotColor = PROVIDER_DOT[event.provider] ?? "bg-text-muted";
+          const fnName = frames[0]?.functionName ?? null;
 
           return (
-            <div
-              key={event.id}
-              className="flex items-center gap-3 px-4 py-2.5 row-hover"
-            >
-              {/* Provider dot */}
-              <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${dotColor}`} />
+            <div key={event.id} className="flex items-center gap-3 px-3 py-1.5 row-hover">
+              <ProviderLogo provider={event.provider} size={13} />
 
-              {/* Time */}
-              <span className="font-mono text-[11px] text-text-muted w-14 shrink-0">
+              <span className="font-mono text-[10px] text-text-muted w-10 shrink-0">
                 {timeAgo(event.timestamp)}
               </span>
 
-              {/* Model */}
-              <span className="font-mono text-xs text-text-secondary w-28 truncate shrink-0">
+              <span className="font-mono text-[11px] text-text-secondary w-28 truncate shrink-0">
                 {truncateModel(event.model)}
               </span>
 
-              {/* Function */}
-              <span className="font-mono text-xs text-text-primary truncate flex-1">
+              <span className="font-mono text-[11px] text-text-primary truncate flex-1">
                 {fnName ? `${fnName}()` : "—"}
               </span>
 
-              {/* Tokens */}
-              <span className="font-mono text-[11px] text-text-muted w-20 text-right shrink-0">
-                {event.total_tokens?.toLocaleString() ?? "—"} tok
+              <span className="font-mono text-[10px] text-text-muted w-16 text-right shrink-0">
+                {event.total_tokens?.toLocaleString() ?? "—"}
               </span>
 
-              {/* Duration */}
-              <span className="font-mono text-[11px] text-text-muted w-16 text-right shrink-0">
+              <span className="font-mono text-[10px] text-text-muted w-14 text-right shrink-0">
                 {Math.round(event.duration_ms)}ms
               </span>
 
-              {/* Cost */}
-              <span className="font-mono text-xs font-medium text-green w-16 text-right shrink-0">
-                {formatCost(event.cost_usd)}
+              <span className="font-mono text-[11px] font-medium text-green w-14 text-right shrink-0">
+                ${(event.cost_usd ?? 0).toFixed(2)}
               </span>
 
-              {/* Streaming badge */}
-              {event.streaming && (
-                <span className="text-[9px] font-mono px-1 py-0.5 rounded-sm bg-accent-muted text-accent uppercase">
+              {event.streaming ? (
+                <span className="text-[8px] font-mono px-1 py-0.5 rounded-sm bg-accent-muted text-accent uppercase w-8 text-center">
                   sse
                 </span>
+              ) : (
+                <span className="w-8" />
               )}
             </div>
           );
         })}
       </div>
+
+      {q && filtered.length > 0 && (
+        <div className="px-3 py-1.5 border-t border-border text-[10px] text-text-muted font-mono">
+          {filtered.length} of {events.length} events
+        </div>
+      )}
     </div>
   );
 }

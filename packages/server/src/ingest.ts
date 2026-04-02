@@ -2,6 +2,7 @@ import type { Router } from "express";
 import { Router as createRouter } from "express";
 import type pg from "pg";
 import type { CostKeyEvent, TransportPayload } from "@costkey/shared";
+import { computeCost } from "./pricing.js";
 
 export function createIngestRouter(pool: pg.Pool): Router {
   const router = createRouter();
@@ -45,6 +46,15 @@ export function createIngestRouter(pool: pg.Pool): Router {
         await client.query("BEGIN");
 
         for (const event of payload.events) {
+          // Server-side cost calculation — authoritative source
+          const costUsd = computeCost(
+            event.model,
+            event.usage?.inputTokens ?? null,
+            event.usage?.outputTokens ?? null,
+            event.usage?.cacheReadTokens ?? null,
+            event.usage?.cacheCreationTokens ?? null,
+          ) ?? event.costUsd ?? null; // Fall back to SDK-calculated cost if server can't resolve
+
           await client.query(
             `INSERT INTO events (
               id, timestamp, project_id, provider, model, url, method, status_code,
@@ -62,7 +72,7 @@ export function createIngestRouter(pool: pg.Pool): Router {
               event.usage?.inputTokens, event.usage?.outputTokens,
               event.usage?.totalTokens, event.usage?.reasoningTokens,
               event.usage?.cacheReadTokens, event.usage?.cacheCreationTokens,
-              event.costUsd, event.durationMs, event.streaming,
+              costUsd, event.durationMs, event.streaming,
               event.streamTiming?.ttft, event.streamTiming?.tps,
               event.streamTiming?.streamDuration, event.streamTiming?.chunkCount,
               event.callSite?.raw ?? null,
@@ -103,7 +113,7 @@ export function createIngestRouter(pool: pg.Pool): Router {
               [
                 projectId, key, f.fileName, f.functionName, f.lineNumber,
                 event.provider, event.model,
-                event.costUsd ?? 0,
+                costUsd ?? 0,
                 event.usage?.inputTokens ?? 0, event.usage?.outputTokens ?? 0,
                 event.durationMs,
                 event.streamTiming?.ttft ?? null,

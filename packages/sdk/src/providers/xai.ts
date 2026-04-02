@@ -5,7 +5,7 @@ import type { ProviderExtractor, NormalizedUsage } from "./types.js";
  * xAI (Grok) — OpenAI-compatible API at api.x.ai
  */
 export const xaiExtractor: ProviderExtractor = {
-  provider: Provider.Unknown, // xAI/Grok
+  provider: Provider.xAI,
 
   match(url: URL): boolean {
     return url.hostname === "api.x.ai" || url.hostname === "api.grok.xai.com";

@@ -6,7 +6,7 @@ import type { ProviderExtractor, NormalizedUsage } from "./types.js";
  * OpenAI-compatible response format
  */
 export const groqExtractor: ProviderExtractor = {
-  provider: Provider.Unknown, // Groq
+  provider: Provider.Groq,
 
   match(url: URL): boolean {
     return url.hostname === "api.groq.com";

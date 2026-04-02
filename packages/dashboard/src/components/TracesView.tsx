@@ -1,24 +1,14 @@
 import { useState } from "react";
-import { ChevronRight, Route, Clock, Circle } from "lucide-react";
+import { ChevronRight, Clock, Circle } from "lucide-react";
 import type { Trace } from "../hooks/useApi";
 import { getTrace, type TraceEvent } from "../api";
+import ProviderLogo, { ProviderDot } from "./ProviderLogo";
 
 interface Props {
   traces: Trace[] | null;
   loading: boolean;
   projectId: string;
-}
-
-const PROVIDER_COLORS: Record<string, string> = {
-  openai: "bg-green",
-  anthropic: "bg-amber",
-  google: "bg-cyan",
-};
-
-function formatCost(cost: number): string {
-  if (cost >= 1) return `$${cost.toFixed(2)}`;
-  if (cost >= 0.01) return `$${cost.toFixed(4)}`;
-  return `$${cost.toFixed(6)}`;
+  search?: string;
 }
 
 function truncateModel(model: string): string {
@@ -35,110 +25,102 @@ function timeAgo(ts: string): string {
   return `${Math.floor(hr / 24)}d`;
 }
 
+const PROVIDER_BAR_COLORS: Record<string, string> = {
+  openai: "bg-green/70",
+  anthropic: "bg-amber/70",
+  google: "bg-cyan/70",
+};
+
 function TraceRow({ trace, projectId }: { trace: Trace; projectId: string }) {
   const [expanded, setExpanded] = useState(false);
   const [events, setEvents] = useState<TraceEvent[] | null>(null);
   const [loading, setLoading] = useState(false);
 
   const models = trace.models.split(",").map((m) => truncateModel(m.trim()));
-  const providers = trace.providers.split(",");
+  const providers = trace.providers.split(",").map((p) => p.trim());
 
   async function toggle() {
-    if (expanded) {
-      setExpanded(false);
-      return;
-    }
+    if (expanded) { setExpanded(false); return; }
     setExpanded(true);
     if (!events) {
       setLoading(true);
       try {
         const data = await getTrace(projectId, trace.trace_id);
         setEvents(data.events);
-      } catch {
-        // silent
-      }
+      } catch { /* silent */ }
       setLoading(false);
     }
   }
 
   return (
-    <div className="border-b border-border/40 last:border-b-0">
+    <div className="border-b border-border/30 last:border-b-0">
       <button
         onClick={toggle}
-        className="w-full flex items-center gap-3 px-4 py-3 row-hover cursor-pointer text-left"
+        className="w-full flex items-center gap-2 px-3 py-2 row-hover cursor-pointer text-left"
       >
         <ChevronRight
-          size={13}
+          size={12}
           className={`text-text-muted shrink-0 transition-transform duration-150 ${expanded ? "rotate-90" : ""}`}
         />
 
-        {/* Provider dots */}
+        {/* Provider logos */}
         <div className="flex gap-1 shrink-0">
           {providers.map((p, i) => (
-            <div key={i} className={`w-2 h-2 rounded-full ${PROVIDER_COLORS[p.trim()] ?? "bg-text-muted"}`} />
+            <ProviderLogo key={i} provider={p} size={12} />
           ))}
         </div>
 
         {/* Trace name */}
-        <span className="font-mono text-sm font-medium text-text-primary truncate min-w-0">
+        <span className="font-mono text-xs font-medium text-text-primary truncate min-w-0">
           {trace.trace_name ?? trace.trace_id}
         </span>
 
-        {/* Call count badge */}
-        <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-sm bg-surface-overlay text-text-secondary shrink-0">
-          {trace.call_count} {trace.call_count === 1 ? "call" : "calls"}
+        <span className="text-[9px] font-mono px-1 py-0.5 rounded-sm bg-surface-overlay text-text-secondary shrink-0">
+          {trace.call_count}
         </span>
 
-        {/* Models */}
-        <span className="font-mono text-[11px] text-text-muted truncate flex-1 min-w-0">
+        <span className="font-mono text-[10px] text-text-muted truncate flex-1 min-w-0">
           {models.join(", ")}
         </span>
 
-        {/* Time ago */}
-        <span className="font-mono text-[11px] text-text-muted w-10 text-right shrink-0">
+        <span className="font-mono text-[10px] text-text-muted w-8 text-right shrink-0">
           {timeAgo(trace.started_at)}
         </span>
 
-        {/* Duration */}
-        <span className="font-mono text-[11px] text-text-muted w-16 text-right shrink-0">
+        <span className="font-mono text-[10px] text-text-muted w-14 text-right shrink-0">
           {Math.round(trace.total_duration_ms)}ms
         </span>
 
-        {/* Tokens */}
-        <span className="font-mono text-[11px] text-text-muted w-16 text-right shrink-0">
+        <span className="font-mono text-[10px] text-text-muted w-12 text-right shrink-0">
           {((trace.total_input_tokens + trace.total_output_tokens) / 1000).toFixed(1)}k
         </span>
 
-        {/* Cost */}
-        <span className="font-mono text-xs font-semibold text-green w-20 text-right shrink-0">
-          {formatCost(trace.total_cost)}
+        <span className="font-mono text-[11px] font-semibold text-green w-16 text-right shrink-0">
+          ${trace.total_cost.toFixed(2)}
         </span>
       </button>
 
-      {/* Expanded: trace events waterfall */}
       {expanded && (
-        <div className="bg-surface/50 px-4 py-2 pb-3">
+        <div className="bg-surface/50 px-3 py-1.5 pb-2">
           {loading && (
-            <div className="flex items-center gap-2 py-2">
+            <div className="flex items-center gap-2 py-1.5">
               <div className="w-3 h-3 border border-accent border-t-transparent rounded-full animate-spin" />
-              <span className="text-xs text-text-muted">Loading trace...</span>
+              <span className="text-[10px] text-text-muted">Loading...</span>
             </div>
           )}
           {events && events.length > 0 && (
-            <div className="flex flex-col gap-0.5">
-              {/* Waterfall header */}
-              <div className="flex items-center gap-2 px-2 py-1.5 text-[10px] uppercase tracking-wider text-text-muted font-medium">
-                <div className="w-5" /> {/* connector space */}
+            <div className="flex flex-col gap-0">
+              <div className="flex items-center gap-2 px-1.5 py-1 text-[9px] uppercase tracking-wider text-text-muted font-medium">
+                <div className="w-4" />
                 <div className="flex-1">Function</div>
-                <div className="w-28">Model</div>
-                <div className="w-14 text-right">Tokens</div>
-                <div className="w-16 text-right">Duration</div>
-                <div className="w-16 text-right">Cost</div>
-                <div className="w-32">Waterfall</div>
+                <div className="w-24">Model</div>
+                <div className="w-12 text-right">Tokens</div>
+                <div className="w-14 text-right">Duration</div>
+                <div className="w-14 text-right">Cost</div>
+                <div className="w-28">Waterfall</div>
               </div>
 
               {(() => {
-                // Calculate waterfall timings
                 const startTime = new Date(events[0].timestamp).getTime();
                 const endTime = Math.max(
                   ...events.map((e) => new Date(e.timestamp).getTime() + e.duration_ms)
@@ -151,65 +133,47 @@ function TraceRow({ trace, projectId }: { trace: Trace; projectId: string }) {
                     : [];
                   const fn = frames[0]?.functionName ?? "unknown";
                   const provider = event.provider;
-                  const dotColor = PROVIDER_COLORS[provider] ?? "bg-text-muted";
-
                   const eventStart = new Date(event.timestamp).getTime();
                   const offsetPct = ((eventStart - startTime) / totalSpan) * 100;
                   const widthPct = Math.max((event.duration_ms / totalSpan) * 100, 2);
 
-                  const barColors: Record<string, string> = {
-                    openai: "bg-green/70",
-                    anthropic: "bg-amber/70",
-                    google: "bg-cyan/70",
-                  };
-
                   return (
-                    <div
-                      key={event.id}
-                      className="flex items-center gap-2 px-2 py-1.5 rounded-sm row-hover"
-                    >
-                      {/* Tree connector */}
-                      <div className="w-5 flex items-center justify-center shrink-0">
+                    <div key={event.id} className="flex items-center gap-2 px-1.5 py-1 rounded-sm row-hover">
+                      <div className="w-4 flex items-center justify-center shrink-0">
                         <div className="flex flex-col items-center">
-                          <div className={`w-px h-2 ${i === 0 ? "bg-transparent" : "bg-border-bright"}`} />
-                          <Circle size={4} className="text-text-muted fill-current" />
-                          <div className={`w-px h-2 ${i === events.length - 1 ? "bg-transparent" : "bg-border-bright"}`} />
+                          <div className={`w-px h-1.5 ${i === 0 ? "bg-transparent" : "bg-border-bright"}`} />
+                          <Circle size={3} className="text-text-muted fill-current" />
+                          <div className={`w-px h-1.5 ${i === events.length - 1 ? "bg-transparent" : "bg-border-bright"}`} />
                         </div>
                       </div>
 
-                      {/* Function */}
-                      <div className="flex items-center gap-1.5 flex-1 min-w-0">
-                        <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${dotColor}`} />
-                        <span className="font-mono text-xs text-text-primary truncate">
+                      <div className="flex items-center gap-1 flex-1 min-w-0">
+                        <ProviderDot provider={provider} />
+                        <span className="font-mono text-[11px] text-text-primary truncate">
                           {fn}()
                         </span>
                       </div>
 
-                      {/* Model */}
-                      <span className="font-mono text-[11px] text-text-muted w-28 truncate shrink-0">
+                      <span className="font-mono text-[10px] text-text-muted w-24 truncate shrink-0">
                         {truncateModel(event.model)}
                       </span>
 
-                      {/* Tokens */}
-                      <span className="font-mono text-[11px] text-text-muted w-14 text-right shrink-0">
+                      <span className="font-mono text-[10px] text-text-muted w-12 text-right shrink-0">
                         {((event.input_tokens ?? 0) + (event.output_tokens ?? 0)).toLocaleString()}
                       </span>
 
-                      {/* Duration */}
-                      <span className="font-mono text-[11px] text-text-secondary w-16 text-right shrink-0">
+                      <span className="font-mono text-[10px] text-text-secondary w-14 text-right shrink-0">
                         {Math.round(event.duration_ms)}ms
                       </span>
 
-                      {/* Cost */}
-                      <span className="font-mono text-[11px] font-medium text-green/80 w-16 text-right shrink-0">
-                        {formatCost(event.cost_usd ?? 0)}
+                      <span className="font-mono text-[10px] font-medium text-green/80 w-14 text-right shrink-0">
+                        ${(event.cost_usd ?? 0).toFixed(2)}
                       </span>
 
-                      {/* Waterfall bar */}
-                      <div className="w-32 shrink-0 h-4 relative">
+                      <div className="w-28 shrink-0 h-3 relative">
                         <div className="absolute inset-0 bg-surface-overlay rounded-sm" />
                         <div
-                          className={`absolute top-0.5 bottom-0.5 rounded-sm ${barColors[provider] ?? "bg-accent/50"}`}
+                          className={`absolute top-0.5 bottom-0.5 rounded-sm ${PROVIDER_BAR_COLORS[provider] ?? "bg-accent/50"}`}
                           style={{
                             left: `${offsetPct}%`,
                             width: `${Math.min(widthPct, 100 - offsetPct)}%`,
@@ -221,14 +185,13 @@ function TraceRow({ trace, projectId }: { trace: Trace; projectId: string }) {
                 });
               })()}
 
-              {/* Trace summary line */}
-              <div className="flex items-center gap-2 px-2 pt-2 mt-1 border-t border-border/30">
-                <Clock size={11} className="text-text-muted" />
-                <span className="font-mono text-[11px] text-text-muted">
+              <div className="flex items-center gap-2 px-1.5 pt-1.5 mt-0.5 border-t border-border/30">
+                <Clock size={10} className="text-text-muted" />
+                <span className="font-mono text-[10px] text-text-muted">
                   {new Date(events[0].timestamp).toLocaleTimeString()} — {Math.round(trace.total_duration_ms)}ms total
                 </span>
-                <span className="font-mono text-[11px] text-text-muted ml-auto">
-                  trace: {trace.trace_id.slice(0, 16)}...
+                <span className="font-mono text-[10px] text-text-muted ml-auto">
+                  {trace.trace_id.slice(0, 16)}...
                 </span>
               </div>
             </div>
@@ -239,48 +202,58 @@ function TraceRow({ trace, projectId }: { trace: Trace; projectId: string }) {
   );
 }
 
-export default function TracesView({ traces, loading, projectId }: Props) {
+export default function TracesView({ traces, loading, projectId, search = "" }: Props) {
   if (loading || !traces) {
     return (
-      <div className="bg-surface-raised border border-border rounded-sm animate-in" style={{ animationDelay: "360ms" }}>
-        <div className="p-5">
-          <div className="h-4 w-32 bg-surface-overlay rounded-sm animate-pulse mb-4" />
-          {[...Array(5)].map((_, i) => (
-            <div key={i} className="h-10 bg-surface-overlay rounded-sm animate-pulse mb-2" />
+      <div className="bg-surface-raised border border-border rounded-sm">
+        <div className="p-3">
+          {[...Array(6)].map((_, i) => (
+            <div key={i} className="h-7 bg-surface-overlay rounded-sm animate-pulse mb-1" />
           ))}
         </div>
       </div>
     );
   }
 
+  const q = search.toLowerCase();
+  const filtered = q
+    ? traces.filter((t) =>
+        (t.trace_name ?? "").toLowerCase().includes(q) ||
+        t.trace_id.toLowerCase().includes(q) ||
+        t.models.toLowerCase().includes(q) ||
+        t.providers.toLowerCase().includes(q)
+      )
+    : traces;
+
   return (
-    <div className="bg-surface-raised border border-border rounded-sm animate-in" style={{ animationDelay: "360ms" }}>
-      <div className="flex items-center gap-2 p-4 border-b border-border">
-        <Route size={14} className="text-accent" />
-        <h2 className="text-sm font-medium text-text-secondary tracking-wide uppercase">
-          Traces
-        </h2>
-        <span className="font-mono text-xs text-text-muted ml-auto">
-          {traces.length} recent traces
-        </span>
-      </div>
-
+    <div className="bg-surface-raised border border-border rounded-sm">
       {/* Column headers */}
-      <div className="flex items-center gap-3 px-4 py-2 border-b border-border/60 text-[10px] uppercase tracking-wider font-medium text-text-muted">
-        <div className="w-3" /> {/* chevron */}
-        <div className="w-5" /> {/* dots */}
+      <div className="flex items-center gap-2 px-3 py-1.5 border-b border-border text-[10px] uppercase tracking-wider font-medium text-text-muted">
+        <div className="w-3" />
+        <div className="w-5" />
         <div className="flex-1">Request</div>
-        <div className="w-10 text-right">Time</div>
-        <div className="w-16 text-right">Duration</div>
-        <div className="w-16 text-right">Tokens</div>
-        <div className="w-20 text-right">Cost</div>
+        <div className="w-8 text-right">Time</div>
+        <div className="w-14 text-right">Duration</div>
+        <div className="w-12 text-right">Tokens</div>
+        <div className="w-16 text-right">Cost</div>
       </div>
 
-      <div className="max-h-[500px] overflow-y-auto">
-        {traces.map((trace) => (
+      <div className="max-h-[calc(100vh-220px)] overflow-y-auto">
+        {filtered.length === 0 && (
+          <div className="px-3 py-6 text-center text-xs text-text-muted font-mono">
+            {q ? "No matching traces" : "No traces yet"}
+          </div>
+        )}
+        {filtered.map((trace) => (
           <TraceRow key={trace.trace_id} trace={trace} projectId={projectId} />
         ))}
       </div>
+
+      {q && filtered.length > 0 && (
+        <div className="px-3 py-1.5 border-t border-border text-[10px] text-text-muted font-mono">
+          {filtered.length} of {traces.length} traces
+        </div>
+      )}
     </div>
   );
 }

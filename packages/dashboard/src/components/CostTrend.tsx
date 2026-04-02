@@ -22,10 +22,10 @@ function formatDate(bucket: string) {
 function CustomTooltip({ active, payload, label }: { active?: boolean; payload?: Array<{ value: number }>; label?: string }) {
   if (!active || !payload?.length) return null;
   return (
-    <div className="bg-surface-overlay border border-border-bright rounded-sm px-3 py-2 shadow-lg">
-      <p className="text-text-secondary text-xs mb-1">{label ? formatDate(label) : ""}</p>
+    <div className="bg-surface-overlay border border-border-bright rounded-sm px-2.5 py-1.5 shadow-lg">
+      <p className="text-text-muted text-[10px] mb-0.5">{label ? formatDate(label) : ""}</p>
       <p className="font-mono text-sm text-text-primary font-semibold">
-        ${payload[0].value.toFixed(4)}
+        ${payload[0].value.toFixed(2)}
       </p>
     </div>
   );
@@ -34,9 +34,9 @@ function CustomTooltip({ active, payload, label }: { active?: boolean; payload?:
 export default function CostTrend({ trends, loading }: Props) {
   if (loading || !trends) {
     return (
-      <div className="bg-surface-raised border border-border rounded-sm p-5 animate-in" style={{ animationDelay: "240ms" }}>
-        <div className="h-4 w-32 bg-surface-overlay rounded-sm animate-pulse mb-4" />
-        <div className="h-48 bg-surface-overlay rounded-sm animate-pulse" />
+      <div className="bg-surface-raised border border-border rounded-sm p-4">
+        <div className="h-3 w-28 bg-surface-overlay rounded-sm animate-pulse mb-3" />
+        <div className="h-44 bg-surface-overlay rounded-sm animate-pulse" />
       </div>
     );
   }
@@ -47,18 +47,18 @@ export default function CostTrend({ trends, loading }: Props) {
   }));
 
   return (
-    <div className="bg-surface-raised border border-border rounded-sm p-5 animate-in" style={{ animationDelay: "240ms" }}>
-      <div className="flex items-center justify-between mb-5">
-        <h2 className="text-sm font-medium text-text-secondary tracking-wide uppercase">
+    <div className="bg-surface-raised border border-border rounded-sm p-4">
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="text-[11px] font-medium text-text-muted tracking-wider uppercase">
           Cost Over Time
         </h2>
-        <span className="font-mono text-xs text-text-muted">
+        <span className="font-mono text-[10px] text-text-muted">
           {trends.length} days
         </span>
       </div>
 
-      <ResponsiveContainer width="100%" height={200}>
-        <AreaChart data={data} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
+      <ResponsiveContainer width="100%" height={190}>
+        <AreaChart data={data} margin={{ top: 4, right: 4, left: -10, bottom: 0 }}>
           <defs>
             <linearGradient id="costGradient" x1="0" y1="0" x2="0" y2="1">
               <stop offset="0%" stopColor="#6366f1" stopOpacity={0.3} />
@@ -70,13 +70,13 @@ export default function CostTrend({ trends, loading }: Props) {
             dataKey="label"
             axisLine={false}
             tickLine={false}
-            tick={{ fill: "#484860", fontSize: 11 }}
-            dy={8}
+            tick={{ fill: "#484860", fontSize: 10 }}
+            dy={6}
           />
           <YAxis
             axisLine={false}
             tickLine={false}
-            tick={{ fill: "#484860", fontSize: 11 }}
+            tick={{ fill: "#484860", fontSize: 10 }}
             tickFormatter={(v: number) => `$${v.toFixed(2)}`}
             dx={-4}
           />
@@ -89,7 +89,7 @@ export default function CostTrend({ trends, loading }: Props) {
             fill="url(#costGradient)"
             dot={false}
             activeDot={{
-              r: 4,
+              r: 3,
               fill: "#6366f1",
               stroke: "#06060b",
               strokeWidth: 2,

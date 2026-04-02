@@ -1,4 +1,5 @@
 import type { ModelBreakdown as ModelData } from "../hooks/useApi";
+import ProviderLogo from "./ProviderLogo";
 
 interface Props {
   models: ModelData[] | null;
@@ -14,24 +15,15 @@ const MODEL_COLORS = [
   { bar: "bg-rose", text: "text-rose", dot: "#fb7185" },
 ];
 
-function formatCost(cost: number): string {
-  if (cost >= 100) return `$${cost.toFixed(0)}`;
-  if (cost >= 1) return `$${cost.toFixed(2)}`;
-  return `$${cost.toFixed(4)}`;
-}
-
 function truncateModel(model: string): string {
-  // "claude-sonnet-4-0-20250514" → "claude-sonnet-4"
-  // "gpt-4o-2024-11-20" → "gpt-4o"
-  const datePattern = /-\d{4}[-\d]*/;
-  return model.replace(datePattern, "").replace(/-$/, "");
+  return model.replace(/-\d{4}[-\d]*/g, "").replace(/-$/, "");
 }
 
 export default function ModelBreakdown({ models, loading }: Props) {
   if (loading || !models) {
     return (
-      <div className="bg-surface-raised border border-border rounded-sm p-5 animate-in" style={{ animationDelay: "360ms" }}>
-        <div className="h-4 w-36 bg-surface-overlay rounded-sm animate-pulse mb-4" />
+      <div className="bg-surface-raised border border-border rounded-sm p-4">
+        <div className="h-3 w-28 bg-surface-overlay rounded-sm animate-pulse mb-3" />
         <div className="h-32 bg-surface-overlay rounded-sm animate-pulse" />
       </div>
     );
@@ -43,13 +35,13 @@ export default function ModelBreakdown({ models, loading }: Props) {
   const sorted = [...models].sort((a, b) => b.cost - a.cost);
 
   return (
-    <div className="bg-surface-raised border border-border rounded-sm p-5 animate-in" style={{ animationDelay: "360ms" }}>
-      <h2 className="text-sm font-medium text-text-secondary tracking-wide uppercase mb-4">
+    <div className="bg-surface-raised border border-border rounded-sm p-4">
+      <h2 className="text-[11px] font-medium text-text-muted tracking-wider uppercase mb-3">
         Cost by Model
       </h2>
 
       {/* Stacked bar */}
-      <div className="flex h-3 rounded-sm overflow-hidden mb-5 gap-px">
+      <div className="flex h-2.5 rounded-sm overflow-hidden mb-4 gap-px">
         {sorted.map((model, i) => {
           const pct = (model.cost / totalCost) * 100;
           const color = MODEL_COLORS[i % MODEL_COLORS.length];
@@ -58,33 +50,30 @@ export default function ModelBreakdown({ models, loading }: Props) {
               key={model.model}
               className={`${color.bar} transition-all duration-300`}
               style={{ width: `${Math.max(pct, 0.5)}%`, opacity: 0.85 }}
-              title={`${truncateModel(model.model)}: ${formatCost(model.cost)} (${pct.toFixed(1)}%)`}
+              title={`${truncateModel(model.model)}: $${model.cost.toFixed(2)} (${pct.toFixed(1)}%)`}
             />
           );
         })}
       </div>
 
       {/* Legend */}
-      <div className="flex flex-col gap-2.5">
+      <div className="flex flex-col gap-2">
         {sorted.map((model, i) => {
           const pct = (model.cost / totalCost) * 100;
           const color = MODEL_COLORS[i % MODEL_COLORS.length];
           return (
-            <div key={model.model} className="flex items-center gap-3">
-              <div
-                className="w-2.5 h-2.5 rounded-full shrink-0"
-                style={{ backgroundColor: color.dot }}
-              />
-              <span className="font-mono text-xs text-text-primary truncate flex-1">
+            <div key={model.model} className="flex items-center gap-2">
+              <ProviderLogo provider={model.provider} size={12} />
+              <span className="font-mono text-[11px] text-text-primary truncate flex-1">
                 {truncateModel(model.model)}
               </span>
-              <span className="font-mono text-xs text-text-muted">
-                {model.calls.toLocaleString()} calls
+              <span className="font-mono text-[10px] text-text-muted">
+                {model.calls.toLocaleString()}
               </span>
-              <span className={`font-mono text-xs font-medium ${color.text}`}>
-                {formatCost(model.cost)}
+              <span className={`font-mono text-[11px] font-medium ${color.text}`}>
+                ${model.cost.toFixed(2)}
               </span>
-              <span className="font-mono text-[10px] text-text-muted w-10 text-right">
+              <span className="font-mono text-[10px] text-text-muted w-9 text-right">
                 {pct.toFixed(1)}%
               </span>
             </div>

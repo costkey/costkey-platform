@@ -4,6 +4,17 @@ export enum Provider {
   Anthropic = "anthropic",
   Google = "google",
   Azure = "azure",
+  Groq = "groq",
+  xAI = "xai",
+  Mistral = "mistral",
+  DeepSeek = "deepseek",
+  Cohere = "cohere",
+  Together = "together",
+  Fireworks = "fireworks",
+  Perplexity = "perplexity",
+  Cerebras = "cerebras",
+  OpenRouter = "openrouter",
+  Bedrock = "bedrock",
   Unknown = "unknown",
 }
 

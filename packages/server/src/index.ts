@@ -109,3 +109,4 @@ async function initApp() {
 
   console.log("[costkey] Ready");
 }
+

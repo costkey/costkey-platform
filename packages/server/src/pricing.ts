@@ -127,3 +127,71 @@ function findPricing(model: string): ModelPricing | null {
 
   return null;
 }
+
+/**
+ * Backfill costs for events that have tokens but no cost.
+ * Runs once on server startup to fix historical data.
+ */
+export async function backfillCosts(pool: import("pg").Pool): Promise<void> {
+  try {
+    const result = await pool.query(
+      `SELECT id, model, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens
+       FROM events
+       WHERE (cost_usd IS NULL OR cost_usd = 0)
+         AND model IS NOT NULL
+         AND (input_tokens > 0 OR output_tokens > 0)`,
+    );
+
+    if (result.rows.length === 0) {
+      console.log("[costkey] No events need cost backfill");
+      return;
+    }
+
+    console.log(`[costkey] Backfilling costs for ${result.rows.length} events...`);
+
+    let updated = 0;
+    for (const row of result.rows) {
+      const cost = computeCost(
+        row.model,
+        row.input_tokens,
+        row.output_tokens,
+        row.cache_read_tokens,
+        row.cache_creation_tokens,
+      );
+      if (cost != null && cost > 0) {
+        await pool.query(
+          "UPDATE events SET cost_usd = $1 WHERE id = $2",
+          [cost, row.id],
+        );
+        updated++;
+      }
+    }
+
+    // Also update call_site_stats
+    if (updated > 0) {
+      await pool.query(`
+        UPDATE call_site_stats SET total_cost_usd = sub.total_cost FROM (
+          SELECT
+            project_id,
+            CONCAT(
+              COALESCE((call_site_frames->0->>'fileName'), 'unknown'), ':',
+              COALESCE((call_site_frames->0->>'functionName'), 'anonymous'), ':',
+              COALESCE((call_site_frames->0->>'lineNumber')::text, '0')
+            ) as cs_key,
+            model,
+            COALESCE(SUM(cost_usd), 0) as total_cost
+          FROM events
+          WHERE call_site_frames IS NOT NULL
+          GROUP BY project_id, cs_key, model
+        ) sub
+        WHERE call_site_stats.project_id = sub.project_id
+          AND call_site_stats.call_site_key = sub.cs_key
+          AND call_site_stats.model = sub.model
+      `);
+    }
+
+    console.log(`[costkey] Backfilled costs for ${updated} events`);
+  } catch (err) {
+    console.error("[costkey] Cost backfill error:", err);
+  }
+}

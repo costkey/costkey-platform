@@ -13,6 +13,7 @@ import { createAlertsRouter, checkAlerts } from "./alerts.js";
 import { rateLimit } from "./middleware.js";
 import { initAnomalyTable, detectAnomalies } from "./anomaly.js";
 import { seedIfEmpty } from "./seed.js";
+import { backfillCosts } from "./pricing.js";
 
 const PORT = parseInt(process.env["PORT"] ?? "4100", 10);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -66,6 +67,7 @@ async function initApp() {
   app.use(createAlertsRouter(pool));
   app.use(createApiRouter(pool));
 
+  await backfillCosts(pool);
   await initAnomalyTable(pool);
   setInterval(() => {
     void checkAlerts(pool);

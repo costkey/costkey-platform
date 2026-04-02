@@ -268,7 +268,6 @@ async function backfillFrames(pool: import("pg").Pool): Promise<void> {
 }
 
 async function rebuildCallSiteStats(pool: import("pg").Pool): Promise<void> {
-  // Truncate and rebuild from events
   await pool.query("DELETE FROM call_site_stats");
 
   await pool.query(`
@@ -280,15 +279,8 @@ async function rebuildCallSiteStats(pool: import("pg").Pool): Promise<void> {
     )
     SELECT
       project_id,
-      CONCAT(
-        COALESCE(call_site_frames->0->>'fileName', 'unknown'), ':',
-        COALESCE(call_site_frames->0->>'functionName', 'anonymous'), ':',
-        COALESCE((call_site_frames->0->>'lineNumber')::text, '0')
-      ),
-      call_site_frames->0->>'fileName',
-      call_site_frames->0->>'functionName',
-      CASE WHEN call_site_frames->0->>'lineNumber' ~ '^\d+$'
-        THEN (call_site_frames->0->>'lineNumber')::int ELSE NULL END,
+      CONCAT(COALESCE(file_name, 'unknown'), ':', COALESCE(function_name, 'anonymous'), ':', COALESCE(line_number::text, '0')),
+      file_name, function_name, line_number,
       provider, model,
       COUNT(*)::int,
       COALESCE(SUM(cost_usd), 0),
@@ -299,17 +291,21 @@ async function rebuildCallSiteStats(pool: import("pg").Pool): Promise<void> {
       AVG(CASE WHEN streaming THEN tps END),
       MIN(timestamp),
       MAX(timestamp)
-    FROM events
-    WHERE call_site_frames IS NOT NULL
-      AND call_site_frames != '[]'::jsonb
-      AND jsonb_array_length(call_site_frames) > 0
-      AND call_site_frames->0->>'fileName' IS NOT NULL
-    GROUP BY project_id,
-      call_site_frames->0->>'fileName',
-      call_site_frames->0->>'functionName',
-      CASE WHEN call_site_frames->0->>'lineNumber' ~ '^\d+$'
-        THEN (call_site_frames->0->>'lineNumber')::int ELSE NULL END,
-      provider, model
+    FROM (
+      SELECT
+        project_id, provider, model, cost_usd, input_tokens, output_tokens,
+        duration_ms, streaming, ttft, tps, timestamp,
+        call_site_frames->0->>'fileName' as file_name,
+        call_site_frames->0->>'functionName' as function_name,
+        CASE WHEN call_site_frames->0->>'lineNumber' ~ '^\d+$'
+          THEN (call_site_frames->0->>'lineNumber')::int ELSE NULL END as line_number
+      FROM events
+      WHERE call_site_frames IS NOT NULL
+        AND call_site_frames != '[]'::jsonb
+        AND jsonb_array_length(call_site_frames) > 0
+    ) sub
+    WHERE file_name IS NOT NULL
+    GROUP BY project_id, file_name, function_name, line_number, provider, model
   `);
 
   console.log("[costkey] Rebuilt call_site_stats from clean frames");

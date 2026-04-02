@@ -12,7 +12,7 @@ The CostKey Python SDK auto-instruments `httpx` and `requests` to capture every 
 pip install costkey
 ```
 
-**Current version:** 0.2.3
+**Current version:** 0.3.0
 
 ## How it works
 
@@ -23,6 +23,28 @@ When you call `costkey.init()`, the SDK monkey-patches `httpx.Client.send`, `htt
 - Timing (latency, TTFT for streams, tokens/sec)
 
 The SDK never modifies your request or response. It reads from cloned data and sends events to CostKey asynchronously in the background.
+
+## Using with Sentry, New Relic, or other APM tools
+
+CostKey coexists with other tools that patch HTTP clients (Sentry, New Relic, Datadog). Each tool wraps the previous one — calls flow through all layers.
+
+**Initialize CostKey after your APM tool:**
+
+```python
+import sentry_sdk
+sentry_sdk.init(dsn="...")  # Sentry patches httpx first
+
+import costkey
+costkey.init(dsn="...")      # CostKey wraps Sentry's patch
+```
+
+This way CostKey sees the raw call and Sentry captures error context. The order matters because the last patcher wraps the others.
+
+**What to know:**
+- CostKey never modifies requests or responses — it only reads
+- CostKey never throws — it can't break your APM's error handling
+- Stack traces may be slightly deeper (extra frames from each wrapper — CostKey filters these automatically)
+- Streaming responses flow through both tools with minimal overhead
 
 ## API Reference
 

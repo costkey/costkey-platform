@@ -20,6 +20,26 @@ When you call `CostKey.init()`, the SDK replaces `globalThis.fetch` with a wrapp
 
 The SDK never modifies your request or response. Events are batched and sent asynchronously in the background.
 
+## Using with Sentry, New Relic, or other APM tools
+
+CostKey coexists with other tools that patch `fetch` (Sentry, New Relic, Datadog). Each tool wraps the previous one.
+
+**Initialize CostKey after your APM tool:**
+
+```typescript
+import * as Sentry from '@sentry/node'
+Sentry.init({ dsn: '...' })  // Sentry patches fetch first
+
+import { CostKey } from 'costkey'
+CostKey.init({ dsn: '...' })  // CostKey wraps Sentry's patch
+```
+
+**What to know:**
+- CostKey never modifies requests or responses — it only reads
+- CostKey never throws — it can't break your APM's error handling
+- Stack traces may be slightly deeper (CostKey filters its own frames automatically)
+- Streaming responses flow through both tools with minimal overhead
+
 ## API Reference
 
 ### `CostKey.init()`

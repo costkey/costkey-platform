@@ -227,6 +227,7 @@ const INTERNAL_FN_PATTERNS = [
   "<module>", "run_until_complete", "_run_once",
 ];
 
+
 async function backfillFrames(pool: import("pg").Pool): Promise<void> {
   try {
     const result = await pool.query(
@@ -240,20 +241,23 @@ async function backfillFrames(pool: import("pg").Pool): Promise<void> {
           ? JSON.parse(row.call_site_frames)
           : row.call_site_frames;
 
-      const filtered = frames.filter((f) => {
+      const filtered = frames.filter((f: { fileName?: string | null; functionName?: string | null }) => {
         const file = f.fileName ?? "";
         const fn = f.functionName ?? "";
         if (!file && !fn) return false;
-        if (INTERNAL_FILE_PATTERNS.some((p) => file.includes(p))) return false;
-        if (INTERNAL_FN_PATTERNS.some((p) => fn.includes(p))) return false;
+        if (INTERNAL_FILE_PATTERNS.some((p: string) => file.includes(p))) return false;
+        if (INTERNAL_FN_PATTERNS.some((p: string) => fn.includes(p))) return false;
         return true;
       });
 
-      // Only update if we actually removed frames
-      if (filtered.length > 0 && filtered.length < frames.length) {
+      if (filtered.length === 0) continue;
+
+      const origJson = JSON.stringify(frames);
+      const newJson = JSON.stringify(filtered);
+      if (origJson !== newJson) {
         await pool.query(
           "UPDATE events SET call_site_frames = $1 WHERE id = $2",
-          [JSON.stringify(filtered), row.id],
+          [newJson, row.id],
         );
         updated++;
       }
@@ -295,10 +299,10 @@ async function rebuildCallSiteStats(pool: import("pg").Pool): Promise<void> {
       SELECT
         project_id, provider, model, cost_usd, input_tokens, output_tokens,
         duration_ms, streaming, ttft, tps, timestamp,
-        call_site_frames->0->>'fileName' as file_name,
-        call_site_frames->0->>'functionName' as function_name,
-        CASE WHEN call_site_frames->0->>'lineNumber' ~ '^\d+$'
-          THEN (call_site_frames->0->>'lineNumber')::int ELSE NULL END as line_number
+        call_site_frames->(jsonb_array_length(call_site_frames)-1)->>'fileName' as file_name,
+        call_site_frames->(jsonb_array_length(call_site_frames)-1)->>'functionName' as function_name,
+        CASE WHEN call_site_frames->(jsonb_array_length(call_site_frames)-1)->>'lineNumber' ~ '^\d+$'
+          THEN (call_site_frames->(jsonb_array_length(call_site_frames)-1)->>'lineNumber')::int ELSE NULL END as line_number
       FROM events
       WHERE call_site_frames IS NOT NULL
         AND call_site_frames != '[]'::jsonb

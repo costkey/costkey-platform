@@ -88,9 +88,7 @@ function filterFrames(frames: StackFrame[]): StackFrame[] {
     const file = frame.fileName ?? "";
     const fn = frame.functionName ?? "";
     if (!file && !fn) return false;
-    // Check file path patterns
     if (INTERNAL_FILE_PATTERNS.some((p) => file.includes(p))) return false;
-    // Check function name patterns
     if (INTERNAL_FN_PATTERNS.some((p) => fn.includes(p))) return false;
     return true;
   });
@@ -183,9 +181,9 @@ export function createIngestRouter(pool: pg.Pool): Router {
             ],
           );
 
-          // Upsert call site stats (use filtered frames)
+          // Upsert call site stats — use LAST frame (outermost = business logic entry point)
           if (cleanFrames && cleanFrames.length > 0) {
-            const f = cleanFrames[0];
+            const f = cleanFrames[cleanFrames.length - 1];
             const key = `${f.fileName ?? "unknown"}:${f.functionName ?? "anonymous"}:${f.lineNumber ?? 0}`;
 
             await client.query(

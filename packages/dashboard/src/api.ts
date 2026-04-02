@@ -102,6 +102,17 @@ export interface SummaryTopFeature {
   pct: number;
 }
 
+export interface SummaryRelease {
+  release: string;
+  calls: number;
+  cost: number;
+  tokens: number;
+  first_seen: string;
+  last_seen: string;
+  cost_per_call: number;
+  cost_change_pct: number | null;
+}
+
 export interface Summary {
   thisMonth: { cost: number; calls: number; tokens: number };
   lastMonth: { cost: number; calls: number; tokens: number };
@@ -110,6 +121,8 @@ export interface Summary {
   topFeatures: SummaryTopFeature[];
   dailyAvg: number;
   projectedMonthly: number;
+  byRelease: SummaryRelease[];
+  costChangeFromPrevRelease: number | null;
 }
 
 export async function getSummary(projectId: string): Promise<Summary> {

@@ -82,6 +82,49 @@ export function createApiRouter(pool: pg.Pool): Router {
         pct: thisMonth.cost > 0 ? (parseFloat(row.cost) / thisMonth.cost) * 100 : 0,
       }));
 
+      // Cost by release
+      const byReleaseResult = await pool.query(
+        `SELECT release,
+          COUNT(*)::int as calls,
+          COALESCE(SUM(cost_usd), 0) as cost,
+          COALESCE(SUM(input_tokens), 0)::int as tokens,
+          MIN(timestamp) as first_seen,
+          MAX(timestamp) as last_seen
+        FROM events
+        WHERE project_id = $1 AND release IS NOT NULL
+        GROUP BY release
+        ORDER BY first_seen DESC
+        LIMIT 10`,
+        [projectId],
+      );
+
+      const byRelease = byReleaseResult.rows.map((row: { release: string; calls: number; cost: string; tokens: number; first_seen: string; last_seen: string }, i: number) => {
+        const cost = parseFloat(row.cost);
+        const costPerCall = row.calls > 0 ? cost / row.calls : 0;
+        // Compare against the next row (previous release, since sorted by first_seen DESC)
+        const prevRow = byReleaseResult.rows[i + 1] as { cost: string; calls: number } | undefined;
+        let costChangePct: number | null = null;
+        if (prevRow && prevRow.calls > 0) {
+          const prevCostPerCall = parseFloat(prevRow.cost) / prevRow.calls;
+          if (prevCostPerCall > 0) {
+            costChangePct = ((costPerCall - prevCostPerCall) / prevCostPerCall) * 100;
+          }
+        }
+        return {
+          release: row.release,
+          calls: row.calls,
+          cost,
+          tokens: row.tokens,
+          first_seen: row.first_seen,
+          last_seen: row.last_seen,
+          cost_per_call: costPerCall,
+          cost_change_pct: costChangePct,
+        };
+      });
+
+      // Cost change from previous release (latest vs second-latest)
+      const costChangeFromPrevRelease = byRelease.length > 0 ? byRelease[0].cost_change_pct : null;
+
       res.json({
         thisMonth,
         lastMonth,
@@ -90,6 +133,8 @@ export function createApiRouter(pool: pg.Pool): Router {
         topFeatures,
         dailyAvg,
         projectedMonthly,
+        byRelease,
+        costChangeFromPrevRelease,
       });
     } catch (err) {
       console.error("[costkey] API error:", err);

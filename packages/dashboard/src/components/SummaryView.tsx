@@ -1,4 +1,4 @@
-import { TrendingUp, TrendingDown, Minus } from "lucide-react";
+import { TrendingUp, TrendingDown, Minus, ArrowUp, ArrowDown, AlertTriangle } from "lucide-react";
 import type { Summary } from "../hooks/useApi";
 import { formatCost, formatTokens } from "../utils";
 
@@ -61,6 +61,30 @@ function FeaturesSkeleton() {
   );
 }
 
+function formatReleaseName(release: string): string {
+  // If it looks like a git SHA (40 hex chars or 7+ hex chars), truncate to 7
+  if (/^[0-9a-f]{7,40}$/i.test(release)) {
+    return release.slice(0, 7);
+  }
+  // Otherwise show full (semver, tag names, etc.) but cap at 20
+  return release.length > 20 ? release.slice(0, 20) + "\u2026" : release;
+}
+
+function ReleaseCostChange({ pct }: { pct: number | null }) {
+  if (pct === null) {
+    return <span className="text-text-muted text-xs font-mono">baseline</span>;
+  }
+  const isUp = pct > 0;
+  const color = isUp ? (pct > 20 ? "text-red" : "text-amber") : "text-green";
+  const Icon = isUp ? ArrowUp : ArrowDown;
+  return (
+    <span className={`inline-flex items-center gap-0.5 text-xs font-mono ${color}`}>
+      <Icon size={11} />
+      {Math.abs(pct).toFixed(0)}%
+    </span>
+  );
+}
+
 export default function SummaryView({ summary, loading }: Props) {
   if (loading || !summary) {
     return (
@@ -103,6 +127,52 @@ export default function SummaryView({ summary, loading }: Props) {
           <span className="text-text-muted text-xs">{formatTokens(summary.thisMonth.tokens)} tokens</span>
         </div>
       </div>
+
+      {/* Cost by Deploy — only shown if releases exist */}
+      {summary.byRelease && summary.byRelease.length > 0 && (
+        <div className="animate-in bg-surface-raised border border-border rounded-sm p-5" style={{ animationDelay: "30ms" }}>
+          <div className="flex items-center justify-between mb-4">
+            <p className="text-text-muted text-xs font-medium tracking-wide uppercase">
+              Cost by Deploy
+            </p>
+            {summary.costChangeFromPrevRelease !== null && summary.costChangeFromPrevRelease > 20 && (
+              <span className="inline-flex items-center gap-1.5 text-xs text-amber bg-amber-muted px-2 py-0.5 rounded-sm">
+                <AlertTriangle size={12} />
+                {formatReleaseName(summary.byRelease[0].release)} costs {Math.abs(summary.costChangeFromPrevRelease).toFixed(0)}% more per call than the previous deploy
+              </span>
+            )}
+          </div>
+          <div className="flex flex-col gap-0">
+            {/* Header row */}
+            <div className="flex items-center gap-3 pb-2 text-text-muted text-xs uppercase tracking-wide border-b border-border">
+              <span className="w-24 shrink-0">Release</span>
+              <span className="w-20 text-right shrink-0">Cost</span>
+              <span className="w-24 text-right shrink-0">Calls</span>
+              <span className="w-24 text-right shrink-0">$/call</span>
+              <span className="w-16 text-right shrink-0">Change</span>
+            </div>
+            {summary.byRelease.map((rel) => (
+              <div key={rel.release} className="flex items-center gap-3 py-2 border-b border-border last:border-0">
+                <span className="font-mono text-sm text-accent w-24 truncate shrink-0" title={rel.release}>
+                  {formatReleaseName(rel.release)}
+                </span>
+                <span className="font-mono text-sm text-text-primary w-20 text-right shrink-0">
+                  {formatCost(rel.cost)}
+                </span>
+                <span className="text-sm text-text-muted w-24 text-right shrink-0">
+                  {rel.calls.toLocaleString()} calls
+                </span>
+                <span className="font-mono text-sm text-text-primary w-24 text-right shrink-0">
+                  {formatCost(rel.cost_per_call)}/call
+                </span>
+                <span className="w-16 text-right shrink-0">
+                  <ReleaseCostChange pct={rel.cost_change_pct} />
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-[1fr_1fr] gap-4">
         {/* Top cost drivers */}

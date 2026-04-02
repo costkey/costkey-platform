@@ -80,6 +80,7 @@ const INTERNAL_FN_PATTERNS = [
   "_generate_content",
   // General patterns
   "<module>",
+  "<anonymous>",
   "run_until_complete",
   "_run_once",
 ];
@@ -115,15 +116,26 @@ export function findBusinessLogicFrame(frames: StackFrame[]): StackFrame {
   if (frames.length <= 1) return frames[0];
 
   const innermostFile = frames[0].fileName ?? "";
+  const uselessNames = ["<module>", "<anonymous>", "anonymous", "", null, undefined];
 
   for (let i = 1; i < frames.length; i++) {
     const file = frames[i].fileName ?? "";
+    const fn = frames[i].functionName ?? "";
+    // Skip frames with useless function names
+    if (uselessNames.includes(fn as string)) continue;
+    // Find first frame from a different file
     if (file && file !== innermostFile) {
       return frames[i];
     }
   }
 
-  // All frames from the same file — just use frame[0]
+  // Fallback: find any frame with a real function name
+  for (const frame of frames) {
+    if (frame.functionName && !uselessNames.includes(frame.functionName)) {
+      return frame;
+    }
+  }
+
   return frames[0];
 }
 

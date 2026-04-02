@@ -62,7 +62,7 @@ function CallSiteRow({ row, maxCost, projectId, onSelectEvent }: {
   }
 
   return (
-    <div className="border-b border-border/30">
+    <div className="border-b border-border/30 row-striped">
       <button
         onClick={toggle}
         className="w-full flex items-center gap-3 px-4 py-3 row-hover cursor-pointer text-left"
@@ -108,7 +108,7 @@ function CallSiteRow({ row, maxCost, projectId, onSelectEvent }: {
       </button>
 
       {expanded && (
-        <div className="bg-surface/50 border-t border-border/20">
+        <div className="bg-surface/50 border-t border-border/20 animate-expand">
           {loadingEvents && (
             <div className="flex items-center gap-2 px-6 py-3">
               <div className="w-3 h-3 border border-accent border-t-transparent rounded-full animate-spin" />

@@ -20,7 +20,7 @@ interface StatCardProps {
 function StatCard({ label, value, sub, icon, color, bgColor, delay }: StatCardProps) {
   return (
     <div
-      className="animate-in bg-surface-raised border border-border rounded-sm px-4 py-4 flex flex-col gap-2 relative overflow-hidden"
+      className="animate-in stat-card-hover bg-surface-raised border border-border rounded-sm px-4 py-4 flex flex-col gap-2 relative overflow-hidden"
       style={{ animationDelay: `${delay}ms` }}
     >
       <div className={`absolute top-0 left-0 right-0 h-px ${bgColor}`} style={{ opacity: 0.6 }} />

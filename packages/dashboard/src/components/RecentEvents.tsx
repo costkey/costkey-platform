@@ -67,7 +67,7 @@ export default function RecentEvents({ events, loading, search = "", projectId }
               <button
                 key={event.id}
                 onClick={() => setSelectedEvent(event)}
-                className="w-full flex items-center gap-3 px-4 py-2.5 row-hover cursor-pointer text-left border-b border-border/20 last:border-b-0"
+                className="w-full flex items-center gap-3 px-4 py-2.5 row-hover row-striped cursor-pointer text-left border-b border-border/20 last:border-b-0"
               >
                 <ProviderLogo provider={event.provider} size={14} />
 

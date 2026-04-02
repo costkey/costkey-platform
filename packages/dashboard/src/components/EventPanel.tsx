@@ -103,7 +103,7 @@ export default function EventPanel({ event, projectId, onClose }: Props) {
 
       <div className="fixed top-0 right-0 h-full w-[600px] max-w-[90vw] bg-surface-raised border-l border-border z-50 flex flex-col animate-slide-in">
         {/* Header */}
-        <div className="flex items-center gap-3 px-5 py-4 border-b border-border shrink-0">
+        <div className="flex items-center gap-3 px-5 py-4 panel-header-gradient shrink-0">
           <ProviderLogo provider={event.provider} size={18} />
           <div className="flex-1 min-w-0">
             <div className="font-mono text-base font-semibold text-text-primary truncate">{fnName}()</div>

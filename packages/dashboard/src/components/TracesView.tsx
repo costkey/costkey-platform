@@ -40,7 +40,7 @@ function TraceRow({ trace, projectId }: { trace: Trace; projectId: string }) {
   }
 
   return (
-    <div className="border-b border-border/30 last:border-b-0">
+    <div className="border-b border-border/30 last:border-b-0 row-striped">
       <button
         onClick={toggle}
         className="w-full flex items-center gap-2 px-3 py-2 row-hover cursor-pointer text-left"

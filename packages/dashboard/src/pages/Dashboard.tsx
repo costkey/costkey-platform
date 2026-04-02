@@ -7,6 +7,7 @@ import CallSitesTable from "../components/CallSitesTable";
 import ModelBreakdown from "../components/ModelBreakdown";
 import TracesView from "../components/TracesView";
 import RecentEvents from "../components/RecentEvents";
+import EmptyState from "../components/EmptyState";
 import { useOverview, useCallSites, useEvents, useTrends, useTraces } from "../hooks/useApi";
 import { useAuth } from "../contexts/AuthContext";
 
@@ -73,25 +74,35 @@ export default function Dashboard() {
       {/* Tab content */}
       <div className="flex-1">
         {activeTab === "overview" && (
-          <div className="flex flex-col gap-4">
-            <StatCards overview={overview.data?.overview ?? null} loading={overview.loading} />
-            <div className="grid grid-cols-[1fr_340px] gap-4">
-              <CostTrend trends={trends.data} loading={trends.loading} />
-              <ModelBreakdown models={overview.data?.byModel ?? null} loading={overview.loading} />
-            </div>
-          </div>
+          !overview.loading && overview.data?.overview && overview.data.overview.total_calls === 0
+            ? <EmptyState tab="overview" />
+            : (
+              <div className="flex flex-col gap-4">
+                <StatCards overview={overview.data?.overview ?? null} loading={overview.loading} />
+                <div className="grid grid-cols-[1fr_340px] gap-4">
+                  <CostTrend trends={trends.data} loading={trends.loading} />
+                  <ModelBreakdown models={overview.data?.byModel ?? null} loading={overview.loading} />
+                </div>
+              </div>
+            )
         )}
 
         {activeTab === "traces" && (
-          <TracesView traces={traces.data} loading={traces.loading} projectId={projectId} search={search} />
+          !traces.loading && traces.data && traces.data.length === 0
+            ? <EmptyState tab="traces" />
+            : <TracesView traces={traces.data} loading={traces.loading} projectId={projectId} search={search} />
         )}
 
         {activeTab === "call-sites" && (
-          <CallSitesTable callSites={callSites.data} loading={callSites.loading} search={search} projectId={projectId} />
+          !callSites.loading && callSites.data && callSites.data.length === 0
+            ? <EmptyState tab="call-sites" />
+            : <CallSitesTable callSites={callSites.data} loading={callSites.loading} search={search} projectId={projectId} />
         )}
 
         {activeTab === "events" && (
-          <RecentEvents events={events.data} loading={events.loading} search={search} projectId={projectId} />
+          !events.loading && events.data && events.data.length === 0
+            ? <EmptyState tab="events" />
+            : <RecentEvents events={events.data} loading={events.loading} search={search} projectId={projectId} />
         )}
       </div>
     </main>

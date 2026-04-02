@@ -1,5 +1,5 @@
 import { BrowserRouter, Routes, Route, Navigate, Outlet, useNavigate } from "react-router-dom";
-import { Hexagon, Settings, ChevronDown } from "lucide-react";
+import { Settings, ChevronDown, ExternalLink } from "lucide-react";
 import { AuthProvider, useAuth } from "./contexts/AuthContext";
 import Login from "./pages/Login";
 import Signup from "./pages/Signup";
@@ -32,10 +32,8 @@ function AppShell() {
       {/* Header */}
       <header className="scanline-effect relative border-b border-border bg-surface-raised/50 backdrop-blur-sm sticky top-0 z-50">
         <div className="max-w-[1400px] mx-auto px-6 h-14 flex items-center gap-4">
-          <button onClick={() => navigate("/")} className="flex items-center gap-2.5 cursor-pointer">
-            <div className="w-7 h-7 bg-accent-muted border border-accent/30 rounded-sm flex items-center justify-center">
-              <Hexagon size={14} className="text-accent" />
-            </div>
+          <button onClick={() => navigate("/")} className="flex items-center gap-2.5 cursor-pointer group">
+            <img src="/favicon.svg" alt="CostKey" className="w-6 h-6 group-hover:brightness-110 transition-all" />
             <span className="font-mono text-sm font-semibold text-text-primary tracking-tight">
               CostKey
             </span>
@@ -46,11 +44,11 @@ function AppShell() {
           {/* Project switcher */}
           {projects.length > 1 ? (
             <div className="relative group">
-              <button className="flex items-center gap-1.5 font-mono text-xs text-text-muted hover:text-text-secondary cursor-pointer">
+              <button className="flex items-center gap-1.5 px-2.5 py-1 bg-surface-overlay/60 border border-border rounded-sm font-mono text-xs text-text-secondary hover:text-text-primary hover:border-border-bright cursor-pointer transition-all">
                 {currentProject?.name ?? org?.name}
-                <ChevronDown size={12} />
+                <ChevronDown size={11} className="text-text-muted" />
               </button>
-              <div className="absolute top-full left-0 mt-1 bg-surface-raised border border-border rounded-sm py-1 min-w-[180px] hidden group-hover:block z-50">
+              <div className="absolute top-full left-0 mt-1 bg-surface-raised border border-border-bright rounded-sm py-1 min-w-[180px] hidden group-hover:block z-50 shadow-lg shadow-black/30">
                 {projects.map((p) => (
                   <button
                     key={p.id}
@@ -65,21 +63,35 @@ function AppShell() {
               </div>
             </div>
           ) : (
-            <span className="font-mono text-xs text-text-muted">{currentProject?.name ?? org?.name}</span>
+            <span className="px-2.5 py-1 bg-surface-overlay/40 border border-border/60 rounded-sm font-mono text-xs text-text-muted">
+              {currentProject?.name ?? org?.name}
+            </span>
           )}
 
           {/* Right side */}
           <div className="ml-auto flex items-center gap-3">
+            <a
+              href="https://docs.costkey.dev"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-1.5 text-[11px] text-text-muted font-mono hover:text-text-secondary transition-colors"
+            >
+              Docs
+              <ExternalLink size={10} />
+            </a>
+
+            <div className="w-px h-4 bg-border" />
+
             <div className="flex items-center gap-1.5">
               <div className="w-1.5 h-1.5 rounded-full bg-green glow-dot" />
-              <span className="text-[11px] text-text-muted font-mono">collecting</span>
+              <span className="text-[11px] text-text-muted/70 font-mono">collecting</span>
             </div>
 
             <button
               onClick={() => navigate("/settings")}
-              className="p-2 text-text-muted hover:text-text-secondary transition-colors cursor-pointer"
+              className="p-1.5 text-text-muted hover:text-text-secondary transition-colors cursor-pointer rounded-sm hover:bg-surface-overlay"
             >
-              <Settings size={15} />
+              <Settings size={14} />
             </button>
 
             <div className="w-7 h-7 rounded-full bg-accent-muted flex items-center justify-center font-mono text-xs text-accent font-medium cursor-pointer"
@@ -98,7 +110,13 @@ function AppShell() {
       <footer className="border-t border-border/50">
         <div className="max-w-[1440px] mx-auto px-4 py-1.5 flex items-center justify-between">
           <span className="font-mono text-[9px] text-text-muted/50">costkey v0.2.0</span>
-          <span className="font-mono text-[9px] text-text-muted/50">AI cost observability</span>
+          <div className="flex items-center gap-3">
+            <a href="https://docs.costkey.dev" target="_blank" rel="noopener noreferrer" className="font-mono text-[9px] text-text-muted/50 hover:text-text-muted transition-colors">Docs</a>
+            <span className="text-text-muted/20">|</span>
+            <a href="https://github.com/costkey-ai/costkey" target="_blank" rel="noopener noreferrer" className="font-mono text-[9px] text-text-muted/50 hover:text-text-muted transition-colors">GitHub</a>
+            <span className="text-text-muted/20">|</span>
+            <a href="https://status.costkey.dev" target="_blank" rel="noopener noreferrer" className="font-mono text-[9px] text-text-muted/50 hover:text-text-muted transition-colors">Status</a>
+          </div>
         </div>
       </footer>
     </div>

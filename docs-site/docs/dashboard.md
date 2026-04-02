@@ -8,11 +8,30 @@ description: What each tab in the CostKey dashboard shows.
 
 The CostKey dashboard is a React SPA that gives you full visibility into your AI API usage. It connects to the CostKey server API and displays cost, usage, and performance data.
 
-Access it at [app.costkey.dev](https://app.costkey.dev) or self-host it (the dashboard is built into the server binary).
+Access it at [app.costkey.dev](https://app.costkey.dev).
+
+## Executive Summary
+
+The Executive Summary is a plain-English overview of your AI spend, designed for stakeholders who don't need to dig into individual events. It includes:
+
+- **Total spend** for the selected period with trend vs. the previous period
+- **Top cost drivers** — which models and call sites are responsible for the most spend
+- **Anomalies** — any functions whose cost spiked unexpectedly
+- **Cost per deploy** — if you set the `release` parameter in your SDK init, the summary shows how costs changed across deployments
+
+This view is useful for budget meetings, executive updates, and quick health checks.
+
+## Cost per Deploy
+
+When you pass a `release` string to `costkey.init()`, every event is tagged with that release. The dashboard groups costs by release so you can see:
+
+- **Cost delta** between the current and previous deploy
+- **Which functions** changed in cost after a deploy
+- **Regression detection** — flags deploys that caused a significant cost increase
+
+This answers: "Did that last deploy make things cheaper or more expensive?"
 
 ## Overview tab
-
-[screenshot: overview]
 
 The Overview tab shows aggregate metrics over a selected time range:
 
@@ -29,8 +48,6 @@ Use the time range selector to view the last hour, day, week, or month.
 
 ## Call Sites tab
 
-[screenshot: call-sites]
-
 Call Sites groups events by the business logic function that triggered them. CostKey's stack trace analysis finds the first frame from a different file than the direct API caller, skipping wrapper/utility functions automatically.
 
 For each call site you see:
@@ -45,8 +62,6 @@ This answers the question: "Which part of my code costs the most?"
 
 ## Traces tab
 
-[screenshot: traces]
-
 Traces group related AI calls that happen during a single operation. When you use `start_trace()` (or the Express/FastAPI middleware), all AI calls within that scope are grouped under one trace.
 
 For each trace:
@@ -60,8 +75,6 @@ For each trace:
 CostKey also auto-generates trace IDs from stack traces when you don't use `start_trace()` explicitly. Calls made from the same request handler within a 5-second window are grouped automatically.
 
 ## Events tab
-
-[screenshot: events]
 
 Events is the raw event log — every individual AI API call. The table shows:
 

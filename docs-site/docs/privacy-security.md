@@ -150,9 +150,6 @@ If the `before_send` hook throws an exception, the event is dropped (not sent). 
 | Hosting | Default retention | Configurable |
 |---------|:-----------------:|:------------:|
 | CostKey Cloud (app.costkey.dev) | 90 days | No (free tier) |
-| Self-hosted | Unlimited | Yes (your database) |
-
-Self-hosted instances retain data for as long as you keep it in PostgreSQL. You can set up your own retention policies using standard PostgreSQL features (e.g., `pg_partman` or a cron job to delete old rows).
 
 ## Network security
 
@@ -163,19 +160,10 @@ Self-hosted instances retain data for as long as you keep it in PostgreSQL. You 
 - Events are batched (default: up to 50 per request) and sent every 5 seconds
 - The transport never blocks your application. If a send fails, events are retried on the next flush. If the queue exceeds 500 events, the oldest are dropped.
 
-### Self-hosted security
 
-When self-hosting, you control:
+## Source code
 
-- **Network access** — restrict ingest endpoints to your VPN/internal network
-- **Database encryption** — use PostgreSQL's encryption features
-- **TLS termination** — handle at your reverse proxy (nginx, Cloudflare, etc.)
-- **Auth** — the JWT secret controls dashboard access
+The SDK source is available on GitHub for review:
 
-## Open source
-
-CostKey is fully open-source (MIT license). You can audit every line of code:
-
-- [SDK source (TypeScript)](https://github.com/costkey/costkey/tree/main/packages/sdk)
-- [SDK source (Python)](https://github.com/costkey/costkey-python)
-- [Server source](https://github.com/costkey/costkey/tree/main/packages/server)
+- [TypeScript SDK](https://github.com/costkey/costkey)
+- [Python SDK](https://github.com/costkey/costkey-python)

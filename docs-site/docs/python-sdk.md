@@ -24,6 +24,34 @@ When you call `costkey.init()`, the SDK monkey-patches `httpx.Client.send`, `htt
 
 The SDK never modifies your request or response. It reads from cloned data and sends events to CostKey asynchronously in the background.
 
+## Call graph analysis
+
+When `costkey.init()` is called, the Python SDK scans your project's `.py` files in a background thread to build a call graph. This typically completes in under 200ms and does not block your application startup.
+
+The call graph identifies which functions in your code are business logic vs. thin wrappers or utility functions. This graph is sent to the CostKey server, which uses it for intelligent frame attribution — so when a stack trace is captured, the dashboard highlights the meaningful function that triggered the AI call, not an intermediate helper.
+
+**How it works:**
+
+1. At `init()`, a background thread walks your project directory and parses `.py` files using the AST module
+2. It builds a map of function definitions and their call relationships
+3. The graph is sent to the server alongside your events
+4. The server uses the graph to pick the most relevant frame from each stack trace
+
+**Configuration:**
+
+```python
+# Default: scan is enabled, project root is auto-detected
+costkey.init(dsn="https://ck_key@app.costkey.dev/proj_id")
+
+# Disable call graph scanning
+costkey.init(dsn="https://ck_key@app.costkey.dev/proj_id", scan_callgraph=False)
+
+# Specify the project root explicitly
+costkey.init(dsn="https://ck_key@app.costkey.dev/proj_id", project_root="/app/src")
+```
+
+The scan only reads `.py` files to extract function/method names and call relationships. It does not execute any code, and no source code content is sent to the server — only the structural call graph.
+
 ## Using with Sentry, New Relic, or other APM tools
 
 CostKey coexists with other tools that patch HTTP clients (Sentry, New Relic, Datadog). Each tool wraps the previous one — calls flow through all layers.
@@ -78,7 +106,9 @@ costkey.init(
 | `flush_interval` | `float` | `5.0` | Seconds between automatic flushes. |
 | `debug` | `bool` | `False` | Enable debug logging to the `costkey` logger. |
 | `default_context` | `dict` | `{}` | Default context applied to every event. |
-| `release` | `str` | `None` | Release version string. Used for sourcemap translation on the server. |
+| `release` | `str` | `None` | Release version string. Used for cost-per-deploy tracking and sourcemap translation. |
+| `scan_callgraph` | `bool` | `True` | Scan your project's `.py` files at init to build a call graph for intelligent attribution. |
+| `project_root` | `str` | `None` | Root directory to scan for call graph analysis. Auto-detected from your main module if not set. |
 
 ### `costkey.with_context()`
 

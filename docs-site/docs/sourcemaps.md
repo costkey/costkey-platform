@@ -145,18 +145,6 @@ The translation happens on the server at ingest time, so:
 - The dashboard always shows original source locations
 - You don't need to serve sourcemaps publicly
 
-## Self-hosted sourcemap upload
-
-If you're self-hosting CostKey, point the CLI to your server:
-
-```bash
-costkey sourcemaps upload \
-  --release $(git rev-parse --short HEAD) \
-  --auth-key $COSTKEY_AUTH_KEY \
-  --host https://costkey.your-company.com \
-  ./dist/*.map
-```
-
 ## Troubleshooting
 
 **Stack traces still show minified locations:**

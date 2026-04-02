@@ -7,7 +7,7 @@ description: Start tracking AI costs in under 60 seconds with CostKey.
 
 # Getting Started
 
-CostKey is an open-source SDK that auto-tracks every AI API call's cost, tokens, and latency. One line of code, zero wrappers, zero proxies.
+CostKey is an SDK that auto-tracks every AI API call's cost, tokens, and latency. One line of code, zero wrappers, zero proxies.
 
 ## Install
 
@@ -41,7 +41,10 @@ Get your DSN from the [CostKey dashboard](https://app.costkey.dev) or by running
 ```python
 import costkey
 
-costkey.init(dsn="https://ck_your_key@app.costkey.dev/your_project_id")
+costkey.init(
+    dsn="https://ck_your_key@app.costkey.dev/your_project_id",
+    release="v1.0.0",  # Track cost per deploy
+)
 ```
 
 </TabItem>
@@ -50,7 +53,10 @@ costkey.init(dsn="https://ck_your_key@app.costkey.dev/your_project_id")
 ```typescript
 import { CostKey } from 'costkey'
 
-CostKey.init({ dsn: 'https://ck_your_key@app.costkey.dev/your_project_id' })
+CostKey.init({
+  dsn: 'https://ck_your_key@app.costkey.dev/your_project_id',
+  release: 'v1.0.0',  // Track cost per deploy
+})
 ```
 
 </TabItem>
@@ -109,6 +115,9 @@ Open the [dashboard](https://app.costkey.dev) and you'll see:
 - **Latency** and streaming metrics (TTFT, tokens/sec)
 - **Stack trace** showing which function in your code made the call
 - **Call site grouping** so you can see which parts of your code cost the most
+- **Body capture** — inspect the exact prompt and completion for any call
+- **Cost per deploy** — set `release` to see how costs change across deployments
+- **Executive summary** — a plain-English summary of your AI spend for stakeholders
 
 ## Add context
 
@@ -198,4 +207,4 @@ await CostKey.shutdown()
 - [TypeScript SDK](/typescript-sdk) — full API reference, Express middleware, sourcemaps
 - [Providers](/providers) — all 15 supported AI providers
 - [Dashboard](/dashboard) — what each tab shows
-- [Self-Hosting](/self-hosting) — run CostKey on your own infrastructure
+- [Privacy & Security](/privacy-security) — what data is captured, credential scrubbing, data retention

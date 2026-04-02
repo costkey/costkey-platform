@@ -6,7 +6,7 @@ const sidebars = {
     'typescript-sdk',
     'providers',
     'dashboard',
-    'self-hosting',
+
     'sourcemaps',
     'privacy-security',
   ],

@@ -60,16 +60,22 @@ interface FrameLike {
 export function findBusinessFrame(frames: FrameLike[]): FrameLike | null {
   if (!frames || frames.length === 0) return null;
 
-  const useless = new Set(["<module>", "<anonymous>", "anonymous", "main", ""]);
+  const useless = new Set(["<module>", "<anonymous>", "anonymous", "main", "_run", ""]);
   const meaningful = frames.filter((f) => {
     const fn = (f.functionName ?? "").split("\n")[0].trim();
     return fn && !useless.has(fn);
   });
 
   const pool = meaningful.length > 0 ? meaningful : frames;
-  if (pool.length === 1) return pool[0];
-  if (pool.length === 2) return pool[pool.length - 1];
-  return pool[pool.length - 2];
+  if (pool.length <= 1) return pool[0];
+
+  // First frame from a different file = business logic caller
+  const innerFile = pool[0].fileName ?? "";
+  for (let i = 1; i < pool.length; i++) {
+    const file = pool[i].fileName ?? "";
+    if (file && file !== innerFile) return pool[i];
+  }
+  return pool[0];
 }
 
 /** Parse call_site_frames from an event (handles string or array) */

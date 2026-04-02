@@ -286,7 +286,7 @@ async function backfillFrames(pool: import("pg").Pool): Promise<void> {
   });
 
   // Rebuild call_site_stats (also runs once)
-  await runOnce(pool, "rebuild_callsite_stats_v3", async () => {
+  await runOnce(pool, "rebuild_callsite_stats_v4", async () => {
     await rebuildCallSiteStats(pool);
   });
 }
@@ -299,16 +299,22 @@ async function backfillFrames(pool: import("pg").Pool): Promise<void> {
 function pickBestFrame(frames: Array<{ fileName?: string | null; functionName?: string | null; lineNumber?: number | null }>): typeof frames[0] {
   if (frames.length === 0) return frames[0];
 
-  const useless = new Set(["<module>", "<anonymous>", "anonymous", "main", ""]);
+  const useless = new Set(["<module>", "<anonymous>", "anonymous", "main", "_run", ""]);
   const meaningful = frames.filter((f) => {
     const fn = (f.functionName ?? "").split("\n")[0].trim();
     return fn && !useless.has(fn);
   });
 
   const pool = meaningful.length > 0 ? meaningful : frames;
-  if (pool.length === 1) return pool[0];
-  if (pool.length === 2) return pool[pool.length - 1];
-  return pool[pool.length - 2];
+  if (pool.length <= 1) return pool[0];
+
+  // First frame from a different file = business logic caller
+  const innerFile = pool[0].fileName ?? "";
+  for (let i = 1; i < pool.length; i++) {
+    const file = pool[i].fileName ?? "";
+    if (file && file !== innerFile) return pool[i];
+  }
+  return pool[0];
 }
 
 async function rebuildCallSiteStats(pool: import("pg").Pool): Promise<void> {

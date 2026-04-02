@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { computeCost, findPricing } from "../pricing.js";
-import { filterFrames, findBusinessLogicFrame, truncateBody } from "../ingest.js";
+import { filterFrames, findBusinessLogicFrame, findBusinessLogicFrameWithGraph, truncateBody } from "../ingest.js";
 
 // ─── Pricing: findPricing ─────────────────────────────────────────────
 
@@ -386,6 +386,85 @@ describe("truncateBody", () => {
     assert.ok(result);
     assert.equal(result.length, 100_000);
     assert.ok(!result.includes("[TRUNCATED]"));
+  });
+});
+
+// ─── Call Graph Frame Selection ──────────────────────────────────────
+
+describe("findBusinessLogicFrameWithGraph", () => {
+  const frame = (fileName: string, functionName: string, lineNumber = 10) => ({
+    fileName,
+    functionName,
+    lineNumber,
+    columnNumber: 0,
+  });
+
+  it("frame matches graph entry — picks lowest score frame", () => {
+    const frames = [
+      frame("/app/services/search.py", "do_search", 50),
+      frame("/app/main.py", "run", 10),
+    ];
+    const graph: Record<string, { score: number; fan_in: number; calls_ai: boolean }> = {
+      "services/search.py:do_search": { score: 2, fan_in: 3, calls_ai: true },
+      "main.py:run": { score: 8, fan_in: 1, calls_ai: false },
+    };
+    const result = findBusinessLogicFrameWithGraph(frames, graph);
+    assert.equal(result.fileName, "/app/services/search.py");
+    assert.equal(result.functionName, "do_search");
+  });
+
+  it("no frames match graph — falls back to findBusinessLogicFrame", () => {
+    const frames = [
+      frame("/app/client.py", "api_call", 10),
+      frame("/app/handler.py", "process", 50),
+    ];
+    const graph: Record<string, { score: number; fan_in: number; calls_ai: boolean }> = {
+      "unrelated_file.py:something": { score: 1, fan_in: 5, calls_ai: true },
+    };
+    const result = findBusinessLogicFrameWithGraph(frames, graph);
+    // Falls back to findBusinessLogicFrame: first frame from different file than frame[0]
+    assert.equal(result.fileName, "/app/handler.py");
+    assert.equal(result.functionName, "process");
+  });
+
+  it("multiple frames match — picks lowest score", () => {
+    const frames = [
+      frame("/app/services/search.py", "do_search", 50),
+      frame("/app/pipeline/stage.py", "run_stage", 100),
+      frame("/app/main.py", "run", 10),
+    ];
+    const graph: Record<string, { score: number; fan_in: number; calls_ai: boolean }> = {
+      "services/search.py:do_search": { score: 5, fan_in: 3, calls_ai: true },
+      "pipeline/stage.py:run_stage": { score: 2, fan_in: 2, calls_ai: true },
+      "main.py:run": { score: 9, fan_in: 1, calls_ai: false },
+    };
+    const result = findBusinessLogicFrameWithGraph(frames, graph);
+    assert.equal(result.fileName, "/app/pipeline/stage.py");
+    assert.equal(result.functionName, "run_stage");
+  });
+
+  it("graph key file matching works with suffix (frame has full path, graph has relative)", () => {
+    const frames = [
+      frame("/app/services/search.py", "do_search", 50),
+    ];
+    const graph: Record<string, { score: number; fan_in: number; calls_ai: boolean }> = {
+      "services/search.py:do_search": { score: 3, fan_in: 2, calls_ai: true },
+    };
+    const result = findBusinessLogicFrameWithGraph(frames, graph);
+    assert.equal(result.fileName, "/app/services/search.py");
+    assert.equal(result.functionName, "do_search");
+  });
+
+  it("empty graph — falls back to findBusinessLogicFrame", () => {
+    const frames = [
+      frame("/app/client.py", "wrapper", 10),
+      frame("/app/handler.py", "process", 50),
+    ];
+    const graph: Record<string, { score: number; fan_in: number; calls_ai: boolean }> = {};
+    const result = findBusinessLogicFrameWithGraph(frames, graph);
+    // Falls back: first frame from different file
+    assert.equal(result.fileName, "/app/handler.py");
+    assert.equal(result.functionName, "process");
   });
 });
 

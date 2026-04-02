@@ -158,6 +158,14 @@ export async function initDatabase(): Promise<void> {
       message TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS call_graphs (
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      uploaded_at TIMESTAMPTZ DEFAULT NOW(),
+      graph_data JSONB NOT NULL,
+      sdk_version TEXT,
+      PRIMARY KEY (project_id)
+    );
+
     CREATE TABLE IF NOT EXISTS migrations (
       name TEXT PRIMARY KEY,
       ran_at TIMESTAMPTZ DEFAULT NOW()

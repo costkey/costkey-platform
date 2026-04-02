@@ -5,7 +5,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { getPool, initDatabase } from "./db.js";
-import { createIngestRouter } from "./ingest.js";
+import { createIngestRouter, loadCallGraphCache } from "./ingest.js";
 import { createApiRouter } from "./api.js";
 import { createAuthRouter, authMiddleware } from "./auth.js";
 import { createTeamsRouter } from "./teams.js";
@@ -51,6 +51,9 @@ async function initApp() {
 
   await initDatabase();
   console.log("[costkey] Database ready");
+
+  // Load call graph cache from DB
+  await loadCallGraphCache(pool);
 
   app.use(authMiddleware());
 

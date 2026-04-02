@@ -138,6 +138,76 @@ export function findBusinessLogicFrame(frames: StackFrame[]): StackFrame {
   return pool[0];
 }
 
+// ─── Call Graph Cache ────────────────────────────────────────────────
+export const callGraphCache = new Map<string, Record<string, { score: number; fan_in: number; calls_ai: boolean; line: number }>>();
+
+/**
+ * Find the best business-logic frame using call graph data.
+ * Matches frames against graph keys by suffix-matching file paths and function names.
+ * Picks the frame with the LOWEST score (most business-logic-like).
+ * Falls back to findBusinessLogicFrame if no matches found.
+ */
+export function findBusinessLogicFrameWithGraph(
+  frames: StackFrame[],
+  graph: Record<string, { score: number; fan_in: number; calls_ai: boolean }>,
+): StackFrame {
+  let bestFrame: StackFrame | null = null;
+  let bestScore = Infinity;
+
+  const graphKeys = Object.keys(graph);
+
+  for (const frame of frames) {
+    const frameFile = frame.fileName ?? "";
+    const frameFn = (frame.functionName ?? "").split("\n")[0].trim();
+    if (!frameFile && !frameFn) continue;
+
+    for (const key of graphKeys) {
+      // Graph keys are typically "file:function" or just file paths
+      // Try to extract file and function parts
+      const lastColon = key.lastIndexOf(":");
+      let graphFile: string;
+      let graphFn: string;
+      if (lastColon > 0) {
+        graphFile = key.slice(0, lastColon);
+        graphFn = key.slice(lastColon + 1);
+      } else {
+        graphFile = key;
+        graphFn = "";
+      }
+
+      // Match: frame fileName ends with graph key's file part
+      const fileMatches = frameFile.endsWith(graphFile) || graphFile.endsWith(frameFile) ||
+        (frameFile && graphFile && (
+          frameFile.endsWith("/" + graphFile) || graphFile.endsWith("/" + frameFile)
+        ));
+
+      // Function names match (if graph has one)
+      const fnMatches = !graphFn || frameFn === graphFn || frameFn.endsWith(graphFn);
+
+      if (fileMatches && fnMatches) {
+        const entry = graph[key];
+        if (entry.score < bestScore) {
+          bestScore = entry.score;
+          bestFrame = frame;
+        }
+      }
+    }
+  }
+
+  return bestFrame ?? findBusinessLogicFrame(frames);
+}
+
+/**
+ * Load call graph cache from database. Called on startup.
+ */
+export async function loadCallGraphCache(pool: import("pg").Pool): Promise<void> {
+  const cgResult = await pool.query("SELECT project_id, graph_data FROM call_graphs");
+  for (const row of cgResult.rows) {
+    callGraphCache.set(row.project_id, typeof row.graph_data === 'string' ? JSON.parse(row.graph_data) : row.graph_data);
+  }
+  console.log(`[costkey] Loaded ${cgResult.rows.length} call graphs`);
+}
+
 /** Max stored body size (100KB). Truncates large prompts/completions to avoid DB bloat. */
 const MAX_BODY_BYTES = 100_000;
 
@@ -255,7 +325,10 @@ export function createIngestRouter(pool: pg.Pool): Router {
           // business logic that actually matters. Works universally without
           // fragile function-name heuristics.
           if (cleanFrames && cleanFrames.length > 0) {
-            const f = findBusinessLogicFrame(cleanFrames);
+            const graph = callGraphCache.get(projectId);
+            const f = graph
+              ? findBusinessLogicFrameWithGraph(cleanFrames, graph)
+              : findBusinessLogicFrame(cleanFrames);
             // Clean newlines from Python function names (traceback includes code lines)
             const cleanFn = (f.functionName ?? "anonymous").split("\n")[0].trim();
             const key = `${f.fileName ?? "unknown"}:${cleanFn}:${f.lineNumber ?? 0}`;
@@ -305,6 +378,61 @@ export function createIngestRouter(pool: pg.Pool): Router {
       res.status(202).json({ accepted: payload.events.length });
     } catch (err) {
       console.error("[costkey] Ingest error:", err);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  // POST /api/v1/projects/:projectId/callgraph — upload call graph data
+  router.post("/api/v1/projects/:projectId/callgraph", async (req, res) => {
+    try {
+      const authHeader = req.headers.authorization;
+      if (!authHeader?.startsWith("Bearer ")) {
+        res.status(401).json({ error: "Missing or invalid authorization" });
+        return;
+      }
+
+      const authKey = authHeader.slice(7);
+      const projResult = await pool.query(
+        "SELECT id FROM projects WHERE auth_key = $1",
+        [authKey],
+      );
+
+      if (projResult.rows.length === 0) {
+        res.status(401).json({ error: "Invalid auth key" });
+        return;
+      }
+
+      const projectId = projResult.rows[0].id;
+
+      // Verify projectId in URL matches the auth key's project
+      if (projectId !== req.params["projectId"]) {
+        res.status(403).json({ error: "Auth key does not match project" });
+        return;
+      }
+
+      const { functions, sdk_version } = req.body as { functions?: Record<string, unknown>; sdk_version?: string };
+      if (!functions || typeof functions !== "object") {
+        res.status(400).json({ error: "Invalid payload: missing functions object" });
+        return;
+      }
+
+      // Upsert into call_graphs table
+      await pool.query(
+        `INSERT INTO call_graphs (project_id, graph_data, sdk_version)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (project_id) DO UPDATE SET
+           graph_data = EXCLUDED.graph_data,
+           sdk_version = EXCLUDED.sdk_version,
+           uploaded_at = NOW()`,
+        [projectId, JSON.stringify(functions), sdk_version ?? null],
+      );
+
+      // Update in-memory cache
+      callGraphCache.set(projectId, functions as Record<string, { score: number; fan_in: number; calls_ai: boolean; line: number }>);
+
+      res.status(200).json({ accepted: Object.keys(functions).length });
+    } catch (err) {
+      console.error("[costkey] Call graph upload error:", err);
       res.status(500).json({ error: "Internal server error" });
     }
   });

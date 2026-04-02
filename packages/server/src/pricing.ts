@@ -219,9 +219,12 @@ const INTERNAL_FILE_PATTERNS = [
 
 const INTERNAL_FN_PATTERNS = [
   "self._client.send", "self._post", "self._request", "self.__request",
-  "_base_client", "._post(", "._get(", "._request(",
-  "_send_single_request", "_send_handling", "_send",
-  "wrapper return func(",
+  "_base_client", "self._client._request", "_legacy_response", "APIRequestor",
+  "._post(", "._get(", "._put(", "._patch(", "._delete(", "._request(",
+  "_send_single_request", "_send_handling", "_send(",
+  "wrapper return func(", "decorator",
+  "generate_content", "_generate_content",
+  "<module>", "run_until_complete", "_run_once",
 ];
 
 async function backfillFrames(pool: import("pg").Pool): Promise<void> {
@@ -256,13 +259,9 @@ async function backfillFrames(pool: import("pg").Pool): Promise<void> {
       }
     }
 
-    if (updated > 0) {
-      console.log(`[costkey] Cleaned stack frames for ${updated} events`);
-      // Rebuild call_site_stats from scratch with clean frames
-      await rebuildCallSiteStats(pool);
-    } else {
-      console.log("[costkey] No stack frames needed cleaning");
-    }
+    console.log(`[costkey] Cleaned stack frames for ${updated} events`);
+    // Always rebuild call_site_stats to ensure consistency
+    await rebuildCallSiteStats(pool);
   } catch (err) {
     console.error("[costkey] Frame backfill error:", err);
   }
@@ -288,7 +287,8 @@ async function rebuildCallSiteStats(pool: import("pg").Pool): Promise<void> {
       ),
       call_site_frames->0->>'fileName',
       call_site_frames->0->>'functionName',
-      (call_site_frames->0->>'lineNumber')::int,
+      CASE WHEN call_site_frames->0->>'lineNumber' ~ '^\d+$'
+        THEN (call_site_frames->0->>'lineNumber')::int ELSE NULL END,
       provider, model,
       COUNT(*)::int,
       COALESCE(SUM(cost_usd), 0),
@@ -301,11 +301,14 @@ async function rebuildCallSiteStats(pool: import("pg").Pool): Promise<void> {
       MAX(timestamp)
     FROM events
     WHERE call_site_frames IS NOT NULL
+      AND call_site_frames != '[]'::jsonb
       AND jsonb_array_length(call_site_frames) > 0
+      AND call_site_frames->0->>'fileName' IS NOT NULL
     GROUP BY project_id,
       call_site_frames->0->>'fileName',
       call_site_frames->0->>'functionName',
-      (call_site_frames->0->>'lineNumber')::int,
+      CASE WHEN call_site_frames->0->>'lineNumber' ~ '^\d+$'
+        THEN (call_site_frames->0->>'lineNumber')::int ELSE NULL END,
       provider, model
   `);
 

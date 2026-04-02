@@ -1,10 +1,10 @@
-import { ArrowUpDown } from "lucide-react";
+import { ArrowUpDown, ChevronRight } from "lucide-react";
 import { useState } from "react";
 import type { CallSite, EventRow } from "../hooks/useApi";
 import { getEvents } from "../api";
 import ProviderLogo from "./ProviderLogo";
 import EventPanel from "./EventPanel";
-import { formatTokens, formatDuration, truncateFile } from "../utils";
+import { formatTokens, formatDuration, truncateFile, truncateModel, timeAgo } from "../utils";
 
 interface Props {
   callSites: CallSite[] | null;
@@ -15,6 +15,175 @@ interface Props {
 
 type SortKey = "total_cost_usd" | "total_calls" | "total_input_tokens" | "avg_duration_ms";
 
+interface AggRow {
+  key: string;
+  fileName: string | null;
+  functionName: string | null;
+  lineNumber: number | null;
+  providers: Set<string>;
+  totalCalls: number;
+  totalCost: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  avgDuration: number;
+}
+
+function CallSiteRow({ row, maxCost, projectId, onSelectEvent }: {
+  row: AggRow;
+  maxCost: number;
+  projectId: string;
+  onSelectEvent: (e: EventRow) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [events, setEvents] = useState<EventRow[] | null>(null);
+  const [loadingEvents, setLoadingEvents] = useState(false);
+
+  async function toggle() {
+    if (expanded) { setExpanded(false); return; }
+    setExpanded(true);
+    if (!events) {
+      setLoadingEvents(true);
+      try {
+        const data = await getEvents(projectId, { limit: 20 });
+        // Filter client-side by function name match
+        const fn = row.functionName ?? "";
+        const matching = data.events.filter((e) => {
+          const frames = e.call_site_frames
+            ? (typeof e.call_site_frames === "string" ? JSON.parse(e.call_site_frames) : e.call_site_frames)
+            : [];
+          return frames.some((f: { functionName?: string }) =>
+            (f.functionName ?? "").includes(fn)
+          );
+        });
+        setEvents(matching.length > 0 ? matching : data.events.slice(0, 5));
+      } catch { /* silent */ }
+      setLoadingEvents(false);
+    }
+  }
+
+  return (
+    <div className="border-b border-border/30">
+      <button
+        onClick={toggle}
+        className="w-full flex items-center gap-3 px-4 py-3 row-hover cursor-pointer text-left"
+      >
+        <ChevronRight
+          size={14}
+          className={`text-text-muted shrink-0 transition-transform duration-150 ${expanded ? "rotate-90" : ""}`}
+        />
+
+        <div className="flex flex-col gap-0.5 flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="font-mono text-sm font-semibold text-text-primary truncate">
+              {row.functionName ?? "anonymous"}()
+            </span>
+            {[...row.providers].map((p) => (
+              <ProviderLogo key={p} provider={p} size={14} />
+            ))}
+          </div>
+          <span className="font-mono text-xs text-text-muted truncate">
+            {truncateFile(row.fileName)}
+            {row.lineNumber != null && `:${row.lineNumber}`}
+          </span>
+        </div>
+
+        <span className="font-mono text-sm text-text-secondary w-16 text-right shrink-0">
+          {row.totalCalls.toLocaleString()}
+        </span>
+
+        <span className="font-mono text-sm font-semibold text-green w-20 text-right shrink-0">
+          ${row.totalCost.toFixed(2)}
+        </span>
+
+        <span className="font-mono text-xs text-text-muted w-20 text-right shrink-0">
+          {formatTokens(row.totalInputTokens)} in
+        </span>
+
+        <span className="font-mono text-sm text-text-secondary w-20 text-right shrink-0">
+          {formatDuration(row.avgDuration)}
+        </span>
+
+        <div className="w-24 shrink-0">
+          <div className="relative h-2 bg-surface-overlay rounded-sm overflow-hidden">
+            <div
+              className="cost-bar absolute inset-y-0 left-0 bg-accent rounded-sm"
+              style={{ width: `${(row.totalCost / maxCost) * 100}%` }}
+            />
+          </div>
+        </div>
+      </button>
+
+      {/* Expanded: show recent events from this call site */}
+      {expanded && (
+        <div className="bg-surface/50 border-t border-border/20">
+          {loadingEvents && (
+            <div className="flex items-center gap-2 px-6 py-3">
+              <div className="w-3 h-3 border border-accent border-t-transparent rounded-full animate-spin" />
+              <span className="text-xs text-text-muted">Loading events...</span>
+            </div>
+          )}
+          {events && events.length > 0 && (
+            <div>
+              <div className="flex items-center gap-3 px-6 py-1.5 text-[10px] uppercase tracking-wider font-medium text-text-muted border-b border-border/20">
+                <div className="w-10">Time</div>
+                <div className="w-5" />
+                <div className="w-40">Model</div>
+                <div className="flex-1">Function</div>
+                <div className="w-16 text-right">Tokens</div>
+                <div className="w-16 text-right">Latency</div>
+                <div className="w-14 text-right">Cost</div>
+              </div>
+              {events.map((event) => {
+                const frames = event.call_site_frames
+                  ? (typeof event.call_site_frames === "string" ? JSON.parse(event.call_site_frames) : event.call_site_frames)
+                  : [];
+                const fn = frames[0]?.functionName ?? null;
+
+                return (
+                  <button
+                    key={event.id}
+                    onClick={(e) => { e.stopPropagation(); onSelectEvent(event); }}
+                    className="w-full flex items-center gap-3 px-6 py-2 row-hover cursor-pointer text-left"
+                  >
+                    <span className="font-mono text-xs text-text-muted w-10 shrink-0">
+                      {timeAgo(event.timestamp)}
+                    </span>
+
+                    <ProviderLogo provider={event.provider} size={12} />
+
+                    <span className="font-mono text-xs text-text-secondary w-40 truncate shrink-0">
+                      {truncateModel(event.model)}
+                    </span>
+
+                    <span className="font-mono text-xs text-text-primary truncate flex-1">
+                      {fn ? `${fn}()` : "—"}
+                    </span>
+
+                    <span className="font-mono text-xs text-text-muted w-16 text-right shrink-0">
+                      {event.total_tokens?.toLocaleString() ?? "—"}
+                    </span>
+
+                    <span className="font-mono text-xs text-text-muted w-16 text-right shrink-0">
+                      {formatDuration(event.duration_ms)}
+                    </span>
+
+                    <span className="font-mono text-xs font-medium text-green w-14 text-right shrink-0">
+                      ${(event.cost_usd ?? 0).toFixed(2)}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          {events && events.length === 0 && (
+            <div className="px-6 py-3 text-xs text-text-muted">No events found</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function CallSitesTable({ callSites, loading, search = "", projectId }: Props) {
   const [sortKey, setSortKey] = useState<SortKey>("total_cost_usd");
   const [selectedEvent, setSelectedEvent] = useState<EventRow | null>(null);
@@ -24,25 +193,14 @@ export default function CallSitesTable({ callSites, loading, search = "", projec
       <div className="bg-surface-raised border border-border rounded-sm">
         <div className="p-4">
           {[...Array(6)].map((_, i) => (
-            <div key={i} className="h-10 bg-surface-overlay rounded-sm animate-pulse mb-2" />
+            <div key={i} className="h-12 bg-surface-overlay rounded-sm animate-pulse mb-2" />
           ))}
         </div>
       </div>
     );
   }
 
-  const aggregated = new Map<string, {
-    key: string;
-    fileName: string | null;
-    functionName: string | null;
-    lineNumber: number | null;
-    providers: Set<string>;
-    totalCalls: number;
-    totalCost: number;
-    totalInputTokens: number;
-    totalOutputTokens: number;
-    avgDuration: number;
-  }>();
+  const aggregated = new Map<string, AggRow>();
 
   for (const cs of callSites) {
     const base = `${cs.file_name}:${cs.function_name}:${cs.line_number}`;
@@ -89,13 +247,6 @@ export default function CallSitesTable({ callSites, loading, search = "", projec
 
   const maxCost = Math.max(...rows.map((r) => r.totalCost), 0.001);
 
-  async function handleRowClick(_row: typeof rows[0]) {
-    try {
-      const data = await getEvents(projectId, { limit: 1 });
-      if (data.events.length > 0) setSelectedEvent(data.events[0]);
-    } catch { /* silent */ }
-  }
-
   function SortHeader({ label, field }: { label: string; field: SortKey }) {
     const active = sortKey === field;
     return (
@@ -114,79 +265,32 @@ export default function CallSitesTable({ callSites, loading, search = "", projec
   return (
     <>
       <div className="bg-surface-raised border border-border rounded-sm">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left">
-            <thead>
-              <tr className="border-b border-border">
-                <th className="px-4 py-2.5 text-xs uppercase tracking-wider font-medium text-text-muted w-[40%]">
-                  Call Site
-                </th>
-                <th className="px-4 py-2.5"><SortHeader label="Calls" field="total_calls" /></th>
-                <th className="px-4 py-2.5"><SortHeader label="Cost" field="total_cost_usd" /></th>
-                <th className="px-4 py-2.5"><SortHeader label="Tokens" field="total_input_tokens" /></th>
-                <th className="px-4 py-2.5"><SortHeader label="Latency" field="avg_duration_ms" /></th>
-                <th className="px-4 py-2.5 w-[100px]">
-                  <span className="text-xs uppercase tracking-wider font-medium text-text-muted">Cost %</span>
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.length === 0 && (
-                <tr>
-                  <td colSpan={6} className="px-4 py-8 text-center text-sm text-text-muted">
-                    {q ? "No matching call sites" : "No call sites yet"}
-                  </td>
-                </tr>
-              )}
-              {rows.map((row) => (
-                <tr
-                  key={row.key}
-                  className="border-b border-border/30 row-hover cursor-pointer"
-                  onClick={() => handleRowClick(row)}
-                >
-                  <td className="px-4 py-2.5">
-                    <div className="flex flex-col gap-0.5">
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono text-sm font-medium text-text-primary">
-                          {row.functionName ?? "anonymous"}()
-                        </span>
-                        {[...row.providers].map((p) => (
-                          <ProviderLogo key={p} provider={p} size={13} />
-                        ))}
-                      </div>
-                      <span className="font-mono text-xs text-text-muted">
-                        {truncateFile(row.fileName)}
-                        {row.lineNumber != null && `:${row.lineNumber}`}
-                      </span>
-                    </div>
-                  </td>
-                  <td className="px-4 py-2.5 font-mono text-sm text-text-secondary">
-                    {row.totalCalls.toLocaleString()}
-                  </td>
-                  <td className="px-4 py-2.5 font-mono text-sm font-semibold text-green">
-                    ${row.totalCost.toFixed(2)}
-                  </td>
-                  <td className="px-4 py-2.5">
-                    <div className="flex flex-col font-mono text-xs">
-                      <span className="text-text-secondary">{formatTokens(row.totalInputTokens)} in</span>
-                      <span className="text-text-muted">{formatTokens(row.totalOutputTokens)} out</span>
-                    </div>
-                  </td>
-                  <td className="px-4 py-2.5 font-mono text-sm text-text-secondary">
-                    {formatDuration(row.avgDuration)}
-                  </td>
-                  <td className="px-4 py-2.5">
-                    <div className="relative h-2 bg-surface-overlay rounded-sm overflow-hidden">
-                      <div
-                        className="cost-bar absolute inset-y-0 left-0 bg-accent rounded-sm"
-                        style={{ width: `${(row.totalCost / maxCost) * 100}%` }}
-                      />
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        {/* Column headers */}
+        <div className="flex items-center gap-3 px-4 py-2.5 border-b border-border">
+          <div className="w-3.5" />
+          <div className="flex-1 text-xs uppercase tracking-wider font-medium text-text-muted">Call Site</div>
+          <div className="w-16 text-right"><SortHeader label="Calls" field="total_calls" /></div>
+          <div className="w-20 text-right"><SortHeader label="Cost" field="total_cost_usd" /></div>
+          <div className="w-20 text-right"><SortHeader label="Tokens" field="total_input_tokens" /></div>
+          <div className="w-20 text-right"><SortHeader label="Latency" field="avg_duration_ms" /></div>
+          <div className="w-24 text-xs uppercase tracking-wider font-medium text-text-muted">Share</div>
+        </div>
+
+        <div className="max-h-[calc(100vh-200px)] overflow-y-auto">
+          {rows.length === 0 && (
+            <div className="px-4 py-8 text-center text-sm text-text-muted">
+              {q ? "No matching call sites" : "No call sites yet"}
+            </div>
+          )}
+          {rows.map((row) => (
+            <CallSiteRow
+              key={row.key}
+              row={row}
+              maxCost={maxCost}
+              projectId={projectId}
+              onSelectEvent={setSelectedEvent}
+            />
+          ))}
         </div>
       </div>
 

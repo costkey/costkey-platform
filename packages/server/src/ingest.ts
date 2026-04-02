@@ -49,13 +49,19 @@ const INTERNAL_FILE_PATTERNS = [
   "site-packages/costkey/",
 ];
 
-/** Function name patterns that indicate library internals (Python SDK methods) */
+/** Function name patterns that indicate library internals (Python/Node SDK methods) */
 const INTERNAL_FN_PATTERNS = [
+  // Anthropic Python SDK
   "self._client.send",
   "self._post",
   "self._request",
   "self.__request",
   "_base_client",
+  // OpenAI Python SDK
+  "self._client._request",
+  "_legacy_response",
+  "APIRequestor",
+  // Generic HTTP client patterns
   "._post(",
   "._get(",
   "._put(",
@@ -64,8 +70,17 @@ const INTERNAL_FN_PATTERNS = [
   "._request(",
   "_send_single_request",
   "_send_handling",
-  "_send",
+  "_send(",
+  // Python decorators / wrappers
   "wrapper return func(",
+  "decorator",
+  // Google SDK
+  "generate_content",
+  "_generate_content",
+  // General patterns
+  "<module>",
+  "run_until_complete",
+  "_run_once",
 ];
 
 function filterFrames(frames: StackFrame[]): StackFrame[] {

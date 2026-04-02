@@ -130,7 +130,7 @@ export function computeCost(
   return Math.round(cost * 1_000_000) / 1_000_000;
 }
 
-function findPricing(model: string): ModelPricing | null {
+export function findPricing(model: string): ModelPricing | null {
   const lower = model.toLowerCase();
   for (const [pattern, pricing] of PRICING) {
     if (lower.includes(pattern.toLowerCase())) return pricing;

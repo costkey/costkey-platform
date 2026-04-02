@@ -84,7 +84,7 @@ const INTERNAL_FN_PATTERNS = [
   "_run_once",
 ];
 
-function filterFrames(frames: StackFrame[]): StackFrame[] {
+export function filterFrames(frames: StackFrame[]): StackFrame[] {
   const filtered = frames.filter((frame) => {
     const file = frame.fileName ?? "";
     const fn = frame.functionName ?? "";
@@ -111,7 +111,7 @@ function filterFrames(frames: StackFrame[]): StackFrame[] {
  *
  * This works universally without fragile function-name heuristics.
  */
-function findBusinessLogicFrame(frames: StackFrame[]): StackFrame {
+export function findBusinessLogicFrame(frames: StackFrame[]): StackFrame {
   if (frames.length <= 1) return frames[0];
 
   const innermostFile = frames[0].fileName ?? "";
@@ -130,7 +130,7 @@ function findBusinessLogicFrame(frames: StackFrame[]): StackFrame {
 /** Max stored body size (100KB). Truncates large prompts/completions to avoid DB bloat. */
 const MAX_BODY_BYTES = 100_000;
 
-function truncateBody(body: unknown): string | null {
+export function truncateBody(body: unknown): string | null {
   if (!body) return null;
   const json = JSON.stringify(body);
   if (json.length <= MAX_BODY_BYTES) return json;

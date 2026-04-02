@@ -79,7 +79,7 @@ CostKey.init({ dsn: 'your-dsn-here' })`;
 
         <p className="text-xs text-text-muted mt-5">
           That's it. Your AI calls will appear here automatically.{" "}
-          <a href="https://docs.costkey.dev" target="_blank" rel="noopener noreferrer" className="text-accent hover:text-accent-hover">
+          <a href="https://costkey.dev/docs" target="_blank" rel="noopener noreferrer" className="text-accent hover:text-accent-hover">
             Read the docs
           </a>
         </p>

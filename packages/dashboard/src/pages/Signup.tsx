@@ -126,7 +126,7 @@ export default function Signup() {
 
       {/* Footer */}
       <div className="mt-12 flex items-center gap-3">
-        <a href="https://docs.costkey.dev" target="_blank" rel="noopener noreferrer" className="text-[10px] font-mono text-text-muted/50 hover:text-text-muted transition-colors">Docs</a>
+        <a href="https://costkey.dev/docs" target="_blank" rel="noopener noreferrer" className="text-[10px] font-mono text-text-muted/50 hover:text-text-muted transition-colors">Docs</a>
         <span className="text-text-muted/20">|</span>
         <a href="https://github.com/costkey-ai/costkey" target="_blank" rel="noopener noreferrer" className="text-[10px] font-mono text-text-muted/50 hover:text-text-muted transition-colors">GitHub</a>
       </div>

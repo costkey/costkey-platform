@@ -137,7 +137,7 @@ costkey.init(
               {/* Docs link */}
               <div className="mt-5 pt-4 border-t border-border/50">
                 <a
-                  href="https://docs.costkey.dev"
+                  href="https://costkey.dev/docs"
                   target="_blank"
                   rel="noopener noreferrer"
                   className="flex items-center gap-1.5 text-xs text-text-muted hover:text-accent transition-colors"

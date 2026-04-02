@@ -71,7 +71,7 @@ function AppShell() {
           {/* Right side */}
           <div className="ml-auto flex items-center gap-3">
             <a
-              href="https://docs.costkey.dev"
+              href="https://costkey.dev/docs"
               target="_blank"
               rel="noopener noreferrer"
               className="flex items-center gap-1.5 text-[11px] text-text-muted font-mono hover:text-text-secondary transition-colors"
@@ -111,7 +111,7 @@ function AppShell() {
         <div className="max-w-[1440px] mx-auto px-4 py-1.5 flex items-center justify-between">
           <span className="font-mono text-[9px] text-text-muted/50">costkey v0.2.0</span>
           <div className="flex items-center gap-3">
-            <a href="https://docs.costkey.dev" target="_blank" rel="noopener noreferrer" className="font-mono text-[9px] text-text-muted/50 hover:text-text-muted transition-colors">Docs</a>
+            <a href="https://costkey.dev/docs" target="_blank" rel="noopener noreferrer" className="font-mono text-[9px] text-text-muted/50 hover:text-text-muted transition-colors">Docs</a>
             <span className="text-text-muted/20">|</span>
             <a href="https://github.com/costkey-ai/costkey" target="_blank" rel="noopener noreferrer" className="font-mono text-[9px] text-text-muted/50 hover:text-text-muted transition-colors">GitHub</a>
             <span className="text-text-muted/20">|</span>

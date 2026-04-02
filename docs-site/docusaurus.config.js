@@ -6,8 +6,8 @@ const config = {
   tagline: 'Sentry for AI costs',
   favicon: 'img/favicon.svg',
 
-  url: 'https://docs.costkey.dev',
-  baseUrl: '/',
+  url: 'https://costkey.dev',
+  baseUrl: '/docs/',
 
   organizationName: 'costkey',
   projectName: 'costkey',

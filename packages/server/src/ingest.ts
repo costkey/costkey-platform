@@ -1,8 +1,61 @@
 import type { Router } from "express";
 import { Router as createRouter } from "express";
 import type pg from "pg";
-import type { CostKeyEvent, TransportPayload } from "@costkey/shared";
+import type { CostKeyEvent, TransportPayload, StackFrame } from "@costkey/shared";
 import { computeCost } from "./pricing.js";
+
+/**
+ * Server-side stack frame filtering.
+ * Strips AI SDK internals, HTTP clients, language runtime frames
+ * so only user application code remains — works for ANY SDK language.
+ */
+const INTERNAL_FRAME_PATTERNS = [
+  // Python AI SDK internals
+  "site-packages/anthropic/",
+  "site-packages/openai/",
+  "site-packages/google/generativeai/",
+  "site-packages/cohere/",
+  "site-packages/mistralai/",
+  "site-packages/groq/",
+  // Python HTTP clients
+  "site-packages/httpx/",
+  "site-packages/httpcore/",
+  "site-packages/requests/",
+  "site-packages/urllib3/",
+  "site-packages/aiohttp/",
+  // Python runtime
+  "/lib/python",
+  "threading.py",
+  "asyncio/",
+  "concurrent/futures/",
+  "_bootstrap",
+  // Node.js AI SDK internals
+  "node_modules/openai/",
+  "node_modules/@anthropic-ai/",
+  "node_modules/@google/generative-ai/",
+  "node_modules/cohere-ai/",
+  // Node.js HTTP / runtime
+  "node_modules/undici/",
+  "node_modules/node-fetch/",
+  "node:internal/",
+  "node:async_hooks",
+  // CostKey SDK internals
+  "costkey/packages/sdk/",
+  "node_modules/costkey/",
+  "site-packages/costkey/",
+];
+
+function filterFrames(frames: StackFrame[]): StackFrame[] {
+  const filtered = frames.filter((frame) => {
+    const file = frame.fileName ?? "";
+    const fn = frame.functionName ?? "";
+    // Keep if no file/function info at all
+    if (!file && !fn) return false;
+    // Strip frames matching internal patterns
+    return !INTERNAL_FRAME_PATTERNS.some((p) => file.includes(p) || fn.includes(p));
+  });
+  return filtered.length > 0 ? filtered : frames; // fallback to original if everything got filtered
+}
 
 export function createIngestRouter(pool: pg.Pool): Router {
   const router = createRouter();
@@ -55,6 +108,11 @@ export function createIngestRouter(pool: pg.Pool): Router {
             event.usage?.cacheCreationTokens ?? null,
           ) ?? event.costUsd ?? null; // Fall back to SDK-calculated cost if server can't resolve
 
+          // Filter stack frames server-side (strips SDK/library internals for all languages)
+          const cleanFrames = event.callSite?.frames
+            ? filterFrames(event.callSite.frames)
+            : null;
+
           await client.query(
             `INSERT INTO events (
               id, timestamp, project_id, provider, model, url, method, status_code,
@@ -76,7 +134,7 @@ export function createIngestRouter(pool: pg.Pool): Router {
               event.streamTiming?.ttft, event.streamTiming?.tps,
               event.streamTiming?.streamDuration, event.streamTiming?.chunkCount,
               event.callSite?.raw ?? null,
-              event.callSite ? JSON.stringify(event.callSite.frames) : null,
+              cleanFrames ? JSON.stringify(cleanFrames) : null,
               event.context?.traceId ?? null,
               event.context?.traceName ?? null,
               event.context ? JSON.stringify(event.context) : null,
@@ -85,9 +143,9 @@ export function createIngestRouter(pool: pg.Pool): Router {
             ],
           );
 
-          // Upsert call site stats
-          if (event.callSite && event.callSite.frames.length > 0) {
-            const f = event.callSite.frames[0];
+          // Upsert call site stats (use filtered frames)
+          if (cleanFrames && cleanFrames.length > 0) {
+            const f = cleanFrames[0];
             const key = `${f.fileName ?? "unknown"}:${f.functionName ?? "anonymous"}:${f.lineNumber ?? 0}`;
 
             await client.query(

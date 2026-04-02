@@ -196,4 +196,108 @@ export async function backfillCosts(pool: import("pg").Pool): Promise<void> {
   } catch (err) {
     console.error("[costkey] Cost backfill error:", err);
   }
+
+  // Also clean up stack frames for existing events
+  await backfillFrames(pool);
+}
+
+/** Patterns for internal/library frames that should be stripped */
+const INTERNAL_FRAME_PATTERNS = [
+  "site-packages/anthropic/", "site-packages/openai/",
+  "site-packages/google/generativeai/", "site-packages/cohere/",
+  "site-packages/mistralai/", "site-packages/groq/",
+  "site-packages/httpx/", "site-packages/httpcore/",
+  "site-packages/requests/", "site-packages/urllib3/",
+  "/lib/python", "threading.py", "asyncio/", "_bootstrap",
+  "node_modules/openai/", "node_modules/@anthropic-ai/",
+  "node_modules/@google/generative-ai/", "node_modules/cohere-ai/",
+  "node_modules/undici/", "node_modules/node-fetch/",
+  "node:internal/", "node:async_hooks",
+  "costkey/packages/sdk/", "node_modules/costkey/", "site-packages/costkey/",
+];
+
+async function backfillFrames(pool: import("pg").Pool): Promise<void> {
+  try {
+    const result = await pool.query(
+      "SELECT id, call_site_frames FROM events WHERE call_site_frames IS NOT NULL",
+    );
+
+    let updated = 0;
+    for (const row of result.rows) {
+      const frames: Array<{ fileName?: string | null; functionName?: string | null }> =
+        typeof row.call_site_frames === "string"
+          ? JSON.parse(row.call_site_frames)
+          : row.call_site_frames;
+
+      const filtered = frames.filter((f) => {
+        const file = f.fileName ?? "";
+        const fn = f.functionName ?? "";
+        if (!file && !fn) return false;
+        return !INTERNAL_FRAME_PATTERNS.some((p) => file.includes(p) || fn.includes(p));
+      });
+
+      // Only update if we actually removed frames
+      if (filtered.length > 0 && filtered.length < frames.length) {
+        await pool.query(
+          "UPDATE events SET call_site_frames = $1 WHERE id = $2",
+          [JSON.stringify(filtered), row.id],
+        );
+        updated++;
+      }
+    }
+
+    if (updated > 0) {
+      console.log(`[costkey] Cleaned stack frames for ${updated} events`);
+      // Rebuild call_site_stats from scratch with clean frames
+      await rebuildCallSiteStats(pool);
+    } else {
+      console.log("[costkey] No stack frames needed cleaning");
+    }
+  } catch (err) {
+    console.error("[costkey] Frame backfill error:", err);
+  }
+}
+
+async function rebuildCallSiteStats(pool: import("pg").Pool): Promise<void> {
+  // Truncate and rebuild from events
+  await pool.query("DELETE FROM call_site_stats");
+
+  await pool.query(`
+    INSERT INTO call_site_stats (
+      project_id, call_site_key, file_name, function_name, line_number,
+      provider, model,
+      total_calls, total_cost_usd, total_input_tokens, total_output_tokens,
+      avg_duration_ms, avg_ttft, avg_tps, first_seen, last_seen
+    )
+    SELECT
+      project_id,
+      CONCAT(
+        COALESCE(call_site_frames->0->>'fileName', 'unknown'), ':',
+        COALESCE(call_site_frames->0->>'functionName', 'anonymous'), ':',
+        COALESCE((call_site_frames->0->>'lineNumber')::text, '0')
+      ),
+      call_site_frames->0->>'fileName',
+      call_site_frames->0->>'functionName',
+      (call_site_frames->0->>'lineNumber')::int,
+      provider, model,
+      COUNT(*)::int,
+      COALESCE(SUM(cost_usd), 0),
+      COALESCE(SUM(input_tokens), 0),
+      COALESCE(SUM(output_tokens), 0),
+      COALESCE(AVG(duration_ms), 0),
+      AVG(CASE WHEN streaming THEN ttft END),
+      AVG(CASE WHEN streaming THEN tps END),
+      MIN(timestamp),
+      MAX(timestamp)
+    FROM events
+    WHERE call_site_frames IS NOT NULL
+      AND jsonb_array_length(call_site_frames) > 0
+    GROUP BY project_id,
+      call_site_frames->0->>'fileName',
+      call_site_frames->0->>'functionName',
+      (call_site_frames->0->>'lineNumber')::int,
+      provider, model
+  `);
+
+  console.log("[costkey] Rebuilt call_site_stats from clean frames");
 }

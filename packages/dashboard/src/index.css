@@ -115,6 +115,16 @@ body {
   opacity: 0;
 }
 
+/* Slide-in panel from right */
+@keyframes slide-in-right {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+
+.animate-slide-in {
+  animation: slide-in-right 0.2s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
 /* Recharts overrides */
 .recharts-cartesian-grid-horizontal line,
 .recharts-cartesian-grid-vertical line {

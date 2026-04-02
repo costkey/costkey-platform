@@ -78,6 +78,25 @@ async function initApp() {
     void detectAnomalies(pool);
   }, 5 * 60 * 1000);
 
+  // Data retention: delete old events periodically
+  const retentionDays = parseInt(process.env["COSTKEY_RETENTION_DAYS"] ?? "90", 10);
+  const cleanupOldEvents = async () => {
+    try {
+      const result = await pool.query(
+        `DELETE FROM events WHERE timestamp < NOW() - INTERVAL '1 day' * $1`,
+        [retentionDays],
+      );
+      const deleted = result.rowCount ?? 0;
+      if (deleted > 0) {
+        console.log(`[costkey] Retention cleanup: deleted ${deleted} events older than ${retentionDays} days`);
+      }
+    } catch (err) {
+      console.error("[costkey] Retention cleanup error:", err);
+    }
+  };
+  void cleanupOldEvents();
+  setInterval(() => void cleanupOldEvents(), 24 * 60 * 60 * 1000);
+
   // SPA fallback — LAST route, after all API routes
   if (hasDashboard) {
     app.get("/{*path}", (_req, res) => {

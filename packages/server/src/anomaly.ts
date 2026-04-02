@@ -73,49 +73,23 @@ export async function detectAnomalies(pool: pg.Pool): Promise<Anomaly[]> {
     for (const project of projects.rows) {
       const projectId = project.id;
 
-      // Get 7-day baselines per call site
-      const baselines = await pool.query(`
-        SELECT
-          call_site_key,
-          function_name,
-          file_name,
-          model,
-          AVG(cost_per_call) as baseline_cost,
-          AVG(tokens_per_call) as baseline_tokens,
-          AVG(avg_duration) as baseline_latency,
-          SUM(call_count) as total_calls
-        FROM (
-          SELECT
-            COALESCE(
-              (SELECT cs.call_site_key FROM call_site_stats cs
-               WHERE cs.project_id = e.project_id
-               LIMIT 1), 'unknown'
-            ) as call_site_key,
-            call_site_raw,
-            model,
-            COUNT(*) as call_count,
-            AVG(cost_usd) as cost_per_call,
-            AVG(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)) as tokens_per_call,
-            AVG(duration_ms) as avg_duration
-          FROM events e
-          WHERE project_id = $1
-            AND timestamp >= NOW() - INTERVAL '7 days'
-            AND timestamp < NOW() - INTERVAL '1 hour'
-          GROUP BY call_site_raw, model, e.project_id
-        ) baseline
-        GROUP BY call_site_key, function_name, file_name, model
-        HAVING SUM(call_count) >= 10
+      // Quick check: does the project have enough recent events for anomaly detection?
+      const baselineCheck = await pool.query(`
+        SELECT COUNT(*) as cnt FROM events
+        WHERE project_id = $1
+          AND timestamp >= NOW() - INTERVAL '7 days'
+          AND timestamp < NOW() - INTERVAL '1 hour'
       `, [projectId]);
 
       // Skip projects with no baseline data
-      if (baselines.rows.length === 0) continue;
+      if (parseInt(baselineCheck.rows[0].cnt) < 10) continue;
 
       // For a simpler and more reliable approach, compare per-function baselines
       // Get 7-day baseline per function
       const fnBaselines = await pool.query(`
         SELECT
-          function_name,
-          file_name,
+          parsed.fn as function_name,
+          parsed.f as file_name,
           AVG(cost_usd) as baseline_cost,
           AVG(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)) as baseline_tokens,
           AVG(duration_ms) as baseline_latency,

@@ -157,9 +157,37 @@ export async function initDatabase(): Promise<void> {
       value DOUBLE PRECISION,
       message TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS migrations (
+      name TEXT PRIMARY KEY,
+      ran_at TIMESTAMPTZ DEFAULT NOW()
+    );
   `);
 
   console.log("[costkey] Database schema initialized");
+}
+
+/**
+ * Run a one-time operation (backfill, ALTER TABLE, etc.) exactly once.
+ * Uses the migrations table to track what has already run.
+ */
+export async function runOnce(
+  p: pg.Pool,
+  name: string,
+  fn: () => Promise<void>,
+): Promise<void> {
+  const check = await p.query(
+    "SELECT 1 FROM migrations WHERE name = $1",
+    [name],
+  );
+  if (check.rows.length > 0) {
+    console.log(`[costkey] Migration "${name}" already ran, skipping`);
+    return;
+  }
+  console.log(`[costkey] Running migration "${name}"...`);
+  await fn();
+  await p.query("INSERT INTO migrations (name) VALUES ($1)", [name]);
+  console.log(`[costkey] Migration "${name}" complete`);
 }
 
 export async function shutdownDatabase(): Promise<void> {

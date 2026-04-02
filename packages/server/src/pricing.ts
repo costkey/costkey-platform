@@ -140,72 +140,76 @@ export function findPricing(model: string): ModelPricing | null {
 
 /**
  * Backfill costs for events that have tokens but no cost.
- * Runs once on server startup to fix historical data.
+ * Runs exactly once using the migrations table.
  */
 export async function backfillCosts(pool: import("pg").Pool): Promise<void> {
-  try {
-    const result = await pool.query(
-      `SELECT id, model, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens
-       FROM events
-       WHERE (cost_usd IS NULL OR cost_usd = 0)
-         AND model IS NOT NULL
-         AND (input_tokens > 0 OR output_tokens > 0)`,
-    );
+  const { runOnce } = await import("./db.js");
 
-    if (result.rows.length === 0) {
-      console.log("[costkey] No events need cost backfill");
-      return;
-    }
-
-    console.log(`[costkey] Backfilling costs for ${result.rows.length} events...`);
-
-    let updated = 0;
-    for (const row of result.rows) {
-      const cost = computeCost(
-        row.model,
-        row.input_tokens,
-        row.output_tokens,
-        row.cache_read_tokens,
-        row.cache_creation_tokens,
+  await runOnce(pool, "backfill_costs_v1", async () => {
+    try {
+      const result = await pool.query(
+        `SELECT id, model, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens
+         FROM events
+         WHERE (cost_usd IS NULL OR cost_usd = 0)
+           AND model IS NOT NULL
+           AND (input_tokens > 0 OR output_tokens > 0)`,
       );
-      if (cost != null && cost > 0) {
-        await pool.query(
-          "UPDATE events SET cost_usd = $1 WHERE id = $2",
-          [cost, row.id],
-        );
-        updated++;
+
+      if (result.rows.length === 0) {
+        console.log("[costkey] No events need cost backfill");
+        return;
       }
+
+      console.log(`[costkey] Backfilling costs for ${result.rows.length} events...`);
+
+      let updated = 0;
+      for (const row of result.rows) {
+        const cost = computeCost(
+          row.model,
+          row.input_tokens,
+          row.output_tokens,
+          row.cache_read_tokens,
+          row.cache_creation_tokens,
+        );
+        if (cost != null && cost > 0) {
+          await pool.query(
+            "UPDATE events SET cost_usd = $1 WHERE id = $2",
+            [cost, row.id],
+          );
+          updated++;
+        }
+      }
+
+      // Also update call_site_stats
+      if (updated > 0) {
+        await pool.query(`
+          UPDATE call_site_stats SET total_cost_usd = sub.total_cost FROM (
+            SELECT
+              project_id,
+              CONCAT(
+                COALESCE((call_site_frames->0->>'fileName'), 'unknown'), ':',
+                COALESCE((call_site_frames->0->>'functionName'), 'anonymous'), ':',
+                COALESCE((call_site_frames->0->>'lineNumber')::text, '0')
+              ) as cs_key,
+              model,
+              COALESCE(SUM(cost_usd), 0) as total_cost
+            FROM events
+            WHERE call_site_frames IS NOT NULL
+            GROUP BY project_id, cs_key, model
+          ) sub
+          WHERE call_site_stats.project_id = sub.project_id
+            AND call_site_stats.call_site_key = sub.cs_key
+            AND call_site_stats.model = sub.model
+        `);
+      }
+
+      console.log(`[costkey] Backfilled costs for ${updated} events`);
+    } catch (err) {
+      console.error("[costkey] Cost backfill error:", err);
     }
+  });
 
-    // Also update call_site_stats
-    if (updated > 0) {
-      await pool.query(`
-        UPDATE call_site_stats SET total_cost_usd = sub.total_cost FROM (
-          SELECT
-            project_id,
-            CONCAT(
-              COALESCE((call_site_frames->0->>'fileName'), 'unknown'), ':',
-              COALESCE((call_site_frames->0->>'functionName'), 'anonymous'), ':',
-              COALESCE((call_site_frames->0->>'lineNumber')::text, '0')
-            ) as cs_key,
-            model,
-            COALESCE(SUM(cost_usd), 0) as total_cost
-          FROM events
-          WHERE call_site_frames IS NOT NULL
-          GROUP BY project_id, cs_key, model
-        ) sub
-        WHERE call_site_stats.project_id = sub.project_id
-          AND call_site_stats.call_site_key = sub.cs_key
-          AND call_site_stats.model = sub.model
-      `);
-    }
-
-    console.log(`[costkey] Backfilled costs for ${updated} events`);
-  } catch (err) {
-    console.error("[costkey] Cost backfill error:", err);
-  }
-
-  // Also clean up stack frames for existing events
+  // Also clean up stack frames for existing events (also runs once)
   await backfillFrames(pool);
 }
 
@@ -237,46 +241,53 @@ const INTERNAL_FN_PATTERNS = [
 
 
 async function backfillFrames(pool: import("pg").Pool): Promise<void> {
-  try {
-    const result = await pool.query(
-      "SELECT id, call_site_frames FROM events WHERE call_site_frames IS NOT NULL",
-    );
+  const { runOnce } = await import("./db.js");
 
-    let updated = 0;
-    for (const row of result.rows) {
-      const frames: Array<{ fileName?: string | null; functionName?: string | null }> =
-        typeof row.call_site_frames === "string"
-          ? JSON.parse(row.call_site_frames)
-          : row.call_site_frames;
+  await runOnce(pool, "backfill_frames_v2", async () => {
+    try {
+      const result = await pool.query(
+        "SELECT id, call_site_frames FROM events WHERE call_site_frames IS NOT NULL",
+      );
 
-      const filtered = frames.filter((f: { fileName?: string | null; functionName?: string | null }) => {
-        const file = f.fileName ?? "";
-        const fn = f.functionName ?? "";
-        if (!file && !fn) return false;
-        if (INTERNAL_FILE_PATTERNS.some((p: string) => file.includes(p))) return false;
-        if (INTERNAL_FN_PATTERNS.some((p: string) => fn.includes(p))) return false;
-        return true;
-      });
+      let updated = 0;
+      for (const row of result.rows) {
+        const frames: Array<{ fileName?: string | null; functionName?: string | null }> =
+          typeof row.call_site_frames === "string"
+            ? JSON.parse(row.call_site_frames)
+            : row.call_site_frames;
 
-      if (filtered.length === 0) continue;
+        const filtered = frames.filter((f: { fileName?: string | null; functionName?: string | null }) => {
+          const file = f.fileName ?? "";
+          const fn = f.functionName ?? "";
+          if (!file && !fn) return false;
+          if (INTERNAL_FILE_PATTERNS.some((p: string) => file.includes(p))) return false;
+          if (INTERNAL_FN_PATTERNS.some((p: string) => fn.includes(p))) return false;
+          return true;
+        });
 
-      const origJson = JSON.stringify(frames);
-      const newJson = JSON.stringify(filtered);
-      if (origJson !== newJson) {
-        await pool.query(
-          "UPDATE events SET call_site_frames = $1 WHERE id = $2",
-          [newJson, row.id],
-        );
-        updated++;
+        if (filtered.length === 0) continue;
+
+        const origJson = JSON.stringify(frames);
+        const newJson = JSON.stringify(filtered);
+        if (origJson !== newJson) {
+          await pool.query(
+            "UPDATE events SET call_site_frames = $1 WHERE id = $2",
+            [newJson, row.id],
+          );
+          updated++;
+        }
       }
-    }
 
-    console.log(`[costkey] Cleaned stack frames for ${updated} events`);
-    // Always rebuild call_site_stats to ensure consistency
+      console.log(`[costkey] Cleaned stack frames for ${updated} events`);
+    } catch (err) {
+      console.error("[costkey] Frame backfill error:", err);
+    }
+  });
+
+  // Rebuild call_site_stats (also runs once)
+  await runOnce(pool, "rebuild_callsite_stats_v2", async () => {
     await rebuildCallSiteStats(pool);
-  } catch (err) {
-    console.error("[costkey] Frame backfill error:", err);
-  }
+  });
 }
 
 /**

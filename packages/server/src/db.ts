@@ -115,6 +115,19 @@ export async function initDatabase(): Promise<void> {
     );
     CREATE INDEX IF NOT EXISTS idx_callsite_cost ON call_site_stats(project_id, total_cost_usd DESC);
 
+    ALTER TABLE events ADD COLUMN IF NOT EXISTS release TEXT;
+
+    CREATE TABLE IF NOT EXISTS sourcemaps (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      release TEXT NOT NULL,
+      file_name TEXT NOT NULL,
+      sourcemap_json TEXT NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE (project_id, release, file_name)
+    );
+    CREATE INDEX IF NOT EXISTS idx_sourcemaps_lookup ON sourcemaps(project_id, release);
+
     CREATE TABLE IF NOT EXISTS team_invites (
       id TEXT PRIMARY KEY,
       org_id TEXT NOT NULL REFERENCES orgs(id),

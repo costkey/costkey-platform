@@ -53,6 +53,7 @@ function init(options: CostKeyOptions): void {
     maxBatchSize: options.maxBatchSize ?? 50,
     flushInterval: options.flushInterval ?? 5000,
     debug: options.debug ?? false,
+    release: options.release,
   });
 
   patchFetch({

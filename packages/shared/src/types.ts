@@ -146,12 +146,16 @@ export interface CostKeyOptions {
   debug?: boolean;
   /** Additional default context applied to all events */
   defaultContext?: EventContext;
+  /** Release version — used for sourcemap translation on the server */
+  release?: string;
 }
 
 /** Batched payload sent to the ingest API */
 export interface TransportPayload {
   /** SDK version */
   sdkVersion: string;
+  /** Release version (for sourcemap translation) */
+  release?: string;
   /** Events in this batch */
   events: CostKeyEvent[];
 }

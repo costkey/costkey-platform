@@ -14,6 +14,8 @@ import { rateLimit } from "./middleware.js";
 import { initAnomalyTable, detectAnomalies } from "./anomaly.js";
 import { seedIfEmpty } from "./seed.js";
 import { backfillCosts } from "./pricing.js";
+import { createSourcemapsRouter } from "./sourcemaps.js";
+import { initSourceMaps } from "./sourcemap-resolver.js";
 
 const PORT = parseInt(process.env["PORT"] ?? "4100", 10);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -65,8 +67,10 @@ async function initApp() {
   app.use(createIngestRouter(pool));
   app.use(createTeamsRouter(pool));
   app.use(createAlertsRouter(pool));
+  app.use(createSourcemapsRouter(pool));
   app.use(createApiRouter(pool));
 
+  await initSourceMaps();
   await backfillCosts(pool);
   await initAnomalyTable(pool);
   setInterval(() => {

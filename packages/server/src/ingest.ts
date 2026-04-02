@@ -3,6 +3,7 @@ import { Router as createRouter } from "express";
 import type pg from "pg";
 import type { CostKeyEvent, TransportPayload, StackFrame } from "@costkey/shared";
 import { computeCost } from "./pricing.js";
+import { translateFrames } from "./sourcemap-resolver.js";
 
 /**
  * Server-side stack frame filtering.
@@ -151,6 +152,7 @@ export function createIngestRouter(pool: pg.Pool): Router {
 
       const projectId = projResult.rows[0].id;
       const payload = req.body as TransportPayload;
+      const release = payload.release ?? null;
 
       if (!payload.events || !Array.isArray(payload.events)) {
         res.status(400).json({ error: "Invalid payload: missing events array" });
@@ -178,9 +180,21 @@ export function createIngestRouter(pool: pg.Pool): Router {
           ) ?? event.costUsd ?? null; // Fall back to SDK-calculated cost if server can't resolve
 
           // Filter stack frames server-side (strips SDK/library internals for all languages)
-          const cleanFrames = event.callSite?.frames
+          let cleanFrames = event.callSite?.frames
             ? filterFrames(event.callSite.frames)
             : null;
+
+          // Translate minified frames using sourcemaps (if release + maps uploaded)
+          if (cleanFrames && release) {
+            try {
+              const { translated, wasTranslated } = await translateFrames(
+                pool, projectId, release, cleanFrames,
+              );
+              if (wasTranslated) cleanFrames = translated;
+            } catch {
+              // Sourcemap translation failure is non-fatal
+            }
+          }
 
           await client.query(
             `INSERT INTO events (
@@ -190,8 +204,8 @@ export function createIngestRouter(pool: pg.Pool): Router {
               cost_usd, duration_ms, streaming,
               ttft, tps, stream_duration, chunk_count,
               call_site_raw, call_site_frames,
-              trace_id, trace_name, context, request_body, response_body
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)
+              trace_id, trace_name, context, request_body, response_body, release
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)
             ON CONFLICT (id) DO NOTHING`,
             [
               event.id, event.timestamp, projectId,
@@ -209,6 +223,7 @@ export function createIngestRouter(pool: pg.Pool): Router {
               event.context ? JSON.stringify(event.context) : null,
               event.requestBody ? JSON.stringify(event.requestBody) : null,
               event.responseBody ? JSON.stringify(event.responseBody) : null,
+              release,
             ],
           );
 

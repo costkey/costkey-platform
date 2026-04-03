@@ -144,9 +144,9 @@ export default function SummaryView({ summary, loading }: Props) {
               </span>
             )}
           </div>
-          <div className="flex flex-col gap-0">
+          <div className="flex flex-col gap-0 max-h-[220px] overflow-y-auto">
             {/* Header row */}
-            <div className="flex items-center gap-3 pb-2 text-text-muted text-xs uppercase tracking-wide border-b border-border">
+            <div className="flex items-center gap-3 pb-2 text-text-muted text-xs uppercase tracking-wide border-b border-border sticky top-0 bg-surface-raised z-10">
               <span className="w-24 shrink-0">Release</span>
               <span className="w-20 text-right shrink-0">Cost</span>
               <span className="w-24 text-right shrink-0">Calls</span>

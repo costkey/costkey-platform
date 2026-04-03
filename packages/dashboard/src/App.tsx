@@ -67,6 +67,54 @@ function PipelineStatus({ projectId }: { projectId?: string }) {
   );
 }
 
+function ProjectSwitcher({ projects, currentProjectId, orgName, onSelect }: {
+  projects: Array<{ id: string; name: string }>;
+  currentProjectId: string | null;
+  orgName?: string;
+  onSelect: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const current = projects.find((p) => p.id === currentProjectId) ?? projects[0];
+
+  // Close on outside click
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (!target.closest("[data-project-switcher]")) setOpen(false);
+    };
+    document.addEventListener("click", handler);
+    return () => document.removeEventListener("click", handler);
+  }, [open]);
+
+  return (
+    <div className="relative" data-project-switcher>
+      <button
+        onClick={() => setOpen(!open)}
+        className="flex items-center gap-1.5 px-2.5 py-1 bg-surface-overlay/60 border border-border rounded-sm font-mono text-xs text-text-secondary hover:text-text-primary hover:border-border-bright cursor-pointer transition-all"
+      >
+        {current?.name ?? orgName}
+        <ChevronDown size={11} className={`text-text-muted transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open && (
+        <div className="absolute top-full left-0 mt-1 bg-surface-raised border border-border-bright rounded-sm py-1 min-w-[180px] z-50 shadow-lg shadow-black/30">
+          {projects.map((p) => (
+            <button
+              key={p.id}
+              onClick={() => { onSelect(p.id); setOpen(false); }}
+              className={`block w-full text-left px-3 py-1.5 font-mono text-xs cursor-pointer transition-colors ${
+                p.id === currentProjectId ? "text-accent bg-accent-muted" : "text-text-secondary hover:bg-surface-overlay"
+              }`}
+            >
+              {p.name}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AppShell() {
   const { user, org, projects, currentProjectId, setCurrentProjectId } = useAuth();
   const navigate = useNavigate();
@@ -88,25 +136,12 @@ function AppShell() {
 
           {/* Project switcher */}
           {projects.length > 1 ? (
-            <div className="relative group">
-              <button className="flex items-center gap-1.5 px-2.5 py-1 bg-surface-overlay/60 border border-border rounded-sm font-mono text-xs text-text-secondary hover:text-text-primary hover:border-border-bright cursor-pointer transition-all">
-                {currentProject?.name ?? org?.name}
-                <ChevronDown size={11} className="text-text-muted" />
-              </button>
-              <div className="absolute top-full left-0 mt-1 bg-surface-raised border border-border-bright rounded-sm py-1 min-w-[180px] hidden group-hover:block z-50 shadow-lg shadow-black/30">
-                {projects.map((p) => (
-                  <button
-                    key={p.id}
-                    onClick={() => setCurrentProjectId(p.id)}
-                    className={`block w-full text-left px-3 py-1.5 font-mono text-xs cursor-pointer transition-colors ${
-                      p.id === currentProjectId ? "text-accent bg-accent-muted" : "text-text-secondary hover:bg-surface-overlay"
-                    }`}
-                  >
-                    {p.name}
-                  </button>
-                ))}
-              </div>
-            </div>
+            <ProjectSwitcher
+              projects={projects}
+              currentProjectId={currentProjectId}
+              orgName={org?.name}
+              onSelect={setCurrentProjectId}
+            />
           ) : (
             <span className="px-2.5 py-1 bg-surface-overlay/40 border border-border/60 rounded-sm font-mono text-xs text-text-muted">
               {currentProject?.name ?? org?.name}

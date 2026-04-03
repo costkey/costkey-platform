@@ -58,15 +58,27 @@ function extractCompletion(body: unknown): string | null {
   if (!b || typeof b !== "object") return null;
   const obj = b as Record<string, unknown>;
 
+  // OpenAI format: choices[0].message.content
   const choices = obj["choices"] as Array<Record<string, unknown>> | undefined;
   if (choices?.[0]) {
     const msg = choices[0]["message"] as Record<string, unknown> | undefined;
     if (msg && typeof msg["content"] === "string") return msg["content"];
   }
 
+  // Anthropic format: content[0].text
   const content = obj["content"] as Array<Record<string, unknown>> | undefined;
   if (content && Array.isArray(content))
     return content.map((c) => (typeof c === "object" && c["text"] ? String(c["text"]) : "")).filter(Boolean).join("\n");
+
+  // Google Gemini format: candidates[0].content.parts[0].text
+  const candidates = obj["candidates"] as Array<Record<string, unknown>> | undefined;
+  if (candidates?.[0]) {
+    const cContent = candidates[0]["content"] as Record<string, unknown> | undefined;
+    if (cContent) {
+      const parts = cContent["parts"] as Array<Record<string, unknown>> | undefined;
+      if (parts) return parts.map((p) => (p["text"] ? String(p["text"]) : "")).filter(Boolean).join("\n");
+    }
+  }
 
   return null;
 }

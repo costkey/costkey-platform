@@ -25,7 +25,7 @@ function CustomTooltip({ active, payload, label }: { active?: boolean; payload?:
     <div className="bg-surface-overlay border border-border-bright rounded-sm px-3 py-2 shadow-lg">
       <p className="text-text-muted text-xs mb-1">{label ? formatDate(label) : ""}</p>
       <p className="font-mono text-base text-text-primary font-bold">
-        ${payload[0].value.toFixed(2)}
+        ${payload[0].value.toFixed(4)}
       </p>
       <p className="font-mono text-xs text-text-muted">
         {payload[0].payload.calls.toLocaleString()} calls

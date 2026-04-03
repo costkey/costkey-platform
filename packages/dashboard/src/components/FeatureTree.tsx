@@ -54,7 +54,7 @@ function FeatureRow({ feature, maxCost }: { feature: Feature; maxCost: number })
           {formatTokens(feature.totalInputTokens + feature.totalOutputTokens)}
         </span>
         <span className="font-mono text-xs font-semibold text-green w-16 text-right shrink-0">
-          ${feature.totalCost.toFixed(2)}
+          ${feature.totalCost.toFixed(4)}
         </span>
 
         <div className="w-20 shrink-0">
@@ -103,7 +103,7 @@ function FeatureRow({ feature, maxCost }: { feature: Feature; maxCost: number })
                   {formatTokens(cs.total_input_tokens)} in
                 </span>
                 <span className="font-mono text-[11px] text-green/80 w-16 text-right shrink-0">
-                  ${cs.total_cost_usd.toFixed(2)}
+                  ${cs.total_cost_usd.toFixed(4)}
                 </span>
 
                 <div className="w-20 shrink-0">

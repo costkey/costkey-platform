@@ -50,7 +50,7 @@ export default function ModelBreakdown({ models, loading }: Props) {
                     {model.calls.toLocaleString()}
                   </span>
                   <span className="font-mono text-xs font-semibold text-green w-16 text-right">
-                    ${model.cost.toFixed(2)}
+                    ${model.cost.toFixed(4)}
                   </span>
                 </div>
               </div>

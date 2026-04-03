@@ -89,7 +89,7 @@ function CallSiteRow({ row, maxCost, projectId, onSelectEvent }: {
           {row.totalCalls.toLocaleString()}
         </span>
         <span className="font-mono text-sm font-semibold text-green w-20 text-right shrink-0">
-          ${row.totalCost.toFixed(2)}
+          ${row.totalCost.toFixed(4)}
         </span>
         <span className="font-mono text-xs text-text-muted w-20 text-right shrink-0">
           {formatTokens(row.totalInputTokens)} in

@@ -83,7 +83,7 @@ function TraceRow({ trace, projectId }: { trace: Trace; projectId: string }) {
         </span>
 
         <span className="font-mono text-[11px] font-semibold text-green w-16 text-right shrink-0">
-          ${trace.total_cost.toFixed(2)}
+          ${trace.total_cost.toFixed(4)}
         </span>
       </button>
 

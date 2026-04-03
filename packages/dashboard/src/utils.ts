@@ -77,7 +77,8 @@ export function findBusinessFrame(frames: FrameLike[]): FrameLike | null {
     const file = pool[i].fileName ?? "";
     if (file && file !== innerFile) return pool[i];
   }
-  return pool[0];
+  // All same file — use frame[1] (caller of the wrapper)
+  return pool.length >= 2 ? pool[1] : pool[0];
 }
 
 /** Parse call_site_frames from an event (handles string or array) */

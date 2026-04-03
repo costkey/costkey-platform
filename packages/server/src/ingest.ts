@@ -135,8 +135,9 @@ export function findBusinessLogicFrame(frames: StackFrame[]): StackFrame {
     if (file && file !== innerFile) return pool[i];
   }
 
-  // All same file — use frame[0] (it's the direct caller)
-  return pool[0];
+  // All same file — use frame[1] (caller of the wrapper, not the wrapper itself)
+  // frame[0] is always the direct API caller (wrapper), frame[1] is what called it
+  return pool.length >= 2 ? pool[1] : pool[0];
 }
 
 // ─── Call Graph Cache ────────────────────────────────────────────────

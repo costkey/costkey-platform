@@ -286,7 +286,7 @@ async function backfillFrames(pool: import("pg").Pool): Promise<void> {
   });
 
   // Rebuild call_site_stats (also runs once)
-  await runOnce(pool, "rebuild_callsite_stats_v5", async () => {
+  await runOnce(pool, "rebuild_callsite_stats_v6", async () => {
     await rebuildCallSiteStats(pool);
   });
 }
@@ -314,7 +314,8 @@ function pickBestFrame(frames: Array<{ fileName?: string | null; functionName?: 
     const file = pool[i].fileName ?? "";
     if (file && file !== innerFile) return pool[i];
   }
-  return pool[0];
+  // All same file — use frame[1] (caller of the wrapper)
+  return pool.length >= 2 ? pool[1] : pool[0];
 }
 
 async function rebuildCallSiteStats(pool: import("pg").Pool): Promise<void> {

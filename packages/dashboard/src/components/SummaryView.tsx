@@ -107,29 +107,31 @@ export default function SummaryView({ summary, loading }: Props) {
 
   return (
     <div className="flex flex-col gap-4 mb-4">
-      {/* Headline card */}
-      <div className="animate-in bg-surface-raised border border-border rounded-sm p-6 relative overflow-hidden">
-        <div className="absolute top-0 left-0 right-0 h-px bg-accent-muted" style={{ opacity: 0.6 }} />
-        <p className="text-text-muted text-sm font-medium mb-2">
-          Your AI spend this month
-        </p>
-        <div className="flex items-baseline gap-4 mb-2">
-          <span className="font-mono text-5xl font-bold tracking-tight text-text-primary">
-            {formatCost(summary.thisMonth.cost)}
-          </span>
-          <ChangeIndicator value={summary.costChange} />
+      {/* Top row: spend + deploy side by side */}
+      <div className={`grid gap-4 ${summary.byRelease?.length ? "grid-cols-[1fr_1fr]" : "grid-cols-1"}`}>
+        {/* Headline card */}
+        <div className="animate-in bg-surface-raised border border-border rounded-sm p-6 relative overflow-hidden">
+          <div className="absolute top-0 left-0 right-0 h-px bg-accent-muted" style={{ opacity: 0.6 }} />
+          <p className="text-text-muted text-sm font-medium mb-2">
+            Your AI spend this month
+          </p>
+          <div className="flex items-baseline gap-4 mb-2">
+            <span className="font-mono text-4xl font-bold tracking-tight text-text-primary">
+              {formatCost(summary.thisMonth.cost)}
+            </span>
+            <ChangeIndicator value={summary.costChange} />
+          </div>
+          <div className="flex items-center gap-3 text-text-muted text-sm font-mono flex-wrap">
+            <span>{formatCost(summary.dailyAvg)}/day avg</span>
+            <span className="text-border-bright">·</span>
+            <span>projected {formatCost(summary.projectedMonthly)}</span>
+            <span className="text-border-bright">·</span>
+            <span className="text-xs">{formatTokens(summary.thisMonth.tokens)} tokens</span>
+          </div>
         </div>
-        <div className="flex items-center gap-3 text-text-muted text-sm font-mono">
-          <span>{formatCost(summary.dailyAvg)}/day avg</span>
-          <span className="text-border-bright">·</span>
-          <span>projected {formatCost(summary.projectedMonthly)} this month</span>
-          <span className="text-border-bright">·</span>
-          <span className="text-text-muted text-xs">{formatTokens(summary.thisMonth.tokens)} tokens</span>
-        </div>
-      </div>
 
-      {/* Cost by Deploy — only shown if releases exist */}
-      {summary.byRelease && summary.byRelease.length > 0 && (
+        {/* Cost by Deploy — same row */}
+        {summary.byRelease && summary.byRelease.length > 0 && (
         <div className="animate-in bg-surface-raised border border-border rounded-sm p-5" style={{ animationDelay: "30ms" }}>
           <div className="flex items-center justify-between mb-4">
             <p className="text-text-muted text-xs font-medium tracking-wide uppercase">
@@ -173,6 +175,7 @@ export default function SummaryView({ summary, loading }: Props) {
           </div>
         </div>
       )}
+      </div>
 
       <div className="grid grid-cols-[1fr_1fr] gap-4">
         {/* Top cost drivers */}

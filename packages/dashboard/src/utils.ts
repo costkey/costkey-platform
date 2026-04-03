@@ -12,10 +12,12 @@ export function formatTokens(tokens: number): string {
   return tokens.toLocaleString();
 }
 
-/** Format cost always as $X.XX */
+/** Format cost — show enough precision to be meaningful */
 export function formatCost(cost: number): string {
   if (cost >= 1000) return `$${(cost / 1000).toFixed(1)}k`;
-  return `$${cost.toFixed(2)}`;
+  if (cost >= 1) return `$${cost.toFixed(2)}`;
+  if (cost >= 0.01) return `$${cost.toFixed(2)}`;
+  return `$${cost.toFixed(4)}`;
 }
 
 /** Strip date suffixes from model names */

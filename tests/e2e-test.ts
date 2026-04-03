@@ -1,325 +1,213 @@
-// CostKey End-to-End Test
-// Run: npm i costkey @anthropic-ai/sdk openai
-// Execute: ANTHROPIC_API_KEY=sk-ant-... OPENAI_API_KEY=sk-... COSTKEY_DSN=https://ck_...@app.costkey.dev/proj_... npx tsx tests/e2e-test.ts
+/**
+ * CostKey E2E Integration Test — Production Simulation
+ *
+ * Simulates "DocuProcess", a real AI-powered document pipeline with:
+ * - Multiple providers (Anthropic, OpenAI, Google)
+ * - Multiple features calling through shared wrappers
+ * - Traced pipelines grouping related calls
+ * - Context tagging
+ * - Batch processing
+ *
+ * Run:
+ *   npm i costkey @anthropic-ai/sdk openai @google/genai
+ *
+ *   ANTHROPIC_API_KEY=... \
+ *   OPENAI_API_KEY=... \
+ *   GOOGLE_API_KEY=... \
+ *   COSTKEY_DSN=https://ck_...@app.costkey.dev/proj_... \
+ *   npx tsx tests/e2e-test.ts
+ */
 
+// ── CostKey MUST init before any AI SDK imports ──
 import { CostKey } from "costkey";
+
+const DSN = process.env["COSTKEY_DSN"];
+if (!DSN) { console.error("❌ Missing COSTKEY_DSN"); process.exit(1); }
+
+const RELEASE = `e2e-${Date.now()}`;
+CostKey.init({ dsn: DSN, debug: true, release: RELEASE });
+console.log(`\n🔧 CostKey initialized (release: ${RELEASE})\n`);
+
+// ── Import AI SDKs AFTER CostKey patches fetch ──
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
-import { randomBytes } from "node:crypto";
+import { GoogleGenAI } from "@google/genai";
 
-// ---------------------------------------------------------------------------
-// Config
-// ---------------------------------------------------------------------------
+const ANTHROPIC_KEY = process.env["ANTHROPIC_API_KEY"] ?? "";
+const OPENAI_KEY = process.env["OPENAI_API_KEY"] ?? "";
+const GOOGLE_KEY = process.env["GOOGLE_API_KEY"] ?? "";
 
-const COSTKEY_DSN = process.env.COSTKEY_DSN;
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-
-if (!COSTKEY_DSN) {
-  console.error("Missing COSTKEY_DSN env var");
-  process.exit(1);
-}
-if (!ANTHROPIC_API_KEY) {
-  console.error("Missing ANTHROPIC_API_KEY env var");
-  process.exit(1);
-}
-if (!OPENAI_API_KEY) {
-  console.error("Missing OPENAI_API_KEY env var");
-  process.exit(1);
+const results: { name: string; pass: boolean; detail: string }[] = [];
+function log(name: string, pass: boolean, detail: string) {
+  results.push({ name, pass, detail });
+  console.log(`  ${pass ? "✅" : "❌"} ${name} — ${detail}`);
 }
 
-const timestamp = Date.now();
-const RELEASE = `e2e-test-${timestamp}`;
+// ════════════════════════════════════════════════════════
+// AI Client Layer (wrappers — should NOT show in dashboard)
+// ════════════════════════════════════════════════════════
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-interface TestResult {
-  name: string;
-  passed: boolean;
-  detail: string;
-  durationMs: number;
+async function callClaude(prompt: string, maxTokens = 50): Promise<string> {
+  const client = new Anthropic({ apiKey: ANTHROPIC_KEY });
+  const r = await client.messages.create({
+    model: "claude-haiku-4-5-20251001", max_tokens: maxTokens,
+    messages: [{ role: "user", content: prompt }],
+  });
+  return r.content[0].type === "text" ? r.content[0].text : "";
 }
 
-const results: TestResult[] = [];
-let debugLogs: string[] = [];
+async function callGPT(prompt: string, maxTokens = 50): Promise<string> {
+  const client = new OpenAI({ apiKey: OPENAI_KEY });
+  const r = await client.chat.completions.create({
+    model: "gpt-4o-mini", max_tokens: maxTokens,
+    messages: [{ role: "user", content: prompt }],
+  });
+  return r.choices[0]?.message?.content ?? "";
+}
 
-// Capture console.log/warn to detect SDK debug output (e.g. 202 responses)
-const originalLog = console.log;
-const originalWarn = console.warn;
-console.log = (...args: unknown[]) => {
-  const msg = args.map(String).join(" ");
-  debugLogs.push(msg);
-  originalLog(...args);
-};
-console.warn = (...args: unknown[]) => {
-  const msg = args.map(String).join(" ");
-  debugLogs.push(msg);
-  originalWarn(...args);
-};
+async function callGemini(prompt: string): Promise<string> {
+  const ai = new GoogleGenAI({ apiKey: GOOGLE_KEY });
+  const r = await ai.models.generateContent({ model: "gemini-2.5-flash", contents: prompt });
+  return r.text ?? "";
+}
 
-async function runTest(
-  name: string,
-  fn: () => Promise<string>,
-): Promise<void> {
-  const start = performance.now();
-  try {
-    const detail = await fn();
-    const durationMs = Math.round(performance.now() - start);
-    results.push({ name, passed: true, detail, durationMs });
-  } catch (err) {
-    const durationMs = Math.round(performance.now() - start);
-    const detail = err instanceof Error ? err.message : String(err);
-    results.push({ name, passed: false, detail, durationMs });
+// ════════════════════════════════════════════════════════
+// Feature Layer (business logic — SHOULD show in dashboard)
+// ════════════════════════════════════════════════════════
+
+async function classifyDocument(text: string): Promise<string> {
+  return callClaude(`Classify this text into one category (legal, medical, financial). Reply with just the category.\n\n"${text}"`);
+}
+
+async function extractInvoiceData(invoiceText: string): Promise<string> {
+  return callGPT(`Extract total amount and vendor from this invoice as JSON.\n\n"${invoiceText}"`);
+}
+
+async function summarizeDocument(text: string): Promise<string> {
+  return callGemini(`Summarize in one sentence: "${text}"`);
+}
+
+async function searchDocuments(query: string): Promise<string> {
+  const category = await callClaude(`Classify this query: "${query}". Reply with one word.`);
+  const results = await callGPT(`List 3 document titles about "${query}" in "${category}". One per line.`);
+  return results;
+}
+
+async function processNewDocument(docText: string): Promise<void> {
+  const traceId = `trace_${Date.now()}`;
+  await CostKey.withContext({ traceId, traceName: "process-document" }, async () => {
+    const cat = await classifyDocument(docText);
+    console.log(`     Classified: ${cat.trim()}`);
+    const summary = await summarizeDocument(docText);
+    console.log(`     Summary: ${summary.trim().substring(0, 60)}...`);
+    const data = await extractInvoiceData(docText);
+    console.log(`     Extracted: ${data.trim().substring(0, 60)}...`);
+  });
+}
+
+async function batchClassify(docs: string[]): Promise<string[]> {
+  const out: string[] = [];
+  for (const doc of docs) out.push(await classifyDocument(doc));
+  return out;
+}
+
+// ════════════════════════════════════════════════════════
+// Test Runner
+// ════════════════════════════════════════════════════════
+
+async function runTests() {
+  const has = { anthropic: !!ANTHROPIC_KEY, openai: !!OPENAI_KEY, google: !!GOOGLE_KEY };
+  console.log("📋 Providers: " +
+    `Anthropic=${has.anthropic ? "✅" : "⏭️"} ` +
+    `OpenAI=${has.openai ? "✅" : "⏭️"} ` +
+    `Google=${has.google ? "✅" : "⏭️"}\n`);
+
+  // Test 1: Anthropic
+  if (has.anthropic) {
+    console.log("── Test 1: Anthropic (classifyDocument) ──");
+    try {
+      const r = await classifyDocument("Patient with acute bronchitis prescribed antibiotics.");
+      log("Anthropic call", r.length > 0, `"${r.trim()}"`);
+    } catch (e: any) { log("Anthropic call", false, e.message); }
   }
-}
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+  // Test 2: OpenAI
+  if (has.openai) {
+    console.log("\n── Test 2: OpenAI (extractInvoiceData) ──");
+    try {
+      const r = await extractInvoiceData("Invoice #1234 from Acme Corp. Total: $5,432.10.");
+      log("OpenAI call", r.length > 0, `"${r.trim().substring(0, 80)}"`);
+    } catch (e: any) { log("OpenAI call", false, e.message); }
+  }
 
-// ---------------------------------------------------------------------------
-// SDK Init
-// ---------------------------------------------------------------------------
+  // Test 3: Gemini
+  if (has.google) {
+    console.log("\n── Test 3: Gemini (summarizeDocument) ──");
+    try {
+      const r = await summarizeDocument("Q3 earnings show 23% revenue increase driven by AI search reducing support tickets by 40%.");
+      log("Gemini call", r.length > 0, `"${r.trim().substring(0, 80)}"`);
+    } catch (e: any) { log("Gemini call", false, e.message); }
+  }
 
-CostKey.init({
-  dsn: COSTKEY_DSN,
-  debug: true,
-  release: RELEASE,
-});
+  // Test 4: Multi-provider
+  if (has.anthropic && has.openai) {
+    console.log("\n── Test 4: Multi-provider (searchDocuments) ──");
+    try {
+      const r = await searchDocuments("medical malpractice liability");
+      log("Multi-provider", r.length > 0, `${r.split("\n").filter(l => l.trim()).length} results`);
+    } catch (e: any) { log("Multi-provider", false, e.message); }
+  }
 
-const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
-const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
+  // Test 5: Traced pipeline
+  if (has.anthropic && has.openai && has.google) {
+    console.log("\n── Test 5: Traced pipeline (processNewDocument) ──");
+    try {
+      await processNewDocument("Invoice #5678 from GlobalTech. AI consulting Q1 2026. Total: $12,750. Net 30.");
+      log("Traced pipeline", true, "3 calls grouped");
+    } catch (e: any) { log("Traced pipeline", false, e.message); }
+  }
 
-// ---------------------------------------------------------------------------
-// Test 1: Basic Anthropic call
-// ---------------------------------------------------------------------------
+  // Test 6: Batch
+  if (has.anthropic) {
+    console.log("\n── Test 6: Batch (3x classifyDocument) ──");
+    try {
+      const cats = await batchClassify([
+        "Defendant failed to file motion within statutory deadline.",
+        "BP 140/90. Recommend ACE inhibitor therapy.",
+        "Q3 revenue exceeded projections by 15%.",
+      ]);
+      log("Batch classify", cats.length === 3, cats.map(c => c.trim()).join(", "));
+    } catch (e: any) { log("Batch classify", false, e.message); }
+  }
 
-async function test1_anthropicBasic(): Promise<string> {
-  const response = await anthropic.messages.create({
-    model: "claude-haiku-4-5-20250404",
-    max_tokens: 20,
-    messages: [{ role: "user", content: "Say hi in 3 words" }],
-  });
-
-  const text =
-    response.content[0].type === "text" ? response.content[0].text : "";
-  if (!text) throw new Error("Empty response from Anthropic");
-
-  return `Model: claude-haiku-4-5 | Response: "${text.trim()}" | Tokens: ${response.usage.input_tokens}in/${response.usage.output_tokens}out`;
-}
-
-// ---------------------------------------------------------------------------
-// Test 2: Basic OpenAI call
-// ---------------------------------------------------------------------------
-
-async function test2_openaiBasic(): Promise<string> {
-  const response = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
-    max_tokens: 20,
-    messages: [{ role: "user", content: "Say hello in 3 words" }],
-  });
-
-  const text = response.choices[0]?.message?.content ?? "";
-  if (!text) throw new Error("Empty response from OpenAI");
-
-  const usage = response.usage;
-  return `Model: gpt-4o-mini | Response: "${text.trim()}" | Tokens: ${usage?.prompt_tokens ?? "?"}in/${usage?.completion_tokens ?? "?"}out`;
-}
-
-// ---------------------------------------------------------------------------
-// Test 3: Multiple call sites
-// ---------------------------------------------------------------------------
-
-async function searchDocuments(): Promise<string> {
-  const response = await anthropic.messages.create({
-    model: "claude-haiku-4-5-20250404",
-    max_tokens: 20,
-    messages: [
-      { role: "user", content: "Name one search engine in one word" },
-    ],
-  });
-  return response.content[0].type === "text" ? response.content[0].text : "";
-}
-
-async function classifyIntent(): Promise<string> {
-  const response = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
-    max_tokens: 20,
-    messages: [
-      {
-        role: "user",
-        content: 'Classify this as greeting or question: "Hi there"',
-      },
-    ],
-  });
-  return response.choices[0]?.message?.content ?? "";
-}
-
-async function generateSummary(): Promise<string> {
-  const response = await anthropic.messages.create({
-    model: "claude-haiku-4-5-20250404",
-    max_tokens: 20,
-    messages: [{ role: "user", content: "Summarize: The sky is blue." }],
-  });
-  return response.content[0].type === "text" ? response.content[0].text : "";
-}
-
-async function test3_multipleCallSites(): Promise<string> {
-  const [r1, r2, r3] = await Promise.all([
-    searchDocuments(),
-    classifyIntent(),
-    generateSummary(),
-  ]);
-  return `searchDocuments: "${r1.trim()}" | classifyIntent: "${r2.trim()}" | generateSummary: "${r3.trim()}"`;
-}
-
-// ---------------------------------------------------------------------------
-// Test 4: Traced pipeline
-// ---------------------------------------------------------------------------
-
-async function test4_tracedPipeline(): Promise<string> {
-  let traceResult = "";
-  const traceId = randomBytes(16).toString("hex");
-
-  await CostKey.withContext(
-    { traceId, traceName: "e2e-traced-pipeline" },
-    async () => {
-      const r1 = await anthropic.messages.create({
-        model: "claude-haiku-4-5-20250404",
-        max_tokens: 20,
-        messages: [{ role: "user", content: "Step 1: Say hello" }],
+  // Test 7: Context tags
+  if (has.anthropic) {
+    console.log("\n── Test 7: Context tags ──");
+    try {
+      await CostKey.withContext({ team: "search", feature: "autocomplete", userId: "user_42" }, async () => {
+        await callClaude("Complete: 'how to file a'");
       });
+      log("Context tags", true, "team=search, feature=autocomplete");
+    } catch (e: any) { log("Context tags", false, e.message); }
+  }
 
-      const r2 = await openai.chat.completions.create({
-        model: "gpt-4o-mini",
-        max_tokens: 20,
-        messages: [{ role: "user", content: "Step 2: Say goodbye" }],
-      });
-
-      const t1 =
-        r1.content[0].type === "text" ? r1.content[0].text.trim() : "";
-      const t2 = r2.choices[0]?.message?.content?.trim() ?? "";
-
-      traceResult = `traceId: ${traceId} | step1: "${t1}" | step2: "${t2}"`;
-    },
-  );
-
-  if (!traceResult) throw new Error("Trace produced no result");
-  return traceResult;
-}
-
-// ---------------------------------------------------------------------------
-// Test 5: Context tagging
-// ---------------------------------------------------------------------------
-
-async function test5_contextTagging(): Promise<string> {
-  let tagResult = "";
-
-  await CostKey.withContext(
-    { team: "e2e-test", task: "context-tagging", userId: "test-user-42" },
-    async () => {
-      const ctx = CostKey.getCurrentContext();
-
-      const response = await anthropic.messages.create({
-        model: "claude-haiku-4-5-20250404",
-        max_tokens: 20,
-        messages: [{ role: "user", content: "Say 'tagged' in one word" }],
-      });
-
-      const text =
-        response.content[0].type === "text"
-          ? response.content[0].text.trim()
-          : "";
-      tagResult = `context: ${JSON.stringify(ctx)} | response: "${text}"`;
-    },
-  );
-
-  if (!tagResult) throw new Error("Context tagging produced no result");
-  return tagResult;
-}
-
-// ---------------------------------------------------------------------------
-// Main
-// ---------------------------------------------------------------------------
-
-async function main(): Promise<void> {
-  originalLog("\n========================================");
-  originalLog("  CostKey E2E Test Suite");
-  originalLog(`  Server:  app.costkey.dev`);
-  originalLog(`  Release: ${RELEASE}`);
-  originalLog("========================================\n");
-
-  // Run tests sequentially to keep output readable
-  await runTest("Test 1: Basic Anthropic call", test1_anthropicBasic);
-  await runTest("Test 2: Basic OpenAI call", test2_openaiBasic);
-  await runTest("Test 3: Multiple call sites", test3_multipleCallSites);
-  await runTest("Test 4: Traced pipeline", test4_tracedPipeline);
-  await runTest("Test 5: Context tagging", test5_contextTagging);
-
-  // Flush all events to the server
-  originalLog("\n--- Flushing events to CostKey server ---");
+  // ── Flush ──
+  console.log("\n⏳ Flushing...");
   await CostKey.flush();
+  console.log("⏳ Waiting 5s for server...\n");
+  await new Promise(r => setTimeout(r, 5000));
 
-  // Wait for server-side processing
-  originalLog("--- Waiting 5s for server processing ---\n");
-  await sleep(5000);
-
-  // Check debug logs for successful event delivery (202 responses)
-  const ingestLogs = debugLogs.filter(
-    (l) => l.includes("[costkey]") || l.includes("202") || l.includes("Ingest"),
-  );
-  const initLog = debugLogs.find((l) => l.includes("Initialized"));
-  const errorLogs = debugLogs.filter(
-    (l) =>
-      (l.includes("[costkey]") && l.includes("Failed")) ||
-      l.includes("Rate limited") ||
-      l.includes("Ingest returned"),
-  );
-
-  // Print results
-  originalLog("========================================");
-  originalLog("  Results");
-  originalLog("========================================\n");
-
-  let passed = 0;
-  let failed = 0;
-
-  for (const r of results) {
-    const icon = r.passed ? "\u2713" : "\u2717";
-    const status = r.passed ? "PASS" : "FAIL";
-    originalLog(`  ${icon} ${status}  ${r.name} (${r.durationMs}ms)`);
-    if (r.passed) {
-      originalLog(`          ${r.detail}`);
-      passed++;
-    } else {
-      originalLog(`          Error: ${r.detail}`);
-      failed++;
-    }
-    originalLog("");
-  }
-
-  originalLog("----------------------------------------");
-  originalLog(`  SDK initialized: ${initLog ? "yes" : "no"}`);
-  originalLog(`  SDK debug lines: ${ingestLogs.length}`);
-  originalLog(
-    `  Delivery errors: ${errorLogs.length === 0 ? "none" : errorLogs.length}`,
-  );
-  if (errorLogs.length > 0) {
-    for (const e of errorLogs) {
-      originalLog(`    -> ${e}`);
-    }
-  }
-  originalLog(`  Total: ${passed} passed, ${failed} failed`);
-  originalLog("========================================\n");
-
-  await CostKey.shutdown();
-
-  process.exit(failed > 0 ? 1 : 0);
+  // ── Summary ──
+  console.log("═".repeat(50));
+  const passed = results.filter(r => r.pass).length;
+  const failed = results.filter(r => !r.pass).length;
+  for (const r of results) console.log(`  ${r.pass ? "✅" : "❌"} ${r.name}`);
+  console.log(`\n  ${passed} passed, ${failed} failed`);
+  console.log(`  Release: ${RELEASE}`);
+  console.log(`  Check dashboard now!`);
+  console.log("═".repeat(50));
+  if (failed > 0) process.exit(1);
 }
 
-main().catch((err) => {
-  originalLog("Fatal error:", err);
-  process.exit(1);
-});
+runTests().catch(e => { console.error("Fatal:", e); process.exit(1); })
+  .finally(() => setTimeout(() => process.exit(0), 2000));

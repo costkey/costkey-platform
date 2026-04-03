@@ -186,7 +186,7 @@ export default function CallSitesTable({ callSites, loading, search = "", projec
 
   const aggregated = new Map<string, AggRow>();
   for (const cs of callSites) {
-    const base = `${cs.file_name}:${cs.function_name}:${cs.line_number}`;
+    const base = `${cs.file_name}:${cs.function_name}`; // aggregate by function, not line number
     const existing = aggregated.get(base);
     if (existing) {
       existing.providers.add(cs.provider);

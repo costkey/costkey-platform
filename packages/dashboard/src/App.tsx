@@ -1,6 +1,8 @@
+import { useState, useEffect } from "react";
 import { BrowserRouter, Routes, Route, Navigate, Outlet, useNavigate } from "react-router-dom";
 import { Settings, ChevronDown, ExternalLink } from "lucide-react";
 import { AuthProvider, useAuth } from "./contexts/AuthContext";
+import { getHealth } from "./api";
 import Login from "./pages/Login";
 import Signup from "./pages/Signup";
 import Onboarding from "./pages/Onboarding";
@@ -20,6 +22,49 @@ function ProtectedRoute() {
 
   if (!user) return <Navigate to="/login" replace />;
   return <AppShell />;
+}
+
+function PipelineStatus({ projectId }: { projectId?: string }) {
+  const [status, setStatus] = useState<"active" | "idle" | "inactive" | "no_data">("no_data");
+  const [lastEvent, setLastEvent] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!projectId) return;
+    const check = () => {
+      getHealth(projectId).then((h) => {
+        setStatus(h.status);
+        setLastEvent(h.lastEventAt);
+      }).catch(() => {});
+    };
+    check();
+    const interval = setInterval(check, 30_000); // poll every 30s
+    return () => clearInterval(interval);
+  }, [projectId]);
+
+  const config = {
+    active: { color: "bg-green", label: "collecting", glow: true },
+    idle: { color: "bg-amber", label: "idle", glow: false },
+    inactive: { color: "bg-red", label: "no data", glow: false },
+    no_data: { color: "bg-text-muted", label: "waiting", glow: false },
+  }[status];
+
+  const timeAgo = lastEvent ? (() => {
+    const ms = Date.now() - new Date(lastEvent).getTime();
+    if (ms < 60000) return "just now";
+    if (ms < 3600000) return `${Math.floor(ms / 60000)}m ago`;
+    if (ms < 86400000) return `${Math.floor(ms / 3600000)}h ago`;
+    return `${Math.floor(ms / 86400000)}d ago`;
+  })() : null;
+
+  return (
+    <div className="flex items-center gap-1.5" title={timeAgo ? `Last event: ${timeAgo}` : "No events received yet"}>
+      <div className={`w-1.5 h-1.5 rounded-full ${config.color} ${config.glow ? "glow-dot" : ""}`} />
+      <span className="text-[11px] text-text-muted/70 font-mono">{config.label}</span>
+      {timeAgo && status !== "active" && (
+        <span className="text-[10px] text-text-muted/50 font-mono">{timeAgo}</span>
+      )}
+    </div>
+  );
 }
 
 function AppShell() {
@@ -82,10 +127,7 @@ function AppShell() {
 
             <div className="w-px h-4 bg-border" />
 
-            <div className="flex items-center gap-1.5">
-              <div className="w-1.5 h-1.5 rounded-full bg-green glow-dot" />
-              <span className="text-[11px] text-text-muted/70 font-mono">collecting</span>
-            </div>
+            <PipelineStatus projectId={currentProjectId ?? projects[0]?.id} />
 
             <button
               onClick={() => navigate("/settings")}

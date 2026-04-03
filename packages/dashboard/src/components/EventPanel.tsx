@@ -139,7 +139,7 @@ export default function EventPanel({ event, projectId, onClose }: Props) {
             <>
               {/* Stats */}
               <div className="grid grid-cols-3 gap-4">
-                <Stat label="Cost" value={`$${(event.cost_usd ?? 0).toFixed(2)}`} accent />
+                <Stat label="Cost" value={`$${(event.cost_usd ?? 0).toFixed(4)}`} accent />
                 <Stat label="Duration" value={formatDuration(event.duration_ms)} />
                 <Stat label="Status" value={`${event.status_code ?? "—"}`} />
               </div>

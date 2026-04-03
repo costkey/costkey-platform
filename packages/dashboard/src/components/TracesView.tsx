@@ -155,7 +155,7 @@ function TraceRow({ trace, projectId }: { trace: Trace; projectId: string }) {
                       </span>
 
                       <span className="font-mono text-[10px] font-medium text-green/80 w-14 text-right shrink-0">
-                        ${(event.cost_usd ?? 0).toFixed(2)}
+                        ${(event.cost_usd ?? 0).toFixed(4)}
                       </span>
 
                       <div className="w-28 shrink-0 h-3 relative">

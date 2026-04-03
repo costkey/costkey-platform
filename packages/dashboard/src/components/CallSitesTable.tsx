@@ -152,7 +152,7 @@ function CallSiteRow({ row, maxCost, projectId, onSelectEvent }: {
                       {formatDuration(event.duration_ms)}
                     </span>
                     <span className="font-mono text-xs font-medium text-green w-14 text-right shrink-0">
-                      ${(event.cost_usd ?? 0).toFixed(2)}
+                      ${(event.cost_usd ?? 0).toFixed(4)}
                     </span>
                   </button>
                 );

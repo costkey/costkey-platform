@@ -142,6 +142,36 @@ export function createApiRouter(pool: pg.Pool): Router {
     }
   });
 
+  // GET /api/v1/projects/:projectId/health — pipeline health check
+  router.get("/api/v1/projects/:projectId/health", async (req, res) => {
+    try {
+      const { projectId } = req.params;
+      const lastEvent = await pool.query(
+        "SELECT MAX(timestamp) as last_event_at FROM events WHERE project_id = $1",
+        [projectId],
+      );
+      const recentCount = await pool.query(
+        `SELECT COUNT(*)::int as cnt FROM events WHERE project_id = $1 AND timestamp > NOW() - INTERVAL '1 hour'`,
+        [projectId],
+      );
+      const lastAt = lastEvent.rows[0]?.last_event_at;
+      const eventsLastHour = recentCount.rows[0]?.cnt ?? 0;
+
+      let status: "active" | "idle" | "inactive" | "no_data" = "no_data";
+      if (lastAt) {
+        const msSince = Date.now() - new Date(lastAt).getTime();
+        if (msSince < 5 * 60 * 1000) status = "active";
+        else if (msSince < 24 * 60 * 60 * 1000) status = "idle";
+        else status = "inactive";
+      }
+
+      res.json({ status, lastEventAt: lastAt, eventsLastHour });
+    } catch (err) {
+      console.error("[costkey] Health check error:", err);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
   // GET /api/v1/projects/:projectId/overview
   router.get("/api/v1/projects/:projectId/overview", async (req, res) => {
     try {

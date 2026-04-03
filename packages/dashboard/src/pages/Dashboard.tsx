@@ -16,9 +16,9 @@ type Tab = "overview" | "traces" | "call-sites" | "events";
 
 const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
   { id: "overview", label: "Overview", icon: <BarChart3 size={14} /> },
-  { id: "traces", label: "Traces", icon: <Route size={14} /> },
-  { id: "call-sites", label: "Call Sites", icon: <FileCode size={14} /> },
   { id: "events", label: "Events", icon: <Activity size={14} /> },
+  { id: "call-sites", label: "Call Sites", icon: <FileCode size={14} /> },
+  { id: "traces", label: "Traces", icon: <Route size={14} /> },
 ];
 
 export default function Dashboard() {

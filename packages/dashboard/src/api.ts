@@ -262,6 +262,16 @@ export async function getFeatures(
   return get(`/projects/${projectId}/features`);
 }
 
+export interface PipelineHealth {
+  status: "active" | "idle" | "inactive" | "no_data";
+  lastEventAt: string | null;
+  eventsLastHour: number;
+}
+
+export async function getHealth(projectId: string): Promise<PipelineHealth> {
+  return get(`/projects/${projectId}/health`);
+}
+
 export async function getTrends(
   projectId: string,
   bucket?: "hour" | "day",

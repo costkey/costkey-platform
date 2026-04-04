@@ -55,6 +55,17 @@ async function initApp() {
   // Load call graph cache from DB
   await loadCallGraphCache(pool);
 
+  // SPA routes — serve index.html for client-side routes BEFORE auth middleware
+  // so /signup, /login, /onboarding don't get blocked
+  if (hasDashboard) {
+    const spaRoutes = ["/login", "/signup", "/onboarding", "/settings"];
+    for (const route of spaRoutes) {
+      app.get(route, (_req, res) => {
+        res.sendFile(path.join(dashboardDist, "index.html"));
+      });
+    }
+  }
+
   app.use(authMiddleware());
 
   app.use("/auth/login", rateLimit({ windowMs: 15 * 60 * 1000, max: 20 }));

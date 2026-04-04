@@ -110,30 +110,30 @@ export default function SummaryView({ summary, loading }: Props) {
       {/* Top row: spend + deploy side by side */}
       <div className={`grid gap-4 ${summary.byRelease?.length ? "grid-cols-[1fr_1fr]" : "grid-cols-1"}`}>
         {/* Headline card */}
-        <div className="animate-in bg-surface-raised border border-border rounded-sm p-6 relative overflow-hidden">
+        <div className="animate-in bg-surface-raised border border-border rounded-sm p-5 relative overflow-hidden flex flex-col justify-center">
           <div className="absolute top-0 left-0 right-0 h-px bg-accent-muted" style={{ opacity: 0.6 }} />
-          <p className="text-text-muted text-sm font-medium mb-2">
+          <p className="text-text-muted text-sm font-medium mb-1">
             Your AI spend this month
           </p>
-          <div className="flex items-baseline gap-4 mb-2">
-            <span className="font-mono text-4xl font-bold tracking-tight text-text-primary">
+          <div className="flex items-baseline gap-3 mb-1">
+            <span className="font-mono text-3xl font-bold tracking-tight text-text-primary">
               {formatCost(summary.thisMonth.cost)}
             </span>
             <ChangeIndicator value={summary.costChange} />
           </div>
-          <div className="flex items-center gap-3 text-text-muted text-sm font-mono flex-wrap">
+          <div className="flex items-center gap-2 text-text-muted text-xs font-mono flex-wrap">
             <span>{formatCost(summary.dailyAvg)}/day avg</span>
             <span className="text-border-bright">·</span>
             <span>projected {formatCost(summary.projectedMonthly)}</span>
             <span className="text-border-bright">·</span>
-            <span className="text-xs">{formatTokens(summary.thisMonth.tokens)} tokens</span>
+            <span>{formatTokens(summary.thisMonth.tokens)} tokens</span>
           </div>
         </div>
 
         {/* Cost by Deploy — same row */}
         {summary.byRelease && summary.byRelease.length > 0 && (
-        <div className="animate-in bg-surface-raised border border-border rounded-sm p-5" style={{ animationDelay: "30ms" }}>
-          <div className="flex items-center justify-between mb-4">
+        <div className="animate-in bg-surface-raised border border-border rounded-sm p-4" style={{ animationDelay: "30ms" }}>
+          <div className="flex items-center justify-between mb-2">
             <p className="text-text-muted text-xs font-medium tracking-wide uppercase">
               Cost by Deploy
             </p>
@@ -144,9 +144,9 @@ export default function SummaryView({ summary, loading }: Props) {
               </span>
             )}
           </div>
-          <div className="flex flex-col gap-0 max-h-[220px] overflow-y-auto">
+          <div className="flex flex-col gap-0 max-h-[180px] overflow-y-auto">
             {/* Header row */}
-            <div className="flex items-center gap-3 pb-2 text-text-muted text-xs uppercase tracking-wide border-b border-border sticky top-0 bg-surface-raised z-10">
+            <div className="flex items-center gap-2 pb-1.5 text-text-muted text-[10px] uppercase tracking-wide border-b border-border sticky top-0 bg-surface-raised z-10">
               <span className="w-24 shrink-0">Release</span>
               <span className="w-20 text-right shrink-0">Cost</span>
               <span className="w-24 text-right shrink-0">Calls</span>
@@ -154,7 +154,7 @@ export default function SummaryView({ summary, loading }: Props) {
               <span className="w-16 text-right shrink-0">Change</span>
             </div>
             {summary.byRelease.map((rel) => (
-              <div key={rel.release} className="flex items-center gap-3 py-2 border-b border-border last:border-0">
+              <div key={rel.release} className="flex items-center gap-2 py-1.5 border-b border-border/50 last:border-0">
                 <span className="font-mono text-sm text-accent w-24 truncate shrink-0" title={rel.release}>
                   {formatReleaseName(rel.release)}
                 </span>

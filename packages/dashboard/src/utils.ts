@@ -59,6 +59,13 @@ interface FrameLike {
  * - 2 frames → use outermost
  * - 3+ frames → use second-to-last (skip generic entry point)
  */
+const WRAPPER_FN_NAMES = new Set(["retry", "withretry", "withbackoff", "callwithretry", "withretries", "ratelimit", "ratelimitcheck", "withratelimit", "withcache", "cached", "memoized", "wrapasync", "wrapfn", "decorator"]);
+
+function isWrapperFn(f: FrameLike): boolean {
+  const fn = (f.functionName ?? "").split("\n")[0].trim().toLowerCase();
+  return WRAPPER_FN_NAMES.has(fn);
+}
+
 export function findBusinessFrame(frames: FrameLike[]): FrameLike | null {
   if (!frames || frames.length === 0) return null;
 
@@ -71,13 +78,18 @@ export function findBusinessFrame(frames: FrameLike[]): FrameLike | null {
   const pool = meaningful.length > 0 ? meaningful : frames;
   if (pool.length <= 1) return pool[0];
 
-  // First frame from a different file = business logic caller
+  // First frame from a different file that's NOT infrastructure
   const innerFile = pool[0].fileName ?? "";
+  for (let i = 1; i < pool.length; i++) {
+    const file = pool[i].fileName ?? "";
+    if (file && file !== innerFile && !isInfra(pool[i])) return pool[i];
+  }
+  // Fallback: first different file (even if infra)
   for (let i = 1; i < pool.length; i++) {
     const file = pool[i].fileName ?? "";
     if (file && file !== innerFile) return pool[i];
   }
-  // All same file — use frame[1] (caller of the wrapper)
+  // Same file — use frame[1]
   return pool.length >= 2 ? pool[1] : pool[0];
 }
 

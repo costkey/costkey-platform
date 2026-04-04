@@ -115,10 +115,28 @@ export function filterFrames(frames: StackFrame[]): StackFrame[] {
  *    → The first different file is always the caller = business logic
  * 3. If all same file, use frame[0]
  */
+/**
+ * Function names that are universally wrappers — never business logic.
+ * These get skipped when picking the business logic frame.
+ * Only function names, not file paths (too aggressive).
+ */
+const WRAPPER_FN_NAMES = new Set([
+  "retry", "withretry", "withbackoff", "callwithretry",
+  "withretries", "retrywithtimeout", "retrywithbackoff",
+  "ratelimit", "ratelimitcheck", "withratelimit",
+  "withcache", "cached", "memoized",
+  "wrapasync", "wrapfn", "decorator",
+]);
+
+function isWrapperFn(frame: StackFrame): boolean {
+  const fn = (frame.functionName ?? "").split("\n")[0].trim().toLowerCase();
+  return WRAPPER_FN_NAMES.has(fn);
+}
+
 export function findBusinessLogicFrame(frames: StackFrame[]): StackFrame {
   if (frames.length === 0) return frames[0];
 
-  // Filter out useless names first
+  // Filter out useless names
   const useless = new Set(["<module>", "<anonymous>", "anonymous", "main", "_run", ""]);
   const meaningful = frames.filter((f) => {
     const fn = (f.functionName ?? "").split("\n")[0].trim();
@@ -128,15 +146,20 @@ export function findBusinessLogicFrame(frames: StackFrame[]): StackFrame {
   const pool = meaningful.length > 0 ? meaningful : frames;
   if (pool.length <= 1) return pool[0];
 
-  // Find first frame from a different file than frame[0]
+  // Find first frame from a different file, skipping known wrapper functions
   const innerFile = pool[0].fileName ?? "";
+  for (let i = 1; i < pool.length; i++) {
+    const file = pool[i].fileName ?? "";
+    if (file && file !== innerFile && !isWrapperFn(pool[i])) return pool[i];
+  }
+
+  // Fallback: first frame from a different file (even if wrapper)
   for (let i = 1; i < pool.length; i++) {
     const file = pool[i].fileName ?? "";
     if (file && file !== innerFile) return pool[i];
   }
 
-  // All same file — use frame[1] (caller of the wrapper, not the wrapper itself)
-  // frame[0] is always the direct API caller (wrapper), frame[1] is what called it
+  // All same file — use frame[1] (caller of the wrapper)
   return pool.length >= 2 ? pool[1] : pool[0];
 }
 

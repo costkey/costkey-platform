@@ -30,9 +30,9 @@ export default function Signup() {
   };
 
   return (
-    <div className="min-h-screen bg-surface flex flex-col items-center justify-center px-4">
+    <div className="min-h-screen bg-surface flex flex-col items-center justify-center px-4 py-12">
       <div className="w-full max-w-sm">
-        <div className="flex items-center justify-center gap-2.5 mb-8">
+        <div className="flex items-center justify-center gap-2.5 mb-8 mt-4">
           <img src="/favicon.svg" alt="CostKey" className="w-8 h-8" />
           <span className="font-mono text-lg font-semibold text-text-primary">CostKey</span>
         </div>

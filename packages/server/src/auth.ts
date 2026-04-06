@@ -167,6 +167,49 @@ export function createAuthRouter(): Router {
     });
   });
 
+  // POST /auth/admin/impersonate — login as any user (admin only)
+  router.post("/auth/admin/impersonate", async (req: Request, res: Response) => {
+    try {
+      const adminKey = req.headers["x-admin-key"];
+      const ADMIN_SECRET = process.env["COSTKEY_ADMIN_SECRET"] ?? "ck-admin-secret-change-me";
+
+      if (!adminKey || adminKey !== ADMIN_SECRET) {
+        res.status(403).json({ error: "Forbidden" });
+        return;
+      }
+
+      const { userId } = req.body as { userId?: string };
+      if (!userId) {
+        res.status(400).json({ error: "Missing userId" });
+        return;
+      }
+
+      const pool = getPool();
+      const result = await pool.query(
+        "SELECT id, email, name, org_id, role FROM users WHERE id = $1",
+        [userId],
+      );
+
+      if (result.rows.length === 0) {
+        res.status(404).json({ error: "User not found" });
+        return;
+      }
+
+      const user = result.rows[0];
+      const token = jwt.sign(
+        { userId: user.id, email: user.email, orgId: user.org_id, role: user.role },
+        JWT_SECRET,
+        { expiresIn: JWT_EXPIRES },
+      );
+
+      setTokenCookie(res, token);
+      res.json({ ok: true, user: { id: user.id, email: user.email, name: user.name } });
+    } catch (err) {
+      console.error("[costkey] Admin impersonate error:", err);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
   return router;
 }
 

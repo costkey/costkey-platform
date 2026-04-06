@@ -53,6 +53,39 @@ module.exports = {
 }
 ```
 
+**Next.js** (`next.config.js`):
+```javascript
+module.exports = {
+  productionBrowserSourceMaps: true,
+  // For server-side sourcemaps (API routes, server components):
+  webpack: (config, { isServer }) => {
+    if (isServer) {
+      config.devtool = 'source-map'
+    }
+    return config
+  },
+}
+```
+
+Then in your instrumentation file:
+```typescript
+// instrumentation.ts (or src/instrumentation.ts)
+import { CostKey } from 'costkey'
+
+CostKey.init({
+  dsn: 'https://ck_key@app.costkey.dev/proj_id',
+  release: process.env.NEXT_PUBLIC_GIT_SHA || process.env.VERCEL_GIT_COMMIT_SHA,
+})
+```
+
+Upload after build:
+```bash
+npx costkey sourcemaps upload \
+  --release $VERCEL_GIT_COMMIT_SHA \
+  --auth-key $COSTKEY_AUTH_KEY \
+  .next/server/**/*.map
+```
+
 **esbuild**:
 ```bash
 esbuild src/index.ts --bundle --sourcemap --outdir=dist
@@ -117,6 +150,19 @@ jobs:
         env:
           GIT_SHA: ${{ github.sha }}
 ```
+
+### Vercel (Next.js)
+
+Add a custom build script in `package.json`:
+```json
+{
+  "scripts": {
+    "build": "next build && npx costkey sourcemaps upload --release $VERCEL_GIT_COMMIT_SHA --auth-key $COSTKEY_AUTH_KEY .next/server/**/*.map"
+  }
+}
+```
+
+Set `COSTKEY_AUTH_KEY` in your Vercel project environment variables.
 
 ### GitLab CI
 

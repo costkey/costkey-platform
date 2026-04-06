@@ -262,10 +262,17 @@ export async function getFeatures(
   return get(`/projects/${projectId}/features`);
 }
 
+export interface HealthHint {
+  type: string;
+  message: string;
+  link: string;
+}
+
 export interface PipelineHealth {
   status: "active" | "idle" | "inactive" | "no_data";
   lastEventAt: string | null;
   eventsLastHour: number;
+  hints?: HealthHint[];
 }
 
 export async function getHealth(projectId: string): Promise<PipelineHealth> {

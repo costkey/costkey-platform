@@ -165,7 +165,37 @@ export function createApiRouter(pool: pg.Pool): Router {
         else status = "inactive";
       }
 
-      res.json({ status, lastEventAt: lastAt, eventsLastHour });
+      // Detect minified/bundled code without sourcemaps
+      const hints: Array<{ type: string; message: string; link: string }> = [];
+
+      const minifiedCheck = await pool.query(
+        `SELECT COUNT(*)::int as cnt FROM events
+         WHERE project_id = $1 AND call_site_frames IS NOT NULL
+         AND timestamp > NOW() - INTERVAL '24 hours'
+         AND (
+           call_site_frames::text LIKE '%".next/%' OR
+           call_site_frames::text LIKE '%"dist/%' OR
+           call_site_frames::text LIKE '%".output/%' OR
+           call_site_frames::text LIKE '%.chunk.%'
+         )`,
+        [projectId],
+      );
+
+      if (minifiedCheck.rows[0].cnt > 0) {
+        const hasSourcemaps = await pool.query(
+          "SELECT COUNT(*)::int as cnt FROM sourcemaps WHERE project_id = $1",
+          [projectId],
+        );
+        if (hasSourcemaps.rows[0].cnt === 0) {
+          hints.push({
+            type: "sourcemaps_missing",
+            message: "Your code appears to be bundled/minified. Upload sourcemaps to see real function names instead of minified ones.",
+            link: "/docs/sourcemaps",
+          });
+        }
+      }
+
+      res.json({ status, lastEventAt: lastAt, eventsLastHour, hints });
     } catch (err) {
       console.error("[costkey] Health check error:", err);
       res.status(500).json({ error: "Internal server error" });

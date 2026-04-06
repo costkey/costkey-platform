@@ -1,7 +1,8 @@
-import { useState } from "react";
-import { BarChart3, Route, FileCode, Activity, Search } from "lucide-react";
+import { useState, useEffect } from "react";
+import { BarChart3, Route, FileCode, Activity, Search, AlertCircle, X, ExternalLink } from "lucide-react";
 import AnomalyBanner from "../components/AnomalyBanner";
 import SummaryView from "../components/SummaryView";
+import { getHealth, type HealthHint } from "../api";
 import StatCards from "../components/StatCards";
 import CostTrend from "../components/CostTrend";
 import CallSitesTable from "../components/CallSitesTable";
@@ -27,6 +28,15 @@ export default function Dashboard() {
   const [activeTab, setActiveTab] = useState<Tab>("overview");
   const [search, setSearch] = useState("");
 
+  const [hints, setHints] = useState<HealthHint[]>([]);
+  const [dismissedHints, setDismissedHints] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    getHealth(projectId).then((h) => {
+      if (h.hints?.length) setHints(h.hints);
+    }).catch(() => {});
+  }, [projectId]);
+
   const summary = useSummary(projectId);
   const overview = useOverview(projectId);
   const callSites = useCallSites(projectId);
@@ -39,6 +49,28 @@ export default function Dashboard() {
   return (
     <main className="max-w-[1440px] mx-auto px-5 pt-3 pb-2 flex flex-col gap-0 min-h-[calc(100vh-56px)]">
       <AnomalyBanner projectId={projectId} />
+
+      {/* Setup hints banner */}
+      {hints.filter((h) => !dismissedHints.has(h.type)).map((hint) => (
+        <div key={hint.type} className="bg-amber-muted border border-amber/20 rounded-sm px-4 py-3 flex items-center gap-3 mb-3">
+          <AlertCircle size={16} className="text-amber shrink-0" />
+          <p className="text-sm text-text-primary flex-1">{hint.message}</p>
+          <a
+            href={`https://costkey.dev${hint.link}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-1 text-xs font-medium text-accent hover:text-accent-hover shrink-0"
+          >
+            Setup guide <ExternalLink size={11} />
+          </a>
+          <button
+            onClick={() => setDismissedHints((prev) => new Set([...prev, hint.type]))}
+            className="text-text-muted hover:text-text-secondary cursor-pointer shrink-0"
+          >
+            <X size={14} />
+          </button>
+        </div>
+      ))}
 
       {/* Tab bar */}
       <div className="flex items-center gap-0 border-b border-border mb-4">

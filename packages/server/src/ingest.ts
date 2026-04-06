@@ -45,6 +45,14 @@ const INTERNAL_FILE_PATTERNS = [
   "node_modules/node-fetch/",
   "node:internal/",
   "node:async_hooks",
+  // Frameworks
+  "node_modules/next/",
+  "node_modules/express/",
+  "node_modules/fastify/",
+  "node_modules/hono/",
+  "node_modules/koa/",
+  "node_modules/@vercel/",
+  "node_modules/@opentelemetry/",
   // CostKey SDK internals
   "costkey/packages/sdk/",
   "node_modules/costkey/",

@@ -227,6 +227,9 @@ const INTERNAL_FILE_PATTERNS = [
   "node_modules/@google/generative-ai/", "node_modules/@google/genai/", "node_modules/cohere-ai/",
   "node_modules/undici/", "node_modules/node-fetch/",
   "node:internal/", "node:async_hooks",
+  "node_modules/next/", "node_modules/express/", "node_modules/fastify/",
+  "node_modules/hono/", "node_modules/koa/", "node_modules/@vercel/",
+  "node_modules/@opentelemetry/",
   "costkey/packages/sdk/", "node_modules/costkey/", "site-packages/costkey/",
 ];
 

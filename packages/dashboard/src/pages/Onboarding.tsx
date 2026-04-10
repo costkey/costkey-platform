@@ -69,83 +69,42 @@ costkey.init(
         <div className="bg-surface-raised border border-border rounded-sm p-6">
           {waiting ? (
             <>
-              <h1 className="text-xl font-semibold text-text-primary mb-2">You're almost there</h1>
-              <p className="text-sm text-text-secondary mb-6">Add CostKey to your app. Every AI call will be tracked automatically.</p>
+              <h1 className="text-xl font-semibold text-text-primary mb-1">Add CostKey to your app</h1>
+              <p className="text-sm text-text-secondary mb-6">Paste this into Cursor, Claude Code, or any AI editor. It includes your DSN.</p>
 
-              {/* Step 1: DSN */}
-              <div className="mb-5">
-                <div className="flex items-center gap-2 mb-2">
-                  <div className="w-5 h-5 rounded-full bg-accent flex items-center justify-center text-black text-xs font-mono font-bold">1</div>
-                  <span className="text-sm font-medium text-text-primary">Your DSN</span>
-                </div>
-                <div className="flex items-center gap-2 bg-surface border border-border rounded-sm px-3 py-2.5">
-                  <code className="font-mono text-xs text-text-primary flex-1 truncate select-all">{dsn}</code>
+              {/* AI prompt */}
+              <div className="relative bg-surface border border-border rounded-sm px-4 py-3 mb-6">
+                <p className="font-mono text-xs text-text-secondary leading-relaxed pr-16">
+                  Install the costkey SDK and add costkey.init() with my DSN to my app's entry point.
+                </p>
+                <button
+                  onClick={() => copyText(cursorPrompt, "cursor")}
+                  className="absolute top-2.5 right-2.5 px-2.5 py-1 text-[10px] font-mono text-text-muted hover:text-text-primary border border-border hover:border-border-bright rounded-sm transition-colors cursor-pointer flex items-center gap-1"
+                >
+                  {copied === "cursor" ? <><Check size={10} className="text-green" /> Copied</> : <><Copy size={10} /> Copy</>}
+                </button>
+              </div>
+
+              {/* Code snippets side by side */}
+              <div className="grid grid-cols-2 gap-3 mb-6">
+                <div className="relative bg-surface border border-border rounded-sm p-3">
+                  <div className="text-[10px] font-mono text-text-muted uppercase tracking-wider mb-2">TypeScript</div>
+                  <pre className="font-mono text-[11px] text-text-primary leading-relaxed whitespace-pre overflow-x-auto">{tsSnippet}</pre>
                   <button
-                    onClick={() => copyText(dsn, "dsn")}
-                    className="shrink-0 text-text-muted hover:text-text-primary transition-colors cursor-pointer"
+                    onClick={() => copyText(tsSnippet, "ts")}
+                    className="absolute top-2.5 right-2.5 text-text-muted hover:text-text-primary transition-colors cursor-pointer"
                   >
-                    {copied === "dsn" ? <Check size={14} className="text-green" /> : <Copy size={14} />}
+                    {copied === "ts" ? <Check size={12} className="text-green" /> : <Copy size={12} />}
                   </button>
                 </div>
-              </div>
-
-              {/* Step 2: AI setup prompt */}
-              <div className="mb-6">
-                <div className="flex items-center gap-2 mb-2">
-                  <div className="w-5 h-5 rounded-full bg-accent flex items-center justify-center text-black text-xs font-mono font-bold">2</div>
-                  <span className="text-sm font-medium text-text-primary">Paste this into Cursor or Claude Code</span>
-                </div>
-                <div className="relative bg-surface border border-border rounded-sm px-4 py-3">
-                  <p className="font-mono text-xs text-text-secondary leading-relaxed pr-16">
-                    Install the costkey SDK and add costkey.init() with my DSN to my app's entry point.
-                  </p>
+                <div className="relative bg-surface border border-border rounded-sm p-3">
+                  <div className="text-[10px] font-mono text-text-muted uppercase tracking-wider mb-2">Python</div>
+                  <pre className="font-mono text-[11px] text-text-primary leading-relaxed whitespace-pre overflow-x-auto">{pySnippet}</pre>
                   <button
-                    onClick={() => copyText(cursorPrompt, "cursor")}
-                    className="absolute top-2.5 right-2.5 px-2.5 py-1 text-[10px] font-mono text-text-muted hover:text-text-primary border border-border hover:border-border-bright rounded-sm transition-colors cursor-pointer flex items-center gap-1"
+                    onClick={() => copyText(pySnippet, "py")}
+                    className="absolute top-2.5 right-2.5 text-text-muted hover:text-text-primary transition-colors cursor-pointer"
                   >
-                    {copied === "cursor" ? <><Check size={10} className="text-green" /> Copied</> : <><Copy size={10} /> Copy</>}
-                  </button>
-                </div>
-                <p className="text-[10px] text-text-muted mt-1.5">The copied prompt includes your DSN. Works with any AI editor.</p>
-              </div>
-
-              <div className="flex items-center gap-3 mb-4">
-                <div className="flex-1 h-px bg-border" />
-                <span className="text-[10px] font-mono text-text-muted uppercase tracking-wider">or manually</span>
-                <div className="flex-1 h-px bg-border" />
-              </div>
-
-              {/* Step 2: Manual Install */}
-              <div className="mb-6">
-                <div className="flex items-center gap-2 mb-2">
-                  <div className="w-5 h-5 rounded-full bg-surface-overlay border border-border flex items-center justify-center text-text-muted text-xs font-mono font-bold">2</div>
-                  <span className="text-sm font-medium text-text-primary">Add to your app manually</span>
-                </div>
-
-                <div className="flex gap-0 mb-0">
-                  <button
-                    onClick={() => setTab("py")}
-                    className={`px-4 py-2 text-xs font-mono border border-border cursor-pointer transition-colors rounded-tl-sm ${
-                      tab === "py" ? "bg-surface-overlay text-accent border-b-surface-overlay" : "bg-surface text-text-muted"
-                    }`}
-                  >Python</button>
-                  <button
-                    onClick={() => setTab("ts")}
-                    className={`px-4 py-2 text-xs font-mono border border-border cursor-pointer transition-colors rounded-tr-sm ${
-                      tab === "ts" ? "bg-surface-overlay text-accent border-b-surface-overlay" : "bg-surface text-text-muted"
-                    }`}
-                  >TypeScript</button>
-                </div>
-
-                <div className="relative bg-surface-overlay border border-border border-t-0 rounded-b-sm p-4">
-                  <pre className="font-mono text-xs text-text-primary leading-relaxed whitespace-pre overflow-x-auto">
-                    {tab === "ts" ? tsSnippet : pySnippet}
-                  </pre>
-                  <button
-                    onClick={() => copyText(tab === "ts" ? tsSnippet : pySnippet, tab)}
-                    className="absolute top-3 right-3 text-text-muted hover:text-accent transition-colors cursor-pointer"
-                  >
-                    {copied === tab ? <Check size={14} className="text-green" /> : <Copy size={14} />}
+                    {copied === "py" ? <Check size={12} className="text-green" /> : <Copy size={12} />}
                   </button>
                 </div>
               </div>

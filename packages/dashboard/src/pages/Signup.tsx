@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../contexts/AuthContext";
 
 function GitHubIcon({ size = 16 }: { size?: number }) {
@@ -13,6 +13,8 @@ function GitHubIcon({ size = 16 }: { size?: number }) {
 export default function Signup() {
   const { signup, error } = useAuth();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const inviteToken = searchParams.get("invite");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -22,10 +24,14 @@ export default function Signup() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSubmitting(true);
-    const result = await signup(email, password, name, orgName || name);
+    const result = await signup(email, password, name, orgName || name, inviteToken ?? undefined);
     setSubmitting(false);
     if (result) {
-      navigate(`/onboarding?dsn=${encodeURIComponent(result.dsn)}&project=${result.projectId}`);
+      if (result.joinedViaInvite) {
+        navigate("/");
+      } else {
+        navigate(`/onboarding?dsn=${encodeURIComponent(result.dsn)}&project=${result.projectId}`);
+      }
     }
   };
 

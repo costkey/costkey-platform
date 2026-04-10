@@ -43,8 +43,8 @@ export function createAuthRouter(): Router {
   // POST /auth/signup
   router.post("/auth/signup", async (req: Request, res: Response) => {
     try {
-      const { email, password, name, orgName } = req.body as {
-        email: string; password: string; name: string; orgName?: string;
+      const { email, password, name, orgName, inviteToken } = req.body as {
+        email: string; password: string; name: string; orgName?: string; inviteToken?: string;
       };
 
       if (!email || !password || !name) {
@@ -63,38 +63,93 @@ export function createAuthRouter(): Router {
       }
 
       const passwordHash = await bcrypt.hash(password, 10);
-      const orgId = `org_${randomId()}`;
       const userId = `usr_${randomId()}`;
-      const projectId = `proj_${randomId()}`;
-      const authKey = `ck_${randomId()}`;
-      const orgSlug = slugify(orgName ?? name);
-      const displayOrgName = orgName ?? `${name}'s Org`;
-
-      // Transaction via raw pool (drizzle transactions need different setup)
       const pool = getPool();
-      const client = await pool.connect();
-      try {
-        await client.query("BEGIN");
-        await client.query("INSERT INTO orgs (id, name, slug) VALUES ($1, $2, $3)", [orgId, displayOrgName, orgSlug]);
-        await client.query("INSERT INTO users (id, email, password_hash, name, org_id, role) VALUES ($1,$2,$3,$4,$5,$6)", [userId, email, passwordHash, name, orgId, "owner"]);
-        await client.query("INSERT INTO projects (id, name, org_id, auth_key) VALUES ($1,$2,$3,$4)", [projectId, "Default Project", orgId, authKey]);
-        await client.query("COMMIT");
-      } catch (err) {
-        await client.query("ROLLBACK");
-        throw err;
-      } finally {
-        client.release();
+
+      // Check if signing up via invite
+      let joinedViaInvite = false;
+      let orgId: string;
+      let role: string;
+      let projectId: string | null = null;
+      let authKey: string | null = null;
+      let displayOrgName: string;
+      let orgSlug: string;
+
+      if (inviteToken) {
+        const invite = await pool.query(
+          "SELECT * FROM team_invites WHERE token = $1 AND status = 'pending'",
+          [inviteToken],
+        );
+
+        if (invite.rows.length > 0) {
+          const inv = invite.rows[0];
+          if (new Date(inv.expires_at) > new Date()) {
+            // Join the inviter's org
+            orgId = inv.org_id;
+            role = inv.role;
+            joinedViaInvite = true;
+
+            const orgResult = await pool.query("SELECT name, slug FROM orgs WHERE id = $1", [orgId]);
+            displayOrgName = orgResult.rows[0]?.name ?? "Team";
+            orgSlug = orgResult.rows[0]?.slug ?? "team";
+
+            const client = await pool.connect();
+            try {
+              await client.query("BEGIN");
+              await client.query("INSERT INTO users (id, email, password_hash, name, org_id, role) VALUES ($1,$2,$3,$4,$5,$6)", [userId, email, passwordHash, name, orgId, role]);
+              await client.query("UPDATE team_invites SET status = 'accepted' WHERE id = $1", [inv.id]);
+              await client.query("COMMIT");
+            } catch (err) {
+              await client.query("ROLLBACK");
+              throw err;
+            } finally {
+              client.release();
+            }
+
+            // Get first project for DSN
+            const proj = await pool.query("SELECT id, auth_key FROM projects WHERE org_id = $1 LIMIT 1", [orgId]);
+            if (proj.rows.length > 0) {
+              projectId = proj.rows[0].id;
+              authKey = proj.rows[0].auth_key;
+            }
+          }
+        }
       }
 
-      const token = jwt.sign({ userId, orgId, role: "owner" }, JWT_SECRET, { expiresIn: JWT_EXPIRES });
+      if (!joinedViaInvite) {
+        // Normal signup — create new org + project
+        orgId = `org_${randomId()}`;
+        role = "owner";
+        projectId = `proj_${randomId()}`;
+        authKey = `ck_${randomId()}`;
+        orgSlug = slugify(orgName ?? name);
+        displayOrgName = orgName ?? `${name}'s Org`;
+
+        const client = await pool.connect();
+        try {
+          await client.query("BEGIN");
+          await client.query("INSERT INTO orgs (id, name, slug) VALUES ($1, $2, $3)", [orgId, displayOrgName, orgSlug]);
+          await client.query("INSERT INTO users (id, email, password_hash, name, org_id, role) VALUES ($1,$2,$3,$4,$5,$6)", [userId, email, passwordHash, name, orgId, "owner"]);
+          await client.query("INSERT INTO projects (id, name, org_id, auth_key) VALUES ($1,$2,$3,$4)", [projectId, "Default Project", orgId, authKey]);
+          await client.query("COMMIT");
+        } catch (err) {
+          await client.query("ROLLBACK");
+          throw err;
+        } finally {
+          client.release();
+        }
+      }
+
+      const token = jwt.sign({ userId, orgId: orgId!, role }, JWT_SECRET, { expiresIn: JWT_EXPIRES });
       setTokenCookie(res, token);
 
       res.status(201).json({
-        user: { id: userId, email, name, orgId, role: "owner" },
-        org: { id: orgId, name: displayOrgName, slug: orgSlug },
-        project: { id: projectId, name: "Default Project", authKey },
-        dsn: `https://${authKey}@app.costkey.dev/${projectId}`,
+        user: { id: userId, email, name, orgId: orgId!, role },
+        org: { id: orgId!, name: displayOrgName!, slug: orgSlug! },
+        project: projectId ? { id: projectId, name: "Default Project", authKey } : null,
+        dsn: authKey ? `https://${authKey}@app.costkey.dev/${projectId}` : null,
         token,
+        joinedViaInvite,
       });
     } catch (err) {
       console.error("[costkey] Signup error:", err);

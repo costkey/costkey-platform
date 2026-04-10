@@ -29,7 +29,7 @@ interface AuthState {
   loading: boolean;
   error: string | null;
   login: (email: string, password: string) => Promise<boolean>;
-  signup: (email: string, password: string, name: string, orgName: string) => Promise<{ dsn: string; projectId: string } | null>;
+  signup: (email: string, password: string, name: string, orgName: string, inviteToken?: string) => Promise<{ dsn: string; projectId: string; joinedViaInvite?: boolean } | null>;
   logout: () => Promise<void>;
   refresh: () => Promise<void>;
   currentProjectId: string | null;
@@ -108,15 +108,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const signup = async (
-    email: string, password: string, name: string, orgName: string,
-  ): Promise<{ dsn: string; projectId: string } | null> => {
+    email: string, password: string, name: string, orgName: string, inviteToken?: string,
+  ): Promise<{ dsn: string; projectId: string; joinedViaInvite?: boolean } | null> => {
     setError(null);
     try {
       const res = await fetch("/auth/signup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ email, password, name, orgName }),
+        body: JSON.stringify({ email, password, name, orgName, inviteToken }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -124,7 +124,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return null;
       }
       await refresh();
-      return { dsn: data.dsn, projectId: data.project.id };
+      return {
+        dsn: data.dsn ?? "",
+        projectId: data.project?.id ?? "",
+        joinedViaInvite: data.joinedViaInvite ?? false,
+      };
     } catch {
       setError("Network error");
       return null;

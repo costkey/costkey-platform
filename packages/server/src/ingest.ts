@@ -470,5 +470,76 @@ export function createIngestRouter(pool: pg.Pool): Router {
     }
   });
 
+  /**
+   * GET /api/v1/projects/:projectId/config — SDK configuration endpoint
+   *
+   * Returns custom provider configurations for this project.
+   * Uses Bearer auth (auth key) — called by the SDK, not the dashboard.
+   *
+   * SDK integration plan:
+   * - On init, SDK fetches GET /config using the auth key
+   * - Parses the providers list
+   * - For each custom provider, calls registerExtractor() with a dynamically created extractor:
+   *   - Matches the hostname
+   *   - Extracts usage using the JSON paths (e.g., "usage.prompt_tokens" → walk the object)
+   *   - Extracts model using the model path
+   * - Caches the config with a 5-minute TTL, refreshes automatically
+   * - If fetch fails, logs warning but doesn't block — uses whatever extractors are already registered
+   */
+  router.get("/api/v1/projects/:projectId/config", async (req, res) => {
+    try {
+      const authHeader = req.headers.authorization;
+      if (!authHeader?.startsWith("Bearer ")) {
+        res.status(401).json({ error: "Missing or invalid authorization" });
+        return;
+      }
+
+      const authKey = authHeader.slice(7);
+      const projResult = await pool.query(
+        "SELECT id FROM projects WHERE auth_key = $1",
+        [authKey],
+      );
+
+      if (projResult.rows.length === 0) {
+        res.status(401).json({ error: "Invalid auth key" });
+        return;
+      }
+
+      const projectId = projResult.rows[0].id;
+      if (projectId !== req.params["projectId"]) {
+        res.status(403).json({ error: "Auth key does not match project" });
+        return;
+      }
+
+      const result = await pool.query(
+        `SELECT id, name, hostname, usage_input_path, usage_output_path, model_path
+        FROM custom_providers WHERE project_id = $1 AND enabled = TRUE
+        ORDER BY created_at ASC`,
+        [projectId],
+      );
+
+      const providers = result.rows.map((row: {
+        id: string; name: string; hostname: string;
+        usage_input_path: string; usage_output_path: string; model_path: string;
+      }) => ({
+        id: row.id,
+        name: row.name,
+        hostname: row.hostname,
+        usageInputPath: row.usage_input_path,
+        usageOutputPath: row.usage_output_path,
+        modelPath: row.model_path,
+      }));
+
+      res.json({
+        status: "ok",
+        serverTime: new Date().toISOString(),
+        providers,
+      });
+    } catch (err) {
+      console.error("[costkey] Config endpoint error:", err);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
   return router;
 }

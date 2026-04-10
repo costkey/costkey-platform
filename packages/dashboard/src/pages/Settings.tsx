@@ -1,11 +1,13 @@
 import { useState, useEffect } from "react";
-import { Settings as SettingsIcon, Users, Key, Bell, Copy, Check, RotateCw, LogOut, Plus, Trash2, Send, Shield } from "lucide-react";
+import { Settings as SettingsIcon, Users, Key, Bell, Copy, Check, RotateCw, LogOut, Plus, Trash2, Send, Shield, Server, Pencil, X } from "lucide-react";
 import { useAuth } from "../contexts/AuthContext";
+import { getCustomProviders, createCustomProvider, updateCustomProvider, deleteCustomProvider } from "../api";
+import type { CustomProvider } from "../api";
 
 export default function Settings() {
   const { user, org, projects, members, logout, refresh } = useAuth();
   const [copied, setCopied] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<"project" | "team" | "alerts" | "account">("project");
+  const [activeTab, setActiveTab] = useState<"project" | "team" | "providers" | "alerts" | "account">("project");
 
   const copy = (text: string, key: string) => {
     navigator.clipboard.writeText(text);
@@ -16,6 +18,7 @@ export default function Settings() {
   const tabs = [
     { id: "project" as const, label: "Projects & Keys", icon: <Key size={14} /> },
     { id: "team" as const, label: "Team", icon: <Users size={14} /> },
+    { id: "providers" as const, label: "Custom Providers", icon: <Server size={14} /> },
     { id: "alerts" as const, label: "Alerts", icon: <Bell size={14} /> },
     { id: "account" as const, label: "Account", icon: <SettingsIcon size={14} /> },
   ];
@@ -40,6 +43,7 @@ export default function Settings() {
 
       {activeTab === "project" && <ProjectsTab projects={projects} copied={copied} copy={copy} refresh={refresh} />}
       {activeTab === "team" && <TeamTab org={org} members={members} user={user} refresh={refresh} />}
+      {activeTab === "providers" && <CustomProvidersTab projects={projects} />}
       {activeTab === "alerts" && <AlertsTab />}
       {activeTab === "account" && <AccountTab user={user} org={org} logout={logout} />}
     </div>
@@ -388,6 +392,235 @@ function AlertsTab() {
           <Bell size={24} className="text-text-muted mx-auto mb-2" />
           <p className="text-sm text-text-muted">No alerts configured yet</p>
           <p className="text-xs text-text-muted mt-1">Create an alert above to get notified when costs exceed a threshold</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Custom Providers Tab ──
+function CustomProvidersTab({ projects }: {
+  projects: Array<{ id: string; name: string }>;
+}) {
+  const [selectedProject, setSelectedProject] = useState(projects[0]?.id ?? "");
+  const [providers, setProviders] = useState<CustomProvider[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+
+  // Form state
+  const [formName, setFormName] = useState("");
+  const [formHostname, setFormHostname] = useState("");
+  const [formInputPath, setFormInputPath] = useState("usage.prompt_tokens");
+  const [formOutputPath, setFormOutputPath] = useState("usage.completion_tokens");
+  const [formModelPath, setFormModelPath] = useState("model");
+  const [saving, setSaving] = useState(false);
+
+  const resetForm = () => {
+    setFormName("");
+    setFormHostname("");
+    setFormInputPath("usage.prompt_tokens");
+    setFormOutputPath("usage.completion_tokens");
+    setFormModelPath("model");
+    setEditingId(null);
+  };
+
+  const loadProviders = async (projectId: string) => {
+    if (!projectId) return;
+    setLoading(true);
+    try {
+      const data = await getCustomProviders(projectId);
+      setProviders(data.providers);
+    } catch {
+      setProviders([]);
+    }
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    if (selectedProject) void loadProviders(selectedProject);
+  }, [selectedProject]);
+
+  const handleSave = async () => {
+    if (!formName.trim() || !formHostname.trim()) return;
+    setSaving(true);
+    try {
+      if (editingId) {
+        await updateCustomProvider(selectedProject, editingId, {
+          name: formName,
+          hostname: formHostname,
+          usageInputPath: formInputPath,
+          usageOutputPath: formOutputPath,
+          modelPath: formModelPath,
+        });
+      } else {
+        await createCustomProvider(selectedProject, {
+          name: formName,
+          hostname: formHostname,
+          usageInputPath: formInputPath,
+          usageOutputPath: formOutputPath,
+          modelPath: formModelPath,
+        });
+      }
+      resetForm();
+      await loadProviders(selectedProject);
+    } catch {
+      // ignore
+    }
+    setSaving(false);
+  };
+
+  const handleEdit = (p: CustomProvider) => {
+    setEditingId(p.id);
+    setFormName(p.name);
+    setFormHostname(p.hostname);
+    setFormInputPath(p.usage_input_path);
+    setFormOutputPath(p.usage_output_path);
+    setFormModelPath(p.model_path);
+  };
+
+  const handleDelete = async (providerId: string, name: string) => {
+    if (!confirm(`Delete custom provider "${name}"?`)) return;
+    await deleteCustomProvider(selectedProject, providerId);
+    await loadProviders(selectedProject);
+  };
+
+  const handleToggle = async (providerId: string, enabled: boolean) => {
+    await updateCustomProvider(selectedProject, providerId, { enabled });
+    setProviders((prev) => prev.map((p) => p.id === providerId ? { ...p, enabled } : p));
+  };
+
+  return (
+    <div className="flex flex-col gap-4">
+      {/* Project selector */}
+      {projects.length > 1 && (
+        <div className="flex items-center gap-3">
+          <label className="text-xs font-mono text-text-muted uppercase tracking-wider">Project</label>
+          <select
+            value={selectedProject}
+            onChange={(e) => { setSelectedProject(e.target.value); resetForm(); }}
+            className="bg-surface border border-border rounded-sm px-3 py-2 text-sm text-text-secondary font-mono cursor-pointer"
+          >
+            {projects.map((p) => (
+              <option key={p.id} value={p.id}>{p.name}</option>
+            ))}
+          </select>
+        </div>
+      )}
+
+      {/* Add / Edit form */}
+      <div className="bg-surface-raised border border-border rounded-sm p-5">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-medium text-text-primary">
+            {editingId ? "Edit Provider" : "Add Custom Provider"}
+          </h3>
+          {editingId && (
+            <button onClick={resetForm} className="text-text-muted hover:text-text-secondary cursor-pointer">
+              <X size={14} />
+            </button>
+          )}
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="block text-xs font-mono text-text-muted uppercase tracking-wider mb-1">Name</label>
+            <input
+              type="text" value={formName} onChange={(e) => setFormName(e.target.value)}
+              placeholder="Internal LLM"
+              className="w-full bg-surface border border-border rounded-sm px-3 py-2 text-sm text-text-primary font-mono focus:outline-none focus:border-accent"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-mono text-text-muted uppercase tracking-wider mb-1">Hostname</label>
+            <input
+              type="text" value={formHostname} onChange={(e) => setFormHostname(e.target.value)}
+              placeholder="ai.internal.company.com"
+              className="w-full bg-surface border border-border rounded-sm px-3 py-2 text-sm text-text-primary font-mono focus:outline-none focus:border-accent"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-mono text-text-muted uppercase tracking-wider mb-1">Input Tokens Path</label>
+            <input
+              type="text" value={formInputPath} onChange={(e) => setFormInputPath(e.target.value)}
+              className="w-full bg-surface border border-border rounded-sm px-3 py-2 text-sm text-text-primary font-mono focus:outline-none focus:border-accent"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-mono text-text-muted uppercase tracking-wider mb-1">Output Tokens Path</label>
+            <input
+              type="text" value={formOutputPath} onChange={(e) => setFormOutputPath(e.target.value)}
+              className="w-full bg-surface border border-border rounded-sm px-3 py-2 text-sm text-text-primary font-mono focus:outline-none focus:border-accent"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-mono text-text-muted uppercase tracking-wider mb-1">Model Path</label>
+            <input
+              type="text" value={formModelPath} onChange={(e) => setFormModelPath(e.target.value)}
+              className="w-full bg-surface border border-border rounded-sm px-3 py-2 text-sm text-text-primary font-mono focus:outline-none focus:border-accent"
+            />
+          </div>
+          <div className="flex items-end">
+            <button
+              onClick={handleSave}
+              disabled={saving || !formName.trim() || !formHostname.trim()}
+              className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-white font-mono text-xs px-4 py-2.5 rounded-sm transition-colors disabled:opacity-50 cursor-pointer"
+            >
+              <Plus size={13} /> {editingId ? "Update" : "Add Provider"}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Providers list */}
+      {loading ? (
+        <div className="text-center text-text-muted text-sm py-8">Loading...</div>
+      ) : providers.length > 0 ? (
+        <div className="bg-surface-raised border border-border rounded-sm">
+          <div className="p-4 border-b border-border">
+            <h3 className="text-sm font-medium text-text-secondary uppercase tracking-wider">
+              Configured Providers
+            </h3>
+          </div>
+          <div className="divide-y divide-border/50">
+            {providers.map((p) => (
+              <div key={p.id} className="flex items-center gap-4 px-4 py-3">
+                <button
+                  onClick={() => handleToggle(p.id, !p.enabled)}
+                  className={`w-8 h-5 rounded-full relative cursor-pointer transition-colors flex-shrink-0 ${
+                    p.enabled ? "bg-green" : "bg-surface-overlay border border-border"
+                  }`}
+                >
+                  <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
+                    p.enabled ? "left-3.5" : "left-0.5"
+                  }`} />
+                </button>
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium text-text-primary">{p.name}</div>
+                  <div className="font-mono text-xs text-text-muted truncate">{p.hostname}</div>
+                </div>
+                <div className="hidden sm:block text-right">
+                  <div className="font-mono text-[10px] text-text-muted">
+                    in: {p.usage_input_path} / out: {p.usage_output_path}
+                  </div>
+                  <div className="font-mono text-[10px] text-text-muted">model: {p.model_path}</div>
+                </div>
+                <div className="flex items-center gap-1">
+                  <button onClick={() => handleEdit(p)}
+                    className="text-text-muted hover:text-accent transition-colors cursor-pointer p-1" title="Edit">
+                    <Pencil size={13} />
+                  </button>
+                  <button onClick={() => handleDelete(p.id, p.name)}
+                    className="text-text-muted hover:text-red transition-colors cursor-pointer p-1" title="Delete">
+                    <Trash2 size={13} />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <div className="bg-surface-raised border border-border border-dashed rounded-sm p-8 text-center">
+          <Server size={24} className="text-text-muted mx-auto mb-2" />
+          <p className="text-sm text-text-muted">No custom providers configured</p>
+          <p className="text-xs text-text-muted mt-1">Add a provider above to track usage from custom or self-hosted AI endpoints</p>
         </div>
       )}
     </div>

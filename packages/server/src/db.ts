@@ -166,6 +166,19 @@ export async function initDatabase(): Promise<void> {
       PRIMARY KEY (project_id)
     );
 
+    CREATE TABLE IF NOT EXISTS custom_providers (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      hostname TEXT NOT NULL,
+      usage_input_path TEXT DEFAULT 'usage.prompt_tokens',
+      usage_output_path TEXT DEFAULT 'usage.completion_tokens',
+      model_path TEXT DEFAULT 'model',
+      enabled BOOLEAN DEFAULT TRUE,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_custom_providers_project ON custom_providers(project_id);
+
     CREATE TABLE IF NOT EXISTS migrations (
       name TEXT PRIMARY KEY,
       ran_at TIMESTAMPTZ DEFAULT NOW()

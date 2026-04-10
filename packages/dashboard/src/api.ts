@@ -279,6 +279,63 @@ export async function getHealth(projectId: string): Promise<PipelineHealth> {
   return get(`/projects/${projectId}/health`);
 }
 
+// ── Custom Providers ──
+
+export interface CustomProvider {
+  id: string;
+  name: string;
+  hostname: string;
+  usage_input_path: string;
+  usage_output_path: string;
+  model_path: string;
+  enabled: boolean;
+  created_at: string;
+}
+
+export async function getCustomProviders(
+  projectId: string,
+): Promise<{ providers: CustomProvider[] }> {
+  const res = await fetch(`${API_BASE}/projects/${projectId}/providers`, { credentials: "include" });
+  if (!res.ok) throw new Error(`API error: ${res.status}`);
+  return res.json();
+}
+
+export async function createCustomProvider(
+  projectId: string,
+  data: { name: string; hostname: string; usageInputPath?: string; usageOutputPath?: string; modelPath?: string },
+): Promise<CustomProvider> {
+  const res = await fetch(`${API_BASE}/projects/${projectId}/providers`, {
+    method: "POST", credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) throw new Error(`API error: ${res.status}`);
+  return res.json();
+}
+
+export async function updateCustomProvider(
+  projectId: string,
+  providerId: string,
+  data: Partial<{ name: string; hostname: string; usageInputPath: string; usageOutputPath: string; modelPath: string; enabled: boolean }>,
+): Promise<void> {
+  const res = await fetch(`${API_BASE}/projects/${projectId}/providers/${providerId}`, {
+    method: "PATCH", credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) throw new Error(`API error: ${res.status}`);
+}
+
+export async function deleteCustomProvider(
+  projectId: string,
+  providerId: string,
+): Promise<void> {
+  const res = await fetch(`${API_BASE}/projects/${projectId}/providers/${providerId}`, {
+    method: "DELETE", credentials: "include",
+  });
+  if (!res.ok) throw new Error(`API error: ${res.status}`);
+}
+
 export async function getTrends(
   projectId: string,
   bucket?: "hour" | "day",

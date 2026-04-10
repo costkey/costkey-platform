@@ -115,6 +115,20 @@ export const alerts = pgTable("alerts", {
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
 });
 
+export const customProviders = pgTable("custom_providers", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  hostname: text("hostname").notNull(),
+  usageInputPath: text("usage_input_path").default("usage.prompt_tokens"),
+  usageOutputPath: text("usage_output_path").default("usage.completion_tokens"),
+  modelPath: text("model_path").default("model"),
+  enabled: boolean("enabled").default(true),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+}, (t) => [
+  index("idx_custom_providers_project").on(t.projectId),
+]);
+
 export const alertHistory = pgTable("alert_history", {
   id: text("id").primaryKey(),
   alertId: text("alert_id").notNull().references(() => alerts.id),

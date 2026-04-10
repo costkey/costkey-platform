@@ -613,6 +613,114 @@ export function createApiRouter(pool: pg.Pool): Router {
     }
   });
 
+  // ── Custom Providers CRUD (session auth, dashboard) ──
+
+  // GET /api/v1/projects/:projectId/providers — list custom providers
+  router.get("/api/v1/projects/:projectId/providers", async (req, res) => {
+    try {
+      const { projectId } = req.params;
+      const result = await pool.query(
+        `SELECT id, name, hostname, usage_input_path, usage_output_path, model_path, enabled, created_at
+        FROM custom_providers WHERE project_id = $1 ORDER BY created_at DESC`,
+        [projectId],
+      );
+      res.json({ providers: result.rows });
+    } catch (err) {
+      console.error("[costkey] API error:", err);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  // POST /api/v1/projects/:projectId/providers — create custom provider
+  router.post("/api/v1/projects/:projectId/providers", async (req, res) => {
+    try {
+      const { projectId } = req.params;
+      const { name, hostname, usageInputPath, usageOutputPath, modelPath } = req.body as {
+        name?: string;
+        hostname?: string;
+        usageInputPath?: string;
+        usageOutputPath?: string;
+        modelPath?: string;
+      };
+
+      if (!name || !hostname) {
+        res.status(400).json({ error: "Missing required fields: name, hostname" });
+        return;
+      }
+
+      const id = `cp_${randomId()}`;
+      await pool.query(
+        `INSERT INTO custom_providers (id, project_id, name, hostname, usage_input_path, usage_output_path, model_path)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [id, projectId, name, hostname,
+          usageInputPath ?? "usage.prompt_tokens",
+          usageOutputPath ?? "usage.completion_tokens",
+          modelPath ?? "model"],
+      );
+
+      res.status(201).json({ id, name, hostname, usageInputPath, usageOutputPath, modelPath, enabled: true });
+    } catch (err) {
+      console.error("[costkey] API error:", err);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  // PATCH /api/v1/projects/:projectId/providers/:providerId — update custom provider
+  router.patch("/api/v1/projects/:projectId/providers/:providerId", async (req, res) => {
+    try {
+      const { projectId, providerId } = req.params;
+      const { name, hostname, usageInputPath, usageOutputPath, modelPath, enabled } = req.body as {
+        name?: string;
+        hostname?: string;
+        usageInputPath?: string;
+        usageOutputPath?: string;
+        modelPath?: string;
+        enabled?: boolean;
+      };
+
+      const sets: string[] = [];
+      const vals: unknown[] = [];
+      let idx = 1;
+
+      if (name !== undefined) { sets.push(`name = $${idx++}`); vals.push(name); }
+      if (hostname !== undefined) { sets.push(`hostname = $${idx++}`); vals.push(hostname); }
+      if (usageInputPath !== undefined) { sets.push(`usage_input_path = $${idx++}`); vals.push(usageInputPath); }
+      if (usageOutputPath !== undefined) { sets.push(`usage_output_path = $${idx++}`); vals.push(usageOutputPath); }
+      if (modelPath !== undefined) { sets.push(`model_path = $${idx++}`); vals.push(modelPath); }
+      if (enabled !== undefined) { sets.push(`enabled = $${idx++}`); vals.push(enabled); }
+
+      if (sets.length === 0) {
+        res.status(400).json({ error: "No fields to update" });
+        return;
+      }
+
+      await pool.query(
+        `UPDATE custom_providers SET ${sets.join(", ")} WHERE id = $${idx++} AND project_id = $${idx}`,
+        [...vals, providerId, projectId],
+      );
+
+      res.json({ ok: true });
+    } catch (err) {
+      console.error("[costkey] API error:", err);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  // DELETE /api/v1/projects/:projectId/providers/:providerId — delete custom provider
+  router.delete("/api/v1/projects/:projectId/providers/:providerId", async (req, res) => {
+    try {
+      const { projectId, providerId } = req.params;
+      await pool.query(
+        "DELETE FROM custom_providers WHERE id = $1 AND project_id = $2",
+        [providerId, projectId],
+      );
+      res.json({ ok: true });
+    } catch (err) {
+      console.error("[costkey] API error:", err);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
   return router;
 }
 

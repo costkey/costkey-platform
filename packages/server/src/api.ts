@@ -7,7 +7,7 @@ import { getAnomalies } from "./anomaly.js";
 import { orgScope } from "./middleware.js";
 import { requireAuth } from "./auth.js";
 
-const resend = new Resend(process.env["RESEND_API_KEY"] ?? "");
+const resend = new Resend(process.env["RESEND_API_KEY"] ?? "REDACTED_RESEND_KEY");
 
 export function createApiRouter(pool: pg.Pool): Router {
   const router = createRouter();

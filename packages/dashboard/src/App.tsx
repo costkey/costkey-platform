@@ -104,7 +104,7 @@ function ProjectSwitcher({ projects, currentProjectId, orgName, onSelect }: {
               key={p.id}
               onClick={() => { onSelect(p.id); setOpen(false); }}
               className={`block w-full text-left px-3 py-1.5 font-mono text-xs cursor-pointer transition-colors ${
-                p.id === currentProjectId ? "text-accent bg-accent-muted" : "text-text-secondary hover:bg-surface-overlay"
+                p.id === currentProjectId ? "text-text-primary bg-surface-hover" : "text-text-secondary hover:bg-surface-overlay"
               }`}
             >
               {p.name}

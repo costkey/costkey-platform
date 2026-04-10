@@ -33,7 +33,7 @@ export default function Settings() {
             key={tab.id}
             onClick={() => setActiveTab(tab.id)}
             className={`flex items-center gap-2 px-4 py-3 text-xs font-mono uppercase tracking-wider transition-colors cursor-pointer border-b-2 -mb-px ${
-              activeTab === tab.id ? "text-accent border-accent" : "text-text-muted border-transparent hover:text-text-secondary"
+              activeTab === tab.id ? "text-text-primary border-text-primary" : "text-text-muted border-transparent hover:text-text-secondary"
             }`}
           >
             {tab.icon} {tab.label}

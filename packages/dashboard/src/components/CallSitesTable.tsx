@@ -100,7 +100,7 @@ function CallSiteRow({ row, maxCost, projectId, onSelectEvent }: {
         <div className="w-24 shrink-0">
           <div className="relative h-2 bg-surface-overlay rounded-sm overflow-hidden">
             <div
-              className="cost-bar absolute inset-y-0 left-0 bg-accent rounded-sm"
+              className="cost-bar absolute inset-y-0 left-0 bg-text-primary/20 rounded-sm"
               style={{ width: `${(row.totalCost / maxCost) * 100}%` }}
             />
           </div>
@@ -230,7 +230,7 @@ export default function CallSitesTable({ callSites, loading, search = "", projec
       <button
         onClick={() => setSortKey(field)}
         className={`flex items-center gap-1 text-xs uppercase tracking-wider font-medium cursor-pointer transition-colors ${
-          active ? "text-accent" : "text-text-muted hover:text-text-secondary"
+          active ? "text-text-primary" : "text-text-muted hover:text-text-secondary"
         }`}
       >
         {label}

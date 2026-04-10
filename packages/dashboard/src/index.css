@@ -3,18 +3,18 @@
 @theme {
   --color-surface: #050505;
   --color-surface-raised: #0a0a0a;
-  --color-surface-overlay: #141414;
-  --color-surface-hover: #1a1a1a;
-  --color-border: #1e1e1e;
-  --color-border-bright: #2a2a2a;
+  --color-surface-overlay: #111111;
+  --color-surface-hover: #171717;
+  --color-border: rgba(255, 255, 255, 0.06);
+  --color-border-bright: rgba(255, 255, 255, 0.10);
   --radius-default: 8px;
-  --color-text-primary: #ededef;
-  --color-text-secondary: #a0a0a8;
-  --color-text-muted: #5c5c66;
+  --color-text-primary: #fafafa;
+  --color-text-secondary: #a1a1aa;
+  --color-text-muted: #52525b;
   --color-accent: #6366f1;
   --color-accent-hover: #818cf8;
   --color-accent-muted: rgba(99, 102, 241, 0.10);
-  --color-accent-glow: rgba(99, 102, 241, 0.20);
+  --color-accent-glow: rgba(99, 102, 241, 0.15);
   --color-green: #34d399;
   --color-green-muted: rgba(52, 211, 153, 0.10);
   --color-amber: #fbbf24;

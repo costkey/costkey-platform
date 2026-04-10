@@ -83,7 +83,7 @@ export default function Dashboard() {
               onClick={() => { setActiveTab(tab.id); setSearch(""); }}
               className={`flex items-center gap-2 px-4 py-3 text-sm font-medium cursor-pointer transition-colors border-b-2 -mb-px ${
                 activeTab === tab.id
-                  ? "text-accent border-accent"
+                  ? "text-text-primary border-text-primary"
                   : "text-text-muted hover:text-text-secondary border-transparent"
               }`}
             >

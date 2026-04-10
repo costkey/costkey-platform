@@ -86,7 +86,7 @@ export default function CostTrend({ trends, loading, timeRange, onTimeRangeChang
               onClick={() => onTimeRangeChange(r.id)}
               className={`px-2.5 py-1 text-[11px] font-mono font-medium rounded-sm cursor-pointer transition-colors ${
                 timeRange === r.id
-                  ? "bg-accent text-white"
+                  ? "bg-surface-hover text-text-primary"
                   : "text-text-muted hover:text-text-secondary"
               }`}
             >
@@ -113,13 +113,13 @@ export default function CostTrend({ trends, loading, timeRange, onTimeRangeChang
             tickFormatter={(v: number) => `$${v.toFixed(2)}`}
             dx={-4}
           />
-          <Tooltip content={<CustomTooltip />} cursor={{ fill: "rgba(99, 102, 241, 0.06)" }} />
+          <Tooltip content={<CustomTooltip />} cursor={{ fill: "rgba(255, 255, 255, 0.02)" }} />
           <Bar
             dataKey="cost"
-            fill="#6366f1"
+            fill="#fafafa"
             radius={[3, 3, 0, 0]}
             maxBarSize={40}
-            opacity={0.85}
+            opacity={0.15}
           />
         </BarChart>
       </ResponsiveContainer>

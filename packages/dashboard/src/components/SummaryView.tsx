@@ -111,7 +111,7 @@ export default function SummaryView({ summary, loading }: Props) {
       <div className={`grid gap-5 ${summary.byRelease?.length ? "grid-cols-[1fr_1fr]" : "grid-cols-1"}`}>
         {/* Headline card */}
         <div className="animate-in bg-surface-raised border border-border rounded-sm p-5 relative overflow-hidden flex flex-col justify-center">
-          <div className="absolute top-0 left-0 right-0 h-px bg-accent-muted" style={{ opacity: 0.6 }} />
+          <div className="absolute top-0 left-0 right-0 h-px bg-border-bright" />
           <p className="text-text-muted text-sm font-medium mb-1">
             Your AI spend this month
           </p>
@@ -155,7 +155,7 @@ export default function SummaryView({ summary, loading }: Props) {
             </div>
             {summary.byRelease.map((rel) => (
               <div key={rel.release} className="flex items-center gap-2 py-1.5 border-b border-border/50 last:border-0">
-                <span className="font-mono text-sm text-accent w-24 truncate shrink-0" title={rel.release}>
+                <span className="font-mono text-sm text-text-primary w-24 truncate shrink-0" title={rel.release}>
                   {formatReleaseName(rel.release)}
                 </span>
                 <span className="font-mono text-sm text-text-primary w-20 text-right shrink-0">
@@ -200,7 +200,7 @@ export default function SummaryView({ summary, loading }: Props) {
                     </span>
                     <div className="flex-1 h-2.5 bg-surface-overlay rounded-sm overflow-hidden">
                       <div
-                        className="h-full bg-accent rounded-sm cost-bar"
+                        className="h-full bg-text-primary/20 rounded-sm cost-bar"
                         style={{ width: `${barWidth}%`, animationDelay: `${i * 80}ms` }}
                       />
                     </div>

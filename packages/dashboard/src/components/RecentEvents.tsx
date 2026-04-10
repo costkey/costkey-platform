@@ -42,63 +42,81 @@ export default function RecentEvents({ events, loading, search = "", projectId }
   return (
     <>
       <div className="bg-surface-raised border border-border rounded-sm">
-        <div className="flex items-center gap-3 px-5 py-3 border-b border-border text-xs uppercase tracking-wider font-medium text-text-muted">
-          <div className="w-5" />
-          <div className="w-36">Time</div>
-          <div className="w-48">Model</div>
-          <div className="flex-1">Function</div>
-          <div className="w-20 text-right">Tokens</div>
-          <div className="w-20 text-right">Latency</div>
-          <div className="w-16 text-right">Cost</div>
-        </div>
+        <table className="w-full">
+          <thead>
+            <tr className="border-b border-border text-xs uppercase tracking-wider font-medium text-text-muted">
+              <th className="text-left px-5 py-3 w-[3%]" />
+              <th className="text-left px-2 py-3 w-[18%]">Time</th>
+              <th className="text-left px-2 py-3 w-[18%]">Model</th>
+              <th className="text-left px-2 py-3">Function</th>
+              <th className="text-right px-2 py-3 w-[10%]">Tokens</th>
+              <th className="text-right px-2 py-3 w-[10%]">Latency</th>
+              <th className="text-right px-5 py-3 w-[10%]">Cost</th>
+            </tr>
+          </thead>
+        </table>
 
-        <div className="max-h-[calc(100vh-200px)] overflow-y-auto">
-          {filtered.length === 0 && (
-            <div className="px-4 py-8 text-center text-sm text-text-muted">
-              {q ? "No matching events" : "No events yet"}
-            </div>
-          )}
-          {filtered.map((event) => {
-            const frames = parseFrames(event.call_site_frames);
-            const best = findBusinessFrame(frames);
-            const fnName = cleanFunctionName(best?.functionName);
+        <div className="max-h-[calc(100vh-220px)] overflow-y-auto">
+          <table className="w-full">
+            <tbody>
+              {filtered.length === 0 && (
+                <tr>
+                  <td colSpan={7} className="px-4 py-8 text-center text-sm text-text-muted">
+                    {q ? "No matching events" : "No events yet"}
+                  </td>
+                </tr>
+              )}
+              {filtered.map((event) => {
+                const frames = parseFrames(event.call_site_frames);
+                const best = findBusinessFrame(frames);
+                const fnName = cleanFunctionName(best?.functionName);
 
-            return (
-              <button
-                key={event.id}
-                onClick={() => setSelectedEvent(event)}
-                className="w-full flex items-center gap-3 px-5 py-3 row-hover row-striped cursor-pointer text-left border-b border-border/20 last:border-b-0"
-              >
-                <ProviderLogo provider={event.provider} size={14} />
-
-                <div className="font-mono text-xs text-text-muted w-36 shrink-0">
-                  <span>{new Date(event.timestamp).toLocaleDateString("en-US", { month: "short", day: "numeric" })}</span>
-                  <span className="text-text-muted/50 ml-1">{new Date(event.timestamp).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false })}</span>
-                  <span className="text-text-muted/40 ml-1">({timeAgo(event.timestamp)})</span>
-                </div>
-
-                <span className="font-mono text-sm text-text-secondary w-48 truncate shrink-0">
-                  {truncateModel(event.model)}
-                </span>
-
-                <span className="font-mono text-sm text-text-primary truncate flex-1">
-                  {fnName ? `${fnName}()` : "—"}
-                </span>
-
-                <span className="font-mono text-xs text-text-muted w-20 text-right shrink-0">
-                  {event.total_tokens?.toLocaleString() ?? "—"}
-                </span>
-
-                <span className="font-mono text-xs text-text-muted w-20 text-right shrink-0">
-                  {formatDuration(event.duration_ms)}
-                </span>
-
-                <span className="font-mono text-sm font-semibold text-green w-16 text-right shrink-0">
-                  ${(event.cost_usd ?? 0).toFixed(4)}
-                </span>
-              </button>
-            );
-          })}
+                return (
+                  <tr
+                    key={event.id}
+                    onClick={() => setSelectedEvent(event)}
+                    className="row-hover row-striped cursor-pointer border-b border-border/10 last:border-b-0"
+                  >
+                    <td className="px-5 py-3 w-[3%]">
+                      <ProviderLogo provider={event.provider} size={14} />
+                    </td>
+                    <td className="px-2 py-3 w-[18%]">
+                      <span className="font-mono text-xs text-text-muted">
+                        {new Date(event.timestamp).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                        <span className="text-text-muted/50 ml-1">{new Date(event.timestamp).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false })}</span>
+                        <span className="text-text-muted/40 ml-1">({timeAgo(event.timestamp)})</span>
+                      </span>
+                    </td>
+                    <td className="px-2 py-3 w-[18%]">
+                      <span className="font-mono text-sm text-text-secondary truncate block">
+                        {truncateModel(event.model)}
+                      </span>
+                    </td>
+                    <td className="px-2 py-3">
+                      <span className="font-mono text-sm text-text-primary truncate block">
+                        {fnName ? `${fnName}()` : "—"}
+                      </span>
+                    </td>
+                    <td className="px-2 py-3 w-[10%] text-right">
+                      <span className="font-mono text-xs text-text-muted">
+                        {event.total_tokens?.toLocaleString() ?? "—"}
+                      </span>
+                    </td>
+                    <td className="px-2 py-3 w-[10%] text-right">
+                      <span className="font-mono text-xs text-text-muted">
+                        {formatDuration(event.duration_ms)}
+                      </span>
+                    </td>
+                    <td className="px-5 py-3 w-[10%] text-right">
+                      <span className="font-mono text-sm font-semibold text-green">
+                        ${(event.cost_usd ?? 0).toFixed(4)}
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
       </div>
 

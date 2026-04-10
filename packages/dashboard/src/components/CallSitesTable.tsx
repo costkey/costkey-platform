@@ -85,19 +85,19 @@ function CallSiteRow({ row, maxCost, projectId, onSelectEvent }: {
             {row.lineNumber != null && `:${row.lineNumber}`}
           </span>
         </div>
-        <span className="font-mono text-sm text-text-secondary w-16 text-right shrink-0">
+        <span className="font-mono text-sm text-text-secondary w-20 text-right shrink-0">
           {row.totalCalls.toLocaleString()}
         </span>
-        <span className="font-mono text-sm font-semibold text-green w-20 text-right shrink-0">
+        <span className="font-mono text-sm font-semibold text-green w-24 text-right shrink-0">
           ${row.totalCost.toFixed(4)}
         </span>
-        <span className="font-mono text-xs text-text-muted w-20 text-right shrink-0">
+        <span className="font-mono text-xs text-text-muted w-24 text-right shrink-0">
           {formatTokens(row.totalInputTokens)} in
         </span>
         <span className="font-mono text-sm text-text-secondary w-20 text-right shrink-0">
           {formatDuration(row.avgDuration)}
         </span>
-        <div className="w-24 shrink-0">
+        <div className="w-28 shrink-0">
           <div className="relative h-2 bg-surface-overlay rounded-sm overflow-hidden">
             <div
               className="cost-bar absolute inset-y-0 left-0 bg-text-primary/20 rounded-sm"
@@ -245,11 +245,11 @@ export default function CallSitesTable({ callSites, loading, search = "", projec
         <div className="flex items-center gap-3 px-5 py-3 border-b border-border">
           <div className="w-3.5" />
           <div className="flex-1 text-xs uppercase tracking-wider font-medium text-text-muted">Call Site</div>
-          <div className="w-16 text-right"><SortHeader label="Calls" field="total_calls" /></div>
-          <div className="w-20 text-right"><SortHeader label="Cost" field="total_cost_usd" /></div>
-          <div className="w-20 text-right"><SortHeader label="Tokens" field="total_input_tokens" /></div>
+          <div className="w-20 text-right"><SortHeader label="Calls" field="total_calls" /></div>
+          <div className="w-24 text-right"><SortHeader label="Cost" field="total_cost_usd" /></div>
+          <div className="w-24 text-right"><SortHeader label="Tokens" field="total_input_tokens" /></div>
           <div className="w-20 text-right"><SortHeader label="Latency" field="avg_duration_ms" /></div>
-          <div className="w-24 text-xs uppercase tracking-wider font-medium text-text-muted">Share</div>
+          <div className="w-28 text-xs uppercase tracking-wider font-medium text-text-muted">Share</div>
         </div>
 
         <div className="max-h-[calc(100vh-200px)] overflow-y-auto">

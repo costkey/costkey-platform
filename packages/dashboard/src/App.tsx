@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
-import { BrowserRouter, Routes, Route, Navigate, Outlet, useNavigate } from "react-router-dom";
-import { Settings, ChevronDown, ExternalLink } from "lucide-react";
+import { BrowserRouter, Routes, Route, Navigate, Outlet, useNavigate, Link } from "react-router-dom";
+import { Settings, ChevronDown, ExternalLink, ArrowRight } from "lucide-react";
 import { AuthProvider, useAuth } from "./contexts/AuthContext";
 import { getHealth } from "./api";
 import Login from "./pages/Login";
@@ -201,6 +201,63 @@ function AppShell() {
   );
 }
 
+function DemoWrapper() {
+  return (
+    <div className="min-h-screen bg-surface flex flex-col">
+      {/* Demo banner */}
+      <div className="bg-surface-overlay border-b border-border px-6 py-2.5 flex items-center justify-center gap-3">
+        <span className="text-sm text-text-secondary">
+          You're viewing demo data from a sample app.
+        </span>
+        <Link
+          to="/signup"
+          className="inline-flex items-center gap-1.5 text-sm font-medium text-text-primary hover:text-text-secondary transition-colors"
+        >
+          Connect your own AI calls
+          <ArrowRight size={14} />
+        </Link>
+      </div>
+
+      {/* Header */}
+      <header className="relative border-b border-border bg-surface sticky top-0 z-50">
+        <div className="max-w-[1440px] mx-auto px-6 h-14 flex items-center gap-4">
+          <Link to="/demo" className="flex items-center gap-2.5 group">
+            <img src="/favicon.svg" alt="CostKey" className="w-6 h-6" />
+            <span className="font-mono text-sm font-semibold text-text-primary tracking-tight">
+              CostKey
+            </span>
+          </Link>
+          <div className="w-px h-5 bg-border" />
+          <span className="px-2.5 py-1 bg-surface-overlay/40 border border-border/60 rounded-sm font-mono text-xs text-text-muted">
+            Acme AI (Demo)
+          </span>
+          <div className="ml-auto flex items-center gap-3">
+            <Link
+              to="/signup"
+              className="bg-accent hover:bg-accent-hover text-black font-mono text-xs font-medium px-4 py-2 rounded-sm transition-colors"
+            >
+              Get Started Free
+            </Link>
+          </div>
+        </div>
+      </header>
+
+      <Dashboard demoMode />
+
+      <footer className="border-t border-border/50">
+        <div className="max-w-[1440px] mx-auto px-6 py-2 flex items-center justify-between">
+          <span className="font-mono text-[9px] text-text-muted/50">costkey demo</span>
+          <div className="flex items-center gap-3">
+            <a href="https://costkey.dev/docs" target="_blank" rel="noopener noreferrer" className="font-mono text-[9px] text-text-muted/50 hover:text-text-muted transition-colors">Docs</a>
+            <span className="text-text-muted/20">|</span>
+            <a href="https://github.com/costkey-ai/costkey" target="_blank" rel="noopener noreferrer" className="font-mono text-[9px] text-text-muted/50 hover:text-text-muted transition-colors">GitHub</a>
+          </div>
+        </div>
+      </footer>
+    </div>
+  );
+}
+
 export default function App() {
   return (
     <BrowserRouter>
@@ -210,6 +267,7 @@ export default function App() {
           <Route path="/signup" element={<Signup />} />
           <Route path="/onboarding" element={<Onboarding />} />
           <Route path="/invite/:token" element={<Invite />} />
+          <Route path="/demo" element={<DemoWrapper />} />
           <Route element={<ProtectedRoute />}>
             <Route path="/" element={<Dashboard />} />
             <Route path="/settings" element={<SettingsPage />} />

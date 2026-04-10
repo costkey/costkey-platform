@@ -7,7 +7,7 @@ export default function Onboarding() {
   const navigate = useNavigate();
   const dsn = params.get("dsn") ?? "";
   const projectId = params.get("project") ?? "";
-  const [copied, setCopied] = useState<"dsn" | "ts" | "py" | null>(null);
+  const [copied, setCopied] = useState<"dsn" | "ts" | "py" | "cursor" | null>(null);
   const [tab, setTab] = useState<"py" | "ts">("py");
   const [waiting, setWaiting] = useState(true);
   const [eventCount, setEventCount] = useState(0);
@@ -32,7 +32,9 @@ export default function Onboarding() {
     return () => clearInterval(interval);
   }, [projectId]);
 
-  const copyText = (text: string, key: "dsn" | "ts" | "py") => {
+  const cursorPrompt = `Install the costkey SDK for this project and initialize it so all AI API calls are automatically tracked.\n\nMy CostKey DSN is: ${dsn}\n\nFor Python: pip install costkey, then add "import costkey; costkey.init(dsn=\\"${dsn}\\")" at the top of the app entry point.\nFor TypeScript/Node: npm install costkey, then add "import { CostKey } from 'costkey'; CostKey.init({ dsn: '${dsn}' })" at the top of the app entry point.\n\nThat's it — all AI calls (OpenAI, Anthropic, Google, etc.) will be captured automatically via fetch interception. No wrapping or tagging needed.`;
+
+  const copyText = (text: string, key: "dsn" | "ts" | "py" | "cursor") => {
     navigator.clipboard.writeText(text);
     setCopied(key);
     setTimeout(() => setCopied(null), 2000);
@@ -85,11 +87,37 @@ costkey.init(
                 </div>
               </div>
 
-              {/* Step 2: Install */}
+              {/* AI Setup prompt */}
               <div className="mb-6">
                 <div className="flex items-center gap-2 mb-2">
                   <div className="w-5 h-5 rounded-full bg-accent flex items-center justify-center text-black text-xs font-mono font-bold">2</div>
-                  <span className="text-sm font-medium text-text-primary">Add to your app</span>
+                  <span className="text-sm font-medium text-text-primary">Set up with AI</span>
+                  <span className="text-[10px] font-mono text-text-muted bg-surface-overlay px-1.5 py-0.5 rounded-sm">Recommended</span>
+                </div>
+                <p className="text-xs text-text-muted mb-2 ml-7">Copy this prompt into Cursor, Claude Code, or any AI editor.</p>
+                <div className="relative bg-surface border border-border rounded-sm p-3">
+                  <pre className="font-mono text-[11px] text-text-secondary leading-relaxed whitespace-pre-wrap pr-8">Install the costkey SDK and add costkey.init(&#123;dsn:'{dsn}'&#125;) to my app entry point. That's it — all AI calls are tracked automatically.</pre>
+                  <button
+                    onClick={() => copyText(cursorPrompt, "cursor")}
+                    className="absolute top-2.5 right-2.5 text-text-muted hover:text-text-primary transition-colors cursor-pointer"
+                  >
+                    {copied === "cursor" ? <Check size={14} className="text-green" /> : <Copy size={14} />}
+                  </button>
+                </div>
+                <p className="text-[10px] text-text-muted mt-1.5 ml-7">Works with Cursor · Claude Code · Windsurf · Copilot · any AI editor</p>
+              </div>
+
+              <div className="flex items-center gap-3 mb-4">
+                <div className="flex-1 h-px bg-border" />
+                <span className="text-[10px] font-mono text-text-muted uppercase tracking-wider">or manually</span>
+                <div className="flex-1 h-px bg-border" />
+              </div>
+
+              {/* Step 3: Manual Install */}
+              <div className="mb-6">
+                <div className="flex items-center gap-2 mb-2">
+                  <div className="w-5 h-5 rounded-full bg-surface-overlay border border-border flex items-center justify-center text-text-muted text-xs font-mono font-bold">3</div>
+                  <span className="text-sm font-medium text-text-primary">Add to your app manually</span>
                 </div>
 
                 <div className="flex gap-0 mb-0">

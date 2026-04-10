@@ -48,15 +48,13 @@ export default function Signup() {
           <p className="text-sm text-text-secondary mb-6">Start tracking your AI costs in 60 seconds.</p>
 
           {/* GitHub button */}
-          <button
-            disabled
-            className="w-full flex items-center justify-center gap-2 bg-surface border border-border rounded-sm px-3 py-2.5 text-sm text-text-muted font-medium mb-4 cursor-not-allowed opacity-60"
-            title="Coming soon"
+          <a
+            href="/auth/github"
+            className="w-full flex items-center justify-center gap-2 bg-surface-overlay hover:bg-surface-hover border border-border rounded-sm px-3 py-2.5 text-sm text-text-primary font-medium mb-4 transition-colors"
           >
             <GitHubIcon size={16} />
             Sign up with GitHub
-            <span className="ml-auto text-[10px] font-mono text-text-muted/60 uppercase">Soon</span>
-          </button>
+          </a>
 
           <div className="flex items-center gap-3 mb-4">
             <div className="flex-1 h-px bg-border" />

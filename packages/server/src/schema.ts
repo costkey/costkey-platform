@@ -10,10 +10,11 @@ export const orgs = pgTable("orgs", {
 export const users = pgTable("users", {
   id: text("id").primaryKey(),
   email: text("email").notNull().unique(),
-  passwordHash: text("password_hash").notNull(),
+  passwordHash: text("password_hash"),
   name: text("name").notNull(),
   orgId: text("org_id").notNull().references(() => orgs.id),
   role: text("role").notNull().default("member"),
+  githubId: text("github_id"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
 });
 

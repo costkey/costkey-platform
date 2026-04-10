@@ -56,13 +56,18 @@ export async function seedIfEmpty(pool: pg.Pool): Promise<void> {
       { name: "CRON nightly-analysis", idxs: [7] },
     ];
 
+    const releases = ["v1.2.0", "v1.2.1", "v1.3.0", "v1.3.1", "v1.4.0"];
+
     const now = Date.now();
     const DAY = 86400000;
     let eventCount = 0;
 
-    for (let d = 6; d >= 0; d--) {
+    for (let d = 29; d >= 0; d--) {
       const dayBase = now - d * DAY;
-      const tracesPerDay = 40 + Math.floor(Math.random() * 30);
+      // More calls on recent days, fewer on older days
+      const baseTraces = d < 7 ? 50 : d < 14 ? 35 : 20;
+      const tracesPerDay = baseTraces + Math.floor(Math.random() * 20);
+      const release = releases[Math.min(Math.floor((29 - d) / 6), releases.length - 1)];
 
       for (let i = 0; i < tracesPerDay; i++) {
         const tmpl = traceTemplates[Math.floor(Math.random() * traceTemplates.length)];
@@ -90,15 +95,15 @@ export async function seedIfEmpty(pool: pg.Pool): Promise<void> {
           await client.query(
             `INSERT INTO events (id, timestamp, project_id, provider, model, url, method, status_code,
               input_tokens, output_tokens, total_tokens, cost_usd, duration_ms, streaming, ttft, tps,
-              trace_id, trace_name, call_site_raw, call_site_frames, context)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`,
+              trace_id, trace_name, call_site_raw, call_site_frames, context, release)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
             [eventId, ts, projectId, m.provider, m.model, url, "POST", 200,
               inputTokens, outputTokens, inputTokens + outputTokens,
               Math.round(costUsd * 1e6) / 1e6, Math.round(durationMs * 100) / 100,
               streaming, ttft ? Math.round(ttft * 100) / 100 : null,
               tps ? Math.round(tps * 100) / 100 : null,
               traceId, tmpl.name, rawStack, frames,
-              JSON.stringify({ task: fn, traceId, traceName: tmpl.name })],
+              JSON.stringify({ task: fn, traceId, traceName: tmpl.name }), release],
           );
 
           await client.query(

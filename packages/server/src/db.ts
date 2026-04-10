@@ -117,6 +117,11 @@ export async function initDatabase(): Promise<void> {
 
     ALTER TABLE events ADD COLUMN IF NOT EXISTS release TEXT;
 
+    -- GitHub OAuth: add github_id, make password_hash nullable
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS github_id TEXT;
+    ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_github ON users(github_id) WHERE github_id IS NOT NULL;
+
     CREATE TABLE IF NOT EXISTS sourcemaps (
       id TEXT PRIMARY KEY,
       project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,

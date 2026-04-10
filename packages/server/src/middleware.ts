@@ -10,15 +10,24 @@ import type { AuthUser } from "./auth.js";
  * Verifies the requested project belongs to the authenticated user's org.
  * Rejects with 404 if project doesn't exist or doesn't belong to user's org.
  */
+const DEMO_PROJECT_ID = "proj_demo";
+
 export function orgScope(pool: pg.Pool) {
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    const { projectId } = req.params;
+
+    // Allow read-only access to demo project without auth
+    if (projectId === DEMO_PROJECT_ID && req.method === "GET") {
+      next();
+      return;
+    }
+
     const user = (req as any).user as AuthUser | undefined;
     if (!user) {
       res.status(401).json({ error: "Authentication required" });
       return;
     }
 
-    const { projectId } = req.params;
     if (!projectId) {
       next();
       return;

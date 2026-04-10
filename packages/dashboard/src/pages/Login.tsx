@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../contexts/AuthContext";
 
 function GitHubIcon({ size = 16 }: { size?: number }) {
@@ -13,6 +13,8 @@ function GitHubIcon({ size = 16 }: { size?: number }) {
 export default function Login() {
   const { login, error } = useAuth();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const ghError = searchParams.get("error");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -38,15 +40,13 @@ export default function Login() {
           <p className="text-sm text-text-secondary mb-6">Enter your credentials to access your dashboard.</p>
 
           {/* GitHub button */}
-          <button
-            disabled
-            className="w-full flex items-center justify-center gap-2 bg-surface border border-border rounded-sm px-3 py-2.5 text-sm text-text-muted font-medium mb-4 cursor-not-allowed opacity-60"
-            title="Coming soon"
+          <a
+            href="/auth/github"
+            className="w-full flex items-center justify-center gap-2 bg-surface-overlay hover:bg-surface-hover border border-border rounded-sm px-3 py-2.5 text-sm text-text-primary font-medium mb-4 transition-colors"
           >
             <GitHubIcon size={16} />
             Sign in with GitHub
-            <span className="ml-auto text-[10px] font-mono text-text-muted/60 uppercase">Soon</span>
-          </button>
+          </a>
 
           <div className="flex items-center gap-3 mb-4">
             <div className="flex-1 h-px bg-border" />
@@ -78,8 +78,10 @@ export default function Login() {
               />
             </div>
 
-            {error && (
-              <div className="text-xs text-red font-mono bg-red-muted px-3 py-2 rounded-sm">{error}</div>
+            {(error || ghError) && (
+              <div className="text-xs text-red font-mono bg-red-muted px-3 py-2 rounded-sm">
+                {error ?? (ghError === "github_no_email" ? "No email found on your GitHub account" : "GitHub login failed. Please try again.")}
+              </div>
             )}
 
             <button

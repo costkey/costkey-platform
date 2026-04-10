@@ -174,6 +174,11 @@ export function createAuthRouter(): Router {
       }
 
       const user = result[0];
+      if (!user.passwordHash) {
+        // GitHub-only account — can't login with password
+        res.status(401).json({ error: "This account uses GitHub login. Please sign in with GitHub." });
+        return;
+      }
       const valid = await bcrypt.compare(password, user.passwordHash);
       if (!valid) {
         res.status(401).json({ error: "Invalid email or password" });
@@ -263,6 +268,134 @@ export function createAuthRouter(): Router {
     } catch (err) {
       console.error("[costkey] Admin impersonate error:", err);
       res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  // ── GitHub OAuth ──
+  const GITHUB_CLIENT_ID = process.env["GITHUB_CLIENT_ID"] ?? "";
+  const GITHUB_CLIENT_SECRET = process.env["GITHUB_CLIENT_SECRET"] ?? "";
+
+  // GET /auth/github — redirect to GitHub OAuth
+  router.get("/auth/github", (_req: Request, res: Response) => {
+    if (!GITHUB_CLIENT_ID) {
+      res.status(503).json({ error: "GitHub OAuth not configured" });
+      return;
+    }
+    const params = new URLSearchParams({
+      client_id: GITHUB_CLIENT_ID,
+      scope: "user:email",
+      redirect_uri: `${process.env["PUBLIC_URL"] ?? "https://app.costkey.dev"}/auth/github/callback`,
+    });
+    res.redirect(`https://github.com/login/oauth/authorize?${params}`);
+  });
+
+  // GET /auth/github/callback — exchange code for token, create/find user
+  router.get("/auth/github/callback", async (req: Request, res: Response) => {
+    try {
+      const code = req.query["code"] as string;
+      if (!code) { res.redirect("/login?error=github_denied"); return; }
+
+      // Exchange code for access token
+      const tokenRes = await fetch("https://github.com/login/oauth/access_token", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({
+          client_id: GITHUB_CLIENT_ID,
+          client_secret: GITHUB_CLIENT_SECRET,
+          code,
+        }),
+      });
+      const tokenData = await tokenRes.json() as { access_token?: string; error?: string };
+      if (!tokenData.access_token) {
+        console.error("[costkey] GitHub OAuth error:", tokenData);
+        res.redirect("/login?error=github_failed");
+        return;
+      }
+
+      // Fetch GitHub user profile
+      const ghUserRes = await fetch("https://api.github.com/user", {
+        headers: { Authorization: `Bearer ${tokenData.access_token}`, "User-Agent": "CostKey" },
+      });
+      const ghUser = await ghUserRes.json() as { id: number; login: string; name: string | null; email: string | null; avatar_url: string };
+
+      // Fetch primary email if not public
+      let email = ghUser.email;
+      if (!email) {
+        const emailsRes = await fetch("https://api.github.com/user/emails", {
+          headers: { Authorization: `Bearer ${tokenData.access_token}`, "User-Agent": "CostKey" },
+        });
+        const emails = await emailsRes.json() as Array<{ email: string; primary: boolean; verified: boolean }>;
+        const primary = emails.find((e) => e.primary && e.verified);
+        email = primary?.email ?? emails[0]?.email ?? null;
+      }
+
+      if (!email) {
+        res.redirect("/login?error=github_no_email");
+        return;
+      }
+
+      const githubId = String(ghUser.id);
+      const name = ghUser.name ?? ghUser.login;
+      const pool = getPool();
+
+      // Check if user exists by github_id
+      let userRow = (await pool.query("SELECT id, email, name, org_id, role FROM users WHERE github_id = $1", [githubId])).rows[0];
+
+      // Check if user exists by email (link accounts)
+      if (!userRow) {
+        userRow = (await pool.query("SELECT id, email, name, org_id, role FROM users WHERE email = $1", [email])).rows[0];
+        if (userRow) {
+          // Link GitHub to existing account
+          await pool.query("UPDATE users SET github_id = $1 WHERE id = $2", [githubId, userRow.id]);
+        }
+      }
+
+      // Create new user + org if not found
+      if (!userRow) {
+        const userId = `usr_${randomId()}`;
+        const orgId = `org_${randomId()}`;
+        const projectId = `proj_${randomId()}`;
+        const authKey = `ck_${randomId()}`;
+        const orgSlug = slugify(name);
+
+        const client = await pool.connect();
+        try {
+          await client.query("BEGIN");
+          await client.query("INSERT INTO orgs (id, name, slug) VALUES ($1, $2, $3)", [orgId, `${name}'s Org`, orgSlug]);
+          await client.query(
+            "INSERT INTO users (id, email, password_hash, name, org_id, role, github_id) VALUES ($1,$2,NULL,$3,$4,'owner',$5)",
+            [userId, email, name, orgId, githubId],
+          );
+          await client.query("INSERT INTO projects (id, name, org_id, auth_key) VALUES ($1,$2,$3,$4)", [projectId, "Default Project", orgId, authKey]);
+          await client.query("COMMIT");
+        } catch (err) {
+          await client.query("ROLLBACK");
+          throw err;
+        } finally {
+          client.release();
+        }
+
+        userRow = { id: userId, email, name, org_id: orgId, role: "owner" };
+
+        // Redirect new users to onboarding
+        const token = jwt.sign({ userId, orgId, role: "owner" }, JWT_SECRET, { expiresIn: JWT_EXPIRES });
+        setTokenCookie(res, token);
+        const dsn = `https://${authKey}@app.costkey.dev/${projectId}`;
+        res.redirect(`/onboarding?dsn=${encodeURIComponent(dsn)}&project=${projectId}`);
+        return;
+      }
+
+      // Existing user — just sign in
+      const token = jwt.sign(
+        { userId: userRow.id, orgId: userRow.org_id, role: userRow.role },
+        JWT_SECRET,
+        { expiresIn: JWT_EXPIRES },
+      );
+      setTokenCookie(res, token);
+      res.redirect("/");
+    } catch (err) {
+      console.error("[costkey] GitHub OAuth callback error:", err);
+      res.redirect("/login?error=github_failed");
     }
   });
 

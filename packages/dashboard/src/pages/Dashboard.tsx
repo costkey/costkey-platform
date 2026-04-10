@@ -23,9 +23,9 @@ const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
   { id: "traces", label: "Traces", icon: <Route size={14} /> },
 ];
 
-export default function Dashboard() {
+export default function Dashboard({ demoMode = false }: { demoMode?: boolean }) {
   const { currentProjectId } = useAuth();
-  const projectId = currentProjectId ?? "proj_demo";
+  const projectId = demoMode ? "proj_demo" : (currentProjectId ?? "proj_demo");
   const [activeTab, setActiveTab] = useState<Tab>("overview");
   const [search, setSearch] = useState("");
   const [timeRange, setTimeRange] = useState<TimeRange>("mtd");

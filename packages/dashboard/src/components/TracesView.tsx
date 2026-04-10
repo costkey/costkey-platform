@@ -43,7 +43,7 @@ function TraceRow({ trace, projectId }: { trace: Trace; projectId: string }) {
     <div className="border-b border-border/30 last:border-b-0 row-striped">
       <button
         onClick={toggle}
-        className="w-full flex items-center gap-3 px-5 py-2.5 row-hover cursor-pointer text-left"
+        className="w-full flex items-center gap-4 px-5 py-3 row-hover cursor-pointer text-left"
       >
         <ChevronRight
           size={12}
@@ -58,31 +58,31 @@ function TraceRow({ trace, projectId }: { trace: Trace; projectId: string }) {
         </div>
 
         {/* Trace name */}
-        <span className="font-mono text-xs font-medium text-text-primary truncate min-w-0">
+        <span className="font-mono text-sm font-medium text-text-primary truncate min-w-0">
           {trace.trace_name ?? trace.trace_id}
         </span>
 
-        <span className="text-[9px] font-mono px-1 py-0.5 rounded-sm bg-surface-overlay text-text-secondary shrink-0">
+        <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-sm bg-surface-overlay text-text-secondary shrink-0">
           {trace.call_count}
         </span>
 
-        <span className="font-mono text-[10px] text-text-muted truncate flex-1 min-w-0">
+        <span className="font-mono text-xs text-text-muted truncate flex-1 min-w-0">
           {models.join(", ")}
         </span>
 
-        <span className="font-mono text-xs text-text-muted w-14 text-right shrink-0">
+        <span className="font-mono text-xs text-text-muted w-16 text-right shrink-0">
           {timeAgo(trace.started_at)}
         </span>
 
-        <span className="font-mono text-xs text-text-muted w-16 text-right shrink-0">
+        <span className="font-mono text-xs text-text-muted w-20 text-right shrink-0">
           {formatDuration(trace.total_duration_ms)}
         </span>
 
-        <span className="font-mono text-xs text-text-muted w-14 text-right shrink-0">
+        <span className="font-mono text-xs text-text-muted w-16 text-right shrink-0">
           {((trace.total_input_tokens + trace.total_output_tokens) / 1000).toFixed(1)}k
         </span>
 
-        <span className="font-mono text-sm font-semibold text-green w-20 text-right shrink-0">
+        <span className="font-mono text-sm font-semibold text-green w-24 text-right shrink-0">
           ${trace.total_cost.toFixed(4)}
         </span>
       </button>
@@ -216,14 +216,14 @@ export default function TracesView({ traces, loading, projectId, search = "" }: 
   return (
     <div className="bg-surface-raised border border-border rounded-sm">
       {/* Column headers */}
-      <div className="flex items-center gap-3 px-5 py-3 border-b border-border text-[10px] uppercase tracking-wider font-medium text-text-muted">
+      <div className="flex items-center gap-4 px-5 py-3 border-b border-border text-xs uppercase tracking-wider font-medium text-text-muted">
         <div className="w-3" />
         <div className="w-5" />
         <div className="flex-1">Request</div>
-        <div className="w-14 text-right">Time</div>
-        <div className="w-16 text-right">Duration</div>
-        <div className="w-14 text-right">Tokens</div>
-        <div className="w-20 text-right">Cost</div>
+        <div className="w-16 text-right">Time</div>
+        <div className="w-20 text-right">Duration</div>
+        <div className="w-16 text-right">Tokens</div>
+        <div className="w-24 text-right">Cost</div>
       </div>
 
       <div className="max-h-[calc(100vh-220px)] overflow-y-auto">

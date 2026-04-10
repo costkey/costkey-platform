@@ -68,12 +68,12 @@ export function createAuthRouter(): Router {
 
       // Check if signing up via invite
       let joinedViaInvite = false;
-      let orgId: string;
-      let role: string;
+      let orgId = "";
+      let role = "owner";
       let projectId: string | null = null;
       let authKey: string | null = null;
-      let displayOrgName: string;
-      let orgSlug: string;
+      let displayOrgName = "";
+      let orgSlug = "";
 
       if (inviteToken) {
         const invite = await pool.query(

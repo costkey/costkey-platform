@@ -9,7 +9,7 @@ const resend = new Resend(process.env["RESEND_API_KEY"] ?? "REDACTED_RESEND_KEY"
 async function sendInviteEmail(to: string, inviterName: string, orgName: string, inviteUrl: string): Promise<void> {
   try {
     await resend.emails.send({
-      from: process.env["RESEND_FROM"] ?? "CostKey <onboarding@resend.dev>",
+      from: "CostKey <noreply@costkey.dev>",
       to,
       subject: `${inviterName} invited you to ${orgName} on CostKey`,
       html: `

@@ -10,14 +10,7 @@ export function createApiRouter(pool: pg.Pool): Router {
   const router = createRouter();
 
   // Apply org-scoping to ALL /api/v1/projects/:projectId/* routes
-  // Demo project allows unauthenticated GET requests (read-only)
-  router.use("/api/v1/projects/:projectId", (req, res, next) => {
-    if (req.params.projectId === "proj_demo" && req.method === "GET") {
-      next();
-      return;
-    }
-    requireAuth(req, res, next);
-  }, orgScope(pool));
+  router.use("/api/v1/projects/:projectId", requireAuth, orgScope(pool));
 
   // GET /api/v1/projects/:projectId/summary
   router.get("/api/v1/projects/:projectId/summary", async (req, res) => {

@@ -58,7 +58,7 @@ async function initApp() {
   // SPA routes — serve index.html for client-side routes BEFORE auth middleware
   // so /signup, /login, /onboarding don't get blocked
   if (hasDashboard) {
-    const spaRoutes = ["/login", "/signup", "/onboarding", "/settings", "/invite/:token", "/demo"];
+    const spaRoutes = ["/login", "/signup", "/onboarding", "/settings", "/invite/:token"];
     for (const route of spaRoutes) {
       app.get(route, (_req, res) => {
         res.sendFile(path.join(dashboardDist, "index.html"));

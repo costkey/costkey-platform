@@ -267,7 +267,6 @@ export default function App() {
           <Route path="/signup" element={<Signup />} />
           <Route path="/onboarding" element={<Onboarding />} />
           <Route path="/invite/:token" element={<Invite />} />
-          <Route path="/demo" element={<DemoWrapper />} />
           <Route element={<ProtectedRoute />}>
             <Route path="/" element={<Dashboard />} />
             <Route path="/settings" element={<SettingsPage />} />

@@ -381,7 +381,7 @@ export function createAuthRouter(): Router {
         const token = jwt.sign({ userId, orgId, role: "owner" }, JWT_SECRET, { expiresIn: JWT_EXPIRES });
         setTokenCookie(res, token);
         const dsn = `https://${authKey}@app.costkey.dev/${projectId}`;
-        res.redirect(`/onboarding?dsn=${encodeURIComponent(dsn)}&project=${projectId}`);
+        res.redirect("/onboarding");
         return;
       }
 

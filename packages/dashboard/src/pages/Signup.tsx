@@ -30,7 +30,7 @@ export default function Signup() {
       if (result.joinedViaInvite) {
         navigate("/");
       } else {
-        navigate(`/onboarding?dsn=${encodeURIComponent(result.dsn)}&project=${result.projectId}`);
+        navigate("/onboarding");
       }
     }
   };

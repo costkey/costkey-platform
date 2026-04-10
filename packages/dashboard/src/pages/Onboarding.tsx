@@ -1,12 +1,14 @@
 import { useState, useEffect } from "react";
-import { useSearchParams, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { Check, Copy, Loader2, ExternalLink, Sparkles } from "lucide-react";
+import { useAuth } from "../contexts/AuthContext";
 
 export default function Onboarding() {
-  const [params] = useSearchParams();
   const navigate = useNavigate();
-  const dsn = params.get("dsn") ?? "";
-  const projectId = params.get("project") ?? "";
+  const { projects, loading: authLoading } = useAuth();
+  const project = projects[0];
+  const projectId = project?.id ?? "";
+  const dsn = project ? `https://${project.authKey}@app.costkey.dev/${project.id}` : "";
   const [copied, setCopied] = useState<"dsn" | "ts" | "py" | "cursor" | null>(null);
   const [tab, setTab] = useState<"py" | "ts">("py");
   const [waiting, setWaiting] = useState(true);
@@ -32,7 +34,7 @@ export default function Onboarding() {
     return () => clearInterval(interval);
   }, [projectId]);
 
-  const cursorPrompt = `Install the costkey SDK for this project and initialize it so all AI API calls are automatically tracked.\n\nMy CostKey DSN is: ${dsn}\n\nFor Python: pip install costkey, then add "import costkey; costkey.init(dsn=\\"${dsn}\\")" at the top of the app entry point.\nFor TypeScript/Node: npm install costkey, then add "import { CostKey } from 'costkey'; CostKey.init({ dsn: '${dsn}' })" at the top of the app entry point.\n\nThat's it — all AI calls (OpenAI, Anthropic, Google, etc.) will be captured automatically via fetch interception. No wrapping or tagging needed.`;
+  const cursorPrompt = `Install the costkey SDK and add costkey.init({ dsn: "${dsn}" }) to my app's entry point file. For Python use: import costkey; costkey.init(dsn="${dsn}"). For TypeScript use: import { CostKey } from 'costkey'; CostKey.init({ dsn: '${dsn}' }).`;
 
   const copyText = (text: string, key: "dsn" | "ts" | "py" | "cursor") => {
     navigator.clipboard.writeText(text);
@@ -58,7 +60,7 @@ costkey.init(
 
   return (
     <div className="min-h-screen bg-surface flex items-center justify-center px-4">
-      <div className="w-full max-w-lg">
+      <div className="w-full max-w-2xl">
         <div className="flex items-center justify-center gap-2.5 mb-8">
           <img src="/favicon.svg" alt="CostKey" className="w-8 h-8" />
           <span className="font-mono text-lg font-semibold text-text-primary">CostKey</span>
@@ -71,40 +73,40 @@ costkey.init(
               <p className="text-sm text-text-secondary mb-6">Add CostKey to your app. Every AI call will be tracked automatically.</p>
 
               {/* Step 1: DSN */}
-              <div className="mb-6">
+              <div className="mb-5">
                 <div className="flex items-center gap-2 mb-2">
                   <div className="w-5 h-5 rounded-full bg-accent flex items-center justify-center text-black text-xs font-mono font-bold">1</div>
                   <span className="text-sm font-medium text-text-primary">Your DSN</span>
                 </div>
                 <div className="flex items-center gap-2 bg-surface border border-border rounded-sm px-3 py-2.5">
-                  <code className="font-mono text-xs text-accent flex-1 truncate select-all">{dsn}</code>
+                  <code className="font-mono text-xs text-text-primary flex-1 truncate select-all">{dsn}</code>
                   <button
                     onClick={() => copyText(dsn, "dsn")}
-                    className="shrink-0 text-text-muted hover:text-accent transition-colors cursor-pointer"
+                    className="shrink-0 text-text-muted hover:text-text-primary transition-colors cursor-pointer"
                   >
                     {copied === "dsn" ? <Check size={14} className="text-green" /> : <Copy size={14} />}
                   </button>
                 </div>
               </div>
 
-              {/* AI Setup prompt */}
+              {/* Step 2: AI setup prompt */}
               <div className="mb-6">
                 <div className="flex items-center gap-2 mb-2">
                   <div className="w-5 h-5 rounded-full bg-accent flex items-center justify-center text-black text-xs font-mono font-bold">2</div>
-                  <span className="text-sm font-medium text-text-primary">Set up with AI</span>
-                  <span className="text-[10px] font-mono text-text-muted bg-surface-overlay px-1.5 py-0.5 rounded-sm">Recommended</span>
+                  <span className="text-sm font-medium text-text-primary">Paste this into Cursor or Claude Code</span>
                 </div>
-                <p className="text-xs text-text-muted mb-2 ml-7">Copy this prompt into Cursor, Claude Code, or any AI editor.</p>
-                <div className="relative bg-surface border border-border rounded-sm p-3">
-                  <pre className="font-mono text-[11px] text-text-secondary leading-relaxed whitespace-pre-wrap pr-8">Install the costkey SDK and add costkey.init(&#123;dsn:'{dsn}'&#125;) to my app entry point. That's it — all AI calls are tracked automatically.</pre>
+                <div className="relative bg-surface border border-border rounded-sm px-4 py-3">
+                  <p className="font-mono text-xs text-text-secondary leading-relaxed pr-16">
+                    Install the costkey SDK and add costkey.init() with my DSN to my app's entry point.
+                  </p>
                   <button
                     onClick={() => copyText(cursorPrompt, "cursor")}
-                    className="absolute top-2.5 right-2.5 text-text-muted hover:text-text-primary transition-colors cursor-pointer"
+                    className="absolute top-2.5 right-2.5 px-2.5 py-1 text-[10px] font-mono text-text-muted hover:text-text-primary border border-border hover:border-border-bright rounded-sm transition-colors cursor-pointer flex items-center gap-1"
                   >
-                    {copied === "cursor" ? <Check size={14} className="text-green" /> : <Copy size={14} />}
+                    {copied === "cursor" ? <><Check size={10} className="text-green" /> Copied</> : <><Copy size={10} /> Copy</>}
                   </button>
                 </div>
-                <p className="text-[10px] text-text-muted mt-1.5 ml-7">Works with Cursor · Claude Code · Windsurf · Copilot · any AI editor</p>
+                <p className="text-[10px] text-text-muted mt-1.5">The copied prompt includes your DSN. Works with any AI editor.</p>
               </div>
 
               <div className="flex items-center gap-3 mb-4">
@@ -113,10 +115,10 @@ costkey.init(
                 <div className="flex-1 h-px bg-border" />
               </div>
 
-              {/* Step 3: Manual Install */}
+              {/* Step 2: Manual Install */}
               <div className="mb-6">
                 <div className="flex items-center gap-2 mb-2">
-                  <div className="w-5 h-5 rounded-full bg-surface-overlay border border-border flex items-center justify-center text-text-muted text-xs font-mono font-bold">3</div>
+                  <div className="w-5 h-5 rounded-full bg-surface-overlay border border-border flex items-center justify-center text-text-muted text-xs font-mono font-bold">2</div>
                   <span className="text-sm font-medium text-text-primary">Add to your app manually</span>
                 </div>
 
@@ -162,17 +164,23 @@ costkey.init(
                 </div>
               </div>
 
-              {/* Docs link */}
-              <div className="mt-5 pt-4 border-t border-border/50">
+              {/* Footer links */}
+              <div className="mt-5 pt-4 border-t border-border/50 flex items-center justify-between">
                 <a
                   href="https://costkey.dev/docs"
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="flex items-center gap-1.5 text-xs text-text-muted hover:text-accent transition-colors"
+                  className="flex items-center gap-1.5 text-xs text-text-muted hover:text-text-secondary transition-colors"
                 >
                   <ExternalLink size={11} />
-                  More setup options in the docs
+                  Docs
                 </a>
+                <button
+                  onClick={() => navigate("/")}
+                  className="text-xs text-text-muted hover:text-text-secondary transition-colors cursor-pointer"
+                >
+                  Skip to dashboard &rarr;
+                </button>
               </div>
             </>
           ) : (
@@ -201,12 +209,7 @@ costkey.init(
         </div>
 
         {waiting && (
-          <button
-            onClick={() => navigate("/")}
-            className="block w-full text-center text-sm text-text-muted mt-4 hover:text-text-secondary transition-colors cursor-pointer"
-          >
-            Skip -- go to dashboard
-          </button>
+          <div></div>
         )}
       </div>
     </div>

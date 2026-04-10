@@ -140,12 +140,13 @@ export function createAuthRouter(): Router {
         }
       }
 
-      const token = jwt.sign({ userId, orgId: orgId!, role }, JWT_SECRET, { expiresIn: JWT_EXPIRES });
+      const finalRole = role as string;
+      const token = jwt.sign({ userId, orgId, role: finalRole }, JWT_SECRET, { expiresIn: JWT_EXPIRES });
       setTokenCookie(res, token);
 
       res.status(201).json({
-        user: { id: userId, email, name, orgId: orgId!, role },
-        org: { id: orgId!, name: displayOrgName!, slug: orgSlug! },
+        user: { id: userId, email, name, orgId, role: finalRole },
+        org: { id: orgId, name: displayOrgName, slug: orgSlug },
         project: projectId ? { id: projectId, name: "Default Project", authKey } : null,
         dsn: authKey ? `https://${authKey}@app.costkey.dev/${projectId}` : null,
         token,

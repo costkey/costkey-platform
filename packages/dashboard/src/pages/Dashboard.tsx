@@ -14,6 +14,7 @@ import { useSummary, useOverview, useCallSites, useEvents, useTrends, useTraces 
 import { useAuth } from "../contexts/AuthContext";
 
 type Tab = "overview" | "traces" | "call-sites" | "events";
+type TimeRange = "mtd" | "7d" | "30d" | "all";
 
 const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
   { id: "overview", label: "Overview", icon: <BarChart3 size={14} /> },
@@ -27,6 +28,7 @@ export default function Dashboard() {
   const projectId = currentProjectId ?? "proj_demo";
   const [activeTab, setActiveTab] = useState<Tab>("overview");
   const [search, setSearch] = useState("");
+  const [timeRange, setTimeRange] = useState<TimeRange>("mtd");
 
   const [hints, setHints] = useState<HealthHint[]>([]);
   const [dismissedHints, setDismissedHints] = useState<Set<string>>(new Set());
@@ -41,7 +43,7 @@ export default function Dashboard() {
   const overview = useOverview(projectId);
   const callSites = useCallSites(projectId);
   const events = useEvents(projectId, 100);
-  const trends = useTrends(projectId);
+  const trends = useTrends(projectId, timeRange);
   const traces = useTraces(projectId);
 
   const showSearch = activeTab !== "overview";
@@ -115,7 +117,7 @@ export default function Dashboard() {
                 <SummaryView summary={summary.data} loading={summary.loading} />
                 <StatCards overview={overview.data?.overview ?? null} loading={overview.loading} />
                 <div className="grid grid-cols-[1fr_340px] gap-5">
-                  <CostTrend trends={trends.data} loading={trends.loading} />
+                  <CostTrend trends={trends.data} loading={trends.loading} timeRange={timeRange} onTimeRangeChange={setTimeRange} />
                   <ModelBreakdown models={overview.data?.byModel ?? null} loading={overview.loading} />
                 </div>
               </div>

@@ -81,10 +81,10 @@ export function useEvents(projectId: string, limit = 20) {
   );
 }
 
-export function useTrends(projectId: string) {
+export function useTrends(projectId: string, range: "mtd" | "7d" | "30d" | "all" = "mtd") {
   return useAsync(
-    () => getTrends(projectId, "day").then((r) => r.trends),
-    [projectId]
+    () => getTrends(projectId, "day", range).then((r) => r.trends),
+    [projectId, range]
   );
 }
 

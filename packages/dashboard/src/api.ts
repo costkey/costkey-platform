@@ -336,16 +336,16 @@ export async function deleteCustomProvider(
   if (!res.ok) throw new Error(`API error: ${res.status}`);
 }
 
+export type TimeRange = "mtd" | "7d" | "30d" | "all";
+
 export async function getTrends(
   projectId: string,
   bucket?: "hour" | "day",
-  from?: string,
-  to?: string,
-): Promise<{ trends: TrendBucket[]; bucket: string }> {
+  range?: TimeRange,
+): Promise<{ trends: TrendBucket[]; bucket: string; range: string }> {
   const params = new URLSearchParams();
   if (bucket) params.set("bucket", bucket);
-  if (from) params.set("from", from);
-  if (to) params.set("to", to);
+  if (range) params.set("range", range);
   const qs = params.toString() ? `?${params}` : "";
   return get(`/projects/${projectId}/trends${qs}`);
 }

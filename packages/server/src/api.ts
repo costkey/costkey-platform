@@ -171,12 +171,15 @@ export function createApiRouter(pool: pg.Pool): Router {
       const minifiedCheck = await pool.query(
         `SELECT COUNT(*)::int as cnt FROM events
          WHERE project_id = $1 AND call_site_frames IS NOT NULL
-         AND timestamp > NOW() - INTERVAL '24 hours'
+         AND timestamp > NOW() - INTERVAL '7 days'
          AND (
-           call_site_frames::text LIKE '%".next/%' OR
-           call_site_frames::text LIKE '%"dist/%' OR
-           call_site_frames::text LIKE '%".output/%' OR
-           call_site_frames::text LIKE '%.chunk.%'
+           call_site_frames::text LIKE '%/.next/%' OR
+           call_site_frames::text LIKE '%/dist/%' OR
+           call_site_frames::text LIKE '%/.output/%' OR
+           call_site_frames::text LIKE '%.chunk.%' OR
+           call_site_frames::text LIKE '%webpack%' OR
+           call_site_frames::text LIKE '%/chunks/%' OR
+           call_site_frames::text LIKE '%__next%'
          )`,
         [projectId],
       );
@@ -339,24 +342,60 @@ export function createApiRouter(pool: pg.Pool): Router {
   router.get("/api/v1/projects/:projectId/trends", async (req, res) => {
     try {
       const { projectId } = req.params;
-      const { from, to } = req.query;
-      const bucket = (req.query["bucket"] as string) || "hour";
-      const { clause, params } = timeFilter(from as string, to as string, 1);
+      const range = (req.query["range"] as string) || "mtd";
+      const bucket = (req.query["bucket"] as string) || "day";
       const trunc = bucket === "day" ? "day" : "hour";
 
+      // Compute from/to based on range
+      let fromDate: string;
+      let toDate: string = new Date().toISOString();
+      if (range === "7d") {
+        fromDate = new Date(Date.now() - 7 * 86400000).toISOString();
+      } else if (range === "30d") {
+        fromDate = new Date(Date.now() - 30 * 86400000).toISOString();
+      } else if (range === "all") {
+        fromDate = new Date("2020-01-01").toISOString();
+      } else {
+        // mtd — start of current month
+        const now = new Date();
+        fromDate = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+      }
+
+      // Allow explicit from/to overrides
+      if (req.query["from"]) fromDate = req.query["from"] as string;
+      if (req.query["to"]) toDate = req.query["to"] as string;
+
+      // Use generate_series to fill zero-usage days
       const result = await pool.query(
-        `SELECT date_trunc('${trunc}', timestamp) as bucket,
-          COUNT(*)::int as calls,
-          COALESCE(SUM(cost_usd), 0) as cost,
-          COALESCE(SUM(input_tokens), 0)::int as input_tokens,
-          COALESCE(SUM(output_tokens), 0)::int as output_tokens,
-          COALESCE(AVG(duration_ms), 0) as avg_duration_ms
-        FROM events WHERE project_id = $1 ${clause}
-        GROUP BY bucket ORDER BY bucket ASC`,
-        [projectId, ...params],
+        `SELECT
+          gs.bucket,
+          COALESCE(e.calls, 0) as calls,
+          COALESCE(e.cost, 0) as cost,
+          COALESCE(e.input_tokens, 0) as input_tokens,
+          COALESCE(e.output_tokens, 0) as output_tokens,
+          COALESCE(e.avg_duration_ms, 0) as avg_duration_ms
+        FROM generate_series(
+          date_trunc('${trunc}', $2::timestamptz),
+          date_trunc('${trunc}', $3::timestamptz),
+          '1 ${trunc}'::interval
+        ) AS gs(bucket)
+        LEFT JOIN (
+          SELECT date_trunc('${trunc}', timestamp) as bucket,
+            COUNT(*)::int as calls,
+            SUM(cost_usd) as cost,
+            SUM(input_tokens)::int as input_tokens,
+            SUM(output_tokens)::int as output_tokens,
+            AVG(duration_ms) as avg_duration_ms
+          FROM events WHERE project_id = $1
+            AND timestamp >= $2::timestamptz
+            AND timestamp <= $3::timestamptz
+          GROUP BY 1
+        ) e ON e.bucket = gs.bucket
+        ORDER BY gs.bucket ASC`,
+        [projectId, fromDate, toDate],
       );
 
-      res.json({ trends: result.rows, bucket });
+      res.json({ trends: result.rows, bucket, range });
     } catch (err) {
       console.error("[costkey] API error:", err);
       res.status(500).json({ error: "Internal server error" });

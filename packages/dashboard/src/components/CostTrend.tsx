@@ -9,10 +9,21 @@ import {
 } from "recharts";
 import type { TrendBucket } from "../hooks/useApi";
 
+type TimeRange = "mtd" | "7d" | "30d" | "all";
+
 interface Props {
   trends: TrendBucket[] | null;
   loading: boolean;
+  timeRange: TimeRange;
+  onTimeRangeChange: (range: TimeRange) => void;
 }
+
+const RANGES: { id: TimeRange; label: string }[] = [
+  { id: "7d", label: "7D" },
+  { id: "mtd", label: "MTD" },
+  { id: "30d", label: "30D" },
+  { id: "all", label: "All" },
+];
 
 function formatDate(bucket: string) {
   const d = new Date(bucket);
@@ -34,11 +45,14 @@ function CustomTooltip({ active, payload, label }: { active?: boolean; payload?:
   );
 }
 
-export default function CostTrend({ trends, loading }: Props) {
+export default function CostTrend({ trends, loading, timeRange, onTimeRangeChange }: Props) {
   if (loading || !trends) {
     return (
       <div className="bg-surface-raised border border-border rounded-sm p-5">
-        <div className="h-4 w-28 bg-surface-overlay rounded-sm animate-pulse mb-4" />
+        <div className="flex items-center justify-between mb-5">
+          <div className="h-4 w-28 bg-surface-overlay rounded-sm animate-pulse" />
+          <div className="h-6 w-36 bg-surface-overlay rounded-sm animate-pulse" />
+        </div>
         <div className="h-52 bg-surface-overlay rounded-sm animate-pulse" />
       </div>
     );
@@ -49,15 +63,35 @@ export default function CostTrend({ trends, loading }: Props) {
     label: formatDate(t.bucket),
   }));
 
+  const totalCost = trends.reduce((sum, t) => sum + t.cost, 0);
+  const totalCalls = trends.reduce((sum, t) => sum + t.calls, 0);
+
   return (
     <div className="bg-surface-raised border border-border rounded-sm p-5">
       <div className="flex items-center justify-between mb-5">
-        <h2 className="text-xs font-semibold text-text-secondary tracking-wide uppercase">
-          Daily Cost
-        </h2>
-        <span className="font-mono text-xs text-text-muted">
-          {trends.length} days
-        </span>
+        <div className="flex items-center gap-3">
+          <h2 className="text-xs font-semibold text-text-secondary tracking-wide uppercase">
+            Daily Cost
+          </h2>
+          <span className="font-mono text-[10px] text-text-muted">
+            {totalCalls.toLocaleString()} calls · ${totalCost.toFixed(4)}
+          </span>
+        </div>
+        <div className="flex items-center gap-0.5 bg-surface border border-border rounded-sm p-0.5">
+          {RANGES.map((r) => (
+            <button
+              key={r.id}
+              onClick={() => onTimeRangeChange(r.id)}
+              className={`px-2.5 py-1 text-[11px] font-mono font-medium rounded-sm cursor-pointer transition-colors ${
+                timeRange === r.id
+                  ? "bg-accent text-white"
+                  : "text-text-muted hover:text-text-secondary"
+              }`}
+            >
+              {r.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       <ResponsiveContainer width="100%" height={220}>

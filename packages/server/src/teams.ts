@@ -1,7 +1,38 @@
 import type { Router } from "express";
 import { Router as createRouter } from "express";
 import type pg from "pg";
+import { Resend } from "resend";
 import { requireAuth } from "./auth.js";
+
+const resend = new Resend(process.env["RESEND_API_KEY"] ?? "REDACTED_RESEND_KEY");
+
+async function sendInviteEmail(to: string, inviterName: string, orgName: string, inviteUrl: string): Promise<void> {
+  try {
+    await resend.emails.send({
+      from: "CostKey <noreply@costkey.dev>",
+      to,
+      subject: `${inviterName} invited you to ${orgName} on CostKey`,
+      html: `
+        <div style="font-family:system-ui,sans-serif;max-width:500px;margin:0 auto;padding:40px 20px">
+          <h2 style="margin:0 0 16px;font-size:20px;color:#111">You've been invited to CostKey</h2>
+          <p style="color:#555;font-size:15px;line-height:1.6;margin:0 0 24px">
+            <strong>${inviterName}</strong> invited you to join <strong>${orgName}</strong> on CostKey.
+            CostKey tracks your AI API costs per function, automatically.
+          </p>
+          <a href="${inviteUrl}" style="display:inline-block;background:#6366f1;color:#fff;padding:12px 28px;border-radius:4px;text-decoration:none;font-size:14px;font-weight:600">
+            Accept Invite
+          </a>
+          <p style="color:#999;font-size:12px;margin:24px 0 0">
+            This invite expires in 7 days. If you didn't expect this, you can ignore this email.
+          </p>
+        </div>
+      `,
+    });
+    console.log(`[costkey] Invite email sent to ${to}`);
+  } catch (err) {
+    console.error(`[costkey] Failed to send invite email to ${to}:`, err);
+  }
+}
 
 function randomId(): string {
   const bytes = new Uint8Array(12);
@@ -68,8 +99,14 @@ export function createTeamsRouter(pool: pg.Pool): Router {
         [id, user.orgId, email, memberRole, user.id, token, expiresAt],
       );
 
-      // In production: send email with invite link
       const inviteUrl = `https://app.costkey.dev/invite/${token}`;
+
+      // Get org name for the email
+      const orgResult = await pool.query("SELECT name FROM orgs WHERE id = $1", [user.orgId]);
+      const orgName = orgResult.rows[0]?.name ?? "your team";
+
+      // Send invite email
+      void sendInviteEmail(email, user.name, orgName, inviteUrl);
 
       res.status(201).json({
         id,

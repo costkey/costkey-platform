@@ -1,10 +1,13 @@
 import type { Router } from "express";
 import { Router as createRouter } from "express";
 import type pg from "pg";
+import { Resend } from "resend";
 import { groupIntoFeatures } from "./grouping.js";
 import { getAnomalies } from "./anomaly.js";
 import { orgScope } from "./middleware.js";
 import { requireAuth } from "./auth.js";
+
+const resend = new Resend(process.env["RESEND_API_KEY"] ?? "");
 
 export function createApiRouter(pool: pg.Pool): Router {
   const router = createRouter();
@@ -761,6 +764,42 @@ export function createApiRouter(pool: pg.Pool): Router {
     } catch (err) {
       console.error("[costkey] API error:", err);
       res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  // POST /api/v1/feedback — send feedback email
+  router.post("/api/v1/feedback", async (req, res) => {
+    try {
+      const user = (req as any).user;
+      const { message, type } = req.body as { message?: string; type?: string };
+      if (!message?.trim()) {
+        res.status(400).json({ error: "Message is required" });
+        return;
+      }
+
+      const fromName = user?.name ?? "Anonymous";
+      const fromEmail = user?.email ?? "unknown";
+      const feedbackType = type ?? "feedback";
+
+      await resend.emails.send({
+        from: "CostKey <noreply@costkey.dev>",
+        to: "naman@costkey.dev",
+        subject: `[CostKey ${feedbackType}] from ${fromName}`,
+        html: `
+          <div style="font-family:system-ui,sans-serif;max-width:500px;padding:20px">
+            <p><strong>From:</strong> ${fromName} (${fromEmail})</p>
+            <p><strong>Type:</strong> ${feedbackType}</p>
+            <hr style="border:none;border-top:1px solid #eee;margin:16px 0">
+            <p style="white-space:pre-wrap">${message}</p>
+          </div>
+        `,
+      });
+
+      console.log(`[costkey] Feedback from ${fromEmail}: ${feedbackType}`);
+      res.json({ ok: true });
+    } catch (err) {
+      console.error("[costkey] Feedback error:", err);
+      res.status(500).json({ error: "Failed to send feedback" });
     }
   });
 

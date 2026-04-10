@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { BrowserRouter, Routes, Route, Navigate, Outlet, useNavigate, Link } from "react-router-dom";
-import { Settings, ChevronDown, ExternalLink, ArrowRight } from "lucide-react";
+import { Settings, ChevronDown, ExternalLink, ArrowRight, MessageSquare, X, Send } from "lucide-react";
 import { AuthProvider, useAuth } from "./contexts/AuthContext";
 import { getHealth } from "./api";
 import Login from "./pages/Login";
@@ -116,6 +116,83 @@ function ProjectSwitcher({ projects, currentProjectId, orgName, onSelect }: {
   );
 }
 
+function FeedbackButton() {
+  const [open, setOpen] = useState(false);
+  const [message, setMessage] = useState("");
+  const [type, setType] = useState("feedback");
+  const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState(false);
+
+  const send = async () => {
+    if (!message.trim()) return;
+    setSending(true);
+    try {
+      await fetch("/api/v1/feedback", {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message, type }),
+      });
+      setSent(true);
+      setTimeout(() => { setOpen(false); setSent(false); setMessage(""); }, 1500);
+    } catch { /* ignore */ }
+    setSending(false);
+  };
+
+  return (
+    <>
+      <button
+        onClick={() => setOpen(true)}
+        className="flex items-center gap-1.5 text-[11px] text-text-muted font-mono hover:text-text-secondary transition-colors cursor-pointer"
+      >
+        Feedback
+      </button>
+
+      {open && (
+        <>
+          <div className="fixed inset-0 bg-black/30 z-40" onClick={() => setOpen(false)} />
+          <div className="fixed top-16 right-6 w-80 bg-surface-raised border border-border rounded-sm z-50 shadow-lg shadow-black/30">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-border">
+              <span className="text-sm font-medium text-text-primary">Send feedback</span>
+              <button onClick={() => setOpen(false)} className="text-text-muted hover:text-text-secondary cursor-pointer">
+                <X size={14} />
+              </button>
+            </div>
+            <div className="p-4 flex flex-col gap-3">
+              <div className="flex gap-2">
+                {["feedback", "bug", "feature"].map((t) => (
+                  <button
+                    key={t}
+                    onClick={() => setType(t)}
+                    className={`px-2.5 py-1 text-[11px] font-mono rounded-sm cursor-pointer transition-colors ${
+                      type === t ? "bg-surface-hover text-text-primary" : "text-text-muted hover:text-text-secondary"
+                    }`}
+                  >
+                    {t}
+                  </button>
+                ))}
+              </div>
+              <textarea
+                value={message}
+                onChange={(e) => setMessage(e.target.value)}
+                placeholder="What's on your mind?"
+                rows={4}
+                className="w-full bg-surface border border-border rounded-sm px-3 py-2 text-sm text-text-primary placeholder:text-text-muted outline-none resize-none focus:border-border-bright"
+              />
+              <button
+                onClick={send}
+                disabled={sending || !message.trim()}
+                className="flex items-center justify-center gap-1.5 bg-accent hover:bg-accent-hover text-black font-mono text-xs font-medium py-2 rounded-sm transition-colors disabled:opacity-50 cursor-pointer"
+              >
+                {sent ? "Sent!" : sending ? "Sending..." : <><Send size={12} /> Send</>}
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+    </>
+  );
+}
+
 function AppShell() {
   const { user, org, projects, currentProjectId, setCurrentProjectId } = useAuth();
   const navigate = useNavigate();
@@ -151,6 +228,10 @@ function AppShell() {
 
           {/* Right side */}
           <div className="ml-auto flex items-center gap-3">
+            <FeedbackButton />
+
+            <div className="w-px h-4 bg-border" />
+
             <a
               href="https://costkey.dev/docs"
               target="_blank"

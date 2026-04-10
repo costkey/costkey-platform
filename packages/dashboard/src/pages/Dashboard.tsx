@@ -14,7 +14,7 @@ import { useSummary, useOverview, useCallSites, useEvents, useTrends, useTraces 
 import { useAuth } from "../contexts/AuthContext";
 
 type Tab = "overview" | "traces" | "call-sites" | "events";
-type TimeRange = "mtd" | "7d" | "30d" | "all";
+type TimeRange = "mtd" | "7d" | "30d" | "3m" | "6m" | "1y";
 
 const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
   { id: "overview", label: "Overview", icon: <BarChart3 size={14} /> },

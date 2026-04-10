@@ -124,7 +124,7 @@ function AppShell() {
   return (
     <div className="min-h-screen bg-surface flex flex-col">
       {/* Header */}
-      <header className="scanline-effect relative border-b border-border bg-surface-raised/50 backdrop-blur-sm sticky top-0 z-50">
+      <header className="relative border-b border-border bg-surface sticky top-0 z-50">
         <div className="max-w-[1440px] mx-auto px-6 h-14 flex items-center gap-4">
           <button onClick={() => navigate("/")} className="flex items-center gap-2.5 cursor-pointer group">
             <img src="/favicon.svg" alt="CostKey" className="w-6 h-6 group-hover:brightness-110 transition-all" />

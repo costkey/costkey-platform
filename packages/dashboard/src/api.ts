@@ -336,7 +336,7 @@ export async function deleteCustomProvider(
   if (!res.ok) throw new Error(`API error: ${res.status}`);
 }
 
-export type TimeRange = "mtd" | "7d" | "30d" | "all";
+export type TimeRange = "mtd" | "7d" | "30d" | "3m" | "6m" | "1y";
 
 export async function getTrends(
   projectId: string,

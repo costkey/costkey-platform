@@ -20,17 +20,14 @@ interface StatCardProps {
 function StatCard({ label, value, sub, icon, color, bgColor, delay }: StatCardProps) {
   return (
     <div
-      className="animate-in stat-card-hover bg-surface-raised border border-border rounded-sm px-4 py-4 flex flex-col gap-2 relative overflow-hidden"
+      className="animate-in stat-card-hover bg-surface-raised border border-border rounded-sm px-4 py-4 flex flex-col gap-2"
       style={{ animationDelay: `${delay}ms` }}
     >
-      <div className={`absolute top-0 left-0 right-0 h-px ${bgColor}`} style={{ opacity: 0.6 }} />
       <div className="flex items-center justify-between">
         <span className="text-text-muted text-xs font-medium tracking-wide uppercase">
           {label}
         </span>
-        <div className={`w-7 h-7 rounded-sm flex items-center justify-center ${bgColor}`}>
-          <span className={color}>{icon}</span>
-        </div>
+        <span className={`${color} opacity-50`}>{icon}</span>
       </div>
       <div className="flex items-baseline gap-1.5">
         <span className="font-mono text-2xl font-bold tracking-tight text-text-primary">

@@ -9,7 +9,7 @@ import {
 } from "recharts";
 import type { TrendBucket } from "../hooks/useApi";
 
-type TimeRange = "mtd" | "7d" | "30d" | "all";
+type TimeRange = "mtd" | "7d" | "30d" | "3m" | "6m" | "1y";
 
 interface Props {
   trends: TrendBucket[] | null;
@@ -22,7 +22,9 @@ const RANGES: { id: TimeRange; label: string }[] = [
   { id: "7d", label: "7D" },
   { id: "mtd", label: "MTD" },
   { id: "30d", label: "30D" },
-  { id: "all", label: "All" },
+  { id: "3m", label: "3M" },
+  { id: "6m", label: "6M" },
+  { id: "1y", label: "1Y" },
 ];
 
 function formatDate(bucket: string) {

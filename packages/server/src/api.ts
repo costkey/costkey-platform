@@ -353,8 +353,12 @@ export function createApiRouter(pool: pg.Pool): Router {
         fromDate = new Date(Date.now() - 7 * 86400000).toISOString();
       } else if (range === "30d") {
         fromDate = new Date(Date.now() - 30 * 86400000).toISOString();
-      } else if (range === "all") {
-        fromDate = new Date("2020-01-01").toISOString();
+      } else if (range === "3m") {
+        fromDate = new Date(Date.now() - 90 * 86400000).toISOString();
+      } else if (range === "6m") {
+        fromDate = new Date(Date.now() - 180 * 86400000).toISOString();
+      } else if (range === "1y") {
+        fromDate = new Date(Date.now() - 365 * 86400000).toISOString();
       } else {
         // mtd — start of current month
         const now = new Date();

@@ -29,7 +29,7 @@ export default function ModelBreakdown({ models, loading }: Props) {
 
   return (
     <div className="bg-surface-raised border border-border rounded-sm p-5">
-      <h2 className="text-xs font-semibold text-text-secondary tracking-wide uppercase mb-4">
+      <h2 className="text-xs font-semibold text-text-secondary tracking-wide uppercase mb-5">
         Cost by Model
       </h2>
 

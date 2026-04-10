@@ -51,7 +51,7 @@ export default function CostTrend({ trends, loading }: Props) {
 
   return (
     <div className="bg-surface-raised border border-border rounded-sm p-5">
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex items-center justify-between mb-5">
         <h2 className="text-xs font-semibold text-text-secondary tracking-wide uppercase">
           Daily Cost
         </h2>

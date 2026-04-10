@@ -33,8 +33,8 @@ export default function Login() {
           <span className="font-mono text-lg font-semibold text-text-primary">CostKey</span>
         </div>
 
-        <div className="bg-surface-raised border border-border rounded-sm p-6">
-          <h1 className="text-lg font-semibold text-text-primary mb-1">Sign in</h1>
+        <div className="bg-surface-raised border border-border rounded-sm p-7">
+          <h1 className="text-lg font-semibold text-text-primary mb-1.5">Sign in</h1>
           <p className="text-sm text-text-secondary mb-6">Enter your credentials to access your dashboard.</p>
 
           {/* GitHub button */}

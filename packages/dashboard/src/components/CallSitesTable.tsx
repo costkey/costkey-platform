@@ -65,7 +65,7 @@ function CallSiteRow({ row, maxCost, projectId, onSelectEvent }: {
     <div className="border-b border-border/30 row-striped">
       <button
         onClick={toggle}
-        className="w-full flex items-center gap-3 px-4 py-3 row-hover cursor-pointer text-left"
+        className="w-full flex items-center gap-3 px-5 py-3.5 row-hover cursor-pointer text-left"
       >
         <ChevronRight
           size={14}
@@ -242,7 +242,7 @@ export default function CallSitesTable({ callSites, loading, search = "", projec
   return (
     <>
       <div className="bg-surface-raised border border-border rounded-sm">
-        <div className="flex items-center gap-3 px-4 py-2.5 border-b border-border">
+        <div className="flex items-center gap-3 px-5 py-3 border-b border-border">
           <div className="w-3.5" />
           <div className="flex-1 text-xs uppercase tracking-wider font-medium text-text-muted">Call Site</div>
           <div className="w-16 text-right"><SortHeader label="Calls" field="total_calls" /></div>

@@ -43,7 +43,7 @@ function TraceRow({ trace, projectId }: { trace: Trace; projectId: string }) {
     <div className="border-b border-border/30 last:border-b-0 row-striped">
       <button
         onClick={toggle}
-        className="w-full flex items-center gap-2 px-3 py-2 row-hover cursor-pointer text-left"
+        className="w-full flex items-center gap-2 px-4 py-2.5 row-hover cursor-pointer text-left"
       >
         <ChevronRight
           size={12}
@@ -88,7 +88,7 @@ function TraceRow({ trace, projectId }: { trace: Trace; projectId: string }) {
       </button>
 
       {expanded && (
-        <div className="bg-surface/50 px-3 py-1.5 pb-2">
+        <div className="bg-surface/50 px-4 py-2 pb-3">
           {loading && (
             <div className="flex items-center gap-2 py-1.5">
               <div className="w-3 h-3 border border-accent border-t-transparent rounded-full animate-spin" />
@@ -194,9 +194,9 @@ export default function TracesView({ traces, loading, projectId, search = "" }: 
   if (loading || !traces) {
     return (
       <div className="bg-surface-raised border border-border rounded-sm">
-        <div className="p-3">
+        <div className="p-4">
           {[...Array(6)].map((_, i) => (
-            <div key={i} className="h-7 bg-surface-overlay rounded-sm animate-pulse mb-1" />
+            <div key={i} className="h-8 bg-surface-overlay rounded-sm animate-pulse mb-2" />
           ))}
         </div>
       </div>
@@ -216,7 +216,7 @@ export default function TracesView({ traces, loading, projectId, search = "" }: 
   return (
     <div className="bg-surface-raised border border-border rounded-sm">
       {/* Column headers */}
-      <div className="flex items-center gap-2 px-3 py-1.5 border-b border-border text-[10px] uppercase tracking-wider font-medium text-text-muted">
+      <div className="flex items-center gap-2 px-4 py-3 border-b border-border text-[10px] uppercase tracking-wider font-medium text-text-muted">
         <div className="w-3" />
         <div className="w-5" />
         <div className="flex-1">Request</div>
@@ -228,7 +228,7 @@ export default function TracesView({ traces, loading, projectId, search = "" }: 
 
       <div className="max-h-[calc(100vh-220px)] overflow-y-auto">
         {filtered.length === 0 && (
-          <div className="px-3 py-6 text-center text-xs text-text-muted font-mono">
+          <div className="px-4 py-8 text-center text-sm text-text-muted font-mono">
             {q ? "No matching traces" : "No traces yet"}
           </div>
         )}
@@ -238,7 +238,7 @@ export default function TracesView({ traces, loading, projectId, search = "" }: 
       </div>
 
       {q && filtered.length > 0 && (
-        <div className="px-3 py-1.5 border-t border-border text-[10px] text-text-muted font-mono">
+        <div className="px-4 py-2 border-t border-border text-[10px] text-text-muted font-mono">
           {filtered.length} of {traces.length} traces
         </div>
       )}

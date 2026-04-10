@@ -125,7 +125,7 @@ function AppShell() {
     <div className="min-h-screen bg-surface flex flex-col">
       {/* Header */}
       <header className="scanline-effect relative border-b border-border bg-surface-raised/50 backdrop-blur-sm sticky top-0 z-50">
-        <div className="max-w-[1400px] mx-auto px-6 h-14 flex items-center gap-4">
+        <div className="max-w-[1440px] mx-auto px-6 h-14 flex items-center gap-4">
           <button onClick={() => navigate("/")} className="flex items-center gap-2.5 cursor-pointer group">
             <img src="/favicon.svg" alt="CostKey" className="w-6 h-6 group-hover:brightness-110 transition-all" />
             <span className="font-mono text-sm font-semibold text-text-primary tracking-tight">
@@ -186,7 +186,7 @@ function AppShell() {
       </div>
 
       <footer className="border-t border-border/50">
-        <div className="max-w-[1440px] mx-auto px-4 py-1.5 flex items-center justify-between">
+        <div className="max-w-[1440px] mx-auto px-6 py-2 flex items-center justify-between">
           <span className="font-mono text-[9px] text-text-muted/50">costkey v0.2.0</span>
           <div className="flex items-center gap-3">
             <a href="https://costkey.dev/docs" target="_blank" rel="noopener noreferrer" className="font-mono text-[9px] text-text-muted/50 hover:text-text-muted transition-colors">Docs</a>

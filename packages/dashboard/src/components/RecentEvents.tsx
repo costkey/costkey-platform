@@ -42,7 +42,7 @@ export default function RecentEvents({ events, loading, search = "", projectId }
   return (
     <>
       <div className="bg-surface-raised border border-border rounded-sm">
-        <div className="flex items-center gap-3 px-4 py-2.5 border-b border-border text-xs uppercase tracking-wider font-medium text-text-muted">
+        <div className="flex items-center gap-3 px-5 py-3 border-b border-border text-xs uppercase tracking-wider font-medium text-text-muted">
           <div className="w-5" />
           <div className="w-36">Time</div>
           <div className="w-48">Model</div>
@@ -67,7 +67,7 @@ export default function RecentEvents({ events, loading, search = "", projectId }
               <button
                 key={event.id}
                 onClick={() => setSelectedEvent(event)}
-                className="w-full flex items-center gap-3 px-4 py-2.5 row-hover row-striped cursor-pointer text-left border-b border-border/20 last:border-b-0"
+                className="w-full flex items-center gap-3 px-5 py-3 row-hover row-striped cursor-pointer text-left border-b border-border/20 last:border-b-0"
               >
                 <ProviderLogo provider={event.provider} size={14} />
 

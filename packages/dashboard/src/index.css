@@ -1,12 +1,13 @@
 @import "tailwindcss";
 
 @theme {
-  --color-surface: #06060b;
-  --color-surface-raised: #0e0e16;
-  --color-surface-overlay: #15151f;
-  --color-surface-hover: #1a1a28;
-  --color-border: #1e1e2e;
-  --color-border-bright: #2a2a3e;
+  --color-surface: #08080f;
+  --color-surface-raised: #10101c;
+  --color-surface-overlay: #181828;
+  --color-surface-hover: #1c1c30;
+  --color-border: #222238;
+  --color-border-bright: #2e2e48;
+  --radius-default: 8px;
   --color-text-primary: #e4e4ec;
   --color-text-secondary: #7c7c96;
   --color-text-muted: #484860;
@@ -45,6 +46,15 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* Global override: make all rounded-sm actually rounded */
+.rounded-sm { border-radius: 8px !important; }
+
+/* Glossy card effect */
+.bg-surface-raised {
+  background: linear-gradient(180deg, #13131f 0%, #0e0e18 100%) !important;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(255, 255, 255, 0.04) inset !important;
+}
+
 #root {
   min-height: 100vh;
 }
@@ -81,10 +91,10 @@ body {
 
 /* Table row hover */
 .row-hover {
-  transition: background-color 0.1s ease;
+  transition: background-color 0.15s ease, box-shadow 0.15s ease;
 }
 .row-hover:hover {
-  background-color: var(--color-surface-hover);
+  background-color: rgba(99, 102, 241, 0.04);
 }
 
 /* Cost bar animation */
@@ -131,8 +141,8 @@ body {
 }
 .stat-card-hover:hover {
   border-color: var(--color-border-bright);
-  box-shadow: 0 2px 12px rgba(99, 102, 241, 0.06);
-  transform: translateY(-1px);
+  box-shadow: 0 4px 20px rgba(99, 102, 241, 0.1), 0 0 0 1px rgba(99, 102, 241, 0.08);
+  transform: translateY(-2px);
 }
 
 /* Alternating table rows */

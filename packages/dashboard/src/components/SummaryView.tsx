@@ -88,9 +88,9 @@ function ReleaseCostChange({ pct }: { pct: number | null }) {
 export default function SummaryView({ summary, loading }: Props) {
   if (loading || !summary) {
     return (
-      <div className="flex flex-col gap-4 mb-4">
+      <div className="flex flex-col gap-5">
         <HeadlineSkeleton />
-        <div className="grid grid-cols-[1fr_1fr] gap-4">
+        <div className="grid grid-cols-[1fr_1fr] gap-5">
           <FeaturesSkeleton />
           <div className="bg-surface-raised border border-border rounded-sm p-5">
             <div className="h-4 w-36 bg-surface-overlay rounded-sm animate-pulse mb-5" />
@@ -106,9 +106,9 @@ export default function SummaryView({ summary, loading }: Props) {
     : 1;
 
   return (
-    <div className="flex flex-col gap-4 mb-4">
+    <div className="flex flex-col gap-5">
       {/* Top row: spend + deploy side by side */}
-      <div className={`grid gap-4 ${summary.byRelease?.length ? "grid-cols-[1fr_1fr]" : "grid-cols-1"}`}>
+      <div className={`grid gap-5 ${summary.byRelease?.length ? "grid-cols-[1fr_1fr]" : "grid-cols-1"}`}>
         {/* Headline card */}
         <div className="animate-in bg-surface-raised border border-border rounded-sm p-5 relative overflow-hidden flex flex-col justify-center">
           <div className="absolute top-0 left-0 right-0 h-px bg-accent-muted" style={{ opacity: 0.6 }} />
@@ -177,7 +177,7 @@ export default function SummaryView({ summary, loading }: Props) {
       )}
       </div>
 
-      <div className="grid grid-cols-[1fr_1fr] gap-4">
+      <div className="grid grid-cols-[1fr_1fr] gap-5">
         {/* Top cost drivers */}
         <div className="animate-in bg-surface-raised border border-border rounded-sm p-5" style={{ animationDelay: "60ms" }}>
           <p className="text-text-muted text-xs font-medium tracking-wide uppercase mb-4">

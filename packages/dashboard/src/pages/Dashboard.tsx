@@ -47,12 +47,12 @@ export default function Dashboard() {
   const showSearch = activeTab !== "overview";
 
   return (
-    <main className="max-w-[1440px] mx-auto px-5 pt-3 pb-2 flex flex-col gap-0 min-h-[calc(100vh-56px)]">
+    <main className="max-w-[1440px] mx-auto px-6 pt-5 pb-6 flex flex-col gap-0 min-h-[calc(100vh-56px)]">
       <AnomalyBanner projectId={projectId} />
 
       {/* Setup hints banner */}
       {hints.filter((h) => !dismissedHints.has(h.type)).map((hint) => (
-        <div key={hint.type} className="bg-amber-muted border border-amber/20 rounded-sm px-4 py-3 flex items-center gap-3 mb-3">
+        <div key={hint.type} className="bg-amber-muted border border-amber/20 rounded-sm px-4 py-3 flex items-center gap-3 mb-4">
           <AlertCircle size={16} className="text-amber shrink-0" />
           <p className="text-sm text-text-primary flex-1">{hint.message}</p>
           <a
@@ -73,13 +73,13 @@ export default function Dashboard() {
       ))}
 
       {/* Tab bar */}
-      <div className="flex items-center gap-0 border-b border-border mb-4">
-        <div className="flex items-center gap-0">
+      <div className="flex items-center gap-0 border-b border-border mb-5">
+        <div className="flex items-center gap-1">
           {TABS.map((tab) => (
             <button
               key={tab.id}
               onClick={() => { setActiveTab(tab.id); setSearch(""); }}
-              className={`flex items-center gap-2 px-5 py-3 text-sm font-medium cursor-pointer transition-colors border-b-2 -mb-px ${
+              className={`flex items-center gap-2 px-4 py-3 text-sm font-medium cursor-pointer transition-colors border-b-2 -mb-px ${
                 activeTab === tab.id
                   ? "text-accent border-accent"
                   : "text-text-muted hover:text-text-secondary border-transparent"
@@ -92,7 +92,7 @@ export default function Dashboard() {
         </div>
 
         {showSearch && (
-          <div className="ml-auto flex items-center gap-2 bg-surface-raised border border-border rounded-sm px-3 py-2 mb-1">
+          <div className="ml-auto flex items-center gap-2 bg-surface-raised border border-border rounded-sm px-3 py-2">
             <Search size={14} className="text-text-muted" />
             <input
               type="text"
@@ -111,10 +111,10 @@ export default function Dashboard() {
           !overview.loading && overview.data?.overview && overview.data.overview.total_calls === 0
             ? <EmptyState tab="overview" />
             : (
-              <div className="flex flex-col gap-4">
+              <div className="flex flex-col gap-5">
                 <SummaryView summary={summary.data} loading={summary.loading} />
                 <StatCards overview={overview.data?.overview ?? null} loading={overview.loading} />
-                <div className="grid grid-cols-[1fr_340px] gap-4">
+                <div className="grid grid-cols-[1fr_340px] gap-5">
                   <CostTrend trends={trends.data} loading={trends.loading} />
                   <ModelBreakdown models={overview.data?.byModel ?? null} loading={overview.loading} />
                 </div>

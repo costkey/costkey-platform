@@ -27,12 +27,12 @@ export default function Settings() {
     <div className="max-w-[900px] mx-auto px-6 py-8">
       <h1 className="text-xl font-semibold text-text-primary mb-6">Settings</h1>
 
-      <div className="flex gap-0 border-b border-border mb-6">
+      <div className="flex gap-1 border-b border-border mb-8">
         {tabs.map((tab) => (
           <button
             key={tab.id}
             onClick={() => setActiveTab(tab.id)}
-            className={`flex items-center gap-2 px-4 py-2.5 text-xs font-mono uppercase tracking-wider transition-colors cursor-pointer border-b-2 -mb-px ${
+            className={`flex items-center gap-2 px-4 py-3 text-xs font-mono uppercase tracking-wider transition-colors cursor-pointer border-b-2 -mb-px ${
               activeTab === tab.id ? "text-accent border-accent" : "text-text-muted border-transparent hover:text-text-secondary"
             }`}
           >
@@ -89,7 +89,7 @@ function ProjectsTab({ projects, copied, copy, refresh }: {
   };
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-5">
       {projects.map((project) => {
         const dsn = `https://${project.authKey}@app.costkey.dev/${project.id}`;
         return (
@@ -195,7 +195,7 @@ function TeamTab({ org, members, user, refresh }: {
   const isOwner = user?.role === "owner";
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-5">
       {/* Invite form */}
       {isOwner && (
         <div className="bg-surface-raised border border-border rounded-sm p-5">
@@ -333,7 +333,7 @@ function AlertsTab() {
   };
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-5">
       {/* Create alert */}
       <div className="bg-surface-raised border border-border rounded-sm p-5">
         <h3 className="text-sm font-medium text-text-primary mb-3">Create alert</h3>
@@ -490,7 +490,7 @@ function CustomProvidersTab({ projects }: {
   };
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-5">
       {/* Project selector */}
       {projects.length > 1 && (
         <div className="flex items-center gap-3">
@@ -634,7 +634,7 @@ function AccountTab({ user, org, logout }: {
   logout: () => Promise<void>;
 }) {
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-5">
       <div className="bg-surface-raised border border-border rounded-sm p-5">
         <h3 className="text-sm font-medium text-text-primary mb-4">Profile</h3>
         <div className="grid grid-cols-2 gap-4">

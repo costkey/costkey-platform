@@ -8,6 +8,7 @@ import Signup from "./pages/Signup";
 import Onboarding from "./pages/Onboarding";
 import Dashboard from "./pages/Dashboard";
 import SettingsPage from "./pages/Settings";
+import Invite from "./pages/Invite";
 
 function ProtectedRoute() {
   const { user, loading } = useAuth();
@@ -208,6 +209,7 @@ export default function App() {
           <Route path="/login" element={<Login />} />
           <Route path="/signup" element={<Signup />} />
           <Route path="/onboarding" element={<Onboarding />} />
+          <Route path="/invite/:token" element={<Invite />} />
           <Route element={<ProtectedRoute />}>
             <Route path="/" element={<Dashboard />} />
             <Route path="/settings" element={<SettingsPage />} />

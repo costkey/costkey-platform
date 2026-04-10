@@ -3,8 +3,42 @@ import { Router as createRouter } from "express";
 import { eq } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
+import { Resend } from "resend";
 import { getDb, getPool } from "./db.js";
 import { users, orgs, projects } from "./schema.js";
+
+const resend = new Resend(process.env["RESEND_API_KEY"]!);
+
+async function sendWelcomeEmail(to: string, name: string, dsn: string): Promise<void> {
+  try {
+    await resend.emails.send({
+      from: "Naman from CostKey <naman@costkey.dev>",
+      to,
+      subject: "Welcome to CostKey — you're set up",
+      html: `
+        <div style="font-family:system-ui,sans-serif;max-width:520px;margin:0 auto;padding:40px 20px;color:#1a1a1a">
+          <p style="font-size:16px;line-height:1.6;margin:0 0 20px">Hey ${name},</p>
+          <p style="font-size:16px;line-height:1.6;margin:0 0 20px">Thanks for signing up for CostKey. Your project is ready.</p>
+          <p style="font-size:16px;line-height:1.6;margin:0 0 8px">Your DSN:</p>
+          <div style="background:#f4f4f5;border-radius:6px;padding:12px 16px;margin:0 0 20px">
+            <code style="font-family:'JetBrains Mono',monospace;font-size:13px;word-break:break-all;color:#18181b">${dsn}</code>
+          </div>
+          <p style="font-size:16px;line-height:1.6;margin:0 0 8px">Add this to your app:</p>
+          <div style="background:#18181b;border-radius:6px;padding:16px;margin:0 0 24px">
+            <code style="font-family:'JetBrains Mono',monospace;font-size:13px;color:#a1a1aa;line-height:1.8;display:block"><span style="color:#fafafa">Python:</span> pip install costkey<br>import costkey<br>costkey.init(dsn="${dsn}")<br><br><span style="color:#fafafa">TypeScript:</span> npm install costkey<br>import { CostKey } from 'costkey'<br>CostKey.init({ dsn: '${dsn}' })</code>
+          </div>
+          <p style="font-size:16px;line-height:1.6;margin:0 0 24px">That's it. Every AI call will show up in <a href="https://app.costkey.dev" style="color:#18181b;font-weight:600">your dashboard</a> automatically.</p>
+          <p style="font-size:16px;line-height:1.6;margin:0 0 4px">If anything's confusing or broken, just reply to this email. I read every one.</p>
+          <p style="font-size:16px;line-height:1.6;margin:24px 0 0">— Naman</p>
+          <p style="font-size:13px;color:#a1a1aa;margin:4px 0 0">Founder, CostKey</p>
+        </div>
+      `,
+    });
+    console.log(`[costkey] Welcome email sent to ${to}`);
+  } catch (err) {
+    console.error(`[costkey] Failed to send welcome email to ${to}:`, err);
+  }
+}
 
 const JWT_SECRET = process.env["COSTKEY_JWT_SECRET"] ?? "costkey-dev-secret-change-in-prod";
 const JWT_EXPIRES = "7d";
@@ -144,14 +178,21 @@ export function createAuthRouter(): Router {
       const token = jwt.sign({ userId, orgId, role: finalRole }, JWT_SECRET, { expiresIn: JWT_EXPIRES });
       setTokenCookie(res, token);
 
+      const dsnUrl = authKey ? `https://${authKey}@app.costkey.dev/${projectId}` : null;
+
       res.status(201).json({
         user: { id: userId, email, name, orgId, role: finalRole },
         org: { id: orgId, name: displayOrgName, slug: orgSlug },
         project: projectId ? { id: projectId, name: "Default Project", authKey } : null,
-        dsn: authKey ? `https://${authKey}@app.costkey.dev/${projectId}` : null,
+        dsn: dsnUrl,
         token,
         joinedViaInvite,
       });
+
+      // Send welcome email (fire and forget)
+      if (dsnUrl && !joinedViaInvite) {
+        void sendWelcomeEmail(email, name, dsnUrl);
+      }
     } catch (err) {
       console.error("[costkey] Signup error:", err);
       res.status(500).json({ error: "Internal server error" });
@@ -380,7 +421,8 @@ export function createAuthRouter(): Router {
         // Redirect new users to onboarding
         const token = jwt.sign({ userId, orgId, role: "owner" }, JWT_SECRET, { expiresIn: JWT_EXPIRES });
         setTokenCookie(res, token);
-        const dsn = `https://${authKey}@app.costkey.dev/${projectId}`;
+        const ghDsn = `https://${authKey}@app.costkey.dev/${projectId}`;
+        void sendWelcomeEmail(email, name, ghDsn);
         res.redirect("/onboarding");
         return;
       }

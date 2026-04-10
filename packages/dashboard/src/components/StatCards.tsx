@@ -73,8 +73,8 @@ export default function StatCards({ overview, loading }: Props) {
         label="Total Calls"
         value={overview.total_calls.toLocaleString()}
         icon={<Zap size={15} />}
-        color="text-accent"
-        bgColor="bg-accent-muted"
+        color="text-cyan"
+        bgColor="bg-cyan-muted"
         delay={40}
       />
       <StatCard

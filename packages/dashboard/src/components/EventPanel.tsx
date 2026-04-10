@@ -130,7 +130,7 @@ export default function EventPanel({ event, projectId, onClose }: Props) {
         <div className="flex-1 overflow-y-auto px-5 py-5 flex flex-col gap-5">
           {loading && (
             <div className="flex items-center gap-2 py-8 justify-center">
-              <div className="w-4 h-4 border-2 border-accent border-t-transparent rounded-full animate-spin" />
+              <div className="w-4 h-4 border-2 border-text-secondary border-t-transparent rounded-full animate-spin" />
               <span className="text-sm text-text-muted">Loading…</span>
             </div>
           )}
@@ -150,7 +150,7 @@ export default function EventPanel({ event, projectId, onClose }: Props) {
                 <div className="grid grid-cols-3 gap-4">
                   <TokenBlock icon={<ArrowUp size={12} />} label="Input" value={event.input_tokens} color="text-cyan" />
                   <TokenBlock icon={<ArrowDown size={12} />} label="Output" value={event.output_tokens} color="text-green" />
-                  <TokenBlock icon={<Zap size={12} />} label="Total" value={event.total_tokens} color="text-accent" />
+                  <TokenBlock icon={<Zap size={12} />} label="Total" value={event.total_tokens} color="text-text-primary" />
                 </div>
                 {event.streaming && (
                   <div className="grid grid-cols-2 gap-4 mt-3 pt-3 border-t border-border/50">
@@ -196,7 +196,7 @@ export default function EventPanel({ event, projectId, onClose }: Props) {
                         <span className="text-text-primary">{frame.functionName ?? "anonymous"}</span>
                         <span className="text-text-muted"> at </span>
                         <span className="text-text-muted">{frame.fileName ?? "?"}</span>
-                        {frame.lineNumber && <span className="text-accent">:{frame.lineNumber}</span>}
+                        {frame.lineNumber && <span className="text-text-secondary">:{frame.lineNumber}</span>}
                       </div>
                     ))}
                   </div>

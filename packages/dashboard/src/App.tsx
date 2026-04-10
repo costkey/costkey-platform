@@ -16,7 +16,7 @@ function ProtectedRoute() {
   if (loading) {
     return (
       <div className="min-h-screen bg-surface flex items-center justify-center">
-        <div className="w-6 h-6 border-2 border-accent border-t-transparent rounded-full animate-spin" />
+        <div className="w-6 h-6 border-2 border-text-secondary border-t-transparent rounded-full animate-spin" />
       </div>
     );
   }
@@ -172,7 +172,7 @@ function AppShell() {
               <Settings size={14} />
             </button>
 
-            <div className="w-7 h-7 rounded-full bg-accent-muted flex items-center justify-center font-mono text-xs text-accent font-medium cursor-pointer"
+            <div className="w-7 h-7 rounded-full bg-surface-overlay flex items-center justify-center font-mono text-xs text-text-primary font-medium cursor-pointer"
               title={user?.email}
             >
               {user?.name?.charAt(0).toUpperCase() ?? "?"}

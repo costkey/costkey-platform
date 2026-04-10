@@ -117,7 +117,7 @@ export default function Signup() {
             <button
               type="submit"
               disabled={submitting}
-              className="w-full bg-accent hover:bg-accent-hover text-white font-mono text-sm font-medium py-2.5 rounded-sm transition-colors disabled:opacity-50 cursor-pointer"
+              className="w-full bg-accent hover:bg-accent-hover text-black font-mono text-sm font-medium py-2.5 rounded-sm transition-colors disabled:opacity-50 cursor-pointer"
             >
               {submitting ? "Creating account..." : "Create account"}
             </button>

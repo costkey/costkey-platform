@@ -111,7 +111,7 @@ function CallSiteRow({ row, maxCost, projectId, onSelectEvent }: {
         <div className="bg-surface/50 border-t border-border/20 animate-expand">
           {loadingEvents && (
             <div className="flex items-center gap-2 px-6 py-3">
-              <div className="w-3 h-3 border border-accent border-t-transparent rounded-full animate-spin" />
+              <div className="w-3 h-3 border border-text-secondary border-t-transparent rounded-full animate-spin" />
               <span className="text-xs text-text-muted">Loading events...</span>
             </div>
           )}

@@ -7,7 +7,7 @@ interface Props {
   loading: boolean;
 }
 
-const BAR_COLORS = ["bg-accent", "bg-green", "bg-amber", "bg-cyan", "bg-violet", "bg-rose"];
+const BAR_COLORS = ["bg-green", "bg-cyan", "bg-amber", "bg-violet", "bg-rose", "bg-text-secondary"];
 
 export default function ModelBreakdown({ models, loading }: Props) {
   if (loading || !models) {

@@ -70,7 +70,7 @@ export default function Invite() {
               <p className="text-sm text-text-secondary">Create an account to join the team. Your invite will be automatically accepted.</p>
               <Link
                 to={`/signup?invite=${token}`}
-                className="w-full bg-accent hover:bg-accent-hover text-white text-center py-2.5 rounded-sm text-sm font-medium transition-colors"
+                className="w-full bg-accent hover:bg-accent-hover text-black text-center py-2.5 rounded-sm text-sm font-medium transition-colors"
               >
                 Create Account
               </Link>

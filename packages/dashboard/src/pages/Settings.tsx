@@ -138,11 +138,11 @@ function ProjectsTab({ projects, copied, copy, refresh }: {
           <input
             type="text" value={newName} onChange={(e) => setNewName(e.target.value)}
             placeholder="New project name..."
-            className="flex-1 bg-surface border border-border rounded-sm px-3 py-2 text-sm text-text-primary font-mono focus:outline-none focus:border-accent"
+            className="flex-1 bg-surface border border-border rounded-sm px-3 py-2 text-sm text-text-primary font-mono focus:outline-none focus:border-border-bright"
             onKeyDown={(e) => e.key === "Enter" && createProject()}
           />
           <button onClick={createProject} disabled={creating || !newName.trim()}
-            className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-white font-mono text-xs px-4 py-2.5 rounded-sm transition-colors disabled:opacity-50 cursor-pointer">
+            className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-black font-mono text-xs px-4 py-2.5 rounded-sm transition-colors disabled:opacity-50 cursor-pointer">
             <Plus size={13} /> Create Project
           </button>
         </div>
@@ -203,7 +203,7 @@ function TeamTab({ org, members, user, refresh }: {
           <div className="flex items-center gap-3">
             <input type="email" value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)}
               placeholder="colleague@company.com"
-              className="flex-1 bg-surface border border-border rounded-sm px-3 py-2 text-sm text-text-primary font-mono focus:outline-none focus:border-accent"
+              className="flex-1 bg-surface border border-border rounded-sm px-3 py-2 text-sm text-text-primary font-mono focus:outline-none focus:border-border-bright"
               onKeyDown={(e) => e.key === "Enter" && sendInvite()} />
             <select value={inviteRole} onChange={(e) => setInviteRole(e.target.value)}
               className="bg-surface border border-border rounded-sm px-3 py-2 text-sm text-text-secondary font-mono cursor-pointer">
@@ -211,7 +211,7 @@ function TeamTab({ org, members, user, refresh }: {
               <option value="admin">Admin</option>
             </select>
             <button onClick={sendInvite} disabled={inviting || !inviteEmail.trim()}
-              className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-white font-mono text-xs px-4 py-2.5 rounded-sm transition-colors disabled:opacity-50 cursor-pointer">
+              className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-black font-mono text-xs px-4 py-2.5 rounded-sm transition-colors disabled:opacity-50 cursor-pointer">
               <Send size={13} /> Invite
             </button>
           </div>
@@ -348,13 +348,13 @@ function AlertsTab() {
             <span className="text-text-muted font-mono text-sm">$</span>
             <input type="number" step="0.01" value={newThreshold} onChange={(e) => setNewThreshold(e.target.value)}
               placeholder="10.00"
-              className="w-24 bg-surface border border-border rounded-sm px-3 py-2 text-sm text-text-primary font-mono focus:outline-none focus:border-accent" />
+              className="w-24 bg-surface border border-border rounded-sm px-3 py-2 text-sm text-text-primary font-mono focus:outline-none focus:border-border-bright" />
           </div>
           <input type="url" value={newWebhook} onChange={(e) => setNewWebhook(e.target.value)}
             placeholder="Slack webhook URL (optional)"
-            className="flex-1 min-w-[200px] bg-surface border border-border rounded-sm px-3 py-2 text-sm text-text-primary font-mono focus:outline-none focus:border-accent" />
+            className="flex-1 min-w-[200px] bg-surface border border-border rounded-sm px-3 py-2 text-sm text-text-primary font-mono focus:outline-none focus:border-border-bright" />
           <button onClick={createAlert} disabled={creating || !newThreshold}
-            className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-white font-mono text-xs px-4 py-2.5 rounded-sm transition-colors disabled:opacity-50 cursor-pointer">
+            className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-black font-mono text-xs px-4 py-2.5 rounded-sm transition-colors disabled:opacity-50 cursor-pointer">
             <Plus size={13} /> Create
           </button>
         </div>
@@ -525,7 +525,7 @@ function CustomProvidersTab({ projects }: {
             <input
               type="text" value={formName} onChange={(e) => setFormName(e.target.value)}
               placeholder="Internal LLM"
-              className="w-full bg-surface border border-border rounded-sm px-3 py-2 text-sm text-text-primary font-mono focus:outline-none focus:border-accent"
+              className="w-full bg-surface border border-border rounded-sm px-3 py-2 text-sm text-text-primary font-mono focus:outline-none focus:border-border-bright"
             />
           </div>
           <div>
@@ -533,35 +533,35 @@ function CustomProvidersTab({ projects }: {
             <input
               type="text" value={formHostname} onChange={(e) => setFormHostname(e.target.value)}
               placeholder="ai.internal.company.com"
-              className="w-full bg-surface border border-border rounded-sm px-3 py-2 text-sm text-text-primary font-mono focus:outline-none focus:border-accent"
+              className="w-full bg-surface border border-border rounded-sm px-3 py-2 text-sm text-text-primary font-mono focus:outline-none focus:border-border-bright"
             />
           </div>
           <div>
             <label className="block text-xs font-mono text-text-muted uppercase tracking-wider mb-1">Input Tokens Path</label>
             <input
               type="text" value={formInputPath} onChange={(e) => setFormInputPath(e.target.value)}
-              className="w-full bg-surface border border-border rounded-sm px-3 py-2 text-sm text-text-primary font-mono focus:outline-none focus:border-accent"
+              className="w-full bg-surface border border-border rounded-sm px-3 py-2 text-sm text-text-primary font-mono focus:outline-none focus:border-border-bright"
             />
           </div>
           <div>
             <label className="block text-xs font-mono text-text-muted uppercase tracking-wider mb-1">Output Tokens Path</label>
             <input
               type="text" value={formOutputPath} onChange={(e) => setFormOutputPath(e.target.value)}
-              className="w-full bg-surface border border-border rounded-sm px-3 py-2 text-sm text-text-primary font-mono focus:outline-none focus:border-accent"
+              className="w-full bg-surface border border-border rounded-sm px-3 py-2 text-sm text-text-primary font-mono focus:outline-none focus:border-border-bright"
             />
           </div>
           <div>
             <label className="block text-xs font-mono text-text-muted uppercase tracking-wider mb-1">Model Path</label>
             <input
               type="text" value={formModelPath} onChange={(e) => setFormModelPath(e.target.value)}
-              className="w-full bg-surface border border-border rounded-sm px-3 py-2 text-sm text-text-primary font-mono focus:outline-none focus:border-accent"
+              className="w-full bg-surface border border-border rounded-sm px-3 py-2 text-sm text-text-primary font-mono focus:outline-none focus:border-border-bright"
             />
           </div>
           <div className="flex items-end">
             <button
               onClick={handleSave}
               disabled={saving || !formName.trim() || !formHostname.trim()}
-              className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-white font-mono text-xs px-4 py-2.5 rounded-sm transition-colors disabled:opacity-50 cursor-pointer"
+              className="flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-black font-mono text-xs px-4 py-2.5 rounded-sm transition-colors disabled:opacity-50 cursor-pointer"
             >
               <Plus size={13} /> {editingId ? "Update" : "Add Provider"}
             </button>

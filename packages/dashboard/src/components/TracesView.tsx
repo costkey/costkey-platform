@@ -91,7 +91,7 @@ function TraceRow({ trace, projectId }: { trace: Trace; projectId: string }) {
         <div className="bg-surface/50 px-4 py-2 pb-3">
           {loading && (
             <div className="flex items-center gap-2 py-1.5">
-              <div className="w-3 h-3 border border-accent border-t-transparent rounded-full animate-spin" />
+              <div className="w-3 h-3 border border-text-secondary border-t-transparent rounded-full animate-spin" />
               <span className="text-[10px] text-text-muted">Loading...</span>
             </div>
           )}

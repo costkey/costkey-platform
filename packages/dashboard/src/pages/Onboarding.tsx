@@ -71,7 +71,7 @@ costkey.init(
               {/* Step 1: DSN */}
               <div className="mb-6">
                 <div className="flex items-center gap-2 mb-2">
-                  <div className="w-5 h-5 rounded-full bg-accent flex items-center justify-center text-white text-xs font-mono font-bold">1</div>
+                  <div className="w-5 h-5 rounded-full bg-accent flex items-center justify-center text-black text-xs font-mono font-bold">1</div>
                   <span className="text-sm font-medium text-text-primary">Your DSN</span>
                 </div>
                 <div className="flex items-center gap-2 bg-surface border border-border rounded-sm px-3 py-2.5">
@@ -88,7 +88,7 @@ costkey.init(
               {/* Step 2: Install */}
               <div className="mb-6">
                 <div className="flex items-center gap-2 mb-2">
-                  <div className="w-5 h-5 rounded-full bg-accent flex items-center justify-center text-white text-xs font-mono font-bold">2</div>
+                  <div className="w-5 h-5 rounded-full bg-accent flex items-center justify-center text-black text-xs font-mono font-bold">2</div>
                   <span className="text-sm font-medium text-text-primary">Add to your app</span>
                 </div>
 
@@ -164,7 +164,7 @@ costkey.init(
               <p className="text-xs text-text-muted mb-5">Every API call is now automatically captured.</p>
               <button
                 onClick={() => navigate("/")}
-                className="bg-accent hover:bg-accent-hover text-white font-mono text-sm font-medium px-8 py-2.5 rounded-sm transition-colors cursor-pointer"
+                className="bg-accent hover:bg-accent-hover text-black font-mono text-sm font-medium px-8 py-2.5 rounded-sm transition-colors cursor-pointer"
               >
                 Open Dashboard &rarr;
               </button>

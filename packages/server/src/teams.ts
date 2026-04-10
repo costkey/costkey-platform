@@ -4,7 +4,7 @@ import type pg from "pg";
 import { Resend } from "resend";
 import { requireAuth } from "./auth.js";
 
-const resend = new Resend(process.env["RESEND_API_KEY"] ?? "REDACTED_RESEND_KEY");
+const resend = new Resend(process.env["RESEND_API_KEY"]!);
 
 async function sendInviteEmail(to: string, inviterName: string, orgName: string, inviteUrl: string): Promise<void> {
   try {

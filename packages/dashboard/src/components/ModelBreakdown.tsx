@@ -40,7 +40,7 @@ export default function ModelBreakdown({ models, loading }: Props) {
             <div key={model.model}>
               <div className="flex items-center justify-between mb-1">
                 <div className="flex items-center gap-2 min-w-0">
-                  <ProviderLogo provider={model.provider} size={13} />
+                  <ProviderLogo provider={model.provider} size={16} />
                   <span className="font-mono text-xs text-text-primary truncate">
                     {truncateModel(model.model)}
                   </span>

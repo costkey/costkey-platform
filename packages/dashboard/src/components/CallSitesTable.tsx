@@ -77,7 +77,7 @@ function CallSiteRow({ row, maxCost, projectId, onSelectEvent }: {
               {row.functionName ?? "anonymous"}()
             </span>
             {[...row.providers].map((p) => (
-              <ProviderLogo key={p} provider={p} size={14} />
+              <ProviderLogo key={p} provider={p} size={18} />
             ))}
           </div>
           <span className="font-mono text-xs text-text-muted truncate">
@@ -138,7 +138,7 @@ function CallSiteRow({ row, maxCost, projectId, onSelectEvent }: {
                     <span className="font-mono text-xs text-text-muted w-10 shrink-0">
                       {timeAgo(event.timestamp)}
                     </span>
-                    <ProviderLogo provider={event.provider} size={12} />
+                    <ProviderLogo provider={event.provider} size={16} />
                     <span className="font-mono text-xs text-text-secondary w-40 truncate shrink-0">
                       {truncateModel(event.model)}
                     </span>

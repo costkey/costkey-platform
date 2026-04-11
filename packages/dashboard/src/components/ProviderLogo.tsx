@@ -4,7 +4,7 @@ interface Props {
   className?: string;
 }
 
-export default function ProviderLogo({ provider, size = 14, className = "" }: Props) {
+export default function ProviderLogo({ provider, size = 18, className = "" }: Props) {
   const src = `/logos/${provider}.svg`;
   return (
     <img
@@ -13,7 +13,7 @@ export default function ProviderLogo({ provider, size = 14, className = "" }: Pr
       width={size}
       height={size}
       className={`inline-block ${className}`}
-      style={{ opacity: 0.85 }}
+      style={{ opacity: 1 }}
       onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
     />
   );

@@ -53,7 +53,7 @@ function TraceRow({ trace, projectId }: { trace: Trace; projectId: string }) {
         {/* Provider logos */}
         <div className="flex gap-1 shrink-0">
           {providers.map((p, i) => (
-            <ProviderLogo key={i} provider={p} size={12} />
+            <ProviderLogo key={i} provider={p} size={16} />
           ))}
         </div>
 

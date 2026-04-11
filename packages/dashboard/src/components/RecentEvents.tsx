@@ -78,7 +78,7 @@ export default function RecentEvents({ events, loading, search = "", projectId }
                     className="row-hover row-striped cursor-pointer border-b border-border/10 last:border-b-0"
                   >
                     <td className="px-5 py-3 w-[3%]">
-                      <ProviderLogo provider={event.provider} size={14} />
+                      <ProviderLogo provider={event.provider} size={20} />
                     </td>
                     <td className="px-2 py-3 w-[18%]">
                       <span className="font-mono text-xs text-text-muted">

@@ -298,6 +298,7 @@ export function createApiRouter(pool: pg.Pool): Router {
 
       if (model) { extra += ` AND model = $${paramIdx++}`; extraParams.push(model as string); }
       if (provider) { extra += ` AND provider = $${paramIdx++}`; extraParams.push(provider as string); }
+      if (req.query["fn"]) { extra += ` AND bl_function = $${paramIdx++}`; extraParams.push(req.query["fn"] as string); }
 
       const events = await pool.query(
         `SELECT id, timestamp, provider, model, url, method, status_code,

@@ -43,14 +43,9 @@ function CallSiteRow({ row, maxCost, projectId, onSelectEvent }: {
     if (!events) {
       setLoadingEvents(true);
       try {
-        // Fetch events and filter by matching business logic function
-        const data = await getEvents(projectId, { limit: 50 });
         const targetFn = row.functionName ?? "";
-        const targetFile = row.fileName ?? "";
-        const matching = data.events.filter((e) => {
-          return e.bl_function === targetFn || e.bl_file === targetFile;
-        });
-        setEvents(matching.length > 0 ? matching.slice(0, 20) : data.events.slice(0, 5));
+        const data = await getEvents(projectId, { limit: 100, fn: targetFn });
+        setEvents(data.events);
       } catch { /* silent */ }
       setLoadingEvents(false);
     }

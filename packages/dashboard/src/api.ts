@@ -162,13 +162,14 @@ export async function getCallSites(
 
 export async function getEvents(
   projectId: string,
-  opts?: { limit?: number; offset?: number; model?: string; provider?: string },
+  opts?: { limit?: number; offset?: number; model?: string; provider?: string; fn?: string },
 ): Promise<{ events: EventRow[]; total: number }> {
   const params = new URLSearchParams();
   if (opts?.limit) params.set("limit", String(opts.limit));
   if (opts?.offset) params.set("offset", String(opts.offset));
   if (opts?.model) params.set("model", opts.model);
   if (opts?.provider) params.set("provider", opts.provider);
+  if (opts?.fn) params.set("fn", opts.fn);
   const qs = params.toString() ? `?${params}` : "";
   return get(`/projects/${projectId}/events${qs}`);
 }

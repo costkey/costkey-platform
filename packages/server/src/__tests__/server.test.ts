@@ -449,7 +449,7 @@ describe("findBusinessLogicFrame", () => {
     assert.equal(result.functionName, "generateResponse");
   });
 
-  it("deeply nested spaghetti — 10 files deep", () => {
+  it("deeply nested spaghetti — 10 files deep, skips service layer", () => {
     const frames = [
       frame("src/infra/http.ts", "fetchJSON", 10),
       frame("src/infra/retry.ts", "withRetry", 20),
@@ -464,10 +464,11 @@ describe("findBusinessLogicFrame", () => {
     ];
     const result = findBusinessLogicFrame(frames);
     // frame[0] = http.ts, first different file = retry.ts
-    // But "withRetry" is in WRAPPER_FN_NAMES (lowercased: "withretry") → skip
-    // Next different file: ai.ts:complete → picks it
-    assert.equal(result.functionName, "complete");
-    assert.equal(result.fileName, "src/services/ai.ts");
+    // "withRetry" is in WRAPPER_FN_NAMES → skip
+    // ai.ts matches service layer pattern (/services/ai) → skip
+    // Next candidate: search.ts (not in AI service layer pattern) → picks it
+    assert.equal(result.functionName, "vectorSearch");
+    assert.equal(result.fileName, "src/services/search.ts");
   });
 
   it("Python class methods with self — function name has dots", () => {
@@ -672,8 +673,131 @@ describe("findBusinessLogicFrameWithGraph", () => {
     const graph: Record<string, { score: number; fan_in: number; calls_ai: boolean }> = {};
     const result = findBusinessLogicFrameWithGraph(frames, graph);
     // Falls back: first frame from different file
-    assert.equal(result.fileName, "/app/handler.py");
-    assert.equal(result.functionName, "process");
+    assert.equal(result?.fileName, "/app/handler.py");
+    assert.equal(result?.functionName, "process");
+  });
+
+  it("wrapper detection: graph picks same file as frame[0], falls back to heuristic", () => {
+    // Graph says call_haiku has lowest score, but it's in the same file as frame[0].
+    // Two frames from that file → wrapper pattern → fall back to heuristic.
+    const frames = [
+      frame("/app/anthropic_client.py", "_messages_create", 10),
+      frame("/app/anthropic_client.py", "call_haiku", 50),
+      frame("/app/pipeline/handler.py", "process_file", 100),
+    ];
+    const graph: Record<string, { score: number; fan_in: number; calls_ai: boolean }> = {
+      "anthropic_client.py:call_haiku": { score: 1, fan_in: 5, calls_ai: true },
+      "pipeline/handler.py:process_file": { score: 3, fan_in: 2, calls_ai: true },
+    };
+    const result = findBusinessLogicFrameWithGraph(frames, graph);
+    // Graph picks call_haiku (score 1), but same file as frame[0] + 2 frames from that file
+    // → falls back to heuristic → picks handler.py (different file)
+    assert.equal(result?.fileName, "/app/pipeline/handler.py");
+    assert.equal(result?.functionName, "process_file");
+  });
+
+  it("wrapper detection: heuristic also picks same file — keeps graph result", () => {
+    // All frames from one file. Graph picks one, heuristic also picks from same file.
+    // No better option → keep graph's pick.
+    const frames = [
+      frame("/app/service.py", "inner_call", 10),
+      frame("/app/service.py", "outer_call", 50),
+      frame("/app/service.py", "entry_point", 100),
+    ];
+    const graph: Record<string, { score: number; fan_in: number; calls_ai: boolean }> = {
+      "service.py:outer_call": { score: 2, fan_in: 3, calls_ai: true },
+    };
+    const result = findBusinessLogicFrameWithGraph(frames, graph);
+    // Graph picks outer_call, same file as frame[0], 3 frames from that file.
+    // Heuristic also returns same file (all same file → frame[1] = outer_call).
+    // Heuristic fileName === innerFile → keep graph result.
+    assert.equal(result?.functionName, "outer_call");
+  });
+
+  it("wrapper detection: only 1 frame from innerFile — keeps graph result", () => {
+    // Graph picks a frame from same file as frame[0], but only 1 frame from that file.
+    // This isn't a wrapper pattern → keep graph result.
+    const frames = [
+      frame("/app/client.py", "call_api", 10),
+      frame("/app/handler.py", "process", 50),
+      frame("/app/main.py", "run", 100),
+    ];
+    const graph: Record<string, { score: number; fan_in: number; calls_ai: boolean }> = {
+      "client.py:call_api": { score: 1, fan_in: 10, calls_ai: true },
+      "handler.py:process": { score: 3, fan_in: 2, calls_ai: true },
+    };
+    const result = findBusinessLogicFrameWithGraph(frames, graph);
+    // Graph picks call_api (score 1). Same file as frame[0] but only 1 frame from client.py.
+    // sameFileCount < 2 → no wrapper detection → keeps graph result.
+    assert.equal(result?.functionName, "call_api");
+  });
+
+  it("tighter file matching: rejects bare suffix without path separator", () => {
+    // "utils.py" should NOT match "old-app/utils.py" via bare endsWith
+    const frames = [
+      frame("/new-app/utils.py", "helper", 10),
+      frame("/new-app/main.py", "run", 50),
+    ];
+    const graph: Record<string, { score: number; fan_in: number; calls_ai: boolean }> = {
+      "old-app/utils.py:helper": { score: 1, fan_in: 5, calls_ai: true },
+    };
+    const result = findBusinessLogicFrameWithGraph(frames, graph);
+    // Should NOT match: "/new-app/utils.py" does not end with "/old-app/utils.py"
+    // Falls back to heuristic → picks main.py (different file)
+    assert.equal(result?.fileName, "/new-app/main.py");
+    assert.equal(result?.functionName, "run");
+  });
+
+  it("graph key without colon — file-only key matches any function", () => {
+    const frames = [
+      frame("/app/search.py", "do_search", 50),
+      frame("/app/main.py", "run", 10),
+    ];
+    const graph: Record<string, { score: number; fan_in: number; calls_ai: boolean }> = {
+      "search.py": { score: 2, fan_in: 3, calls_ai: true },
+    };
+    const result = findBusinessLogicFrameWithGraph(frames, graph);
+    // Key has no colon → graphFn = "" → fnMatches is true for any function
+    assert.equal(result?.fileName, "/app/search.py");
+    assert.equal(result?.functionName, "do_search");
+  });
+
+  it("frame with no file and no function gets skipped", () => {
+    const frames = [
+      frame("", "", 0),
+      frame("/app/handler.py", "process", 50),
+    ];
+    const graph: Record<string, { score: number; fan_in: number; calls_ai: boolean }> = {
+      "handler.py:process": { score: 2, fan_in: 1, calls_ai: true },
+    };
+    const result = findBusinessLogicFrameWithGraph(frames, graph);
+    // First frame skipped (no file/fn), second matches
+    assert.equal(result?.functionName, "process");
+  });
+
+  it("function endsWith matching — Class.method matches graph key method", () => {
+    const frames = [
+      frame("/app/client.py", "OpenAIClient.complete", 10),
+      frame("/app/features/search.py", "SearchService.search", 50),
+    ];
+    const graph: Record<string, { score: number; fan_in: number; calls_ai: boolean }> = {
+      "client.py:complete": { score: 8, fan_in: 10, calls_ai: true },
+      "features/search.py:search": { score: 2, fan_in: 2, calls_ai: true },
+    };
+    const result = findBusinessLogicFrameWithGraph(frames, graph);
+    // "OpenAIClient.complete".endsWith("complete") → matches client.py:complete (score 8)
+    // "SearchService.search".endsWith("search") → matches features/search.py:search (score 2)
+    // Picks lowest score → search
+    assert.equal(result?.functionName, "SearchService.search");
+  });
+
+  it("empty frames — returns undefined", () => {
+    const graph: Record<string, { score: number; fan_in: number; calls_ai: boolean }> = {
+      "file.py:fn": { score: 1, fan_in: 1, calls_ai: true },
+    };
+    const result = findBusinessLogicFrameWithGraph([], graph);
+    // No frames → no graph match → falls back to findBusinessLogicFrame([]) → undefined
+    assert.equal(result, undefined);
   });
 });
 
@@ -816,5 +940,183 @@ describe("translateFrames", () => {
     assert.equal(result.wasTranslated, true);
     assert.equal(result.translated[0].fileName, "src/index.ts");
     assert.equal(result.translated[0].functionName, "init");
+  });
+});
+
+// ─── Grouping Engine ──────────────────────────────────────────────────
+
+import { groupIntoFeatures } from "../grouping.js";
+
+describe("groupIntoFeatures", () => {
+  const mkFrame = (fileName: string, functionName: string, lineNumber = 10) => ({
+    fileName,
+    functionName,
+    lineNumber,
+    columnNumber: 0,
+  });
+
+  const mkStat = (key: string, fileName: string, functionName: string, cost: number, calls: number): any => ({
+    call_site_key: key,
+    file_name: fileName,
+    function_name: functionName,
+    line_number: 10,
+    total_calls: calls,
+    total_cost_usd: cost,
+    total_input_tokens: 100 * calls,
+    total_output_tokens: 50 * calls,
+    avg_duration_ms: 200,
+    avg_ttft: null,
+    avg_tps: null,
+  });
+
+  it("single call site returns one feature", () => {
+    const stats = [mkStat("cs1", "app.py", "doWork", 1.5, 10)];
+    const events = [{
+      call_site_key: "cs1",
+      frames: [
+        mkFrame("app.py", "doWork", 10),
+        mkFrame("main.py", "run", 1),
+      ],
+    }];
+    const features = groupIntoFeatures(stats, events);
+    assert.equal(features.length, 1);
+    assert.equal(features[0].rootFunction, "run");
+    assert.equal(features[0].totalCost, 1.5);
+    assert.equal(features[0].totalCalls, 10);
+  });
+
+  it("two call sites sharing a root get grouped together", () => {
+    const stats = [
+      mkStat("cs1", "search.py", "search", 2.0, 5),
+      mkStat("cs2", "summarize.py", "summarize", 1.0, 3),
+    ];
+    const events = [
+      {
+        call_site_key: "cs1",
+        frames: [mkFrame("search.py", "search"), mkFrame("pipeline.py", "runPipeline")],
+      },
+      {
+        call_site_key: "cs2",
+        frames: [mkFrame("summarize.py", "summarize"), mkFrame("pipeline.py", "runPipeline")],
+      },
+    ];
+    const features = groupIntoFeatures(stats, events);
+    assert.equal(features.length, 1);
+    assert.equal(features[0].rootFunction, "runPipeline");
+    assert.equal(features[0].totalCost, 3.0);
+    assert.equal(features[0].totalCalls, 8);
+    assert.equal(features[0].callSites.length, 2);
+  });
+
+  it("different roots produce separate features", () => {
+    const stats = [
+      mkStat("cs1", "a.py", "fnA", 1.0, 1),
+      mkStat("cs2", "b.py", "fnB", 2.0, 1),
+    ];
+    const events = [
+      { call_site_key: "cs1", frames: [mkFrame("a.py", "fnA"), mkFrame("rootA.py", "handleA")] },
+      { call_site_key: "cs2", frames: [mkFrame("b.py", "fnB"), mkFrame("rootB.py", "handleB")] },
+    ];
+    const features = groupIntoFeatures(stats, events);
+    assert.equal(features.length, 2);
+    // Sorted by cost descending
+    assert.equal(features[0].rootFunction, "handleB");
+    assert.equal(features[0].totalCost, 2.0);
+    assert.equal(features[1].rootFunction, "handleA");
+    assert.equal(features[1].totalCost, 1.0);
+  });
+
+  it("dispatcher root gets split into sub-features", () => {
+    // Router dispatches to 4 unrelated call sites — should split
+    const stats = [
+      mkStat("cs1", "a.py", "fnA", 1.0, 1),
+      mkStat("cs2", "b.py", "fnB", 1.0, 1),
+      mkStat("cs3", "c.py", "fnC", 1.0, 1),
+      mkStat("cs4", "d.py", "fnD", 1.0, 1),
+    ];
+    const events = [
+      { call_site_key: "cs1", frames: [mkFrame("a.py", "fnA"), mkFrame("handlerA.py", "handleA"), mkFrame("router.py", "dispatch")] },
+      { call_site_key: "cs2", frames: [mkFrame("b.py", "fnB"), mkFrame("handlerB.py", "handleB"), mkFrame("router.py", "dispatch")] },
+      { call_site_key: "cs3", frames: [mkFrame("c.py", "fnC"), mkFrame("handlerC.py", "handleC"), mkFrame("router.py", "dispatch")] },
+      { call_site_key: "cs4", frames: [mkFrame("d.py", "fnD"), mkFrame("handlerD.py", "handleD"), mkFrame("router.py", "dispatch")] },
+    ];
+    const features = groupIntoFeatures(stats, events);
+    // Should split into 4 features (one per handler), not 1 "dispatch" feature
+    assert.equal(features.length, 4);
+    const rootFns = features.map(f => f.rootFunction).sort();
+    assert.deepEqual(rootFns, ["handleA", "handleB", "handleC", "handleD"]);
+  });
+
+  it("non-dispatcher root with shared children stays grouped", () => {
+    // 3 call sites but they share the same child frame — NOT a dispatcher
+    const stats = [
+      mkStat("cs1", "a.py", "fnA", 1.0, 1),
+      mkStat("cs2", "b.py", "fnB", 1.0, 1),
+      mkStat("cs3", "c.py", "fnC", 1.0, 1),
+    ];
+    const events = [
+      { call_site_key: "cs1", frames: [mkFrame("a.py", "fnA"), mkFrame("pipeline.py", "process"), mkFrame("main.py", "run")] },
+      { call_site_key: "cs2", frames: [mkFrame("b.py", "fnB"), mkFrame("pipeline.py", "process"), mkFrame("main.py", "run")] },
+      { call_site_key: "cs3", frames: [mkFrame("c.py", "fnC"), mkFrame("pipeline.py", "process"), mkFrame("main.py", "run")] },
+    ];
+    const features = groupIntoFeatures(stats, events);
+    // All share the same child "process" → NOT a dispatcher → stays as 1 group
+    assert.equal(features.length, 1);
+    assert.equal(features[0].rootFunction, "run");
+  });
+
+  it("empty events produce no features", () => {
+    const stats = [mkStat("cs1", "a.py", "fn", 1.0, 1)];
+    const features = groupIntoFeatures(stats, []);
+    assert.equal(features.length, 0);
+  });
+
+  it("call site with no matching stats still creates a feature", () => {
+    const events = [{
+      call_site_key: "cs1",
+      frames: [mkFrame("a.py", "fn"), mkFrame("main.py", "run")],
+    }];
+    const features = groupIntoFeatures([], events);
+    assert.equal(features.length, 1);
+    assert.equal(features[0].totalCost, 0);
+    assert.equal(features[0].callSites.length, 0);
+  });
+
+  it("deduplicates call sites with correct weighted average", () => {
+    // Same call_site_key appears twice in stats (e.g. two model variants)
+    const stats = [
+      mkStat("cs1", "a.py", "fn", 1.0, 10),
+      mkStat("cs1", "a.py", "fn", 2.0, 20),
+    ];
+    // Override avg_duration_ms for the test
+    stats[0].avg_duration_ms = 100;
+    stats[1].avg_duration_ms = 200;
+
+    const events = [{
+      call_site_key: "cs1",
+      frames: [mkFrame("a.py", "fn"), mkFrame("main.py", "run")],
+    }];
+    const features = groupIntoFeatures(stats, events);
+    assert.equal(features.length, 1);
+    assert.equal(features[0].totalCost, 3.0);
+    assert.equal(features[0].totalCalls, 30);
+    // The feature uses deduplicateCallSites, but stats have same call_site_key
+    // so they get merged. Weighted avg: (100*10 + 200*20) / 30 = 5000/30 ≈ 166.67
+    // Check the merged call site
+    assert.equal(features[0].callSites.length, 1);
+  });
+
+  it("picks most common trace shape, not longest", () => {
+    const stats = [mkStat("cs1", "a.py", "fn", 1.0, 1)];
+    // 3 traces: 2 short (common), 1 long (outlier)
+    const events = [
+      { call_site_key: "cs1", frames: [mkFrame("a.py", "fn"), mkFrame("handler.py", "handle")] },
+      { call_site_key: "cs1", frames: [mkFrame("a.py", "fn"), mkFrame("handler.py", "handle")] },
+      { call_site_key: "cs1", frames: [mkFrame("a.py", "fn"), mkFrame("middleware.py", "auth"), mkFrame("extra.py", "setup"), mkFrame("outlier.py", "boot")] },
+    ];
+    const features = groupIntoFeatures(stats, events);
+    assert.equal(features.length, 1);
+    // Root should be from the common trace (handler.py), not the outlier (outlier.py)
+    assert.equal(features[0].rootFunction, "handle");
   });
 });

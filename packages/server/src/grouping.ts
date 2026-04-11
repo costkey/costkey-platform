@@ -86,20 +86,40 @@ export function groupIntoFeatures(
 ): Feature[] {
   // Step 1: Collect best trace per call site
   const bestTrace = new Map<string, StackFrame[]>();
-  const callSiteTraces = new Map<string, StackFrame[][]>();
+  // Count trace shape occurrences per call site, then pick the most common
+  const traceCounts = new Map<string, Map<string, { count: number; trace: StackFrame[] }>>();
 
   for (const ef of eventFrames) {
     if (ef.frames.length === 0) continue;
-    const existing = callSiteTraces.get(ef.call_site_key) ?? [];
-    const key = ef.frames.map((f) => frameKey(f)).join("|");
-    if (!existing.some((t) => t.map((f) => frameKey(f)).join("|") === key)) {
-      existing.push(ef.frames);
+    const sig = ef.frames.map((f) => frameKey(f)).join("|");
+    let counts = traceCounts.get(ef.call_site_key);
+    if (!counts) {
+      counts = new Map();
+      traceCounts.set(ef.call_site_key, counts);
     }
-    callSiteTraces.set(ef.call_site_key, existing);
+    const entry = counts.get(sig);
+    if (entry) entry.count++;
+    else counts.set(sig, { count: 1, trace: ef.frames });
   }
 
-  for (const [key, traces] of callSiteTraces) {
-    bestTrace.set(key, traces.reduce((a, b) => (a.length >= b.length ? a : b), []));
+  for (const [key, counts] of traceCounts) {
+    let best: StackFrame[] | undefined;
+    let bestCount = 0;
+    for (const { count, trace } of counts.values()) {
+      if (count > bestCount || (count === bestCount && trace.length > (best?.length ?? 0))) {
+        best = trace;
+        bestCount = count;
+      }
+    }
+    if (best) bestTrace.set(key, best);
+  }
+
+  // Step 1b: Index call site stats by key for O(1) lookup
+  const statsByKey = new Map<string, CallSiteRow[]>();
+  for (const cs of callSiteStats) {
+    const existing = statsByKey.get(cs.call_site_key);
+    if (existing) existing.push(cs);
+    else statsByKey.set(cs.call_site_key, [cs]);
   }
 
   // Step 2: Initial grouping by root (top of stack)
@@ -139,7 +159,7 @@ export function groupIntoFeatures(
   const finalGroups: Group[] = [];
 
   for (const group of rootGroups.values()) {
-    const split = splitIfDispatcher(group);
+    const split = splitIfDispatcher(group, 0);
     finalGroups.push(...split);
   }
 
@@ -157,7 +177,7 @@ export function groupIntoFeatures(
 
     const seenKeys = new Set<string>();
     for (const key of group.callSiteKeys) {
-      const matchingStats = callSiteStats.filter((cs) => cs.call_site_key === key);
+      const matchingStats = statsByKey.get(key) ?? [];
       for (const cs of matchingStats) {
         if (!seenKeys.has(`${cs.call_site_key}:${cs.function_name}`)) {
           callSites.push(cs);
@@ -200,9 +220,11 @@ export function groupIntoFeatures(
  *   If child frames are mostly unique (few shared), the root is a dispatcher.
  *   Split into sub-groups by the shared intermediate frames.
  */
-function splitIfDispatcher(group: Group): Group[] {
-  // Don't split small groups
-  if (group.callSiteKeys.size <= 2) return [group];
+const MAX_SPLIT_DEPTH = 5;
+
+function splitIfDispatcher(group: Group, depth: number): Group[] {
+  // Don't split small groups or recurse too deep
+  if (group.callSiteKeys.size <= 2 || depth >= MAX_SPLIT_DEPTH) return [group];
 
   // For each call site, find the "child frame" — the frame just below the root
   const childFrames = new Map<string, { frame: StackFrame; callSiteKeys: Set<string>; chains: CallChain[]; traces: Map<string, StackFrame[]> }>();
@@ -283,9 +305,9 @@ function splitIfDispatcher(group: Group): Group[] {
       traces: child.traces,
     };
 
-    // Recurse — but only one level deep to prevent infinite splits
+    // Recurse with depth limit
     if (child.callSiteKeys.size > 2) {
-      subGroups.push(...splitIfDispatcher(subGroup));
+      subGroups.push(...splitIfDispatcher(subGroup, depth + 1));
     } else {
       subGroups.push(subGroup);
     }
@@ -295,21 +317,27 @@ function splitIfDispatcher(group: Group): Group[] {
 }
 
 function deduplicateCallSites(callSites: CallSiteRow[]): CallSiteRow[] {
-  const byFunction = new Map<string, CallSiteRow>();
+  const byFunction = new Map<string, CallSiteRow & { _prevCalls: number }>();
 
   for (const cs of callSites) {
     const key = cs.call_site_key;
     const existing = byFunction.get(key);
     if (existing) {
+      // Weighted average: weight by total_calls for correct mean
+      const prevCalls = existing._prevCalls;
+      const newCalls = prevCalls + cs.total_calls;
+      existing.avg_duration_ms = (existing.avg_duration_ms * prevCalls + cs.avg_duration_ms * cs.total_calls) / newCalls;
+      existing._prevCalls = newCalls;
       existing.total_calls += cs.total_calls;
       existing.total_cost_usd += cs.total_cost_usd;
       existing.total_input_tokens += cs.total_input_tokens;
       existing.total_output_tokens += cs.total_output_tokens;
-      existing.avg_duration_ms = (existing.avg_duration_ms + cs.avg_duration_ms) / 2;
     } else {
-      byFunction.set(key, { ...cs });
+      byFunction.set(key, { ...cs, _prevCalls: cs.total_calls });
     }
   }
 
-  return [...byFunction.values()].sort((a, b) => b.total_cost_usd - a.total_cost_usd);
+  return [...byFunction.values()]
+    .map(({ _prevCalls, ...cs }) => cs)
+    .sort((a, b) => b.total_cost_usd - a.total_cost_usd);
 }

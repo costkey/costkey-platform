@@ -249,7 +249,7 @@ export function createAuthRouter(): Router {
   router.get("/auth/me", async (req: Request, res: Response) => {
     const authUser = (req as any).user as AuthUser | undefined;
     if (!authUser) {
-      res.status(401).json({ error: "Not authenticated" });
+      res.json({ authenticated: false });
       return;
     }
 

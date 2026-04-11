@@ -134,15 +134,38 @@ const WRAPPER_FN_NAMES = new Set([
   "ratelimit", "ratelimitcheck", "withratelimit",
   "withcache", "cached", "memoized",
   "wrapasync", "wrapfn", "decorator",
+  "execute", "invoke", "call",
+  "middleware", "pipe", "compose",
+  "intercept", "proxy", "delegate",
+  "runwithtimeout", "withtimeout",
+  "trace", "instrument", "measure",
+  "withauth", "authorize",
 ]);
 
 function isWrapperFn(frame: StackFrame): boolean {
   const fn = (frame.functionName ?? "").split("\n")[0].trim().toLowerCase();
-  return WRAPPER_FN_NAMES.has(fn);
+  // Strip leading underscores (Python convention: _retry, __retry)
+  const stripped = fn.replace(/^_+/, "");
+  return WRAPPER_FN_NAMES.has(fn) || WRAPPER_FN_NAMES.has(stripped);
 }
 
-export function findBusinessLogicFrame(frames: StackFrame[]): StackFrame {
-  if (frames.length === 0) return frames[0];
+/** Directory/file patterns that indicate infrastructure or service layers, not business logic */
+const SERVICE_LAYER_PATTERNS = [
+  "/infra/", "/infrastructure/",
+  "/services/ai", "/services/llm", "/services/openai", "/services/anthropic",
+  "/lib/ai", "/lib/llm", "/lib/openai", "/lib/anthropic",
+  "/utils/ai", "/utils/llm", "/utils/openai", "/utils/anthropic",
+  "/shared/ai", "/shared/llm",
+  "/clients/", "/adapters/",
+];
+
+function isServiceLayer(filePath: string): boolean {
+  const lower = filePath.toLowerCase();
+  return SERVICE_LAYER_PATTERNS.some((p) => lower.includes(p));
+}
+
+export function findBusinessLogicFrame(frames: StackFrame[]): StackFrame | undefined {
+  if (frames.length === 0) return undefined;
 
   // Filter out useless names
   const useless = new Set(["<module>", "<anonymous>", "anonymous", "main", "_run", ""]);
@@ -154,8 +177,19 @@ export function findBusinessLogicFrame(frames: StackFrame[]): StackFrame {
   const pool = meaningful.length > 0 ? meaningful : frames;
   if (pool.length <= 1) return pool[0];
 
-  // Find first frame from a different file, skipping known wrapper functions
+  // Collect candidate frames from different files, skipping wrappers
   const innerFile = pool[0].fileName ?? "";
+  const candidates: StackFrame[] = [];
+  for (let i = 1; i < pool.length; i++) {
+    const file = pool[i].fileName ?? "";
+    if (file && file !== innerFile && !isWrapperFn(pool[i]) && !isServiceLayer(file)) {
+      candidates.push(pool[i]);
+    }
+  }
+  // If we found candidates past service layers, pick the first one
+  if (candidates.length > 0) return candidates[0];
+
+  // Fallback: first frame from a different file, skipping wrappers but allowing service layers
   for (let i = 1; i < pool.length; i++) {
     const file = pool[i].fileName ?? "";
     if (file && file !== innerFile && !isWrapperFn(pool[i])) return pool[i];
@@ -183,7 +217,7 @@ export const callGraphCache = new Map<string, Record<string, { score: number; fa
 export function findBusinessLogicFrameWithGraph(
   frames: StackFrame[],
   graph: Record<string, { score: number; fan_in: number; calls_ai: boolean }>,
-): StackFrame {
+): StackFrame | undefined {
   let bestFrame: StackFrame | null = null;
   let bestScore = Infinity;
 
@@ -208,8 +242,9 @@ export function findBusinessLogicFrameWithGraph(
         graphFn = "";
       }
 
-      // Match: frame fileName ends with graph key's file part
-      const fileMatches = frameFile.endsWith(graphFile) || graphFile.endsWith(frameFile) ||
+      // Match: suffix match but require a path separator boundary to avoid
+      // false positives like "app/utils.py" matching "old-app/utils.py"
+      const fileMatches = frameFile === graphFile ||
         (frameFile && graphFile && (
           frameFile.endsWith("/" + graphFile) || graphFile.endsWith("/" + frameFile)
         ));
@@ -238,7 +273,7 @@ export function findBusinessLogicFrameWithGraph(
       const sameFileCount = frames.filter(f => (f.fileName ?? "") === innerFile).length;
       if (sameFileCount >= 2) {
         const heuristicResult = findBusinessLogicFrame(frames);
-        if ((heuristicResult.fileName ?? "") !== innerFile) {
+        if (heuristicResult && (heuristicResult.fileName ?? "") !== innerFile) {
           return heuristicResult;
         }
       }
@@ -358,9 +393,11 @@ export function createIngestRouter(pool: pg.Pool): Router {
             const best = graphData
               ? findBusinessLogicFrameWithGraph(cleanFrames, graphData)
               : findBusinessLogicFrame(cleanFrames);
-            blFunction = (best.functionName ?? "").split("\n")[0].trim() || null;
-            blFile = best.fileName ?? null;
-            blLine = best.lineNumber ?? null;
+            if (best) {
+              blFunction = (best.functionName ?? "").split("\n")[0].trim() || null;
+              blFile = best.fileName ?? null;
+              blLine = best.lineNumber ?? null;
+            }
           }
 
           await client.query(

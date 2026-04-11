@@ -58,6 +58,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return;
       }
       const data = await res.json();
+      if (data.authenticated === false) {
+        setUser(null);
+        setOrg(null);
+        setProjects([]);
+        setMembers([]);
+        return;
+      }
       setUser(data.user);
       setOrg(data.org);
       setProjects(data.projects ?? []);

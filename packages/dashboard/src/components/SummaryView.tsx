@@ -110,7 +110,7 @@ export default function SummaryView({ summary, loading }: Props) {
       {/* Top row: spend + deploy side by side */}
       <div className={`grid gap-5 ${summary.byRelease?.length ? "grid-cols-[1fr_1fr]" : "grid-cols-1"}`}>
         {/* Headline card */}
-        <div className="animate-in bg-surface-raised border border-border rounded-sm p-5 relative overflow-hidden flex flex-col justify-center">
+        <div className="animate-in bg-surface-raised border border-border rounded-sm p-5 relative overflow-hidden">
           <div className="absolute top-0 left-0 right-0 h-px bg-border-bright" />
           <p className="text-text-muted text-sm font-medium mb-1">
             Your AI spend this month
@@ -132,8 +132,8 @@ export default function SummaryView({ summary, loading }: Props) {
 
         {/* Cost by Deploy — same row */}
         {summary.byRelease && summary.byRelease.length > 0 && (
-        <div className="animate-in bg-surface-raised border border-border rounded-sm p-4" style={{ animationDelay: "30ms" }}>
-          <div className="flex items-center justify-between mb-2">
+        <div className="animate-in bg-surface-raised border border-border rounded-sm p-5" style={{ animationDelay: "30ms" }}>
+          <div className="flex items-center justify-between mb-3">
             <p className="text-text-muted text-xs font-medium tracking-wide uppercase">
               Cost by Deploy
             </p>

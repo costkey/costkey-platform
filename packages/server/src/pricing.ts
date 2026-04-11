@@ -289,7 +289,7 @@ async function backfillFrames(pool: import("pg").Pool): Promise<void> {
   });
 
   // Rebuild call_site_stats (also runs once)
-  await runOnce(pool, "rebuild_callsite_stats_v8", async () => {
+  await runOnce(pool, "rebuild_callsite_stats_v9", async () => {
     await rebuildCallSiteStats(pool);
   });
 }
@@ -324,18 +324,38 @@ function pickBestFrame(frames: Array<{ fileName?: string | null; functionName?: 
 async function rebuildCallSiteStats(pool: import("pg").Pool): Promise<void> {
   await pool.query("DELETE FROM call_site_stats");
 
-  // Fetch all events with frames and rebuild in JS (so we can use the same
-  // business-logic-frame heuristic as ingest, which can't be expressed in SQL)
-  const result = await pool.query(`
-    SELECT id, project_id, provider, model, cost_usd, input_tokens, output_tokens,
-      duration_ms, streaming, ttft, tps, timestamp, call_site_frames
-    FROM events
-    WHERE call_site_frames IS NOT NULL
+  // First backfill bl_ fields on any events that don't have them
+  const needBl = await pool.query(`
+    SELECT id, call_site_frames FROM events
+    WHERE bl_function IS NULL
+      AND call_site_frames IS NOT NULL
       AND call_site_frames != '[]'::jsonb
       AND jsonb_array_length(call_site_frames) > 0
   `);
+  for (const row of needBl.rows) {
+    const frames = typeof row.call_site_frames === "string"
+      ? JSON.parse(row.call_site_frames) : row.call_site_frames;
+    if (!frames || frames.length === 0) continue;
+    const best = pickBestFrame(frames);
+    const fn = (best.functionName ?? "").split("\n")[0].trim() || null;
+    await pool.query(
+      "UPDATE events SET bl_function = $1, bl_file = $2, bl_line = $3 WHERE id = $4",
+      [fn, best.fileName ?? null, best.lineNumber ?? null, row.id],
+    );
+  }
+  if (needBl.rows.length > 0) {
+    console.log(`[costkey] Backfilled bl_ fields on ${needBl.rows.length} events`);
+  }
 
-  // Aggregate in memory
+  // Now rebuild stats purely from bl_ fields — single source of truth
+  const result = await pool.query(`
+    SELECT id, project_id, provider, model, cost_usd, input_tokens, output_tokens,
+      duration_ms, streaming, ttft, tps, timestamp,
+      bl_function, bl_file, bl_line
+    FROM events
+    WHERE bl_function IS NOT NULL
+  `);
+
   const stats = new Map<string, {
     projectId: string; key: string; fileName: string | null; functionName: string | null;
     lineNumber: number | null; provider: string; model: string;
@@ -345,14 +365,9 @@ async function rebuildCallSiteStats(pool: import("pg").Pool): Promise<void> {
   }>();
 
   for (const row of result.rows) {
-    const frames = typeof row.call_site_frames === "string"
-      ? JSON.parse(row.call_site_frames) : row.call_site_frames;
-    if (!frames || frames.length === 0) continue;
-
-    const best = pickBestFrame(frames);
-    const fn = (best.functionName ?? "anonymous").split("\n")[0].trim();
-    const fileName = best.fileName ?? "unknown";
-    const lineNum = best.lineNumber ?? null;
+    const fn = row.bl_function;
+    const fileName = row.bl_file ?? "unknown";
+    const lineNum = row.bl_line ?? null;
     const compositeKey = `${row.project_id}:${fileName}:${fn}:${lineNum}:${row.model}`;
 
     const existing = stats.get(compositeKey);
@@ -400,22 +415,5 @@ async function rebuildCallSiteStats(pool: import("pg").Pool): Promise<void> {
     );
   }
 
-  // Also backfill bl_ fields on events
-  let blUpdated = 0;
-  for (const row of result.rows) {
-    const frames = typeof row.call_site_frames === "string"
-      ? JSON.parse(row.call_site_frames) : row.call_site_frames;
-    if (!frames || frames.length === 0) continue;
-    const best = pickBestFrame(frames);
-    const fn = (best.functionName ?? "").split("\n")[0].trim() || null;
-    const file = best.fileName ?? null;
-    const line = best.lineNumber ?? null;
-    await pool.query(
-      "UPDATE events SET bl_function = $1, bl_file = $2, bl_line = $3 WHERE id = $4",
-      [fn, file, line, row.id],
-    );
-    blUpdated++;
-  }
-
-  console.log(`[costkey] Rebuilt call_site_stats: ${stats.size} entries from ${result.rows.length} events, backfilled ${blUpdated} bl_ fields`);
+  console.log(`[costkey] Rebuilt call_site_stats: ${stats.size} entries from ${result.rows.length} events`);
 }

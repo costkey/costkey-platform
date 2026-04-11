@@ -24,6 +24,8 @@ interface AsyncState<T> {
   error: string | null;
 }
 
+const POLL_INTERVAL = 30_000;
+
 function useAsync<T>(fn: () => Promise<T>, deps: unknown[]): AsyncState<T> {
   const [state, setState] = useState<AsyncState<T>>({
     data: null,
@@ -33,17 +35,25 @@ function useAsync<T>(fn: () => Promise<T>, deps: unknown[]): AsyncState<T> {
 
   useEffect(() => {
     let cancelled = false;
-    setState((s) => ({ ...s, loading: true, error: null }));
-    fn()
-      .then((data) => {
-        if (!cancelled) setState({ data, loading: false, error: null });
-      })
-      .catch((err) => {
-        if (!cancelled)
-          setState({ data: null, loading: false, error: String(err) });
-      });
+
+    const fetch = (isInitial: boolean) => {
+      if (isInitial) setState((s) => ({ ...s, loading: true, error: null }));
+      fn()
+        .then((data) => {
+          if (!cancelled) setState({ data, loading: false, error: null });
+        })
+        .catch((err) => {
+          if (!cancelled && state.data === null)
+            setState({ data: null, loading: false, error: String(err) });
+        });
+    };
+
+    fetch(true);
+    const interval = setInterval(() => fetch(false), POLL_INTERVAL);
+
     return () => {
       cancelled = true;
+      clearInterval(interval);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps);

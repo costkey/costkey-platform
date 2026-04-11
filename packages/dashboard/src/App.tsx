@@ -61,7 +61,7 @@ function PipelineStatus({ projectId }: { projectId?: string }) {
     <div className="flex items-center gap-1.5" title={timeAgo ? `Last event: ${timeAgo}` : "No events received yet"}>
       <div className={`w-1.5 h-1.5 rounded-full ${config.color} ${config.glow ? "glow-dot" : ""}`} />
       <span className="text-[11px] text-text-muted/70 font-mono">{config.label}</span>
-      {timeAgo && status !== "active" && (
+      {timeAgo && (status === "inactive" || status === "no_data") && (
         <span className="text-[10px] text-text-muted/50 font-mono">{timeAgo}</span>
       )}
     </div>

@@ -90,7 +90,7 @@ export default function SummaryView({ summary, loading }: Props) {
     return (
       <div className="flex flex-col gap-5">
         <HeadlineSkeleton />
-        <div className="grid grid-cols-[1fr_1fr] gap-5">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
           <FeaturesSkeleton />
           <div className="bg-surface-raised border border-border rounded-sm p-5">
             <div className="h-4 w-36 bg-surface-overlay rounded-sm animate-pulse mb-5" />
@@ -108,7 +108,7 @@ export default function SummaryView({ summary, loading }: Props) {
   return (
     <div className="flex flex-col gap-5">
       {/* Top row: spend + deploy side by side */}
-      <div className="grid gap-5 grid-cols-[1fr_1fr]">
+      <div className="grid gap-5 grid-cols-1 md:grid-cols-2">
         {/* Headline card */}
         <div className="animate-in bg-surface-raised border border-border rounded-sm p-5 relative overflow-hidden">
           <div className="absolute top-0 left-0 right-0 h-px bg-border-bright" />
@@ -144,6 +144,7 @@ export default function SummaryView({ summary, loading }: Props) {
               </span>
             )}
           </div>
+          <div className="overflow-x-auto">
           <table className="w-full">
             <thead>
               <tr className="text-text-muted text-xs uppercase tracking-wide">
@@ -166,6 +167,7 @@ export default function SummaryView({ summary, loading }: Props) {
               ))}
             </tbody>
           </table>
+          </div>
         </div>
         ) : (
         <div className="animate-in bg-surface-raised border border-border rounded-sm p-5" style={{ animationDelay: "30ms" }}>
@@ -196,7 +198,7 @@ export default function SummaryView({ summary, loading }: Props) {
         )}
       </div>
 
-      <div className="grid grid-cols-[1fr_1fr] gap-5">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
         {/* Top cost drivers */}
         <div className="animate-in bg-surface-raised border border-border rounded-sm p-5" style={{ animationDelay: "60ms" }}>
           <p className="text-text-muted text-xs font-medium tracking-wide uppercase mb-4">
@@ -244,6 +246,7 @@ export default function SummaryView({ summary, loading }: Props) {
           <p className="text-text-muted text-xs font-medium tracking-wide uppercase mb-4">
             Month over month
           </p>
+          <div className="overflow-x-auto">
           <table className="w-full">
             <thead>
               <tr className="text-text-muted text-xs uppercase tracking-wide">
@@ -286,6 +289,7 @@ export default function SummaryView({ summary, loading }: Props) {
               </tr>
             </tbody>
           </table>
+          </div>
         </div>
       </div>
     </div>

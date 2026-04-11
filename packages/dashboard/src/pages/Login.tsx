@@ -18,10 +18,12 @@ export default function Login() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [hideError, setHideError] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSubmitting(true);
+    setHideError(false);
     const ok = await login(email, password);
     setSubmitting(false);
     if (ok) navigate("/");
@@ -60,7 +62,7 @@ export default function Login() {
               <input
                 type="email"
                 value={email}
-                onChange={(e) => setEmail(e.target.value)}
+                onChange={(e) => { setEmail(e.target.value); setHideError(true); }}
                 required
                 className="w-full bg-surface border border-border rounded-sm px-3 py-2.5 text-sm text-text-primary font-mono outline-none auth-input transition-all"
                 placeholder="you@company.com"
@@ -71,14 +73,14 @@ export default function Login() {
               <input
                 type="password"
                 value={password}
-                onChange={(e) => setPassword(e.target.value)}
+                onChange={(e) => { setPassword(e.target.value); setHideError(true); }}
                 required
                 className="w-full bg-surface border border-border rounded-sm px-3 py-2.5 text-sm text-text-primary font-mono outline-none auth-input transition-all"
                 placeholder="••••••••"
               />
             </div>
 
-            {(error || ghError) && (
+            {(error || ghError) && !hideError && (
               <div className="text-xs text-red font-mono bg-red-muted px-3 py-2 rounded-sm">
                 {error ?? (ghError === "github_no_email" ? "No email found on your GitHub account" : "GitHub login failed. Please try again.")}
               </div>

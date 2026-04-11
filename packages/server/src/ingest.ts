@@ -313,6 +313,16 @@ export function createIngestRouter(pool: pg.Pool): Router {
         await client.query("BEGIN");
 
         for (const event of payload.events) {
+          // Fallback: extract model from URL path if SDK didn't resolve it
+          // e.g. Google Gemini: /v1beta/models/gemini-2.5-flash:generateContent
+          if (!event.model && event.url) {
+            try {
+              const urlPath = new URL(event.url).pathname;
+              const modelMatch = urlPath.match(/\/models\/([^/:]+)/);
+              if (modelMatch) event.model = modelMatch[1];
+            } catch { /* invalid URL, ignore */ }
+          }
+
           // Server-side cost calculation — authoritative source
           const costUsd = computeCost(
             event.model,

@@ -117,7 +117,7 @@ export default function Dashboard({ demoMode = false }: { demoMode?: boolean }) 
               <div className="flex flex-col gap-5">
                 <SummaryView summary={summary.data} loading={summary.loading} />
                 <StatCards overview={overview.data?.overview ?? null} loading={overview.loading} />
-                <div className="grid grid-cols-[1fr_340px] gap-5">
+                <div className="grid grid-cols-1 md:grid-cols-[1fr_340px] gap-5">
                   <CostTrend
                     trends={trends.data?.trends ?? null}
                     byModel={trends.data?.byModel}

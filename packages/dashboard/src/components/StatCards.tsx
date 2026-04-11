@@ -53,14 +53,14 @@ function Skeleton() {
 export default function StatCards({ overview, loading }: Props) {
   if (loading || !overview) {
     return (
-      <div className="grid grid-cols-5 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
         {[0, 1, 2, 3, 4].map((i) => <Skeleton key={i} />)}
       </div>
     );
   }
 
   return (
-    <div className="grid grid-cols-5 gap-4">
+    <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
       <StatCard
         label="Total Cost"
         value={formatCost(overview.total_cost)}

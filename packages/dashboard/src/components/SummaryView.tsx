@@ -112,9 +112,9 @@ export default function SummaryView({ summary, loading }: Props) {
         {/* Headline card */}
         <div className="animate-in bg-surface-raised border border-border rounded-sm p-5 relative overflow-hidden">
           <div className="absolute top-0 left-0 right-0 h-px bg-border-bright" />
-          <p className="text-text-muted text-sm font-medium mb-1">
+          <h2 className="text-text-muted text-sm font-medium mb-1">
             Your AI spend this month
-          </p>
+          </h2>
           <div className="flex items-baseline gap-3 mb-1">
             <span className="font-mono text-3xl font-bold tracking-tight text-text-primary">
               {formatCost(summary.thisMonth.cost)}
@@ -134,9 +134,9 @@ export default function SummaryView({ summary, loading }: Props) {
         {summary.byRelease && summary.byRelease.length > 0 ? (
         <div className="animate-in bg-surface-raised border border-border rounded-sm p-5" style={{ animationDelay: "30ms" }}>
           <div className="flex items-center justify-between mb-3">
-            <p className="text-text-muted text-xs font-medium tracking-wide uppercase">
+            <h2 className="text-text-muted text-xs font-medium tracking-wide uppercase">
               Cost by Deploy
-            </p>
+            </h2>
             {summary.costChangeFromPrevRelease !== null && summary.costChangeFromPrevRelease > 20 && (
               <span className="inline-flex items-center gap-1.5 text-xs text-amber bg-amber-muted px-2 py-0.5 rounded-sm">
                 <AlertTriangle size={12} />
@@ -171,9 +171,9 @@ export default function SummaryView({ summary, loading }: Props) {
         </div>
         ) : (
         <div className="animate-in bg-surface-raised border border-border rounded-sm p-5" style={{ animationDelay: "30ms" }}>
-          <p className="text-text-muted text-xs font-medium tracking-wide uppercase mb-4">
+          <h2 className="text-text-muted text-xs font-medium tracking-wide uppercase mb-4">
             Quick Stats
-          </p>
+          </h2>
           <div className="flex flex-col gap-4">
             <div>
               <div className="text-text-muted text-xs mb-1">Avg cost per call</div>
@@ -201,9 +201,9 @@ export default function SummaryView({ summary, loading }: Props) {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
         {/* Top cost drivers */}
         <div className="animate-in bg-surface-raised border border-border rounded-sm p-5" style={{ animationDelay: "60ms" }}>
-          <p className="text-text-muted text-xs font-medium tracking-wide uppercase mb-4">
+          <h2 className="text-text-muted text-xs font-medium tracking-wide uppercase mb-4">
             Where your money goes
-          </p>
+          </h2>
           {summary.topFeatures.length === 0 ? (
             <p className="text-text-muted text-sm">No call site data yet</p>
           ) : (
@@ -243,9 +243,9 @@ export default function SummaryView({ summary, loading }: Props) {
 
         {/* Month comparison */}
         <div className="animate-in bg-surface-raised border border-border rounded-sm p-5" style={{ animationDelay: "120ms" }}>
-          <p className="text-text-muted text-xs font-medium tracking-wide uppercase mb-4">
+          <h2 className="text-text-muted text-xs font-medium tracking-wide uppercase mb-4">
             Month over month
-          </p>
+          </h2>
           <div className="overflow-x-auto">
           <table className="w-full">
             <thead>

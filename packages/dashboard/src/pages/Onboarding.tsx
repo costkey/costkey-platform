@@ -92,6 +92,7 @@ costkey.init(
                   <pre className="font-mono text-[11px] text-text-primary leading-relaxed whitespace-pre overflow-x-auto">{tsSnippet}</pre>
                   <button
                     onClick={() => copyText(tsSnippet, "ts")}
+                    aria-label="Copy TypeScript snippet"
                     className="absolute top-2.5 right-2.5 text-text-muted hover:text-text-primary transition-colors cursor-pointer"
                   >
                     {copied === "ts" ? <Check size={12} className="text-green" /> : <Copy size={12} />}
@@ -102,6 +103,7 @@ costkey.init(
                   <pre className="font-mono text-[11px] text-text-primary leading-relaxed whitespace-pre overflow-x-auto">{pySnippet}</pre>
                   <button
                     onClick={() => copyText(pySnippet, "py")}
+                    aria-label="Copy Python snippet"
                     className="absolute top-2.5 right-2.5 text-text-muted hover:text-text-primary transition-colors cursor-pointer"
                   >
                     {copied === "py" ? <Check size={12} className="text-green" /> : <Copy size={12} />}

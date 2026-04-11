@@ -99,7 +99,7 @@ function ProjectsTab({ projects, copied, copy, refresh }: {
               <div className="flex items-center gap-2">
                 <span className="font-mono text-xs text-text-muted">{project.id}</span>
                 <button onClick={() => deleteProject(project.id, project.name)}
-                  className="text-text-muted hover:text-red transition-colors cursor-pointer p-1" title="Delete project">
+                  className="text-text-muted hover:text-red transition-colors cursor-pointer p-1" title="Delete project" aria-label="Delete project">
                   <Trash2 size={13} />
                 </button>
               </div>
@@ -109,7 +109,7 @@ function ProjectsTab({ projects, copied, copy, refresh }: {
               <label className="block text-xs font-mono text-text-muted uppercase tracking-wider mb-1.5">DSN</label>
               <div className="flex items-center gap-2 bg-surface border border-border rounded-sm px-3 py-2">
                 <code className="font-mono text-xs text-accent flex-1 truncate">{dsn}</code>
-                <button onClick={() => copy(dsn, `dsn-${project.id}`)} className="text-text-muted hover:text-accent cursor-pointer">
+                <button onClick={() => copy(dsn, `dsn-${project.id}`)} aria-label="Copy DSN" className="text-text-muted hover:text-accent cursor-pointer">
                   {copied === `dsn-${project.id}` ? <Check size={14} className="text-green" /> : <Copy size={14} />}
                 </button>
               </div>
@@ -119,7 +119,7 @@ function ProjectsTab({ projects, copied, copy, refresh }: {
               <label className="block text-xs font-mono text-text-muted uppercase tracking-wider mb-1.5">API Key</label>
               <div className="flex items-center gap-2 bg-surface border border-border rounded-sm px-3 py-2">
                 <code className="font-mono text-xs text-text-secondary flex-1">{project.authKey}</code>
-                <button onClick={() => copy(project.authKey, `key-${project.id}`)} className="text-text-muted hover:text-accent cursor-pointer">
+                <button onClick={() => copy(project.authKey, `key-${project.id}`)} aria-label="Copy API key" className="text-text-muted hover:text-accent cursor-pointer">
                   {copied === `key-${project.id}` ? <Check size={14} className="text-green" /> : <Copy size={14} />}
                 </button>
                 <button onClick={() => rotateKey(project.id)}
@@ -243,6 +243,7 @@ function TeamTab({ org, members, user, refresh }: {
                 </span>
                 {isOwner && member.id !== user?.id && (
                   <button onClick={() => removeMember(member.id, member.name)}
+                    aria-label="Remove member"
                     className="text-text-muted hover:text-red transition-colors cursor-pointer p-1">
                     <Trash2 size={12} />
                   </button>
@@ -380,7 +381,7 @@ function AlertsTab() {
                   {alert.project_name && <div className="font-mono text-xs text-text-muted">{alert.project_name}</div>}
                   {alert.webhook_url && <div className="font-mono text-xs text-text-muted truncate max-w-[300px]">{alert.webhook_url}</div>}
                 </div>
-                <button onClick={() => deleteAlert(alert.id)} className="text-text-muted hover:text-red transition-colors cursor-pointer p-1">
+                <button onClick={() => deleteAlert(alert.id)} aria-label="Delete alert" className="text-text-muted hover:text-red transition-colors cursor-pointer p-1">
                   <Trash2 size={13} />
                 </button>
               </div>
@@ -514,7 +515,7 @@ function CustomProvidersTab({ projects }: {
             {editingId ? "Edit Provider" : "Add Custom Provider"}
           </h3>
           {editingId && (
-            <button onClick={resetForm} className="text-text-muted hover:text-text-secondary cursor-pointer">
+            <button onClick={resetForm} aria-label="Cancel editing" className="text-text-muted hover:text-text-secondary cursor-pointer">
               <X size={14} />
             </button>
           )}
@@ -604,11 +605,11 @@ function CustomProvidersTab({ projects }: {
                 </div>
                 <div className="flex items-center gap-1">
                   <button onClick={() => handleEdit(p)}
-                    className="text-text-muted hover:text-accent transition-colors cursor-pointer p-1" title="Edit">
+                    className="text-text-muted hover:text-accent transition-colors cursor-pointer p-1" title="Edit" aria-label="Edit provider">
                     <Pencil size={13} />
                   </button>
                   <button onClick={() => handleDelete(p.id, p.name)}
-                    className="text-text-muted hover:text-red transition-colors cursor-pointer p-1" title="Delete">
+                    className="text-text-muted hover:text-red transition-colors cursor-pointer p-1" title="Delete" aria-label="Delete provider">
                     <Trash2 size={13} />
                   </button>
                 </div>

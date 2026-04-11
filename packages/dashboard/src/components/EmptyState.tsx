@@ -70,6 +70,7 @@ CostKey.init({ dsn: 'your-dsn-here' })`;
             </pre>
             <button
               onClick={() => copy(snippet, lang)}
+              aria-label="Copy code snippet"
               className="absolute top-3 right-3 text-text-muted hover:text-accent transition-colors cursor-pointer"
             >
               {copied === lang ? <Check size={14} className="text-green" /> : <Copy size={14} />}

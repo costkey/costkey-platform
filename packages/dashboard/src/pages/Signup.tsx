@@ -64,8 +64,9 @@ export default function Signup() {
 
           <form onSubmit={handleSubmit} className="flex flex-col gap-4">
             <div>
-              <label className="block text-xs font-mono text-text-muted uppercase tracking-wider mb-1.5">Your name</label>
+              <label htmlFor="signup-name" className="block text-xs font-mono text-text-muted uppercase tracking-wider mb-1.5">Your name</label>
               <input
+                id="signup-name"
                 type="text"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
@@ -75,8 +76,9 @@ export default function Signup() {
               />
             </div>
             <div>
-              <label className="block text-xs font-mono text-text-muted uppercase tracking-wider mb-1.5">Work email</label>
+              <label htmlFor="signup-email" className="block text-xs font-mono text-text-muted uppercase tracking-wider mb-1.5">Work email</label>
               <input
+                id="signup-email"
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
@@ -86,8 +88,9 @@ export default function Signup() {
               />
             </div>
             <div>
-              <label className="block text-xs font-mono text-text-muted uppercase tracking-wider mb-1.5">Password</label>
+              <label htmlFor="signup-password" className="block text-xs font-mono text-text-muted uppercase tracking-wider mb-1.5">Password</label>
               <input
+                id="signup-password"
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
@@ -98,8 +101,9 @@ export default function Signup() {
               />
             </div>
             <div>
-              <label className="block text-xs font-mono text-text-muted uppercase tracking-wider mb-1.5">Organization name</label>
+              <label htmlFor="signup-org" className="block text-xs font-mono text-text-muted uppercase tracking-wider mb-1.5">Organization name</label>
               <input
+                id="signup-org"
                 type="text"
                 value={orgName}
                 onChange={(e) => setOrgName(e.target.value)}

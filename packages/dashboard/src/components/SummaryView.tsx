@@ -108,7 +108,7 @@ export default function SummaryView({ summary, loading }: Props) {
   return (
     <div className="flex flex-col gap-5">
       {/* Top row: spend + deploy side by side */}
-      <div className={`grid gap-5 ${summary.byRelease?.length ? "grid-cols-[1fr_1fr]" : "grid-cols-1"}`}>
+      <div className="grid gap-5 grid-cols-[1fr_1fr]">
         {/* Headline card */}
         <div className="animate-in bg-surface-raised border border-border rounded-sm p-5 relative overflow-hidden">
           <div className="absolute top-0 left-0 right-0 h-px bg-border-bright" />
@@ -130,8 +130,8 @@ export default function SummaryView({ summary, loading }: Props) {
           </div>
         </div>
 
-        {/* Cost by Deploy — same row */}
-        {summary.byRelease && summary.byRelease.length > 0 && (
+        {/* Cost by Deploy or Quick Stats */}
+        {summary.byRelease && summary.byRelease.length > 0 ? (
         <div className="animate-in bg-surface-raised border border-border rounded-sm p-5" style={{ animationDelay: "30ms" }}>
           <div className="flex items-center justify-between mb-3">
             <p className="text-text-muted text-xs font-medium tracking-wide uppercase">
@@ -167,7 +167,33 @@ export default function SummaryView({ summary, loading }: Props) {
             </tbody>
           </table>
         </div>
-      )}
+        ) : (
+        <div className="animate-in bg-surface-raised border border-border rounded-sm p-5" style={{ animationDelay: "30ms" }}>
+          <p className="text-text-muted text-xs font-medium tracking-wide uppercase mb-4">
+            Quick Stats
+          </p>
+          <div className="flex flex-col gap-4">
+            <div>
+              <div className="text-text-muted text-xs mb-1">Avg cost per call</div>
+              <div className="font-mono text-2xl font-bold text-text-primary">
+                {summary.thisMonth.calls > 0 ? formatCost(summary.thisMonth.cost / summary.thisMonth.calls) : "—"}
+              </div>
+            </div>
+            <div>
+              <div className="text-text-muted text-xs mb-1">Total calls</div>
+              <div className="font-mono text-2xl font-bold text-text-primary">
+                {summary.thisMonth.calls.toLocaleString()}
+              </div>
+            </div>
+            <div>
+              <div className="text-text-muted text-xs mb-1">Total tokens</div>
+              <div className="font-mono text-2xl font-bold text-text-primary">
+                {formatTokens(summary.thisMonth.tokens)}
+              </div>
+            </div>
+          </div>
+        </div>
+        )}
       </div>
 
       <div className="grid grid-cols-[1fr_1fr] gap-5">

@@ -144,35 +144,28 @@ export default function SummaryView({ summary, loading }: Props) {
               </span>
             )}
           </div>
-          <div className="flex flex-col gap-0 max-h-[180px] overflow-y-auto">
-            {/* Header row */}
-            <div className="flex items-center gap-2 pb-1.5 text-text-muted text-[10px] uppercase tracking-wide border-b border-border sticky top-0 bg-surface-raised z-10">
-              <span className="w-24 shrink-0">Release</span>
-              <span className="w-20 text-right shrink-0">Cost</span>
-              <span className="w-24 text-right shrink-0">Calls</span>
-              <span className="w-24 text-right shrink-0">$/call</span>
-              <span className="w-16 text-right shrink-0">Change</span>
-            </div>
-            {summary.byRelease.map((rel) => (
-              <div key={rel.release} className="flex items-center gap-2 py-1.5 border-b border-border/50 last:border-0">
-                <span className="font-mono text-sm text-text-primary w-24 truncate shrink-0" title={rel.release}>
-                  {formatReleaseName(rel.release)}
-                </span>
-                <span className="font-mono text-sm text-text-primary w-20 text-right shrink-0">
-                  {formatCost(rel.cost)}
-                </span>
-                <span className="text-sm text-text-muted w-24 text-right shrink-0">
-                  {rel.calls.toLocaleString()} calls
-                </span>
-                <span className="font-mono text-sm text-text-primary w-24 text-right shrink-0">
-                  {formatCost(rel.cost_per_call)}/call
-                </span>
-                <span className="w-16 text-right shrink-0">
-                  <ReleaseCostChange pct={rel.cost_change_pct} />
-                </span>
-              </div>
-            ))}
-          </div>
+          <table className="w-full">
+            <thead>
+              <tr className="text-text-muted text-xs uppercase tracking-wide">
+                <th className="text-left pb-3 font-medium">Release</th>
+                <th className="text-right pb-3 font-medium">Cost</th>
+                <th className="text-right pb-3 font-medium">Calls</th>
+                <th className="text-right pb-3 font-medium">$/call</th>
+                <th className="text-right pb-3 font-medium">Change</th>
+              </tr>
+            </thead>
+            <tbody className="font-mono text-sm">
+              {summary.byRelease.map((rel) => (
+                <tr key={rel.release} className="border-t border-border">
+                  <td className="py-3 text-text-primary" title={rel.release}>{formatReleaseName(rel.release)}</td>
+                  <td className="py-3 text-right text-text-primary">{formatCost(rel.cost)}</td>
+                  <td className="py-3 text-right text-text-muted">{rel.calls.toLocaleString()}</td>
+                  <td className="py-3 text-right text-text-primary">{formatCost(rel.cost_per_call)}/call</td>
+                  <td className="py-3 text-right"><ReleaseCostChange pct={rel.cost_change_pct} /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
       </div>

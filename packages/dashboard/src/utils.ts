@@ -67,6 +67,10 @@ function isWrapperFn(f: FrameLike): boolean {
 }
 
 export function findBusinessFrame(frames: FrameLike[]): FrameLike | null {
+  const infraPatterns = ["node_modules/", "site-packages/", ".next/", "dist/", "node:", "internal/"];
+  const isInfra = (f: { fileName?: string | null }) =>
+    infraPatterns.some((p) => (f.fileName ?? "").includes(p));
+
   if (!frames || frames.length === 0) return null;
 
   const useless = new Set(["<module>", "<anonymous>", "anonymous", "main", "_run", ""]);

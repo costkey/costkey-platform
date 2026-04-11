@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { EventRow } from "../hooks/useApi";
 import ProviderLogo from "./ProviderLogo";
 import EventPanel from "./EventPanel";
-import { truncateModel, timeAgo, formatDuration, findBusinessFrame, parseFrames, cleanFunctionName } from "../utils";
+import { truncateModel, timeAgo, formatDuration, cleanFunctionName } from "../utils";
 
 interface Props {
   events: EventRow[] | null;
@@ -29,8 +29,7 @@ export default function RecentEvents({ events, loading, search = "", projectId }
   const q = search.toLowerCase();
   const filtered = q
     ? events.filter((e) => {
-        const best = findBusinessFrame(parseFrames(e.call_site_frames));
-        const fn = cleanFunctionName(best?.functionName) ?? "";
+        const fn = e.bl_function ?? "";
         return (
           e.model?.toLowerCase().includes(q) ||
           e.provider?.toLowerCase().includes(q) ||
@@ -67,9 +66,7 @@ export default function RecentEvents({ events, loading, search = "", projectId }
                 </tr>
               )}
               {filtered.map((event) => {
-                const frames = parseFrames(event.call_site_frames);
-                const best = findBusinessFrame(frames);
-                const fnName = cleanFunctionName(best?.functionName);
+                const fnName = event.bl_function;
 
                 return (
                   <tr

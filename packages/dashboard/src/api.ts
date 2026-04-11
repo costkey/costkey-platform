@@ -65,6 +65,9 @@ export interface EventRow {
   context: Record<string, unknown> | string | null;
   request_body?: string | null;
   response_body?: string | null;
+  bl_function?: string | null;
+  bl_file?: string | null;
+  bl_line?: number | null;
 }
 
 export interface TrendBucket {

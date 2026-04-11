@@ -6,7 +6,6 @@ import ProviderLogo from "./ProviderLogo";
 import EventPanel from "./EventPanel";
 import {
   formatTokens, formatDuration, truncateFile, truncateModel, timeAgo,
-  findBusinessFrame, parseFrames, cleanFunctionName,
 } from "../utils";
 
 interface Props {
@@ -49,11 +48,7 @@ function CallSiteRow({ row, maxCost, projectId, onSelectEvent }: {
         const targetFn = row.functionName ?? "";
         const targetFile = row.fileName ?? "";
         const matching = data.events.filter((e) => {
-          const frames = parseFrames(e.call_site_frames);
-          const best = findBusinessFrame(frames);
-          const fn = cleanFunctionName(best?.functionName) ?? "";
-          const file = best?.fileName ?? "";
-          return fn === targetFn || file === targetFile;
+          return e.bl_function === targetFn || e.bl_file === targetFile;
         });
         setEvents(matching.length > 0 ? matching.slice(0, 20) : data.events.slice(0, 5));
       } catch { /* silent */ }
@@ -127,8 +122,7 @@ function CallSiteRow({ row, maxCost, projectId, onSelectEvent }: {
                 <div className="w-14 text-right">Cost</div>
               </div>
               {events.map((event) => {
-                const best = findBusinessFrame(parseFrames(event.call_site_frames));
-                const fn = cleanFunctionName(best?.functionName);
+                const fn = event.bl_function;
                 return (
                   <button
                     key={event.id}

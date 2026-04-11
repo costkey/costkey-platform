@@ -321,6 +321,20 @@ export function createIngestRouter(pool: pg.Pool): Router {
             }
           }
 
+          // Compute business logic frame (single source of truth)
+          let blFunction: string | null = null;
+          let blFile: string | null = null;
+          let blLine: number | null = null;
+          if (cleanFrames && cleanFrames.length > 0) {
+            const graphData = callGraphCache.get(projectId);
+            const best = graphData
+              ? findBusinessLogicFrameWithGraph(cleanFrames, graphData)
+              : findBusinessLogicFrame(cleanFrames);
+            blFunction = (best.functionName ?? "").split("\n")[0].trim() || null;
+            blFile = best.fileName ?? null;
+            blLine = best.lineNumber ?? null;
+          }
+
           await client.query(
             `INSERT INTO events (
               id, timestamp, project_id, provider, model, url, method, status_code,
@@ -329,8 +343,9 @@ export function createIngestRouter(pool: pg.Pool): Router {
               cost_usd, duration_ms, streaming,
               ttft, tps, stream_duration, chunk_count,
               call_site_raw, call_site_frames,
-              trace_id, trace_name, context, request_body, response_body, release
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)
+              trace_id, trace_name, context, request_body, response_body, release,
+              bl_function, bl_file, bl_line
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32)
             ON CONFLICT (id) DO NOTHING`,
             [
               event.id, event.timestamp, projectId,
@@ -349,10 +364,11 @@ export function createIngestRouter(pool: pg.Pool): Router {
               truncateBody(event.requestBody),
               truncateBody(event.responseBody),
               release,
+              blFunction, blFile, blLine,
             ],
           );
 
-          // Upsert call site stats — find the best "business logic" frame
+          // Upsert call site stats — use the same bl_ values
           // Strategy: frame[0] is the direct API caller (usually a wrapper).
           // Walk up until we find a frame from a DIFFERENT file — that's the
           // business logic that actually matters. Works universally without

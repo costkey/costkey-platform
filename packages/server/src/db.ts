@@ -116,6 +116,9 @@ export async function initDatabase(): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_callsite_cost ON call_site_stats(project_id, total_cost_usd DESC);
 
     ALTER TABLE events ADD COLUMN IF NOT EXISTS release TEXT;
+    ALTER TABLE events ADD COLUMN IF NOT EXISTS bl_function TEXT;
+    ALTER TABLE events ADD COLUMN IF NOT EXISTS bl_file TEXT;
+    ALTER TABLE events ADD COLUMN IF NOT EXISTS bl_line INTEGER;
 
     -- GitHub OAuth: add github_id, make password_hash nullable
     ALTER TABLE users ADD COLUMN IF NOT EXISTS github_id TEXT;

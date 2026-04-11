@@ -3,7 +3,7 @@ import { ChevronRight, Clock, Circle } from "lucide-react";
 import type { Trace } from "../hooks/useApi";
 import { getTrace, type TraceEvent } from "../api";
 import ProviderLogo, { ProviderDot } from "./ProviderLogo";
-import { truncateModel, timeAgo, formatDuration, findBusinessFrame, cleanFunctionName } from "../utils";
+import { truncateModel, timeAgo, formatDuration, cleanFunctionName } from "../utils";
 
 interface Props {
   traces: Trace[] | null;
@@ -115,11 +115,7 @@ function TraceRow({ trace, projectId }: { trace: Trace; projectId: string }) {
                 const totalSpan = Math.max(endTime - startTime, 1);
 
                 return events.map((event, i) => {
-                  const frames = event.call_site_frames
-                    ? (typeof event.call_site_frames === "string" ? JSON.parse(event.call_site_frames) : event.call_site_frames)
-                    : [];
-                  const best = findBusinessFrame(frames);
-                  const fn = cleanFunctionName(best?.functionName) ?? "unknown";
+                  const fn = event.bl_function ?? "unknown";
                   const provider = event.provider;
                   const eventStart = new Date(event.timestamp).getTime();
                   const offsetPct = ((eventStart - startTime) / totalSpan) * 100;

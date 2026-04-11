@@ -3,7 +3,7 @@ import { ArrowDown, ArrowUp, Zap, X, Copy, Check } from "lucide-react";
 import type { EventRow } from "../hooks/useApi";
 import { getEvent } from "../api";
 import ProviderLogo from "./ProviderLogo";
-import { truncateModel, formatDuration, findBusinessFrame, cleanFunctionName } from "../utils";
+import { truncateModel, formatDuration } from "../utils";
 
 interface Props {
   event: EventRow;
@@ -104,8 +104,7 @@ export default function EventPanel({ event, projectId, onClose }: Props) {
   const frames = event.call_site_frames
     ? (typeof event.call_site_frames === "string" ? JSON.parse(event.call_site_frames) : event.call_site_frames)
     : [];
-  const best = findBusinessFrame(frames);
-  const fnName = cleanFunctionName(best?.functionName) ?? "unknown";
+  const fnName = event.bl_function ?? "unknown";
   const prompt = detail ? extractPrompt(detail.request_body) : null;
   const completion = detail ? extractCompletion(detail.response_body) : null;
   const [copied, setCopied] = useState<"input" | "output" | null>(null);

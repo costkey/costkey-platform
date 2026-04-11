@@ -289,7 +289,7 @@ async function backfillFrames(pool: import("pg").Pool): Promise<void> {
   });
 
   // Rebuild call_site_stats (also runs once)
-  await runOnce(pool, "rebuild_callsite_stats_v7", async () => {
+  await runOnce(pool, "rebuild_callsite_stats_v8", async () => {
     await rebuildCallSiteStats(pool);
   });
 }
@@ -400,5 +400,22 @@ async function rebuildCallSiteStats(pool: import("pg").Pool): Promise<void> {
     );
   }
 
-  console.log(`[costkey] Rebuilt call_site_stats: ${stats.size} entries from ${result.rows.length} events`);
+  // Also backfill bl_ fields on events
+  let blUpdated = 0;
+  for (const row of result.rows) {
+    const frames = typeof row.call_site_frames === "string"
+      ? JSON.parse(row.call_site_frames) : row.call_site_frames;
+    if (!frames || frames.length === 0) continue;
+    const best = pickBestFrame(frames);
+    const fn = (best.functionName ?? "").split("\n")[0].trim() || null;
+    const file = best.fileName ?? null;
+    const line = best.lineNumber ?? null;
+    await pool.query(
+      "UPDATE events SET bl_function = $1, bl_file = $2, bl_line = $3 WHERE id = $4",
+      [fn, file, line, row.id],
+    );
+    blUpdated++;
+  }
+
+  console.log(`[costkey] Rebuilt call_site_stats: ${stats.size} entries from ${result.rows.length} events, backfilled ${blUpdated} bl_ fields`);
 }

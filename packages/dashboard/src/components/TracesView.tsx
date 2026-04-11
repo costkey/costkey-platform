@@ -43,6 +43,7 @@ function TraceRow({ trace, projectId }: { trace: Trace; projectId: string }) {
     <div className="border-b border-border/30 last:border-b-0 row-striped">
       <button
         onClick={toggle}
+        aria-expanded={expanded}
         className="w-full flex items-center gap-4 px-5 py-3 row-hover cursor-pointer text-left"
       >
         <ChevronRight

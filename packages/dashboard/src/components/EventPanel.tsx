@@ -118,7 +118,7 @@ export default function EventPanel({ event, projectId, onClose }: Props) {
     <>
       <div className="fixed inset-0 bg-black/40 z-40 backdrop-blur-sm" onClick={onClose} />
 
-      <div className="fixed top-0 right-0 h-full w-[600px] max-w-[90vw] bg-surface-raised border-l border-border z-50 flex flex-col animate-slide-in">
+      <div role="dialog" aria-modal="true" aria-label="Event details" className="fixed top-0 right-0 h-full w-[600px] max-w-[90vw] bg-surface-raised border-l border-border z-50 flex flex-col animate-slide-in">
         {/* Header */}
         <div className="flex items-center gap-3 px-5 py-4 panel-header-gradient shrink-0">
           <ProviderLogo provider={event.provider} size={18} />
@@ -126,7 +126,7 @@ export default function EventPanel({ event, projectId, onClose }: Props) {
             <div className="font-mono text-base font-semibold text-text-primary truncate">{fnName}()</div>
             <div className="text-xs text-text-muted">{truncateModel(event.model)} · {formatTimestamp(event.timestamp)}</div>
           </div>
-          <button onClick={onClose} className="p-2 text-text-muted hover:text-text-secondary cursor-pointer rounded-sm hover:bg-surface-overlay">
+          <button onClick={onClose} aria-label="Close panel" className="p-2 text-text-muted hover:text-text-secondary cursor-pointer rounded-sm hover:bg-surface-overlay">
             <X size={18} />
           </button>
         </div>

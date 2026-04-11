@@ -55,6 +55,7 @@ function CallSiteRow({ row, maxCost, projectId, onSelectEvent }: {
     <div className="border-b border-border/30 row-striped">
       <button
         onClick={toggle}
+        aria-expanded={expanded}
         className="w-full flex items-center gap-4 px-5 py-3.5 row-hover cursor-pointer text-left"
       >
         <ChevronRight

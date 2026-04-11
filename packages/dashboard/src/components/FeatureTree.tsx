@@ -28,6 +28,7 @@ function FeatureRow({ feature, maxCost }: { feature: Feature; maxCost: number })
     <div className="border-b border-border/30 last:border-b-0">
       <button
         onClick={() => setExpanded(!expanded)}
+        aria-expanded={expanded}
         className="w-full flex items-center gap-2 px-3 py-2 row-hover cursor-pointer text-left"
       >
         <ChevronRight

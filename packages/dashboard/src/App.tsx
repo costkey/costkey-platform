@@ -252,12 +252,15 @@ function AppShell() {
             <button
               onClick={() => navigate("/settings")}
               className="p-1.5 text-text-muted hover:text-text-secondary transition-colors cursor-pointer rounded-sm hover:bg-surface-overlay"
+              aria-label="Settings"
             >
               <Settings size={14} />
             </button>
 
             <div className="w-7 h-7 rounded-full bg-surface-overlay flex items-center justify-center font-mono text-xs text-text-primary font-medium cursor-pointer"
               title={user?.email}
+              aria-label={`User: ${user?.name ?? user?.email}`}
+              role="img"
             >
               {user?.name?.charAt(0).toUpperCase() ?? "?"}
             </div>

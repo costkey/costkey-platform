@@ -50,7 +50,7 @@ export default function Dashboard({ demoMode = false }: { demoMode?: boolean }) 
   const showSearch = activeTab !== "overview";
 
   return (
-    <main className="max-w-[1440px] mx-auto px-6 pt-5 pb-6 flex flex-col gap-0 min-h-[calc(100vh-56px)]">
+    <main className="max-w-[1440px] mx-auto px-4 md:px-6 pt-5 pb-6 flex flex-col gap-0 min-h-[calc(100vh-56px)]">
       <AnomalyBanner projectId={projectId} />
 
       {/* Setup hints banner */}
@@ -76,13 +76,13 @@ export default function Dashboard({ demoMode = false }: { demoMode?: boolean }) 
       ))}
 
       {/* Tab bar */}
-      <div className="flex items-center gap-0 border-b border-border mb-5">
+      <div className="flex items-center gap-0 border-b border-border mb-5 overflow-x-auto">
         <div className="flex items-center gap-1">
           {TABS.map((tab) => (
             <button
               key={tab.id}
               onClick={() => { setActiveTab(tab.id); setSearch(""); }}
-              className={`flex items-center gap-2 px-4 py-3 text-sm font-medium cursor-pointer transition-colors border-b-2 -mb-px ${
+              className={`flex items-center gap-2 px-4 py-3 text-sm font-medium cursor-pointer transition-colors border-b-2 -mb-px whitespace-nowrap ${
                 activeTab === tab.id
                   ? "text-text-primary border-text-primary"
                   : "text-text-muted hover:text-text-secondary border-transparent"

@@ -202,15 +202,15 @@ function AppShell() {
     <div className="min-h-screen bg-surface flex flex-col">
       {/* Header */}
       <header className="relative border-b border-border bg-surface sticky top-0 z-50">
-        <div className="max-w-[1440px] mx-auto px-6 h-14 flex items-center gap-4">
-          <button onClick={() => navigate("/")} className="flex items-center gap-2.5 cursor-pointer group">
+        <div className="max-w-[1440px] mx-auto px-4 md:px-6 h-14 flex items-center gap-2 md:gap-4">
+          <button onClick={() => navigate("/")} className="flex items-center gap-2.5 cursor-pointer group shrink-0">
             <img src="/favicon.svg" alt="CostKey" className="w-6 h-6 group-hover:brightness-110 transition-all" />
-            <span className="font-mono text-sm font-semibold text-text-primary tracking-tight">
+            <span className="font-mono text-sm font-semibold text-text-primary tracking-tight hidden sm:inline">
               CostKey
             </span>
           </button>
 
-          <div className="w-px h-5 bg-border" />
+          <div className="w-px h-5 bg-border hidden sm:block" />
 
           {/* Project switcher */}
           {projects.length > 1 ? (
@@ -221,30 +221,33 @@ function AppShell() {
               onSelect={setCurrentProjectId}
             />
           ) : (
-            <span className="px-2.5 py-1 bg-surface-overlay/40 border border-border/60 rounded-sm font-mono text-xs text-text-muted">
+            <span className="px-2.5 py-1 bg-surface-overlay/40 border border-border/60 rounded-sm font-mono text-xs text-text-muted truncate max-w-[120px] md:max-w-none">
               {currentProject?.name ?? org?.name}
             </span>
           )}
 
           {/* Right side */}
-          <div className="ml-auto flex items-center gap-3">
-            <FeedbackButton />
-
-            <div className="w-px h-4 bg-border" />
+          <div className="ml-auto flex items-center gap-2 md:gap-3">
+            <span className="hidden md:contents">
+              <FeedbackButton />
+              <div className="w-px h-4 bg-border" />
+            </span>
 
             <a
               href="https://costkey.dev/docs"
               target="_blank"
               rel="noopener noreferrer"
-              className="flex items-center gap-1.5 text-[11px] text-text-muted font-mono hover:text-text-secondary transition-colors"
+              className="hidden md:flex items-center gap-1.5 text-[11px] text-text-muted font-mono hover:text-text-secondary transition-colors"
             >
               Docs
               <ExternalLink size={10} />
             </a>
 
-            <div className="w-px h-4 bg-border" />
+            <div className="w-px h-4 bg-border hidden md:block" />
 
-            <PipelineStatus projectId={currentProjectId ?? projects[0]?.id} />
+            <span className="hidden md:inline-flex">
+              <PipelineStatus projectId={currentProjectId ?? projects[0]?.id} />
+            </span>
 
             <button
               onClick={() => navigate("/settings")}

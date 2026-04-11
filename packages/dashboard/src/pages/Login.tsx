@@ -58,8 +58,9 @@ export default function Login() {
 
           <form onSubmit={handleSubmit} className="flex flex-col gap-4">
             <div>
-              <label className="block text-xs font-mono text-text-muted uppercase tracking-wider mb-1.5">Email</label>
+              <label htmlFor="login-email" className="block text-xs font-mono text-text-muted uppercase tracking-wider mb-1.5">Email</label>
               <input
+                id="login-email"
                 type="email"
                 value={email}
                 onChange={(e) => { setEmail(e.target.value); setHideError(true); }}
@@ -69,8 +70,9 @@ export default function Login() {
               />
             </div>
             <div>
-              <label className="block text-xs font-mono text-text-muted uppercase tracking-wider mb-1.5">Password</label>
+              <label htmlFor="login-password" className="block text-xs font-mono text-text-muted uppercase tracking-wider mb-1.5">Password</label>
               <input
+                id="login-password"
                 type="password"
                 value={password}
                 onChange={(e) => { setPassword(e.target.value); setHideError(true); }}

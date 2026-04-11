@@ -227,6 +227,24 @@ export function findBusinessLogicFrameWithGraph(
     }
   }
 
+  // Wrapper detection: if the graph picked a frame from the same file as frame[0],
+  // AND there are 2+ frames from that file (typical wrapper pattern like
+  // anthropic_client.py having both call_haiku and _messages_create_with_backoff),
+  // prefer the heuristic which picks a frame from a DIFFERENT file.
+  if (bestFrame) {
+    const innerFile = frames[0]?.fileName ?? "";
+    const bestFile = bestFrame.fileName ?? "";
+    if (innerFile && bestFile && innerFile === bestFile) {
+      const sameFileCount = frames.filter(f => (f.fileName ?? "") === innerFile).length;
+      if (sameFileCount >= 2) {
+        const heuristicResult = findBusinessLogicFrame(frames);
+        if ((heuristicResult.fileName ?? "") !== innerFile) {
+          return heuristicResult;
+        }
+      }
+    }
+  }
+
   return bestFrame ?? findBusinessLogicFrame(frames);
 }
 

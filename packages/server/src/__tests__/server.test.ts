@@ -289,15 +289,16 @@ describe("findBusinessLogicFrame", () => {
     assert.equal(result.functionName, "main");
   });
 
-  it("all frames same file returns frame[0]", () => {
+  it("all frames same file returns frame[1] (caller of wrapper)", () => {
     const frames = [
       frame("client.py", "call_api", 10),
       frame("client.py", "wrapper", 50),
       frame("client.py", "init", 100),
     ];
     const result = findBusinessLogicFrame(frames);
-    assert.equal(result.functionName, "call_api");
-    assert.equal(result.lineNumber, 10);
+    // All same file → frame[1] is the caller of the innermost function
+    assert.equal(result.functionName, "wrapper");
+    assert.equal(result.lineNumber, 50);
   });
 
   it("wrapper in client.py + business logic in handler.py returns handler frame", () => {
@@ -337,6 +338,214 @@ describe("findBusinessLogicFrame", () => {
     const result = findBusinessLogicFrame(frames);
     assert.equal(result.fileName, "/app/src/pipeline/stage2_haiku.py");
     assert.equal(result.functionName, "_process_file_group");
+  });
+
+  // ─── ADVERSARIAL: patterns that try to break the algorithm ───
+
+  it("user's own LLM wrapper in a separate utils file — should skip it", () => {
+    // Dev has src/utils/llm.ts that wraps OpenAI. Business logic is in src/features/search.ts.
+    // After filterFrames strips node_modules/openai, frames look like:
+    const frames = [
+      frame("src/utils/llm.ts", "callGPT", 25),
+      frame("src/features/search.ts", "doSearch", 80),
+      frame("src/api/routes.ts", "handleRequest", 12),
+    ];
+    const result = findBusinessLogicFrame(frames);
+    // Algorithm picks callGPT because it's frame[0] and doSearch is "different file"
+    // This is CORRECT — callGPT IS the direct caller. But is it what the user wants?
+    // Answer: doSearch is better. But the algorithm picks doSearch (first DIFFERENT file from frame[0]).
+    // Wait — frame[0] is callGPT in llm.ts. First different file is search.ts. So it picks doSearch.
+    assert.equal(result.functionName, "doSearch");
+  });
+
+  it("user's LLM wrapper in same file as business logic — picks frame[1]", () => {
+    // Everything in one file. call_llm wraps the API, process_data uses it.
+    const frames = [
+      frame("app/service.py", "call_llm", 10),
+      frame("app/service.py", "process_data", 50),
+      frame("app/service.py", "handle_request", 100),
+    ];
+    const result = findBusinessLogicFrame(frames);
+    // All same file → falls back to frame[1]
+    assert.equal(result.functionName, "process_data");
+  });
+
+  it("monorepo: shared package wraps API, app package has business logic", () => {
+    // packages/shared/src/ai.ts wraps OpenAI
+    // packages/app/src/features/search.ts has business logic
+    const frames = [
+      frame("packages/shared/src/ai.ts", "generateCompletion", 30),
+      frame("packages/app/src/features/search.ts", "searchProducts", 85),
+      frame("packages/app/src/routes/api.ts", "handleSearch", 15),
+    ];
+    const result = findBusinessLogicFrame(frames);
+    // Different file from frame[0] → picks searchProducts
+    assert.equal(result.functionName, "searchProducts");
+  });
+
+  it("Python decorator in separate file — should not pick the decorator", () => {
+    // User has a @retry decorator in utils/decorators.py
+    // Business logic in features/summarizer.py
+    const frames = [
+      frame("app/utils/decorators.py", "retry_wrapper", 15),
+      frame("app/features/summarizer.py", "generate_summary", 42),
+      frame("app/api/handler.py", "handle_summarize", 88),
+    ];
+    const result = findBusinessLogicFrame(frames);
+    // retry_wrapper is NOT in WRAPPER_FN_NAMES (it's "retry_wrapper" not "retry")
+    // But it IS frame[0], and generate_summary is a different file → picks generate_summary
+    assert.equal(result.functionName, "generate_summary");
+  });
+
+  it("retry in WRAPPER_FN_NAMES — gets skipped even if different file", () => {
+    // A file called retry_utils.py has a function literally called "retry"
+    const frames = [
+      frame("app/llm_client.py", "call_api", 10),
+      frame("app/retry_utils.py", "retry", 5),
+      frame("app/features/search.py", "do_search", 100),
+    ];
+    const result = findBusinessLogicFrame(frames);
+    // retry_utils.py is different file from llm_client.py, but "retry" is in WRAPPER_FN_NAMES → skip
+    // Next different file: search.py → picks do_search
+    assert.equal(result.functionName, "do_search");
+  });
+
+  it("all frames are useless names except one — picks the meaningful one", () => {
+    const frames = [
+      frame("app.py", "<module>", 1),
+      frame("app.py", "", 5),
+      frame("handler.py", "process_request", 20),
+      frame("main.py", "main", 1),
+    ];
+    const result = findBusinessLogicFrame(frames);
+    // Only "process_request" survives the useless filter
+    assert.equal(result.functionName, "process_request");
+  });
+
+  it("ALL frames are useless — falls back to original frames", () => {
+    const frames = [
+      frame("app.py", "<module>", 1),
+      frame("main.py", "main", 5),
+      frame("run.py", "<anonymous>", 10),
+    ];
+    const result = findBusinessLogicFrame(frames);
+    // All filtered as useless. Falls back to original frames.
+    // frame[0] is app.py, first different file is main.py → picks main
+    // But "main" is useless... the pool IS the original frames since meaningful is empty.
+    // pool[0] = app.py:<module>, innerFile = app.py, first different file = main.py → picks main.py:main
+    assert.equal(result.fileName, "main.py");
+  });
+
+  it("Next.js bundled code — function names are minified garbage", () => {
+    // After filterFrames strips .next/ and node_modules/next/, what's left?
+    // If sourcemaps aren't uploaded, we get mangled names
+    const frames = [
+      frame("src/app/api/chat/route.ts", "POST", 15),
+      frame("src/lib/ai.ts", "generateResponse", 42),
+    ];
+    const result = findBusinessLogicFrame(frames);
+    // POST is not useless, different file → picks generateResponse? No.
+    // frame[0] is route.ts:POST, first different file is ai.ts → picks generateResponse
+    assert.equal(result.functionName, "generateResponse");
+  });
+
+  it("deeply nested spaghetti — 10 files deep", () => {
+    const frames = [
+      frame("src/infra/http.ts", "fetchJSON", 10),
+      frame("src/infra/retry.ts", "withRetry", 20),
+      frame("src/services/ai.ts", "complete", 30),
+      frame("src/services/search.ts", "vectorSearch", 40),
+      frame("src/features/rag.ts", "retrieveAndGenerate", 50),
+      frame("src/controllers/chat.ts", "handleChat", 60),
+      frame("src/routes/api.ts", "chatRoute", 70),
+      frame("src/middleware/auth.ts", "requireAuth", 80),
+      frame("src/server.ts", "listen", 90),
+      frame("src/index.ts", "main", 100),
+    ];
+    const result = findBusinessLogicFrame(frames);
+    // frame[0] = http.ts, first different file = retry.ts
+    // But "withRetry" is in WRAPPER_FN_NAMES (lowercased: "withretry") → skip
+    // Next different file: ai.ts:complete → picks it
+    assert.equal(result.functionName, "complete");
+    assert.equal(result.fileName, "src/services/ai.ts");
+  });
+
+  it("Python class methods with self — function name has dots", () => {
+    const frames = [
+      frame("app/clients/openai_client.py", "OpenAIClient.create_completion", 55),
+      frame("app/services/generator.py", "ContentGenerator.generate", 120),
+      frame("app/handlers/api.py", "APIHandler.handle_generate", 30),
+    ];
+    const result = findBusinessLogicFrame(frames);
+    assert.equal(result.functionName, "ContentGenerator.generate");
+  });
+
+  it("function name with newlines (Python traceback format)", () => {
+    const frames = [
+      frame("app/client.py", "_call_api\n    response = client.chat.completions.create(", 10),
+      frame("app/handler.py", "process_request\n    result = _call_api(prompt)", 50),
+    ];
+    const result = findBusinessLogicFrame(frames);
+    // Newlines are split, so functionName comparison uses first line
+    assert.equal(result.fileName, "app/handler.py");
+  });
+
+  it("single frame with useless name — returns it anyway", () => {
+    const frames = [frame("app.py", "<module>", 1)];
+    const result = findBusinessLogicFrame(frames);
+    assert.equal(result.functionName, "<module>");
+  });
+
+  it("two frames, same file, one is wrapper fn name — picks the other", () => {
+    const frames = [
+      frame("app/service.py", "retry", 10),
+      frame("app/service.py", "do_work", 50),
+    ];
+    const result = findBusinessLogicFrame(frames);
+    // All same file → frame[1]
+    assert.equal(result.functionName, "do_work");
+  });
+
+  it("lambda/arrow function names", () => {
+    const frames = [
+      frame("src/api.ts", "Object.<anonymous>", 10),
+      frame("src/handler.ts", "processQueue", 50),
+    ];
+    const result = findBusinessLogicFrame(frames);
+    // "Object.<anonymous>" is not in useless set (it's not exactly "<anonymous>")
+    // Different file → picks processQueue
+    assert.equal(result.functionName, "processQueue");
+  });
+
+  it("null fileName on all frames — uses function names only", () => {
+    const frames = [
+      frame("", "wrapper", 0),
+      frame("", "businessLogic", 0),
+    ];
+    // innerFile is "", file for frame[1] is also "" — same. Falls to frame[1].
+    const result = findBusinessLogicFrame(frames);
+    assert.equal(result.functionName, "businessLogic");
+  });
+
+  it("user wrapper named exactly like a known wrapper — withCache", () => {
+    // User has a legit function called "withCache" that IS their business logic
+    const frames = [
+      frame("src/llm.ts", "callModel", 10),
+      frame("src/cache.ts", "withCache", 20),
+      frame("src/handler.ts", "handleRequest", 30),
+    ];
+    const result = findBusinessLogicFrame(frames);
+    // "withcache" is in WRAPPER_FN_NAMES → skipped
+    // Next different file: handler.ts → picks handleRequest
+    // This is WRONG — user's withCache is their real code. But we can't distinguish.
+    assert.equal(result.functionName, "handleRequest");
+    // Known limitation: if user names function exactly like a wrapper, we skip it.
+  });
+
+  it("empty frames array — returns undefined (edge case)", () => {
+    const frames: Array<{ fileName: string; functionName: string; lineNumber: number; columnNumber: number }> = [];
+    const result = findBusinessLogicFrame(frames);
+    assert.equal(result, undefined);
   });
 });
 

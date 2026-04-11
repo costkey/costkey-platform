@@ -3,7 +3,7 @@
  * This is the authoritative pricing source — the SDK no longer calculates costs.
  * Source: provider pricing pages as of 2026-04.
  */
-import { filterFrames, findBusinessLogicFrame } from "./ingest.js";
+import { filterFrames, findBusinessLogicFrame, findBusinessLogicFrameWithGraph, callGraphCache } from "./ingest.js";
 interface ModelPricing {
   input: number;
   output: number;
@@ -290,7 +290,7 @@ async function backfillFrames(pool: import("pg").Pool): Promise<void> {
   });
 
   // Rebuild call_site_stats (also runs once)
-  await runOnce(pool, "rebuild_callsite_stats_v11", async () => {
+  await runOnce(pool, "rebuild_callsite_stats_v12", async () => {
     await rebuildCallSiteStats(pool);
   });
 }
@@ -325,9 +325,9 @@ function pickBestFrame(frames: Array<{ fileName?: string | null; functionName?: 
 async function rebuildCallSiteStats(pool: import("pg").Pool): Promise<void> {
   await pool.query("DELETE FROM call_site_stats");
 
-  // Re-backfill ALL bl_ fields using the canonical algorithm
+  // Re-backfill ALL bl_ fields using the canonical algorithm (with graph when available)
   const needBl = await pool.query(`
-    SELECT id, call_site_frames FROM events
+    SELECT id, project_id, call_site_frames FROM events
     WHERE call_site_frames IS NOT NULL
       AND call_site_frames != '[]'::jsonb
       AND jsonb_array_length(call_site_frames) > 0
@@ -337,7 +337,10 @@ async function rebuildCallSiteStats(pool: import("pg").Pool): Promise<void> {
       ? JSON.parse(row.call_site_frames) : row.call_site_frames;
     if (!frames || frames.length === 0) continue;
     const filtered = filterFrames(frames);
-    const best = findBusinessLogicFrame(filtered);
+    const graph = callGraphCache.get(row.project_id);
+    const best = graph
+      ? findBusinessLogicFrameWithGraph(filtered, graph)
+      : findBusinessLogicFrame(filtered);
     const fn = (best.functionName ?? "").split("\n")[0].trim() || null;
     await pool.query(
       "UPDATE events SET bl_function = $1, bl_file = $2, bl_line = $3 WHERE id = $4",

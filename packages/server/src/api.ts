@@ -349,7 +349,11 @@ export function createApiRouter(pool: pg.Pool): Router {
       const { projectId } = req.params;
       const range = (req.query["range"] as string) || "mtd";
       const bucket = (req.query["bucket"] as string) || "day";
-      const trunc = bucket === "day" ? "day" : "hour";
+      if (bucket !== "day" && bucket !== "hour") {
+        res.status(400).json({ error: "bucket must be 'day' or 'hour'" });
+        return;
+      }
+      const trunc = bucket;
 
       // Compute from/to based on range
       let fromDate: string;

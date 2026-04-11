@@ -10,7 +10,7 @@
   --radius-default: 8px;
   --color-text-primary: #fafafa;
   --color-text-secondary: #a1a1aa;
-  --color-text-muted: #52525b;
+  --color-text-muted: #71717a;
   --color-accent: #fafafa;
   --color-accent-hover: #e4e4e7;
   --color-accent-muted: rgba(255, 255, 255, 0.06);
@@ -170,6 +170,24 @@ body {
 
 .animate-confetti-pop {
   animation: confetti-pop 0.5s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+/* Focus-visible ring for all interactive elements */
+button:focus-visible,
+a:focus-visible,
+[role="tab"]:focus-visible,
+[role="button"]:focus-visible {
+  outline: 2px solid var(--color-border-bright);
+  outline-offset: 2px;
+}
+
+/* Respect reduced motion preference */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
 /* Recharts overrides */

@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { ArrowDown, ArrowUp, Zap, X } from "lucide-react";
+import { ArrowDown, ArrowUp, Zap, X, Copy, Check } from "lucide-react";
 import type { EventRow } from "../hooks/useApi";
 import { getEvent } from "../api";
 import ProviderLogo from "./ProviderLogo";
@@ -108,6 +108,12 @@ export default function EventPanel({ event, projectId, onClose }: Props) {
   const fnName = cleanFunctionName(best?.functionName) ?? "unknown";
   const prompt = detail ? extractPrompt(detail.request_body) : null;
   const completion = detail ? extractCompletion(detail.response_body) : null;
+  const [copied, setCopied] = useState<"input" | "output" | null>(null);
+  const copyText = (text: string, key: "input" | "output") => {
+    navigator.clipboard.writeText(text);
+    setCopied(key);
+    setTimeout(() => setCopied(null), 1500);
+  };
 
   return (
     <>
@@ -163,9 +169,14 @@ export default function EventPanel({ event, projectId, onClose }: Props) {
               {/* Input */}
               {prompt && (
                 <div>
-                  <div className="flex items-center gap-1.5 mb-2">
-                    <ArrowUp size={12} className="text-cyan" />
-                    <span className="text-xs uppercase tracking-wider font-medium text-text-muted">Input</span>
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-1.5">
+                      <ArrowUp size={12} className="text-cyan" />
+                      <span className="text-xs uppercase tracking-wider font-medium text-text-muted">Input</span>
+                    </div>
+                    <button onClick={() => copyText(prompt, "input")} className="flex items-center gap-1 text-[10px] font-mono text-text-muted hover:text-text-primary transition-colors cursor-pointer">
+                      {copied === "input" ? <><Check size={10} className="text-green" /> Copied</> : <><Copy size={10} /> Copy</>}
+                    </button>
                   </div>
                   <pre className="bg-surface border border-border rounded-sm px-4 py-3 font-mono text-xs text-text-secondary whitespace-pre-wrap break-words max-h-72 overflow-y-auto leading-relaxed">
                     {truncateText(prompt, 3000)}
@@ -176,9 +187,14 @@ export default function EventPanel({ event, projectId, onClose }: Props) {
               {/* Output */}
               {completion && (
                 <div>
-                  <div className="flex items-center gap-1.5 mb-2">
-                    <ArrowDown size={12} className="text-green" />
-                    <span className="text-xs uppercase tracking-wider font-medium text-text-muted">Output</span>
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-1.5">
+                      <ArrowDown size={12} className="text-green" />
+                      <span className="text-xs uppercase tracking-wider font-medium text-text-muted">Output</span>
+                    </div>
+                    <button onClick={() => copyText(completion, "output")} className="flex items-center gap-1 text-[10px] font-mono text-text-muted hover:text-text-primary transition-colors cursor-pointer">
+                      {copied === "output" ? <><Check size={10} className="text-green" /> Copied</> : <><Copy size={10} /> Copy</>}
+                    </button>
                   </div>
                   <pre className="bg-surface border border-border rounded-sm px-4 py-3 font-mono text-xs text-text-secondary whitespace-pre-wrap break-words max-h-72 overflow-y-auto leading-relaxed">
                     {truncateText(completion, 3000)}

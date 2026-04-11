@@ -3,6 +3,7 @@
  * This is the authoritative pricing source — the SDK no longer calculates costs.
  * Source: provider pricing pages as of 2026-04.
  */
+import { filterFrames, findBusinessLogicFrame } from "./ingest.js";
 interface ModelPricing {
   input: number;
   output: number;
@@ -289,7 +290,7 @@ async function backfillFrames(pool: import("pg").Pool): Promise<void> {
   });
 
   // Rebuild call_site_stats (also runs once)
-  await runOnce(pool, "rebuild_callsite_stats_v10", async () => {
+  await runOnce(pool, "rebuild_callsite_stats_v11", async () => {
     await rebuildCallSiteStats(pool);
   });
 }
@@ -324,11 +325,10 @@ function pickBestFrame(frames: Array<{ fileName?: string | null; functionName?: 
 async function rebuildCallSiteStats(pool: import("pg").Pool): Promise<void> {
   await pool.query("DELETE FROM call_site_stats");
 
-  // First backfill bl_ fields on any events that don't have them
+  // Re-backfill ALL bl_ fields using the canonical algorithm
   const needBl = await pool.query(`
     SELECT id, call_site_frames FROM events
-    WHERE bl_function IS NULL
-      AND call_site_frames IS NOT NULL
+    WHERE call_site_frames IS NOT NULL
       AND call_site_frames != '[]'::jsonb
       AND jsonb_array_length(call_site_frames) > 0
   `);
@@ -336,7 +336,8 @@ async function rebuildCallSiteStats(pool: import("pg").Pool): Promise<void> {
     const frames = typeof row.call_site_frames === "string"
       ? JSON.parse(row.call_site_frames) : row.call_site_frames;
     if (!frames || frames.length === 0) continue;
-    const best = pickBestFrame(frames);
+    const filtered = filterFrames(frames);
+    const best = findBusinessLogicFrame(filtered);
     const fn = (best.functionName ?? "").split("\n")[0].trim() || null;
     await pool.query(
       "UPDATE events SET bl_function = $1, bl_file = $2, bl_line = $3 WHERE id = $4",

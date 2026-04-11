@@ -519,7 +519,7 @@ function CustomProvidersTab({ projects }: {
             </button>
           )}
         </div>
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <div>
             <label className="block text-xs font-mono text-text-muted uppercase tracking-wider mb-1">Name</label>
             <input
@@ -637,7 +637,7 @@ function AccountTab({ user, org, logout }: {
     <div className="flex flex-col gap-5">
       <div className="bg-surface-raised border border-border rounded-sm p-5">
         <h3 className="text-sm font-medium text-text-primary mb-4">Profile</h3>
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
             <label className="block text-xs font-mono text-text-muted uppercase tracking-wider mb-1">Name</label>
             <div className="text-sm text-text-primary">{user?.name}</div>

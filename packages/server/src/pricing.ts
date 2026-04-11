@@ -289,7 +289,7 @@ async function backfillFrames(pool: import("pg").Pool): Promise<void> {
   });
 
   // Rebuild call_site_stats (also runs once)
-  await runOnce(pool, "rebuild_callsite_stats_v9", async () => {
+  await runOnce(pool, "rebuild_callsite_stats_v10", async () => {
     await rebuildCallSiteStats(pool);
   });
 }

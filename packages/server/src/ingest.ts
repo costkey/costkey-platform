@@ -368,19 +368,10 @@ export function createIngestRouter(pool: pg.Pool): Router {
             ],
           );
 
-          // Upsert call site stats — use the same bl_ values
-          // Strategy: frame[0] is the direct API caller (usually a wrapper).
-          // Walk up until we find a frame from a DIFFERENT file — that's the
-          // business logic that actually matters. Works universally without
-          // fragile function-name heuristics.
-          if (cleanFrames && cleanFrames.length > 0) {
-            const graph = callGraphCache.get(projectId);
-            const f = graph
-              ? findBusinessLogicFrameWithGraph(cleanFrames, graph)
-              : findBusinessLogicFrame(cleanFrames);
-            const cleanFn = (f.functionName ?? "anonymous").split("\n")[0].trim();
-            const key = `${f.fileName ?? "unknown"}:${cleanFn}:${f.lineNumber ?? 0}`;
-            const eventModel = event.model ?? "unknown"; // model is part of PK, can't be null
+          // Upsert call site stats — use bl_ values (single source of truth)
+          if (blFunction) {
+            const key = `${blFile ?? "unknown"}:${blFunction}:${blLine ?? 0}`;
+            const eventModel = event.model ?? "unknown";
 
             await client.query(
               `INSERT INTO call_site_stats (
@@ -403,7 +394,7 @@ export function createIngestRouter(pool: pg.Pool): Router {
                   ELSE call_site_stats.avg_tps END,
                 last_seen = EXCLUDED.last_seen`,
               [
-                projectId, key, f.fileName, cleanFn, f.lineNumber,
+                projectId, key, blFile, blFunction, blLine,
                 event.provider, eventModel,
                 costUsd ?? 0,
                 event.usage?.inputTokens ?? 0, event.usage?.outputTokens ?? 0,

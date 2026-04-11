@@ -155,7 +155,7 @@ export default function SummaryView({ summary, loading }: Props) {
               </tr>
             </thead>
             <tbody className="font-mono text-sm">
-              {summary.byRelease.map((rel) => (
+              {summary.byRelease.slice(0, 2).map((rel) => (
                 <tr key={rel.release} className="border-t border-border">
                   <td className="py-3 text-text-primary" title={rel.release}>{formatReleaseName(rel.release)}</td>
                   <td className="py-3 text-right text-text-primary">{formatCost(rel.cost)}</td>

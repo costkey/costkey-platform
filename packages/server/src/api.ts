@@ -304,7 +304,8 @@ export function createApiRouter(pool: pg.Pool): Router {
           input_tokens, output_tokens, total_tokens, reasoning_tokens,
           cache_read_tokens, cache_creation_tokens,
           cost_usd, duration_ms, streaming, ttft, tps, stream_duration, chunk_count,
-          call_site_raw, call_site_frames, context
+          call_site_raw, call_site_frames, context,
+          bl_function, bl_file, bl_line
         FROM events WHERE project_id = $1 ${clause} ${extra}
         ORDER BY timestamp DESC LIMIT $${paramIdx++} OFFSET $${paramIdx}`,
         [projectId, ...params, ...extraParams, limit, offset],
@@ -473,7 +474,8 @@ export function createApiRouter(pool: pg.Pool): Router {
         `SELECT id, timestamp, provider, model, url, method, status_code,
           input_tokens, output_tokens, total_tokens,
           cost_usd, duration_ms, streaming, ttft, tps,
-          call_site_raw, call_site_frames, context
+          call_site_raw, call_site_frames, context,
+          bl_function, bl_file, bl_line
         FROM events WHERE project_id = $1 AND trace_id = $2
         ORDER BY timestamp ASC`,
         [projectId, traceId],

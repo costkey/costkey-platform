@@ -50,7 +50,7 @@ export default function Signup() {
           {/* GitHub button */}
           <a
             href="/auth/github"
-            className="w-full flex items-center justify-center gap-2 bg-surface-overlay hover:bg-surface-hover border border-border rounded-sm px-3 py-2.5 text-sm text-text-primary font-medium mb-4 transition-colors"
+            className="w-full flex items-center justify-center gap-2 bg-surface-overlay hover:bg-surface-hover border border-border rounded-sm px-3 py-3 text-sm text-text-primary font-medium mb-4 transition-colors"
           >
             <GitHubIcon size={16} />
             Sign up with GitHub
@@ -70,7 +70,7 @@ export default function Signup() {
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 required
-                className="w-full bg-surface border border-border rounded-sm px-3 py-2.5 text-sm text-text-primary font-mono outline-none auth-input transition-all"
+                className="w-full bg-surface border border-border rounded-sm px-3 py-3 text-sm text-text-primary font-mono outline-none auth-input transition-all"
                 placeholder="Jane Doe"
               />
             </div>
@@ -81,7 +81,7 @@ export default function Signup() {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 required
-                className="w-full bg-surface border border-border rounded-sm px-3 py-2.5 text-sm text-text-primary font-mono outline-none auth-input transition-all"
+                className="w-full bg-surface border border-border rounded-sm px-3 py-3 text-sm text-text-primary font-mono outline-none auth-input transition-all"
                 placeholder="jane@company.com"
               />
             </div>
@@ -93,7 +93,7 @@ export default function Signup() {
                 onChange={(e) => setPassword(e.target.value)}
                 required
                 minLength={8}
-                className="w-full bg-surface border border-border rounded-sm px-3 py-2.5 text-sm text-text-primary font-mono outline-none auth-input transition-all"
+                className="w-full bg-surface border border-border rounded-sm px-3 py-3 text-sm text-text-primary font-mono outline-none auth-input transition-all"
                 placeholder="min 8 characters"
               />
             </div>
@@ -103,7 +103,7 @@ export default function Signup() {
                 type="text"
                 value={orgName}
                 onChange={(e) => setOrgName(e.target.value)}
-                className="w-full bg-surface border border-border rounded-sm px-3 py-2.5 text-sm text-text-primary font-mono outline-none auth-input transition-all"
+                className="w-full bg-surface border border-border rounded-sm px-3 py-3 text-sm text-text-primary font-mono outline-none auth-input transition-all"
                 placeholder="ACME Corp (optional)"
               />
             </div>

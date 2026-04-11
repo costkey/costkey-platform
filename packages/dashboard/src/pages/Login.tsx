@@ -44,7 +44,7 @@ export default function Login() {
           {/* GitHub button */}
           <a
             href="/auth/github"
-            className="w-full flex items-center justify-center gap-2 bg-surface-overlay hover:bg-surface-hover border border-border rounded-sm px-3 py-2.5 text-sm text-text-primary font-medium mb-4 transition-colors"
+            className="w-full flex items-center justify-center gap-2 bg-surface-overlay hover:bg-surface-hover border border-border rounded-sm px-3 py-3 text-sm text-text-primary font-medium mb-4 transition-colors"
           >
             <GitHubIcon size={16} />
             Sign in with GitHub
@@ -64,7 +64,7 @@ export default function Login() {
                 value={email}
                 onChange={(e) => { setEmail(e.target.value); setHideError(true); }}
                 required
-                className="w-full bg-surface border border-border rounded-sm px-3 py-2.5 text-sm text-text-primary font-mono outline-none auth-input transition-all"
+                className="w-full bg-surface border border-border rounded-sm px-3 py-3 text-sm text-text-primary font-mono outline-none auth-input transition-all"
                 placeholder="you@company.com"
               />
             </div>
@@ -75,7 +75,7 @@ export default function Login() {
                 value={password}
                 onChange={(e) => { setPassword(e.target.value); setHideError(true); }}
                 required
-                className="w-full bg-surface border border-border rounded-sm px-3 py-2.5 text-sm text-text-primary font-mono outline-none auth-input transition-all"
+                className="w-full bg-surface border border-border rounded-sm px-3 py-3 text-sm text-text-primary font-mono outline-none auth-input transition-all"
                 placeholder="••••••••"
               />
             </div>
@@ -89,7 +89,7 @@ export default function Login() {
             <button
               type="submit"
               disabled={submitting}
-              className="w-full bg-accent hover:bg-accent-hover text-black font-mono text-sm font-medium py-2.5 rounded-sm transition-colors disabled:opacity-50 cursor-pointer"
+              className="w-full bg-accent hover:bg-accent-hover text-black font-mono text-sm font-medium py-3 rounded-sm transition-colors disabled:opacity-50 cursor-pointer"
             >
               {submitting ? "Signing in..." : "Sign in"}
             </button>

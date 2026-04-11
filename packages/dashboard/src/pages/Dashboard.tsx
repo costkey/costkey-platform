@@ -29,6 +29,7 @@ export default function Dashboard({ demoMode = false }: { demoMode?: boolean }) 
   const [activeTab, setActiveTab] = useState<Tab>("overview");
   const [search, setSearch] = useState("");
   const [timeRange, setTimeRange] = useState<TimeRange>("mtd");
+  const [groupByModel, setGroupByModel] = useState(false);
 
   const [hints, setHints] = useState<HealthHint[]>([]);
   const [dismissedHints, setDismissedHints] = useState<Set<string>>(new Set());
@@ -43,7 +44,7 @@ export default function Dashboard({ demoMode = false }: { demoMode?: boolean }) 
   const overview = useOverview(projectId);
   const callSites = useCallSites(projectId);
   const events = useEvents(projectId, 100);
-  const trends = useTrends(projectId, timeRange);
+  const trends = useTrends(projectId, timeRange, groupByModel);
   const traces = useTraces(projectId);
 
   const showSearch = activeTab !== "overview";
@@ -117,7 +118,15 @@ export default function Dashboard({ demoMode = false }: { demoMode?: boolean }) 
                 <SummaryView summary={summary.data} loading={summary.loading} />
                 <StatCards overview={overview.data?.overview ?? null} loading={overview.loading} />
                 <div className="grid grid-cols-[1fr_340px] gap-5">
-                  <CostTrend trends={trends.data} loading={trends.loading} timeRange={timeRange} onTimeRangeChange={setTimeRange} />
+                  <CostTrend
+                    trends={trends.data?.trends ?? null}
+                    byModel={trends.data?.byModel}
+                    loading={trends.loading}
+                    timeRange={timeRange}
+                    onTimeRangeChange={setTimeRange}
+                    groupByModel={groupByModel}
+                    onGroupByModelChange={setGroupByModel}
+                  />
                   <ModelBreakdown models={overview.data?.byModel ?? null} loading={overview.loading} />
                 </div>
               </div>

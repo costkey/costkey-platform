@@ -402,7 +402,28 @@ export function createApiRouter(pool: pg.Pool): Router {
         [projectId, fromDate, toDate],
       );
 
-      res.json({ trends: result.rows, bucket, range });
+      // Per-model breakdown if requested
+      let byModel: Record<string, Array<{ bucket: string; cost: number }>> | undefined;
+      if (req.query["groupBy"] === "model") {
+        const modelResult = await pool.query(
+          `SELECT date_trunc('${trunc}', timestamp) as bucket,
+            COALESCE(model, 'unknown') as model,
+            COALESCE(SUM(cost_usd), 0) as cost
+          FROM events WHERE project_id = $1
+            AND timestamp >= $2::timestamptz
+            AND timestamp <= $3::timestamptz
+          GROUP BY 1, 2 ORDER BY 1`,
+          [projectId, fromDate, toDate],
+        );
+        byModel = {};
+        for (const row of modelResult.rows) {
+          const m = row.model as string;
+          if (!byModel[m]) byModel[m] = [];
+          byModel[m].push({ bucket: row.bucket, cost: Number(row.cost) });
+        }
+      }
+
+      res.json({ trends: result.rows, bucket, range, byModel });
     } catch (err) {
       console.error("[costkey] API error:", err);
       res.status(500).json({ error: "Internal server error" });

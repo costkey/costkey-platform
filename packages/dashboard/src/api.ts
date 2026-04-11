@@ -342,10 +342,12 @@ export async function getTrends(
   projectId: string,
   bucket?: "hour" | "day",
   range?: TimeRange,
-): Promise<{ trends: TrendBucket[]; bucket: string; range: string }> {
+  groupBy?: "model",
+): Promise<{ trends: TrendBucket[]; bucket: string; range: string; byModel?: Record<string, Array<{ bucket: string; cost: number }>> }> {
   const params = new URLSearchParams();
   if (bucket) params.set("bucket", bucket);
   if (range) params.set("range", range);
+  if (groupBy) params.set("groupBy", groupBy);
   const qs = params.toString() ? `?${params}` : "";
   return get(`/projects/${projectId}/trends${qs}`);
 }

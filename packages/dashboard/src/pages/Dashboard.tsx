@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { BarChart3, Route, FileCode, Activity, Search, AlertCircle, X, ExternalLink } from "lucide-react";
+import { BarChart3, Route, FileCode, Activity, Search, AlertCircle, X, ExternalLink, Lightbulb } from "lucide-react";
 import AnomalyBanner from "../components/AnomalyBanner";
 import SummaryView from "../components/SummaryView";
 import { getHealth, type HealthHint } from "../api";
@@ -10,14 +10,16 @@ import ModelBreakdown from "../components/ModelBreakdown";
 import TracesView from "../components/TracesView";
 import RecentEvents from "../components/RecentEvents";
 import EmptyState from "../components/EmptyState";
+import InsightsView from "../components/InsightsView";
 import { useSummary, useOverview, useCallSites, useEvents, useTrends, useTraces } from "../hooks/useApi";
 import { useAuth } from "../contexts/AuthContext";
 
-type Tab = "overview" | "traces" | "call-sites" | "events";
+type Tab = "overview" | "insights" | "traces" | "call-sites" | "events";
 type TimeRange = "mtd" | "7d" | "30d" | "3m" | "6m" | "1y";
 
 const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
   { id: "overview", label: "Overview", icon: <BarChart3 size={14} /> },
+  { id: "insights", label: "Insights", icon: <Lightbulb size={14} /> },
   { id: "events", label: "Events", icon: <Activity size={14} /> },
   { id: "call-sites", label: "Call Sites", icon: <FileCode size={14} /> },
   { id: "traces", label: "Traces", icon: <Route size={14} /> },
@@ -131,6 +133,10 @@ export default function Dashboard({ demoMode = false }: { demoMode?: boolean }) 
                 </div>
               </div>
             )
+        )}
+
+        {activeTab === "insights" && (
+          <InsightsView projectId={projectId} />
         )}
 
         {activeTab === "traces" && (

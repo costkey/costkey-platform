@@ -355,3 +355,47 @@ export async function getTrends(
   const qs = params.toString() ? `?${params}` : "";
   return get(`/projects/${projectId}/trends${qs}`);
 }
+
+// ── Insights ──
+
+export interface InsightsModule {
+  module: string;
+  calls: number;
+  cost: number;
+  tokens: number;
+  functions: number;
+}
+
+export interface InsightsModuleTrend {
+  day: string;
+  module: string;
+  cost: number;
+  calls: number;
+}
+
+export interface InsightsHotspot {
+  function: string;
+  file: string;
+  calls: number;
+  cost: number;
+  avgCost: number;
+  tokens: number;
+  prevCost: number;
+  costChange: number | null;
+}
+
+export interface InsightsData {
+  range: string;
+  totals: { calls: number; cost: number; tokens: number };
+  modules: InsightsModule[];
+  moduleTrends: InsightsModuleTrend[];
+  context: Record<string, Array<{ value: string; calls: number; cost: number; tokens: number }>>;
+  hotspots: InsightsHotspot[];
+}
+
+export async function getInsights(projectId: string, range?: TimeRange): Promise<InsightsData> {
+  const params = new URLSearchParams();
+  if (range) params.set("range", range);
+  const qs = params.toString() ? `?${params}` : "";
+  return get(`/projects/${projectId}/insights${qs}`);
+}

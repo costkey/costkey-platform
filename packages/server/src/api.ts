@@ -831,6 +831,199 @@ export function createApiRouter(pool: pg.Pool): Router {
     }
   });
 
+  // ── Insights: aggregated views by module, context, and service ──
+
+  // GET /api/v1/projects/:projectId/insights
+  router.get("/api/v1/projects/:projectId/insights", async (req, res) => {
+    try {
+      const { projectId } = req.params;
+      const range = (req.query["range"] as string) ?? "30d";
+
+      // Calculate time bounds
+      const rangeMap: Record<string, string> = {
+        "7d": "7 days", "30d": "30 days", "mtd": "0 days",
+        "3m": "3 months", "6m": "6 months", "1y": "1 year",
+      };
+      const interval = rangeMap[range] ?? "30 days";
+      const timeClause = range === "mtd"
+        ? "AND timestamp >= date_trunc('month', NOW())"
+        : `AND timestamp >= NOW() - INTERVAL '${interval}'`;
+      const prevTimeClause = range === "mtd"
+        ? "AND timestamp >= date_trunc('month', NOW() - INTERVAL '1 month') AND timestamp < date_trunc('month', NOW())"
+        : `AND timestamp >= NOW() - INTERVAL '${interval}' - INTERVAL '${interval}' AND timestamp < NOW() - INTERVAL '${interval}'`;
+
+      // 1. Module rollup: group by directory extracted from bl_file
+      const moduleResult = await pool.query(
+        `SELECT
+          CASE
+            WHEN bl_file IS NULL OR bl_file = '' THEN '(unknown)'
+            WHEN bl_file LIKE '%/%' THEN substring(bl_file from '^(.*/)[^/]+$')
+            ELSE bl_file
+          END as module,
+          COUNT(*)::int as calls,
+          COALESCE(SUM(cost_usd), 0) as cost,
+          COALESCE(SUM(input_tokens + output_tokens), 0)::bigint as tokens,
+          COUNT(DISTINCT bl_function) as functions
+        FROM events WHERE project_id = $1 ${timeClause}
+        GROUP BY module
+        ORDER BY cost DESC
+        LIMIT 20`,
+        [projectId],
+      );
+
+      // 2. Module trends: daily cost per top 5 modules
+      const topModules = moduleResult.rows.slice(0, 5).map((r: any) => r.module);
+      let moduleTrends: any[] = [];
+      if (topModules.length > 0) {
+        const moduleTrendsResult = await pool.query(
+          `SELECT
+            date_trunc('day', timestamp)::date as day,
+            CASE
+              WHEN bl_file IS NULL OR bl_file = '' THEN '(unknown)'
+              WHEN bl_file LIKE '%/%' THEN substring(bl_file from '^(.*/)[^/]+$')
+              ELSE bl_file
+            END as module,
+            COALESCE(SUM(cost_usd), 0) as cost,
+            COUNT(*)::int as calls
+          FROM events WHERE project_id = $1 ${timeClause}
+          GROUP BY day, module
+          HAVING CASE
+            WHEN bl_file IS NULL OR bl_file = '' THEN '(unknown)'
+            WHEN bl_file LIKE '%/%' THEN substring(bl_file from '^(.*/)[^/]+$')
+            ELSE bl_file
+          END = ANY($2)
+          ORDER BY day`,
+          [projectId, topModules],
+        );
+        moduleTrends = moduleTrendsResult.rows;
+      }
+
+      // 3. Context rollup: group by each context key
+      const contextResult = await pool.query(
+        `SELECT
+          key as context_key,
+          value as context_value,
+          COUNT(*)::int as calls,
+          COALESCE(SUM(cost_usd), 0) as cost,
+          COALESCE(SUM(input_tokens + output_tokens), 0)::bigint as tokens
+        FROM events, jsonb_each_text(context) AS kv(key, value)
+        WHERE project_id = $1 ${timeClause}
+          AND context IS NOT NULL AND context != '{}'::jsonb
+          AND key NOT IN ('traceId', 'traceName')
+        GROUP BY key, value
+        ORDER BY cost DESC
+        LIMIT 50`,
+        [projectId],
+      );
+
+      // Group context results by key
+      const contextByKey: Record<string, any[]> = {};
+      for (const row of contextResult.rows) {
+        const key = row.context_key;
+        if (!contextByKey[key]) contextByKey[key] = [];
+        contextByKey[key].push({
+          value: row.context_value,
+          calls: row.calls,
+          cost: parseFloat(row.cost),
+          tokens: parseInt(row.tokens),
+        });
+      }
+
+      // 4. Function hotspots: top functions with current vs previous period cost
+      const hotspotsResult = await pool.query(
+        `SELECT
+          bl_function as function,
+          bl_file as file,
+          COUNT(*)::int as calls,
+          COALESCE(SUM(cost_usd), 0) as cost,
+          COALESCE(AVG(cost_usd), 0) as avg_cost,
+          COALESCE(SUM(input_tokens + output_tokens), 0)::bigint as tokens
+        FROM events WHERE project_id = $1 ${timeClause}
+          AND bl_function IS NOT NULL AND bl_function != ''
+        GROUP BY bl_function, bl_file
+        ORDER BY cost DESC
+        LIMIT 15`,
+        [projectId],
+      );
+
+      // Previous period for comparison
+      const prevHotspotsResult = await pool.query(
+        `SELECT
+          bl_function as function,
+          bl_file as file,
+          COALESCE(SUM(cost_usd), 0) as cost,
+          COUNT(*)::int as calls
+        FROM events WHERE project_id = $1 ${prevTimeClause}
+          AND bl_function IS NOT NULL AND bl_function != ''
+        GROUP BY bl_function, bl_file`,
+        [projectId],
+      );
+
+      const prevCostMap = new Map<string, { cost: number; calls: number }>();
+      for (const row of prevHotspotsResult.rows) {
+        prevCostMap.set(`${row.file}:${row.function}`, {
+          cost: parseFloat(row.cost),
+          calls: row.calls,
+        });
+      }
+
+      const hotspots = hotspotsResult.rows.map((row: any) => {
+        const key = `${row.file}:${row.function}`;
+        const prev = prevCostMap.get(key);
+        const cost = parseFloat(row.cost);
+        const prevCost = prev?.cost ?? 0;
+        const costChange = prevCost > 0 ? ((cost - prevCost) / prevCost) * 100 : null;
+        return {
+          function: row.function,
+          file: row.file,
+          calls: row.calls,
+          cost,
+          avgCost: parseFloat(row.avg_cost),
+          tokens: parseInt(row.tokens),
+          prevCost,
+          costChange,
+        };
+      });
+
+      // 5. Overall totals for this period
+      const totalResult = await pool.query(
+        `SELECT
+          COUNT(*)::int as calls,
+          COALESCE(SUM(cost_usd), 0) as cost,
+          COALESCE(SUM(input_tokens + output_tokens), 0)::bigint as tokens
+        FROM events WHERE project_id = $1 ${timeClause}`,
+        [projectId],
+      );
+
+      res.json({
+        range,
+        totals: {
+          calls: totalResult.rows[0].calls,
+          cost: parseFloat(totalResult.rows[0].cost),
+          tokens: parseInt(totalResult.rows[0].tokens),
+        },
+        modules: moduleResult.rows.map((r: any) => ({
+          module: r.module,
+          calls: r.calls,
+          cost: parseFloat(r.cost),
+          tokens: parseInt(r.tokens),
+          functions: r.functions,
+        })),
+        moduleTrends: moduleTrends.map((r: any) => ({
+          day: r.day,
+          module: r.module,
+          cost: parseFloat(r.cost),
+          calls: r.calls,
+        })),
+        context: contextByKey,
+        hotspots,
+      });
+    } catch (err) {
+      console.error("[costkey] Insights error:", err);
+      res.status(500).json({ error: "Failed to fetch insights" });
+    }
+  });
+
   return router;
 }
 

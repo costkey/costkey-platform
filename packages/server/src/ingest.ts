@@ -220,6 +220,7 @@ export function findBusinessLogicFrameWithGraph(
 ): StackFrame | undefined {
   let bestFrame: StackFrame | null = null;
   let bestScore = Infinity;
+  const scoredFrames: { frame: StackFrame; score: number }[] = [];
 
   const graphKeys = Object.keys(graph);
 
@@ -228,6 +229,7 @@ export function findBusinessLogicFrameWithGraph(
     const frameFn = (frame.functionName ?? "").split("\n")[0].trim();
     if (!frameFile && !frameFn) continue;
 
+    let frameLowestScore = Infinity;
     for (const key of graphKeys) {
       // Graph keys are typically "file:function" or just file paths
       // Try to extract file and function parts
@@ -250,28 +252,46 @@ export function findBusinessLogicFrameWithGraph(
         ));
 
       // Function names match (if graph has one)
-      const fnMatches = !graphFn || frameFn === graphFn || frameFn.endsWith(graphFn);
+      // Require exact match OR dotted suffix (Class.method matching "method")
+      // to avoid "do_search" matching graph key ":search"
+      const fnMatches = !graphFn || frameFn === graphFn ||
+        (frameFn.endsWith("." + graphFn));
 
       if (fileMatches && fnMatches) {
         const entry = graph[key];
+        if (entry.score < frameLowestScore) frameLowestScore = entry.score;
         if (entry.score < bestScore) {
           bestScore = entry.score;
           bestFrame = frame;
         }
       }
     }
+    if (frameLowestScore < Infinity) {
+      scoredFrames.push({ frame, score: frameLowestScore });
+    }
   }
 
   // Wrapper detection: if the graph picked a frame from the same file as frame[0],
   // AND there are 2+ frames from that file (typical wrapper pattern like
   // anthropic_client.py having both call_haiku and _messages_create_with_backoff),
-  // prefer the heuristic which picks a frame from a DIFFERENT file.
+  // pick the lowest-score frame from a DIFFERENT file instead.
   if (bestFrame) {
     const innerFile = frames[0]?.fileName ?? "";
     const bestFile = bestFrame.fileName ?? "";
     if (innerFile && bestFile && innerFile === bestFile) {
       const sameFileCount = frames.filter(f => (f.fileName ?? "") === innerFile).length;
       if (sameFileCount >= 2) {
+        // Find lowest-score frame from a different file using graph data
+        let altFrame: StackFrame | null = null;
+        let altScore = Infinity;
+        for (const scored of scoredFrames) {
+          if ((scored.frame.fileName ?? "") !== innerFile && scored.score < altScore) {
+            altFrame = scored.frame;
+            altScore = scored.score;
+          }
+        }
+        if (altFrame) return altFrame;
+        // No scored frame from different file — fall back to heuristic
         const heuristicResult = findBusinessLogicFrame(frames);
         if (heuristicResult && (heuristicResult.fileName ?? "") !== innerFile) {
           return heuristicResult;

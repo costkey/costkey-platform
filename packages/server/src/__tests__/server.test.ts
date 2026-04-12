@@ -677,9 +677,10 @@ describe("findBusinessLogicFrameWithGraph", () => {
     assert.equal(result?.functionName, "process");
   });
 
-  it("wrapper detection: graph picks same file as frame[0], falls back to heuristic", () => {
+  it("wrapper detection: picks next-lowest-score frame from different file", () => {
     // Graph says call_haiku has lowest score, but it's in the same file as frame[0].
-    // Two frames from that file → wrapper pattern → fall back to heuristic.
+    // Two frames from that file → wrapper pattern → pick next-lowest scored frame
+    // from a different file (using graph data, not heuristic).
     const frames = [
       frame("/app/anthropic_client.py", "_messages_create", 10),
       frame("/app/anthropic_client.py", "call_haiku", 50),
@@ -690,15 +691,38 @@ describe("findBusinessLogicFrameWithGraph", () => {
       "pipeline/handler.py:process_file": { score: 3, fan_in: 2, calls_ai: true },
     };
     const result = findBusinessLogicFrameWithGraph(frames, graph);
-    // Graph picks call_haiku (score 1), but same file as frame[0] + 2 frames from that file
-    // → falls back to heuristic → picks handler.py (different file)
+    // Graph picks call_haiku (score 1), same file as frame[0] + 2 frames from that file
+    // → wrapper detected → picks handler.py:process_file (score 3, lowest from different file)
     assert.equal(result?.fileName, "/app/pipeline/handler.py");
     assert.equal(result?.functionName, "process_file");
   });
 
-  it("wrapper detection: heuristic also picks same file — keeps graph result", () => {
-    // All frames from one file. Graph picks one, heuristic also picks from same file.
-    // No better option → keep graph's pick.
+  it("wrapper detection: prefers graph score over heuristic order", () => {
+    // Graph picks same-file frame. Two other frames from different files both have scores.
+    // Should pick by score, not by stack order.
+    const frames = [
+      frame("/app/client.py", "_send", 10),
+      frame("/app/client.py", "call_model", 50),
+      frame("/app/router.py", "dispatch", 80),
+      frame("/app/features/search.py", "doSearch", 100),
+    ];
+    const graph: Record<string, { score: number; fan_in: number; calls_ai: boolean }> = {
+      "client.py:call_model": { score: 1, fan_in: 8, calls_ai: true },
+      "router.py:dispatch": { score: 7, fan_in: 5, calls_ai: false },
+      "features/search.py:doSearch": { score: 3, fan_in: 2, calls_ai: true },
+    };
+    const result = findBusinessLogicFrameWithGraph(frames, graph);
+    // Graph picks call_model (score 1), same file wrapper detected.
+    // Alt frames from different files: dispatch (score 7), doSearch (score 3).
+    // Picks doSearch (lowest score from different file), NOT dispatch (heuristic would pick
+    // dispatch since it's earlier in the stack).
+    assert.equal(result?.functionName, "doSearch");
+    assert.equal(result?.fileName, "/app/features/search.py");
+  });
+
+  it("wrapper detection: no scored alt frames — falls back to heuristic", () => {
+    // All frames from one file. Graph picks one, no other frames have graph scores.
+    // Falls back to heuristic, which also picks same file → keep graph result.
     const frames = [
       frame("/app/service.py", "inner_call", 10),
       frame("/app/service.py", "outer_call", 50),
@@ -709,8 +733,8 @@ describe("findBusinessLogicFrameWithGraph", () => {
     };
     const result = findBusinessLogicFrameWithGraph(frames, graph);
     // Graph picks outer_call, same file as frame[0], 3 frames from that file.
-    // Heuristic also returns same file (all same file → frame[1] = outer_call).
-    // Heuristic fileName === innerFile → keep graph result.
+    // No scored frames from different file. Heuristic also returns same file.
+    // → keep graph result.
     assert.equal(result?.functionName, "outer_call");
   });
 
@@ -788,6 +812,33 @@ describe("findBusinessLogicFrameWithGraph", () => {
     // "OpenAIClient.complete".endsWith("complete") → matches client.py:complete (score 8)
     // "SearchService.search".endsWith("search") → matches features/search.py:search (score 2)
     // Picks lowest score → search
+    assert.equal(result?.functionName, "SearchService.search");
+  });
+
+  it("fnMatches rejects partial suffix — do_search does not match :search", () => {
+    const frames = [
+      frame("/app/search.py", "do_search", 50),
+      frame("/app/main.py", "run", 10),
+    ];
+    const graph: Record<string, { score: number; fan_in: number; calls_ai: boolean }> = {
+      "other.py:search": { score: 1, fan_in: 5, calls_ai: true },
+    };
+    const result = findBusinessLogicFrameWithGraph(frames, graph);
+    // "do_search" does NOT end with ".search" and is not === "search"
+    // → no match → falls back to heuristic
+    assert.equal(result?.functionName, "run");
+  });
+
+  it("fnMatches allows dotted suffix — Class.search matches :search", () => {
+    const frames = [
+      frame("/app/search.py", "SearchService.search", 50),
+      frame("/app/main.py", "run", 10),
+    ];
+    const graph: Record<string, { score: number; fan_in: number; calls_ai: boolean }> = {
+      "search.py:search": { score: 1, fan_in: 5, calls_ai: true },
+    };
+    const result = findBusinessLogicFrameWithGraph(frames, graph);
+    // "SearchService.search".endsWith(".search") → matches
     assert.equal(result?.functionName, "SearchService.search");
   });
 

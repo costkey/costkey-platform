@@ -179,7 +179,8 @@ export function computeScores(
     const avgPosition = row.total_seen > 0 ? row.position_sum / row.total_seen : 0;
     const avgDepth = row.total_seen > 0 ? row.stack_depth_sum / row.total_seen : 1;
     // Normalize position to 0-1 (0 = innermost/SDK, 1 = outermost/entry)
-    const normalizedPos = avgDepth > 1 ? avgPosition / (avgDepth - 1) : 0.5;
+    const rawPos = avgDepth > 1 ? avgPosition / (avgDepth - 1) : 0.5;
+    const normalizedPos = Math.max(0, Math.min(1, rawPos));
 
     const key = row.function_name
       ? `${row.file_name}:${row.function_name}`

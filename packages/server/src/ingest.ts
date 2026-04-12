@@ -28,8 +28,8 @@ const INTERNAL_FILE_PATTERNS = [
   "site-packages/requests/",
   "site-packages/urllib3/",
   "site-packages/aiohttp/",
-  // Python runtime / stdlib
-  "/lib/python",
+  // Python runtime / stdlib — see special handling in filterFrames
+  // "/lib/python" is checked separately to exclude site-packages paths
   "threading.py",
   "asyncio/",
   "concurrent/futures/",
@@ -105,6 +105,8 @@ export function filterFrames(frames: StackFrame[]): StackFrame[] {
     if (!file && !fn) return false;
     if (INTERNAL_FILE_PATTERNS.some((p) => file.includes(p))) return false;
     if (INTERNAL_FN_PATTERNS.some((p) => fn.includes(p))) return false;
+    // Python stdlib: /lib/pythonX.Y/foo.py but NOT /lib/pythonX.Y/site-packages/
+    if (file.includes("/lib/python") && !file.includes("site-packages")) return false;
     return true;
   });
   return filtered.length > 0 ? filtered : frames;

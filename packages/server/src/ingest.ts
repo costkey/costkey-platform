@@ -229,10 +229,14 @@ export function findBusinessLogicFrameWithGraph(
     const frameFn = (frame.functionName ?? "").split("\n")[0].trim();
     if (!frameFile && !frameFn) continue;
 
-    let frameLowestScore = Infinity;
+    // Find the best graph match for this frame.
+    // When multiple graph keys match, prefer the most specific (longest path),
+    // then lowest score. This prevents short ambiguous keys like "utils.py"
+    // from winning over specific keys like "app/utils.py".
+    let frameScore = Infinity;
+    let frameSpecificity = 0;
+    const frameFileLower = frameFile.toLowerCase();
     for (const key of graphKeys) {
-      // Graph keys are typically "file:function" or just file paths
-      // Try to extract file and function parts
       const lastColon = key.lastIndexOf(":");
       let graphFile: string;
       let graphFn: string;
@@ -244,30 +248,35 @@ export function findBusinessLogicFrameWithGraph(
         graphFn = "";
       }
 
-      // Match: suffix match but require a path separator boundary to avoid
-      // false positives like "app/utils.py" matching "old-app/utils.py"
-      const fileMatches = frameFile === graphFile ||
-        (frameFile && graphFile && (
-          frameFile.endsWith("/" + graphFile) || graphFile.endsWith("/" + frameFile)
+      // Case-insensitive file matching with path separator boundary
+      const graphFileLower = graphFile.toLowerCase();
+      const fileMatches = frameFileLower === graphFileLower ||
+        (frameFileLower && graphFileLower && (
+          frameFileLower.endsWith("/" + graphFileLower) || graphFileLower.endsWith("/" + frameFileLower)
         ));
 
-      // Function names match (if graph has one)
       // Require exact match OR dotted suffix (Class.method matching "method")
-      // to avoid "do_search" matching graph key ":search"
       const fnMatches = !graphFn || frameFn === graphFn ||
         (frameFn.endsWith("." + graphFn));
 
       if (fileMatches && fnMatches) {
         const entry = graph[key];
-        if (entry.score < frameLowestScore) frameLowestScore = entry.score;
-        if (entry.score < bestScore) {
-          bestScore = entry.score;
-          bestFrame = frame;
+        const specificity = graphFile.length;
+        // Most specific match wins, then lowest score breaks ties
+        if (specificity > frameSpecificity ||
+            (specificity === frameSpecificity && entry.score < frameScore)) {
+          frameScore = entry.score;
+          frameSpecificity = specificity;
         }
       }
     }
-    if (frameLowestScore < Infinity) {
-      scoredFrames.push({ frame, score: frameLowestScore });
+
+    if (frameScore < Infinity) {
+      scoredFrames.push({ frame, score: frameScore });
+      if (frameScore < bestScore) {
+        bestScore = frameScore;
+        bestFrame = frame;
+      }
     }
   }
 

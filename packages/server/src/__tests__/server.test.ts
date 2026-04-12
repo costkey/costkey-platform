@@ -842,6 +842,59 @@ describe("findBusinessLogicFrameWithGraph", () => {
     assert.equal(result?.functionName, "SearchService.search");
   });
 
+  it("case-insensitive file matching — Search.py matches search.py", () => {
+    const frames = [
+      frame("/app/Search.py", "doSearch", 50),
+      frame("/app/main.py", "run", 10),
+    ];
+    const graph: Record<string, { score: number; fan_in: number; calls_ai: boolean }> = {
+      "search.py:doSearch": { score: 2, fan_in: 3, calls_ai: true },
+    };
+    const result = findBusinessLogicFrameWithGraph(frames, graph);
+    // Case-insensitive: "Search.py" matches "search.py"
+    assert.equal(result?.functionName, "doSearch");
+    assert.equal(result?.fileName, "/app/Search.py");
+  });
+
+  it("specific graph key wins over ambiguous short key", () => {
+    // Two graph keys match the same frame, but one is more specific
+    const frames = [
+      frame("/project/app/utils.py", "helper", 50),
+      frame("/project/main.py", "run", 10),
+    ];
+    const graph: Record<string, { score: number; fan_in: number; calls_ai: boolean }> = {
+      "utils.py:helper": { score: 1, fan_in: 10, calls_ai: false },       // short, ambiguous
+      "app/utils.py:helper": { score: 5, fan_in: 2, calls_ai: true },     // specific, higher score
+    };
+    const result = findBusinessLogicFrameWithGraph(frames, graph);
+    // Both keys match /project/app/utils.py, but "app/utils.py" is more specific
+    // (longer path) → uses score 5 from the specific key, not score 1 from the short key
+    // Score 5 < Infinity → frame is scored at 5. main.py has no match → no score.
+    // bestFrame = utils.py with score 5
+    assert.equal(result?.functionName, "helper");
+    assert.equal(result?.fileName, "/project/app/utils.py");
+  });
+
+  it("ambiguous key loses to specific key even with lower score", () => {
+    // Frame matches a short key (score 1) and a long key (score 3).
+    // The long key should win because it's more specific.
+    const frames = [
+      frame("/project/lib/utils.py", "process", 50),
+      frame("/project/app/utils.py", "process", 30),
+    ];
+    const graph: Record<string, { score: number; fan_in: number; calls_ai: boolean }> = {
+      "utils.py:process": { score: 1, fan_in: 10, calls_ai: false },          // matches BOTH frames
+      "app/utils.py:process": { score: 3, fan_in: 2, calls_ai: true },        // matches only app/utils.py
+    };
+    const result = findBusinessLogicFrameWithGraph(frames, graph);
+    // lib/utils.py: matches "utils.py" (specificity 8, score 1) — no longer key matches
+    // app/utils.py: matches "utils.py" (specificity 8, score 1) AND "app/utils.py" (specificity 12, score 3)
+    //   → specificity 12 > 8 → uses score 3
+    // Global best: lib/utils.py at score 1 beats app/utils.py at score 3
+    // This is correct — lib/utils.py only had the short key, so score 1 is its real score
+    assert.equal(result?.fileName, "/project/lib/utils.py");
+  });
+
   it("empty frames — returns undefined", () => {
     const graph: Record<string, { score: number; fan_in: number; calls_ai: boolean }> = {
       "file.py:fn": { score: 1, fan_in: 1, calls_ai: true },

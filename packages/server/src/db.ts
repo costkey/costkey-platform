@@ -187,6 +187,26 @@ export async function initDatabase(): Promise<void> {
     );
     CREATE INDEX IF NOT EXISTS idx_custom_providers_project ON custom_providers(project_id);
 
+    CREATE TABLE IF NOT EXISTS frame_stats (
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      file_name TEXT NOT NULL,
+      function_name TEXT NOT NULL,
+      total_seen INTEGER NOT NULL DEFAULT 0,
+      position_sum INTEGER NOT NULL DEFAULT 0,
+      stack_depth_sum INTEGER NOT NULL DEFAULT 0,
+      distinct_call_sites INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (project_id, file_name, function_name)
+    );
+    CREATE INDEX IF NOT EXISTS idx_frame_stats_project ON frame_stats(project_id);
+
+    CREATE TABLE IF NOT EXISTS frame_stats_callsites (
+      project_id TEXT NOT NULL,
+      file_name TEXT NOT NULL,
+      function_name TEXT NOT NULL,
+      call_site_key TEXT NOT NULL,
+      PRIMARY KEY (project_id, file_name, function_name, call_site_key)
+    );
+
     CREATE TABLE IF NOT EXISTS migrations (
       name TEXT PRIMARY KEY,
       ran_at TIMESTAMPTZ DEFAULT NOW()

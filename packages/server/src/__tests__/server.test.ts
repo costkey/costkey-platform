@@ -1224,3 +1224,114 @@ describe("groupIntoFeatures", () => {
     assert.equal(features[0].rootFunction, "handle");
   });
 });
+
+// ─── Implicit Graph Scoring ──────────────────────────────────────────
+
+import { computeScores } from "../implicit-graph.js";
+
+describe("computeScores (implicit graph)", () => {
+  it("business logic in middle of stack scores lower than edges", () => {
+    const rows = [
+      // SDK wrapper: always at position 0, depth 5 → normalized 0.0
+      { file_name: "client.py", function_name: "call_api", total_seen: 100, position_sum: 0, stack_depth_sum: 500, distinct_sites: "20" },
+      // Business logic: always at position 2, depth 5 → normalized 0.5
+      { file_name: "features/search.py", function_name: "doSearch", total_seen: 10, position_sum: 20, stack_depth_sum: 50, distinct_sites: "2" },
+      // Entry point: always at position 4, depth 5 → normalized 1.0
+      { file_name: "main.py", function_name: "main", total_seen: 100, position_sum: 400, stack_depth_sum: 500, distinct_sites: "20" },
+    ];
+    const graph = computeScores(rows);
+
+    const wrapper = graph["client.py:call_api"];
+    const business = graph["features/search.py:doSearch"];
+    const entry = graph["main.py:main"];
+
+    assert.ok(wrapper, "wrapper should be in graph");
+    assert.ok(business, "business logic should be in graph");
+    assert.ok(entry, "entry point should be in graph");
+
+    // Business logic should have the lowest score
+    assert.ok(business.score < wrapper.score,
+      `business (${business.score}) should score lower than wrapper (${wrapper.score})`);
+    assert.ok(business.score < entry.score,
+      `business (${business.score}) should score lower than entry (${entry.score})`);
+  });
+
+  it("high-frequency utility scores higher than low-frequency feature", () => {
+    const rows = [
+      // Utility called 500 times from 15 different call sites
+      { file_name: "utils.py", function_name: "retry", total_seen: 500, position_sum: 500, stack_depth_sum: 2000, distinct_sites: "15" },
+      // Feature function called 10 times from 1 call site
+      { file_name: "features/report.py", function_name: "generateReport", total_seen: 10, position_sum: 20, stack_depth_sum: 50, distinct_sites: "1" },
+    ];
+    const graph = computeScores(rows);
+
+    const utility = graph["utils.py:retry"];
+    const feature = graph["features/report.py:generateReport"];
+
+    assert.ok(feature.score < utility.score,
+      `feature (${feature.score}) should score lower than utility (${utility.score})`);
+  });
+
+  it("single function gets middling score", () => {
+    const rows = [
+      { file_name: "app.py", function_name: "main", total_seen: 50, position_sum: 50, stack_depth_sum: 150, distinct_sites: "5" },
+    ];
+    const graph = computeScores(rows);
+
+    assert.ok(graph["app.py:main"]);
+    // With one function, percentile ranks are 0. Score depends only on edge penalty.
+    const score = graph["app.py:main"].score;
+    assert.ok(score >= 0 && score <= 10, `score should be 0-10, got ${score}`);
+  });
+
+  it("empty rows returns empty graph", () => {
+    const graph = computeScores([]);
+    assert.deepEqual(graph, {});
+  });
+
+  it("realistic 5-function stack produces correct ranking", () => {
+    // Simulates: SDK → wrapper → service → feature → entry
+    const rows = [
+      { file_name: "sdk/client.py", function_name: "send", total_seen: 200, position_sum: 0, stack_depth_sum: 1000, distinct_sites: "30" },
+      { file_name: "lib/retry.py", function_name: "withRetry", total_seen: 200, position_sum: 200, stack_depth_sum: 1000, distinct_sites: "25" },
+      { file_name: "services/ai.py", function_name: "complete", total_seen: 150, position_sum: 300, stack_depth_sum: 750, distinct_sites: "15" },
+      { file_name: "features/chat.py", function_name: "handleChat", total_seen: 30, position_sum: 90, stack_depth_sum: 150, distinct_sites: "3" },
+      { file_name: "main.py", function_name: "run", total_seen: 200, position_sum: 800, stack_depth_sum: 1000, distinct_sites: "30" },
+    ];
+    const graph = computeScores(rows);
+
+    const scores = Object.entries(graph)
+      .map(([key, entry]) => ({ key, score: entry.score }))
+      .sort((a, b) => a.score - b.score);
+
+    // handleChat should be the lowest score (most business-logic-like)
+    assert.equal(scores[0].key, "features/chat.py:handleChat",
+      `Expected handleChat to rank first, got: ${scores.map(s => `${s.key}=${s.score}`).join(", ")}`);
+  });
+
+  it("graph keys use file:function format compatible with findBusinessLogicFrameWithGraph", () => {
+    const rows = [
+      { file_name: "app/handler.py", function_name: "process", total_seen: 10, position_sum: 20, stack_depth_sum: 50, distinct_sites: "2" },
+    ];
+    const graph = computeScores(rows);
+
+    // Key should be "file:function" format
+    assert.ok(graph["app/handler.py:process"], "key should be file:function format");
+    assert.ok(typeof graph["app/handler.py:process"].score === "number");
+    assert.ok(typeof graph["app/handler.py:process"].fan_in === "number");
+    assert.ok(typeof graph["app/handler.py:process"].calls_ai === "boolean");
+  });
+
+  it("calls_ai is true for frames near inner stack position", () => {
+    const rows = [
+      // Position 0/4 → normalized 0.0 → calls_ai should be true (< 0.3)
+      { file_name: "client.py", function_name: "send", total_seen: 100, position_sum: 0, stack_depth_sum: 500, distinct_sites: "5" },
+      // Position 3/4 → normalized 0.75 → calls_ai should be false
+      { file_name: "main.py", function_name: "run", total_seen: 100, position_sum: 300, stack_depth_sum: 400, distinct_sites: "5" },
+    ];
+    const graph = computeScores(rows);
+
+    assert.equal(graph["client.py:send"].calls_ai, true);
+    assert.equal(graph["main.py:run"].calls_ai, false);
+  });
+});

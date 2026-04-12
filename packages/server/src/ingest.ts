@@ -4,6 +4,7 @@ import type pg from "pg";
 import type { CostKeyEvent, TransportPayload, StackFrame } from "@costkey/shared";
 import { computeCost } from "./pricing.js";
 import { translateFrames } from "./sourcemap-resolver.js";
+import { updateFrameStats, getImplicitGraph, invalidateImplicitGraph } from "./implicit-graph.js";
 
 /**
  * Server-side stack frame filtering.
@@ -414,19 +415,27 @@ export function createIngestRouter(pool: pg.Pool): Router {
           }
 
           // Compute business logic frame (single source of truth)
+          // Priority: explicit call graph > implicit graph (from event data) > heuristic
           let blFunction: string | null = null;
           let blFile: string | null = null;
           let blLine: number | null = null;
           if (cleanFrames && cleanFrames.length > 0) {
-            const graphData = callGraphCache.get(projectId);
-            const best = graphData
-              ? findBusinessLogicFrameWithGraph(cleanFrames, graphData)
-              : findBusinessLogicFrame(cleanFrames);
+            const explicitGraph = callGraphCache.get(projectId);
+            let best;
+            if (explicitGraph) {
+              best = findBusinessLogicFrameWithGraph(cleanFrames, explicitGraph);
+            } else {
+              const implicitGraph = await getImplicitGraph(pool, projectId);
+              best = implicitGraph
+                ? findBusinessLogicFrameWithGraph(cleanFrames, implicitGraph)
+                : findBusinessLogicFrame(cleanFrames);
+            }
             if (best) {
               blFunction = (best.functionName ?? "").split("\n")[0].trim() || null;
               blFile = best.fileName ?? null;
               blLine = best.lineNumber ?? null;
             }
+
           }
 
           await client.query(
@@ -462,9 +471,16 @@ export function createIngestRouter(pool: pg.Pool): Router {
             ],
           );
 
-          // Upsert call site stats — use bl_ values (single source of truth)
+          // Upsert call site stats and frame stats — use bl_ values (single source of truth)
+          const callSiteKey = blFunction ? `${blFile ?? "unknown"}:${blFunction}:${blLine ?? 0}` : null;
+
+          // Feed frame stats for implicit graph building
+          if (cleanFrames && cleanFrames.length > 0 && callSiteKey) {
+            await updateFrameStats(client, projectId, cleanFrames, callSiteKey);
+          }
+
           if (blFunction) {
-            const key = `${blFile ?? "unknown"}:${blFunction}:${blLine ?? 0}`;
+            const key = callSiteKey!;
             const eventModel = event.model ?? "unknown";
 
             await client.query(
@@ -502,6 +518,8 @@ export function createIngestRouter(pool: pg.Pool): Router {
         }
 
         await client.query("COMMIT");
+        // Invalidate implicit graph cache after new data
+        invalidateImplicitGraph(projectId);
       } catch (err) {
         await client.query("ROLLBACK");
         throw err;

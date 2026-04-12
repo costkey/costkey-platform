@@ -130,6 +130,28 @@ export const customProviders = pgTable("custom_providers", {
   index("idx_custom_providers_project").on(t.projectId),
 ]);
 
+export const frameStats = pgTable("frame_stats", {
+  projectId: text("project_id").notNull(),
+  fileName: text("file_name").notNull(),
+  functionName: text("function_name").notNull(),
+  totalSeen: integer("total_seen").notNull().default(0),
+  positionSum: integer("position_sum").notNull().default(0),
+  stackDepthSum: integer("stack_depth_sum").notNull().default(0),
+  cooccurKeys: jsonb("cooccur_keys").notNull().default([]),
+}, (t) => [
+  primaryKey({ columns: [t.projectId, t.fileName, t.functionName] }),
+  index("idx_frame_stats_project").on(t.projectId),
+]);
+
+export const frameStatsCallsites = pgTable("frame_stats_callsites", {
+  projectId: text("project_id").notNull(),
+  fileName: text("file_name").notNull(),
+  functionName: text("function_name").notNull(),
+  callSiteKey: text("call_site_key").notNull(),
+}, (t) => [
+  primaryKey({ columns: [t.projectId, t.fileName, t.functionName, t.callSiteKey] }),
+]);
+
 export const alertHistory = pgTable("alert_history", {
   id: text("id").primaryKey(),
   alertId: text("alert_id").notNull().references(() => alerts.id),

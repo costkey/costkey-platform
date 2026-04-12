@@ -341,11 +341,13 @@ async function rebuildCallSiteStats(pool: import("pg").Pool): Promise<void> {
     const best = graph
       ? findBusinessLogicFrameWithGraph(filtered, graph)
       : findBusinessLogicFrame(filtered);
-    const fn = (best.functionName ?? "").split("\n")[0].trim() || null;
-    await pool.query(
-      "UPDATE events SET bl_function = $1, bl_file = $2, bl_line = $3 WHERE id = $4",
-      [fn, best.fileName ?? null, best.lineNumber ?? null, row.id],
-    );
+    if (best) {
+      const fn = (best.functionName ?? "").split("\n")[0].trim() || null;
+      await pool.query(
+        "UPDATE events SET bl_function = $1, bl_file = $2, bl_line = $3 WHERE id = $4",
+        [fn, best.fileName ?? null, best.lineNumber ?? null, row.id],
+      );
+    }
   }
   if (needBl.rows.length > 0) {
     console.log(`[costkey] Backfilled bl_ fields on ${needBl.rows.length} events`);

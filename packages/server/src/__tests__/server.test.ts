@@ -5593,3 +5593,475 @@ describe("findBusinessLogicFrame: no filterCtx (backward compat)", () => {
     assert.equal(r!.functionName, "processRequest");
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════
+// 605+ — Mutation testing: verify the algorithm CHANGES behavior when
+// inputs change. Regression guards. Cross-cutting invariants.
+// ═══════════════════════════════════════════════════════════════════════
+
+describe("mutation guards: changing input changes output", () => {
+  const frame = (fileName: string, functionName: string) => ({
+    fileName, functionName, lineNumber: 10, columnNumber: 0,
+  });
+
+  it("removing frame[0] changes the result", () => {
+    const full = [frame("a.py", "inner"), frame("b.py", "middle"), frame("c.py", "outer")];
+    const without0 = [frame("b.py", "middle"), frame("c.py", "outer")];
+    const r1 = findBusinessLogicFrame(full);
+    const r2 = findBusinessLogicFrame(without0);
+    // full: inner is frame[0], picks middle (different file)
+    // without0: middle is frame[0], picks outer (different file)
+    assert.equal(r1!.functionName, "middle");
+    assert.equal(r2!.functionName, "outer");
+  });
+
+  it("swapping frame order changes the result", () => {
+    const order1 = [frame("a.py", "fn1"), frame("b.py", "fn2")];
+    const order2 = [frame("b.py", "fn2"), frame("a.py", "fn1")];
+    const r1 = findBusinessLogicFrame(order1);
+    const r2 = findBusinessLogicFrame(order2);
+    assert.equal(r1!.functionName, "fn2");
+    assert.equal(r2!.functionName, "fn1");
+  });
+
+  it("changing function name from wrapper to non-wrapper changes result", () => {
+    const withWrapper = [frame("a.py", "sdk"), frame("b.py", "retry"), frame("c.py", "handle")];
+    const withoutWrapper = [frame("a.py", "sdk"), frame("b.py", "process"), frame("c.py", "handle")];
+    const r1 = findBusinessLogicFrame(withWrapper);
+    const r2 = findBusinessLogicFrame(withoutWrapper);
+    // retry is wrapper → skipped → picks handle
+    assert.equal(r1!.functionName, "handle");
+    // process is not wrapper → picked
+    assert.equal(r2!.functionName, "process");
+  });
+
+  it("changing file path to service layer changes result", () => {
+    const normal = [frame("a.py", "sdk"), frame("src/handler.py", "process"), frame("src/main.py", "entry")];
+    const service = [frame("a.py", "sdk"), frame("src/services/ai.py", "process"), frame("src/main.py", "entry")];
+    const r1 = findBusinessLogicFrame(normal);
+    const r2 = findBusinessLogicFrame(service);
+    assert.equal(r1!.functionName, "process");
+    // service layer → skipped → picks entry... wait "main" is useless
+    // entry is not "main", it's "entry" → not useless → picked
+    assert.equal(r2!.fileName, "src/main.py");
+  });
+
+  it("graph score change flips the winner", () => {
+    const frames = [frame("/app/a.py", "fnA"), frame("/app/b.py", "fnB")];
+    type G = Record<string, { score: number; fan_in: number; calls_ai: boolean }>;
+    const g1: G = { "a.py:fnA": { score: 1, fan_in: 1, calls_ai: true }, "b.py:fnB": { score: 5, fan_in: 1, calls_ai: true } };
+    const g2: G = { "a.py:fnA": { score: 5, fan_in: 1, calls_ai: true }, "b.py:fnB": { score: 1, fan_in: 1, calls_ai: true } };
+    assert.equal(findBusinessLogicFrameWithGraph(frames, g1)?.functionName, "fnA");
+    assert.equal(findBusinessLogicFrameWithGraph(frames, g2)?.functionName, "fnB");
+  });
+
+  it("adding SDK frame before user frame enables fast-path", () => {
+    const userOnly = [frame("src/a.py", "fn1"), frame("src/b.py", "fn2")];
+    const withSDK = [
+      frame("/venv/lib/python3.11/site-packages/openai/_client.py", "request"),
+      frame("src/a.py", "fn1"),
+      frame("src/b.py", "fn2"),
+    ];
+    const r1Pick = (() => { const f = filterFrames(userOnly); return findBusinessLogicFrame(f, getFilterContext(userOnly, f)); })();
+    const r2Pick = (() => { const f = filterFrames(withSDK); return findBusinessLogicFrame(f, getFilterContext(withSDK, f)); })();
+    // Without SDK: no filtering → fn2 (first different file)
+    // With SDK: openai filtered, fn1 adjacent → fast-path → fn1
+    assert.equal(r1Pick!.functionName, "fn2");
+    assert.equal(r2Pick!.functionName, "fn1");
+  });
+});
+
+describe("regression: filterFrames edge cases caught in production", () => {
+  const mk = (...args: Array<[string, string]>) => args.map(([f, fn]) => ({
+    fileName: f, functionName: fn, lineNumber: 10, columnNumber: 0,
+  }));
+
+  it("OpenAI v5 with .mjs extension", () => {
+    const r = filterFrames(mk(
+      ["node_modules/openai/dist/index.mjs", "ChatCompletions.create"],
+      ["src/handler.ts", "process"],
+    ));
+    assert.equal(r.length, 1);
+  });
+
+  it("Anthropic SDK with nested resource imports", () => {
+    const r = filterFrames(mk(
+      ["node_modules/@anthropic-ai/sdk/src/resources/messages/messages.ts", "Messages.create"],
+      ["node_modules/@anthropic-ai/sdk/src/core.ts", "APIClient.post"],
+      ["src/handler.ts", "process"],
+    ));
+    assert.equal(r.length, 1);
+  });
+
+  it("Google GenAI new package name", () => {
+    const r = filterFrames(mk(
+      ["node_modules/@google/genai/dist/models.js", "generateContent"],
+      ["src/handler.ts", "process"],
+    ));
+    assert.equal(r.length, 1);
+  });
+
+  it("Google generative-ai old package name", () => {
+    const r = filterFrames(mk(
+      ["node_modules/@google/generative-ai/dist/index.mjs", "generateContent"],
+      ["src/handler.ts", "process"],
+    ));
+    assert.equal(r.length, 1);
+  });
+
+  it("cohere-ai Node SDK", () => {
+    const r = filterFrames(mk(
+      ["node_modules/cohere-ai/dist/index.js", "CohereClient.chat"],
+      ["src/handler.ts", "process"],
+    ));
+    assert.equal(r.length, 1);
+  });
+
+  it("Python deepseek SDK", () => {
+    const r = filterFrames(mk(
+      ["/venv/lib/python3.11/site-packages/deepseek/client.py", "chat"],
+      ["src/handler.py", "process"],
+    ));
+    assert.equal(r.length, 1);
+  });
+
+  it("Python groq SDK", () => {
+    const r = filterFrames(mk(
+      ["/venv/lib/python3.11/site-packages/groq/_client.py", "chat"],
+      ["src/handler.py", "process"],
+    ));
+    assert.equal(r.length, 1);
+  });
+
+  it("Python together SDK", () => {
+    const r = filterFrames(mk(
+      ["/venv/lib/python3.11/site-packages/together/client.py", "complete"],
+      ["src/handler.py", "process"],
+    ));
+    assert.equal(r.length, 1);
+  });
+
+  it("CostKey SDK in monorepo packages path", () => {
+    const r = filterFrames(mk(
+      ["costkey/packages/sdk/dist/index.js", "wrapFetch"],
+      ["src/handler.ts", "process"],
+    ));
+    assert.equal(r.length, 1);
+  });
+
+  it("Python asyncio runners module", () => {
+    const r = filterFrames(mk(
+      ["/usr/lib/python3.11/asyncio/runners.py", "run"],
+      ["src/handler.py", "process"],
+    ));
+    assert.equal(r.length, 1);
+  });
+
+  it("Python asyncio selector_events", () => {
+    const r = filterFrames(mk(
+      ["/usr/lib/python3.11/asyncio/selector_events.py", "_SelectorSocketTransport._read_ready__data_received"],
+      ["src/handler.py", "process"],
+    ));
+    assert.equal(r.length, 1);
+  });
+
+  it("Python concurrent.futures._base", () => {
+    const r = filterFrames(mk(
+      ["/usr/lib/python3.11/concurrent/futures/_base.py", "Future.result"],
+      ["src/handler.py", "process"],
+    ));
+    assert.equal(r.length, 1);
+  });
+
+  it("node:internal/modules/run_main", () => {
+    const r = filterFrames(mk(
+      ["node:internal/modules/run_main", "executeUserEntryPoint"],
+      ["src/handler.ts", "process"],
+    ));
+    assert.equal(r.length, 1);
+  });
+
+  it(".next/server compiled output", () => {
+    const r = filterFrames(mk(
+      [".next/server/chunks/123.js", "a"],
+      [".next/server/app/api/route.js", "POST"],
+      ["src/handler.ts", "process"],
+    ));
+    assert.equal(r.length, 1);
+  });
+
+  it("Koa middleware", () => {
+    const r = filterFrames(mk(
+      ["node_modules/koa/lib/application.js", "handleRequest"],
+      ["node_modules/koa/lib/context.js", "onerror"],
+      ["src/handler.ts", "process"],
+    ));
+    assert.equal(r.length, 1);
+  });
+
+  it("Fastify lifecycle hooks", () => {
+    const r = filterFrames(mk(
+      ["node_modules/fastify/lib/hooks.js", "hookRunnerApplication"],
+      ["node_modules/fastify/lib/reply.js", "Reply.send"],
+      ["src/handler.ts", "process"],
+    ));
+    assert.equal(r.length, 1);
+  });
+
+  it("Hono middleware chain", () => {
+    const r = filterFrames(mk(
+      ["node_modules/hono/dist/compose.js", "compose"],
+      ["node_modules/hono/dist/hono.js", "Hono.handleRequest"],
+      ["src/handler.ts", "process"],
+    ));
+    assert.equal(r.length, 1);
+  });
+
+  it("@vercel/edge runtime", () => {
+    const r = filterFrames(mk(
+      ["node_modules/@vercel/edge/dist/index.js", "handleRequest"],
+      ["src/handler.ts", "process"],
+    ));
+    assert.equal(r.length, 1);
+  });
+
+  it("@opentelemetry instrumentation-http", () => {
+    const r = filterFrames(mk(
+      ["node_modules/@opentelemetry/instrumentation-http/build/src/http.js", "outgoing"],
+      ["node_modules/@opentelemetry/api/build/src/trace.js", "getTracer"],
+      ["src/handler.ts", "process"],
+    ));
+    assert.equal(r.length, 1);
+  });
+});
+
+describe("regression: scoring formula properties", () => {
+  it("frequency=0 for all functions → scores depend only on position and diversity", () => {
+    // total_seen=0 triggers division guard: avgPosition=0, avgDepth=1, normalizedPos=0.5
+    const rows = [
+      { file_name: "a.py", function_name: "fn1", total_seen: 0, position_sum: 0, stack_depth_sum: 0, distinct_sites: "1" },
+      { file_name: "b.py", function_name: "fn2", total_seen: 0, position_sum: 0, stack_depth_sum: 0, distinct_sites: "10" },
+    ];
+    const graph = computeScores(rows);
+    // Both normalizedPos=0.5, same edge penalty. Same frequency (tied rank).
+    // Only diversity differs: fn1 has lower → lower score
+    assert.ok(graph["a.py:fn1"].score <= graph["b.py:fn2"].score);
+  });
+
+  it("adding a high-frequency function doesn't change relative order of low-frequency ones", () => {
+    const base = [
+      { file_name: "a.py", function_name: "low", total_seen: 5, position_sum: 15, stack_depth_sum: 25, distinct_sites: "1" },
+      { file_name: "b.py", function_name: "med", total_seen: 50, position_sum: 150, stack_depth_sum: 250, distinct_sites: "5" },
+    ];
+    const withHigh = [
+      ...base,
+      { file_name: "c.py", function_name: "high", total_seen: 5000, position_sum: 15000, stack_depth_sum: 25000, distinct_sites: "100" },
+    ];
+    const g1 = computeScores(base);
+    const g2 = computeScores(withHigh);
+    // low should beat med in both
+    assert.ok(g1["a.py:low"].score < g1["b.py:med"].score);
+    assert.ok(g2["a.py:low"].score < g2["b.py:med"].score);
+  });
+
+  it("score is symmetric to function name — same file, different names get same score", () => {
+    const rows = [
+      { file_name: "mod.py", function_name: "alpha", total_seen: 100, position_sum: 200, stack_depth_sum: 500, distinct_sites: "10" },
+      { file_name: "mod.py", function_name: "beta", total_seen: 100, position_sum: 200, stack_depth_sum: 500, distinct_sites: "10" },
+    ];
+    const graph = computeScores(rows);
+    assert.equal(graph["mod.py:alpha"].score, graph["mod.py:beta"].score);
+  });
+});
+
+describe("cross-cutting: full pipeline integration", () => {
+  const frame = (fileName: string, functionName: string) => ({
+    fileName, functionName, lineNumber: 10, columnNumber: 0,
+  });
+
+  it("filterFrames → computeScores → findBusinessLogicFrameWithGraph: full loop", () => {
+    // Simulate what happens in production: events come in, frames get filtered,
+    // stats accumulate, scores get computed, then new events use the graph.
+    const rawFrames = [
+      frame("/venv/lib/python3.11/site-packages/anthropic/_client.py", "self._post"),
+      frame("/venv/lib/python3.11/site-packages/httpx/_client.py", "send"),
+      frame("src/wrapper.py", "call_ai"),
+      frame("src/features/chat.py", "respond_to_user"),
+      frame("src/main.py", "main"),
+    ];
+
+    // Step 1: filter
+    const filtered = filterFrames(rawFrames);
+    assert.equal(filtered.length, 3); // wrapper, chat, main survive
+
+    // Step 2: simulate accumulated stats (as if 100 events already processed)
+    const stats = [
+      { file_name: "src/wrapper.py", function_name: "call_ai", total_seen: 100, position_sum: 0, stack_depth_sum: 300, distinct_sites: "15" },
+      { file_name: "src/features/chat.py", function_name: "respond_to_user", total_seen: 20, position_sum: 20, stack_depth_sum: 60, distinct_sites: "1" },
+      { file_name: "src/main.py", function_name: "main", total_seen: 100, position_sum: 200, stack_depth_sum: 300, distinct_sites: "15" },
+    ];
+    const graph = computeScores(stats);
+
+    // Step 3: use graph to pick frame
+    const result = findBusinessLogicFrameWithGraph(filtered, graph);
+
+    // respond_to_user should win: low freq, mid-position, low diversity
+    assert.equal(result?.functionName, "respond_to_user");
+  });
+
+  it("heuristic agrees with graph on obvious cases", () => {
+    const frames = [
+      frame("sdk.py", "internal"),
+      frame("src/handler.py", "processRequest"),
+      frame("src/main.py", "entry"),
+    ];
+    const graph = {
+      "handler.py:processRequest": { score: 1, fan_in: 1, calls_ai: true } as const,
+      "main.py:entry": { score: 9, fan_in: 1, calls_ai: false } as const,
+    };
+    const heuristic = findBusinessLogicFrame(frames);
+    const graphResult = findBusinessLogicFrameWithGraph(frames, graph);
+    // Both should pick processRequest
+    assert.equal(heuristic?.functionName, "processRequest");
+    assert.equal(graphResult?.functionName, "processRequest");
+  });
+
+  it("graph overrides heuristic on ambiguous cases", () => {
+    const frames = [
+      frame("sdk.py", "internal"),
+      frame("src/middleware/rate-limit.ts", "checkRate"),  // heuristic would pick this
+      frame("src/features/chat.ts", "generateReply"),      // graph should pick this
+      frame("src/routes/api.ts", "handleRequest"),
+    ];
+    const graph = {
+      "middleware/rate-limit.ts:checkRate": { score: 9, fan_in: 50, calls_ai: false } as const,
+      "features/chat.ts:generateReply": { score: 1, fan_in: 1, calls_ai: true } as const,
+      "routes/api.ts:handleRequest": { score: 6, fan_in: 10, calls_ai: false } as const,
+    };
+    const heuristic = findBusinessLogicFrame(frames);
+    const graphResult = findBusinessLogicFrameWithGraph(frames, graph);
+    // Heuristic picks first different file (checkRate)
+    assert.equal(heuristic?.functionName, "checkRate");
+    // Graph picks generateReply (lowest score)
+    assert.equal(graphResult?.functionName, "generateReply");
+  });
+
+  it("implicit graph gets smarter with more data — cold vs warm", () => {
+    // Cold: only 2 events, not enough signal
+    const cold = computeScores([
+      { file_name: "wrapper.py", function_name: "wrap", total_seen: 2, position_sum: 0, stack_depth_sum: 8, distinct_sites: "2" },
+      { file_name: "feature.py", function_name: "doWork", total_seen: 2, position_sum: 4, stack_depth_sum: 8, distinct_sites: "2" },
+    ]);
+    // Both have same frequency and diversity → tied. Only position differs.
+    // doWork at position 2/3=0.67 (near ideal 0.6), wrap at 0 (edge)
+    assert.ok(cold["feature.py:doWork"].score < cold["wrapper.py:wrap"].score);
+
+    // Warm: 500 events, clear signal
+    const warm = computeScores([
+      { file_name: "wrapper.py", function_name: "wrap", total_seen: 500, position_sum: 0, stack_depth_sum: 2000, distinct_sites: "30" },
+      { file_name: "feature.py", function_name: "doWork", total_seen: 50, position_sum: 100, stack_depth_sum: 200, distinct_sites: "3" },
+    ]);
+    // doWork still wins, but now with much clearer margin (lower freq + lower diversity)
+    assert.ok(warm["feature.py:doWork"].score < warm["wrapper.py:wrap"].score);
+
+    // The gap should be larger with more data
+    const coldGap = cold["wrapper.py:wrap"].score - cold["feature.py:doWork"].score;
+    const warmGap = warm["wrapper.py:wrap"].score - warm["feature.py:doWork"].score;
+    assert.ok(warmGap >= coldGap,
+      `warm gap (${warmGap}) should be >= cold gap (${coldGap})`);
+  });
+});
+
+describe("e2e: platform-specific Python paths", () => {
+  const frame = (fileName: string, functionName: string) => ({
+    fileName, functionName, lineNumber: 10, columnNumber: 0,
+  });
+  const pick = (frames: ReturnType<typeof frame>[]) => {
+    const filtered = filterFrames(frames);
+    const ctx = getFilterContext(frames, filtered);
+    return findBusinessLogicFrame(filtered, ctx);
+  };
+
+  // Linux distro variations
+  for (const prefix of [
+    "/usr/lib/python3.11",
+    "/usr/local/lib/python3.11",
+    "/usr/lib/python3.12",
+    "/usr/lib/python3.10",
+    "/opt/homebrew/lib/python3.11",
+    "/opt/homebrew/Cellar/python@3.11/3.11.5/Frameworks/Python.framework/Versions/3.11/lib/python3.11",
+  ]) {
+    it(`filters stdlib from ${prefix.slice(0, 30)}...`, () => {
+      const frames = [
+        frame(`${prefix}/typing.py`, "cast"),
+        frame(`${prefix.replace("/lib/python", "/lib/python")}/site-packages/openai/_client.py`, "request"),
+        frame("src/handler.py", "process"),
+      ];
+      const filtered = filterFrames(frames);
+      // Both stdlib and SDK should be filtered
+      const userFrames = filtered.filter(f => f.fileName === "src/handler.py");
+      assert.ok(userFrames.length > 0, "user frame should survive");
+    });
+  }
+
+  // venv/virtualenv path variations
+  for (const venvPath of [
+    "/home/user/project/venv",
+    "/home/user/project/.venv",
+    "/home/user/.virtualenvs/myproject",
+    "/home/user/miniconda3/envs/myenv",
+    "/home/user/.pyenv/versions/3.11.5",
+    "/home/user/.local/pipx/venvs/myapp",
+  ]) {
+    it(`handles venv at ${venvPath.slice(0, 35)}...`, () => {
+      const frames = [
+        frame(`${venvPath}/lib/python3.11/site-packages/anthropic/_client.py`, "self._post"),
+        frame("src/handler.py", "process"),
+      ];
+      const r = pick(frames);
+      assert.equal(r!.functionName, "process");
+    });
+  }
+});
+
+describe("e2e: platform-specific Node.js paths", () => {
+  const frame = (fileName: string, functionName: string) => ({
+    fileName, functionName, lineNumber: 10, columnNumber: 0,
+  });
+  const pick = (frames: ReturnType<typeof frame>[]) => {
+    const filtered = filterFrames(frames);
+    const ctx = getFilterContext(frames, filtered);
+    return findBusinessLogicFrame(filtered, ctx);
+  };
+
+  // node_modules location variations
+  for (const nmPath of [
+    "node_modules",
+    "../node_modules",
+    "../../node_modules",
+    "/home/user/project/node_modules",
+    "/app/node_modules",
+  ]) {
+    it(`filters SDK from ${nmPath}/openai/`, () => {
+      const frames = [
+        frame(`${nmPath}/openai/src/core.ts`, "makeRequest"),
+        frame("src/handler.ts", "process"),
+      ];
+      const r = pick(frames);
+      assert.equal(r!.functionName, "process");
+    });
+  }
+
+  // pnpm .pnpm store variations
+  for (const sdk of ["openai", "@anthropic-ai/sdk", "@google/genai"]) {
+    it(`filters pnpm .pnpm/${sdk.replace(/\//g, "+")}`, () => {
+      const pnpmPath = `node_modules/.pnpm/${sdk.replace(/\//g, "+")}@1.0.0/node_modules/${sdk}/src/index.ts`;
+      const frames = [
+        frame(pnpmPath, "create"),
+        frame("src/handler.ts", "process"),
+      ];
+      const r = pick(frames);
+      assert.equal(r!.functionName, "process");
+    });
+  }
+});

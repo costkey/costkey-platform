@@ -24,8 +24,10 @@ const MODULE_COLORS = [
   "#34d399", "#22d3ee", "#fbbf24", "#a78bfa", "#fb7185",
 ];
 
-function ChangeIndicator({ change }: { change: number | null }) {
-  if (change === null) return <span className="text-text-muted text-[10px]">new</span>;
+function ChangeIndicator({ change }: { change: number | null | undefined }) {
+  if (change == null || typeof change !== "number" || !isFinite(change)) {
+    return <span className="text-text-muted text-[10px]">new</span>;
+  }
   if (Math.abs(change) < 1) return <Minus size={12} className="text-text-muted" />;
   if (change > 0) return (
     <span className="flex items-center gap-0.5 text-red text-xs font-mono">
@@ -110,7 +112,9 @@ export default function InsightsView({ projectId }: Props) {
       </div>
 
       {/* Cost treemap — drillable from module → function */}
-      <CostTreemap data={data} projectId={projectId} />
+      {data.modules.length > 0 && data.totals.cost > 0 && (
+        <CostTreemap data={data} projectId={projectId} />
+      )}
 
       {/* Module cost breakdown + trend chart side by side */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

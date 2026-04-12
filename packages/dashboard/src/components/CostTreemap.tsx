@@ -93,13 +93,16 @@ function buildTree(data: InsightsData): TreeNode {
 
 // Custom treemap content renderer
 function TreemapCell(props: any) {
-  const { x, y, width, height, name, depth, index, cost, calls } = props;
+  const { x, y, width, height, name, depth, index } = props;
+  const cost = typeof props.cost === "number" ? props.cost : props.size ?? 0;
+  const calls = typeof props.calls === "number" ? props.calls : 0;
 
-  if (width < 4 || height < 4) return null;
+  if (!width || !height || width < 4 || height < 4) return null;
 
-  const color = COLORS[index % COLORS.length];
+  const color = COLORS[(index ?? 0) % COLORS.length];
   const showLabel = width > 50 && height > 30;
   const showCost = width > 70 && height > 45;
+  const displayName = name ?? "";
 
   return (
     <g>
@@ -124,10 +127,10 @@ function TreemapCell(props: any) {
           fontFamily="JetBrains Mono"
           fontWeight={600}
         >
-          {name.length > Math.floor(width / 7) ? name.slice(0, Math.floor(width / 7) - 1) + "..." : name}
+          {displayName.length > Math.floor(width / 7) ? displayName.slice(0, Math.floor(width / 7) - 1) + "..." : displayName}
         </text>
       )}
-      {showCost && (
+      {showCost && cost > 0 && (
         <text
           x={x + 6}
           y={y + 30}
@@ -135,7 +138,7 @@ function TreemapCell(props: any) {
           fontSize={10}
           fontFamily="JetBrains Mono"
         >
-          {formatCost(cost)} · {calls?.toLocaleString()} calls
+          {formatCost(cost)} · {calls.toLocaleString()} calls
         </text>
       )}
     </g>
@@ -144,14 +147,17 @@ function TreemapCell(props: any) {
 
 function CustomTooltip({ active, payload }: any) {
   if (!active || !payload?.[0]) return null;
-  const data = payload[0].payload;
+  const d = payload[0]?.payload;
+  if (!d) return null;
+  const cost = typeof d.cost === "number" ? d.cost : d.size ?? 0;
+  const calls = typeof d.calls === "number" ? d.calls : 0;
   return (
     <div className="bg-surface-raised border border-border rounded-sm px-3 py-2 shadow-lg">
-      <div className="text-xs font-mono font-semibold text-text-primary mb-1">{data.name}</div>
+      <div className="text-xs font-mono font-semibold text-text-primary mb-1">{d.name ?? "unknown"}</div>
       <div className="text-[10px] font-mono text-text-secondary space-y-0.5">
-        <div>Cost: {formatCost(data.cost)}</div>
-        <div>Calls: {data.calls?.toLocaleString() ?? "—"}</div>
-        {data.fullPath && <div className="text-text-muted truncate max-w-[200px]">{data.fullPath}</div>}
+        <div>Cost: {formatCost(cost)}</div>
+        <div>Calls: {calls.toLocaleString()}</div>
+        {d.fullPath && <div className="text-text-muted truncate max-w-[200px]">{d.fullPath}</div>}
       </div>
     </div>
   );
@@ -161,6 +167,11 @@ export default function CostTreemap({ data }: Props) {
   const [drillPath, setDrillPath] = useState<string[]>([]);
 
   const tree = buildTree(data);
+
+  // No data to show
+  if (!tree.children || tree.children.length === 0 || tree.cost <= 0) {
+    return null;
+  }
 
   // Navigate to the drilled-down node
   let currentNode = tree;
@@ -173,19 +184,21 @@ export default function CostTreemap({ data }: Props) {
     }
   }
 
-  const handleClick = useCallback((node: any) => {
+  const handleClick = (node: any) => {
     if (node?.children && node.children.length > 0) {
       setDrillPath(prev => [...prev, node.name]);
     }
-  }, []);
+  };
 
-  const handleBack = useCallback(() => {
+  const handleBack = () => {
     setDrillPath(prev => prev.slice(0, -1));
-  }, []);
+  };
 
   const treemapData = currentNode.children && currentNode.children.length > 0
-    ? currentNode.children
-    : [currentNode];
+    ? currentNode.children.filter(c => c.size > 0)
+    : [currentNode].filter(c => c.size > 0);
+
+  if (treemapData.length === 0) return null;
 
   return (
     <div className="bg-surface-raised border border-border rounded-sm p-4">

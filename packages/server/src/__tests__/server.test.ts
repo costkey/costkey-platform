@@ -548,6 +548,126 @@ describe("findBusinessLogicFrame", () => {
     const result = findBusinessLogicFrame(frames);
     assert.equal(result, undefined);
   });
+
+  // ─── ADVERSARIAL: try to break the algorithm ───────────────────────
+
+  it("ALL frames are service layer + wrapper — degrades gracefully", () => {
+    const frames = [
+      frame("src/clients/openai.ts", "retry", 10),
+      frame("src/services/ai.ts", "call", 20),
+      frame("src/adapters/llm.ts", "invoke", 30),
+      frame("src/infra/http.ts", "execute", 40),
+    ];
+    const result = findBusinessLogicFrame(frames);
+    // Every frame is either wrapper or service layer.
+    // First pass (skip wrappers + service): no candidates.
+    // Second pass (skip wrappers only): still no candidates ("retry","call","invoke","execute" all in WRAPPER_FN_NAMES).
+    // Third pass (any different file): picks first different file from frame[0].
+    // frame[0] = clients/openai.ts, first different = services/ai.ts
+    assert.ok(result, "should not return undefined");
+    assert.equal(result!.fileName, "src/services/ai.ts");
+  });
+
+  it("frame[0] has null fileName — innerFile is empty string", () => {
+    const frames = [
+      frame("", "sdk_internal", 10),
+      frame("app/handler.py", "process", 50),
+      frame("app/main.py", "run", 100),
+    ];
+    const result = findBusinessLogicFrame(frames);
+    // innerFile is "". app/handler.py is "" !== "" → but the check is `file && file !== innerFile`
+    // file is "app/handler.py" (truthy), innerFile is "" (falsy doesn't matter, !== checks string)
+    // "app/handler.py" !== "" → true → picks handler.py
+    assert.equal(result!.functionName, "process");
+  });
+
+  it("100-frame stack — doesn't crash, picks something reasonable", () => {
+    const frames = [
+      frame("sdk/client.py", "send", 1),
+      ...Array.from({ length: 97 }, (_, i) =>
+        frame(`layer${i}/mod.py`, `fn_${i}`, i + 10)
+      ),
+      frame("app/main.py", "main", 999),
+    ];
+    const result = findBusinessLogicFrame(frames);
+    assert.ok(result, "should return a frame");
+    // Should pick first different file that's not wrapper or service layer
+    assert.equal(result!.fileName, "layer0/mod.py");
+  });
+
+  it("function named 'call' that IS the business logic — gets skipped", () => {
+    // User has a function literally called "call" in their feature code
+    const frames = [
+      frame("sdk/openai.py", "create", 10),
+      frame("app/dialer.py", "call", 50),     // business logic, but name matches WRAPPER_FN_NAMES
+      frame("app/routes.py", "handleRequest", 100),
+    ];
+    const result = findBusinessLogicFrame(frames);
+    // "call" is in WRAPPER_FN_NAMES → gets skipped
+    // Falls to handleRequest
+    assert.equal(result!.functionName, "handleRequest");
+    // Known limitation: if your business function is literally named "call", it gets skipped.
+  });
+
+  it("unicode in file names and function names", () => {
+    const frames = [
+      frame("src/клиент.py", "отправить", 10),
+      frame("src/обработчик.py", "обработать", 50),
+    ];
+    const result = findBusinessLogicFrame(frames);
+    assert.equal(result!.fileName, "src/обработчик.py");
+  });
+
+  it("all frames have identical fileName but different functions", () => {
+    const frames = [
+      frame("monolith.py", "inner_call", 10),
+      frame("monolith.py", "process", 50),
+      frame("monolith.py", "validate", 100),
+      frame("monolith.py", "handle_request", 200),
+      frame("monolith.py", "main", 500),
+    ];
+    const result = findBusinessLogicFrame(frames);
+    // All same file, "main" filtered as useless → meaningful = [inner_call, process, validate, handle_request]
+    // All same file → frame[1] = process
+    assert.equal(result!.functionName, "process");
+  });
+
+  it("service layer file as frame[0] — doesn't affect different-file check", () => {
+    // If frame[0] itself is a service layer file, the service layer check
+    // only applies to candidate frames (i > 0), not to innerFile
+    const frames = [
+      frame("src/services/ai.ts", "callModel", 10),
+      frame("src/features/chat.ts", "handleChat", 50),
+      frame("src/routes/api.ts", "chatRoute", 100),
+    ];
+    const result = findBusinessLogicFrame(frames);
+    // frame[0] is service layer, but that's innerFile — we look for DIFFERENT files
+    // chat.ts is different, not wrapper, not service → picked
+    assert.equal(result!.functionName, "handleChat");
+  });
+
+  it("wrapper name with leading underscores — __retry gets stripped and matched", () => {
+    const frames = [
+      frame("sdk/client.py", "send", 10),
+      frame("app/utils.py", "__retry", 20),
+      frame("app/handler.py", "process", 50),
+    ];
+    const result = findBusinessLogicFrame(frames);
+    // __retry → stripped to "retry" → matches WRAPPER_FN_NAMES → skipped
+    assert.equal(result!.functionName, "process");
+  });
+
+  it("clients/ path triggers service layer even deep in path", () => {
+    const frames = [
+      frame("src/wrapper.ts", "wrap", 10),
+      frame("src/domain/clients/api-client.ts", "fetchData", 50),
+      frame("src/features/dashboard.ts", "loadDashboard", 100),
+    ];
+    const result = findBusinessLogicFrame(frames);
+    // clients/ in path → service layer → skipped in first pass
+    // picks dashboard.ts
+    assert.equal(result!.functionName, "loadDashboard");
+  });
 });
 
 // ─── Body Truncation ──────────────────────────────────────────────────
@@ -900,8 +1020,158 @@ describe("findBusinessLogicFrameWithGraph", () => {
       "file.py:fn": { score: 1, fan_in: 1, calls_ai: true },
     };
     const result = findBusinessLogicFrameWithGraph([], graph);
-    // No frames → no graph match → falls back to findBusinessLogicFrame([]) → undefined
     assert.equal(result, undefined);
+  });
+
+  // ─── ADVERSARIAL: try to break graph matching ──────────────────────
+
+  it("graph key with Windows path containing colons — C:\\Users\\app.py:func", () => {
+    const frames = [
+      frame("C:\\Users\\project\\app.py", "process", 50),
+    ];
+    const graph: Record<string, { score: number; fan_in: number; calls_ai: boolean }> = {
+      "C:\\Users\\project\\app.py:process": { score: 2, fan_in: 1, calls_ai: true },
+    };
+    const result = findBusinessLogicFrameWithGraph(frames, graph);
+    // lastIndexOf(":") finds the last colon (between file and function)
+    // graphFile = "C:\\Users\\project\\app.py", graphFn = "process"
+    // Exact match on both → should work
+    assert.equal(result?.functionName, "process");
+  });
+
+  it("graph key that is just a colon — degenerate input", () => {
+    const frames = [
+      frame("/app/handler.py", "process", 50),
+    ];
+    const graph: Record<string, { score: number; fan_in: number; calls_ai: boolean }> = {
+      ":": { score: 1, fan_in: 1, calls_ai: true },
+    };
+    const result = findBusinessLogicFrameWithGraph(frames, graph);
+    // lastColon = 0, so lastColon > 0 is false → graphFile = ":", graphFn = ""
+    // fileMatches: "/app/handler.py" === ":" → false. No match.
+    // Falls back to heuristic → undefined (single frame, no different file)
+    // Actually, heuristic with 1 frame returns that frame
+    assert.equal(result?.functionName, "process");
+  });
+
+  it("graph entry with score 0 — valid lowest possible score", () => {
+    const frames = [
+      frame("/app/a.py", "funcA", 10),
+      frame("/app/b.py", "funcB", 50),
+    ];
+    const graph: Record<string, { score: number; fan_in: number; calls_ai: boolean }> = {
+      "a.py:funcA": { score: 0, fan_in: 1, calls_ai: true },
+      "b.py:funcB": { score: 5, fan_in: 1, calls_ai: true },
+    };
+    const result = findBusinessLogicFrameWithGraph(frames, graph);
+    // Score 0 < 5 → picks funcA
+    assert.equal(result?.functionName, "funcA");
+  });
+
+  it("graph entry with negative score — still works", () => {
+    const frames = [
+      frame("/app/a.py", "funcA", 10),
+      frame("/app/b.py", "funcB", 50),
+    ];
+    const graph: Record<string, { score: number; fan_in: number; calls_ai: boolean }> = {
+      "a.py:funcA": { score: -5, fan_in: 1, calls_ai: true },
+      "b.py:funcB": { score: 2, fan_in: 1, calls_ai: true },
+    };
+    const result = findBusinessLogicFrameWithGraph(frames, graph);
+    assert.equal(result?.functionName, "funcA");
+  });
+
+  it("two frames match the SAME graph key — both get same score", () => {
+    // Two files both named handler.py in different dirs
+    const frames = [
+      frame("/app/v1/handler.py", "process", 10),
+      frame("/app/v2/handler.py", "process", 50),
+    ];
+    const graph: Record<string, { score: number; fan_in: number; calls_ai: boolean }> = {
+      "handler.py:process": { score: 3, fan_in: 2, calls_ai: true },
+    };
+    const result = findBusinessLogicFrameWithGraph(frames, graph);
+    // Both match "handler.py:process" via endsWith("/" + "handler.py")
+    // Both get score 3. First one processed wins (bestScore starts at Infinity, first < Infinity)
+    assert.equal(result?.fileName, "/app/v1/handler.py");
+  });
+
+  it("100 graph keys — performance sanity, picks correct lowest", () => {
+    const frames = [
+      frame("/app/target.py", "theOne", 50),
+      frame("/app/decoy.py", "notThis", 10),
+    ];
+    const graph: Record<string, { score: number; fan_in: number; calls_ai: boolean }> = {};
+    for (let i = 0; i < 100; i++) {
+      graph[`noise${i}.py:fn${i}`] = { score: i, fan_in: 1, calls_ai: false };
+    }
+    graph["target.py:theOne"] = { score: -1, fan_in: 1, calls_ai: true };
+    graph["decoy.py:notThis"] = { score: 50, fan_in: 1, calls_ai: false };
+    const result = findBusinessLogicFrameWithGraph(frames, graph);
+    assert.equal(result?.functionName, "theOne");
+  });
+
+  it("wrapper detection with graph — all scored frames from same file", () => {
+    // Graph scores multiple frames from the wrapper file, none from other files
+    const frames = [
+      frame("/app/client.py", "send", 10),
+      frame("/app/client.py", "retry", 20),
+      frame("/app/client.py", "validate", 30),
+      frame("/app/handler.py", "process", 50),  // not in graph
+    ];
+    const graph: Record<string, { score: number; fan_in: number; calls_ai: boolean }> = {
+      "client.py:retry": { score: 1, fan_in: 5, calls_ai: true },
+      "client.py:validate": { score: 2, fan_in: 3, calls_ai: true },
+    };
+    const result = findBusinessLogicFrameWithGraph(frames, graph);
+    // Graph picks retry (score 1), same file as frame[0], 3 frames from that file.
+    // Wrapper detected. No scored alt frames from different file.
+    // Falls back to heuristic → handler.py (different file, not wrapper)
+    assert.equal(result?.functionName, "process");
+  });
+
+  it("graph key with URL as file path — https://cdn.example.com/app.js:init", () => {
+    const frames = [
+      frame("https://cdn.example.com/assets/app.js", "init", 10),
+    ];
+    const graph: Record<string, { score: number; fan_in: number; calls_ai: boolean }> = {
+      // lastColon at position of last ":"  → splits on ":init"
+      // But wait — "https://cdn.example.com/assets/app.js:init"
+      // lastIndexOf(":") = position of ":init" → graphFile = "https://cdn.example.com/assets/app.js"
+      "https://cdn.example.com/assets/app.js:init": { score: 2, fan_in: 1, calls_ai: true },
+    };
+    const result = findBusinessLogicFrameWithGraph(frames, graph);
+    // Exact match on file and function
+    assert.equal(result?.functionName, "init");
+  });
+
+  it("function with dots in name — a.b.c.method matches graph key :method", () => {
+    const frames = [
+      frame("/app/mod.py", "package.module.Class.method", 50),
+    ];
+    const graph: Record<string, { score: number; fan_in: number; calls_ai: boolean }> = {
+      "mod.py:method": { score: 2, fan_in: 1, calls_ai: true },
+    };
+    const result = findBusinessLogicFrameWithGraph(frames, graph);
+    // "package.module.Class.method".endsWith(".method") → true
+    assert.equal(result?.functionName, "package.module.Class.method");
+  });
+
+  it("graph with identical scores — first matching frame wins", () => {
+    const frames = [
+      frame("/app/a.py", "alpha", 10),
+      frame("/app/b.py", "beta", 50),
+      frame("/app/c.py", "gamma", 100),
+    ];
+    const graph: Record<string, { score: number; fan_in: number; calls_ai: boolean }> = {
+      "a.py:alpha": { score: 5, fan_in: 1, calls_ai: true },
+      "b.py:beta": { score: 5, fan_in: 1, calls_ai: true },
+      "c.py:gamma": { score: 5, fan_in: 1, calls_ai: true },
+    };
+    const result = findBusinessLogicFrameWithGraph(frames, graph);
+    // All score 5. First frame processed (alpha) sets bestScore = 5.
+    // beta has score 5 but NOT < 5, doesn't replace. Same for gamma.
+    assert.equal(result?.functionName, "alpha");
   });
 });
 
@@ -1333,5 +1603,87 @@ describe("computeScores (implicit graph)", () => {
 
     assert.equal(graph["client.py:send"].calls_ai, true);
     assert.equal(graph["main.py:run"].calls_ai, false);
+  });
+
+  // ─── ADVERSARIAL: try to break scoring ─────────────────────────────
+
+  it("all functions identical frequency/position/diversity — all same score", () => {
+    const rows = [
+      { file_name: "a.py", function_name: "fnA", total_seen: 50, position_sum: 100, stack_depth_sum: 250, distinct_sites: "5" },
+      { file_name: "b.py", function_name: "fnB", total_seen: 50, position_sum: 100, stack_depth_sum: 250, distinct_sites: "5" },
+      { file_name: "c.py", function_name: "fnC", total_seen: 50, position_sum: 100, stack_depth_sum: 250, distinct_sites: "5" },
+    ];
+    const graph = computeScores(rows);
+    // All identical → all should get the same score
+    const scores = Object.values(graph).map(e => e.score);
+    assert.equal(scores[0], scores[1]);
+    assert.equal(scores[1], scores[2]);
+  });
+
+  it("single-frame stacks (depth 1) — no division by zero", () => {
+    // avgDepth = 1, normalizedPos = avgPosition / (avgDepth - 1) = 0/0
+    // Should handle gracefully with fallback to 0.5
+    const rows = [
+      { file_name: "app.py", function_name: "handler", total_seen: 100, position_sum: 0, stack_depth_sum: 100, distinct_sites: "10" },
+    ];
+    const graph = computeScores(rows);
+    assert.ok(graph["app.py:handler"]);
+    assert.ok(!isNaN(graph["app.py:handler"].score), "score should not be NaN");
+    assert.ok(isFinite(graph["app.py:handler"].score), "score should not be Infinity");
+  });
+
+  it("zero total_seen — no division by zero", () => {
+    const rows = [
+      { file_name: "app.py", function_name: "handler", total_seen: 0, position_sum: 0, stack_depth_sum: 0, distinct_sites: "0" },
+    ];
+    const graph = computeScores(rows);
+    assert.ok(graph["app.py:handler"]);
+    assert.ok(!isNaN(graph["app.py:handler"].score));
+  });
+
+  it("massive numbers — doesn't overflow", () => {
+    const rows = [
+      { file_name: "app.py", function_name: "hot", total_seen: 999999999, position_sum: 1999999998, stack_depth_sum: 4999999995, distinct_sites: "50000" },
+      { file_name: "other.py", function_name: "cold", total_seen: 1, position_sum: 2, stack_depth_sum: 5, distinct_sites: "1" },
+    ];
+    const graph = computeScores(rows);
+    assert.ok(isFinite(graph["app.py:hot"].score));
+    assert.ok(isFinite(graph["other.py:cold"].score));
+    // cold should score lower (less frequent, less diverse)
+    assert.ok(graph["other.py:cold"].score < graph["app.py:hot"].score);
+  });
+
+  it("function with empty name — uses file-only key", () => {
+    const rows = [
+      { file_name: "app.py", function_name: "", total_seen: 10, position_sum: 20, stack_depth_sum: 50, distinct_sites: "2" },
+    ];
+    const graph = computeScores(rows);
+    // Empty function name → key is just the file
+    assert.ok(graph["app.py"]);
+  });
+
+  it("two functions — one at position 0 always, one at ideal position", () => {
+    // Edge penalty should clearly differentiate
+    const rows = [
+      // Always at position 0, depth 10 → normalized 0.0 → far from ideal 0.6
+      { file_name: "inner.py", function_name: "sdk_call", total_seen: 50, position_sum: 0, stack_depth_sum: 500, distinct_sites: "5" },
+      // Always at position 5.4, depth 10 → normalized 0.6 → exactly at ideal
+      { file_name: "feature.py", function_name: "doWork", total_seen: 50, position_sum: 270, stack_depth_sum: 500, distinct_sites: "5" },
+    ];
+    const graph = computeScores(rows);
+    // Same frequency and diversity → score difference is purely from edge penalty
+    // doWork at ideal position should score lower
+    assert.ok(graph["feature.py:doWork"].score < graph["inner.py:sdk_call"].score,
+      `doWork (${graph["feature.py:doWork"].score}) should beat sdk_call (${graph["inner.py:sdk_call"].score})`);
+  });
+
+  it("distinct_sites as non-numeric string — handles gracefully", () => {
+    const rows = [
+      { file_name: "app.py", function_name: "fn", total_seen: 10, position_sum: 20, stack_depth_sum: 50, distinct_sites: "not_a_number" },
+    ];
+    const graph = computeScores(rows);
+    // parseInt("not_a_number") → NaN → || 0 → diversity = 0
+    assert.ok(graph["app.py:fn"]);
+    assert.equal(graph["app.py:fn"].fan_in, 0);
   });
 });

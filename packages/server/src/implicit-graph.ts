@@ -132,6 +132,35 @@ export async function buildImplicitGraph(
 }
 
 /**
+ * Compute tied-rank percentiles: equal values get the same rank (the average
+ * of their positions). Returns a Map from key to percentile (0-1).
+ */
+function tiedRankPercentile<T extends { key: string }>(
+  items: T[],
+  getValue: (item: T) => number,
+): Map<string, number> {
+  const sorted = [...items].sort((a, b) => getValue(a) - getValue(b));
+  const n = sorted.length;
+  const denom = n > 1 ? n - 1 : 1;
+  const ranks = new Map<string, number>();
+
+  let i = 0;
+  while (i < n) {
+    // Find the run of tied values
+    let j = i;
+    while (j < n && getValue(sorted[j]) === getValue(sorted[i])) j++;
+    // Average rank for the tied group
+    const avgRank = (i + j - 1) / 2;
+    for (let k = i; k < j; k++) {
+      ranks.set(sorted[k].key, avgRank / denom);
+    }
+    i = j;
+  }
+
+  return ranks;
+}
+
+/**
  * Compute scores from raw frame stats. Exported for testing.
  */
 export function computeScores(
@@ -166,17 +195,9 @@ export function computeScores(
 
   const n = metrics.length;
 
-  // Compute percentile ranks (0-1) for frequency and diversity
-  const byFreq = [...metrics].sort((a, b) => a.frequency - b.frequency);
-  const byDiv = [...metrics].sort((a, b) => a.diversity - b.diversity);
-
-  const freqRank = new Map<string, number>();
-  const divRank = new Map<string, number>();
-  const denom = n > 1 ? n - 1 : 1;
-  for (let i = 0; i < n; i++) {
-    freqRank.set(byFreq[i].key, i / denom);
-    divRank.set(byDiv[i].key, i / denom);
-  }
+  // Compute tied-rank percentiles: equal values get the same rank
+  const freqRank = tiedRankPercentile(metrics, m => m.frequency);
+  const divRank = tiedRankPercentile(metrics, m => m.diversity);
 
   const graph: Record<string, ImplicitGraphEntry> = {};
 

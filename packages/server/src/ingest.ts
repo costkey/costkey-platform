@@ -4,7 +4,7 @@ import type pg from "pg";
 import type { CostKeyEvent, TransportPayload, StackFrame } from "@costkey/shared";
 import { computeCost } from "./pricing.js";
 import { translateFrames } from "./sourcemap-resolver.js";
-import { updateFrameStats, getImplicitGraph, invalidateImplicitGraph } from "./implicit-graph.js";
+import { updateFrameStatsBatch, getImplicitGraph, invalidateImplicitGraph } from "./implicit-graph.js";
 
 /**
  * Server-side stack frame filtering.
@@ -374,6 +374,10 @@ export function createIngestRouter(pool: pg.Pool): Router {
 
       // Batch insert events
       const client = await pool.connect();
+      const frameStatsBatch: Array<{
+        frames: Array<{ fileName: string | null; functionName: string | null; lineNumber: number | null }>;
+        callSiteKey: string;
+      }> = [];
       try {
         await client.query("BEGIN");
 
@@ -474,9 +478,9 @@ export function createIngestRouter(pool: pg.Pool): Router {
           // Upsert call site stats and frame stats — use bl_ values (single source of truth)
           const callSiteKey = blFunction ? `${blFile ?? "unknown"}:${blFunction}:${blLine ?? 0}` : null;
 
-          // Feed frame stats for implicit graph building
+          // Collect frame stats for batch insert after the loop
           if (cleanFrames && cleanFrames.length > 0 && callSiteKey) {
-            await updateFrameStats(client, projectId, cleanFrames, callSiteKey);
+            frameStatsBatch.push({ frames: cleanFrames, callSiteKey });
           }
 
           if (blFunction) {
@@ -515,6 +519,11 @@ export function createIngestRouter(pool: pg.Pool): Router {
               ],
             );
           }
+        }
+
+        // Batch insert all frame stats in 2 queries (instead of 2 per event)
+        if (frameStatsBatch.length > 0) {
+          await updateFrameStatsBatch(client, projectId, frameStatsBatch);
         }
 
         await client.query("COMMIT");

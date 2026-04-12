@@ -34,53 +34,68 @@ export interface ImplicitGraphEntry {
 }
 
 /**
- * Upsert frame stats for all frames in a stack trace.
- * Called at ingest time for each event. Tracks per-function position
- * and frequency — the minimum data needed to compute scores.
+ * Batch upsert frame stats for ALL events in an ingest batch.
+ * Called once per batch (not per event) with 2 SQL queries total,
+ * regardless of how many events or frames are in the batch.
  */
-export async function updateFrameStats(
+export async function updateFrameStatsBatch(
   client: pg.PoolClient,
   projectId: string,
-  frames: Array<{ fileName: string | null; functionName: string | null; lineNumber: number | null }>,
-  callSiteKey: string,
+  batch: Array<{
+    frames: Array<{ fileName: string | null; functionName: string | null; lineNumber: number | null }>;
+    callSiteKey: string;
+  }>,
 ): Promise<void> {
-  if (frames.length === 0) return;
+  // Collect all frames across all events into parallel arrays
+  const files: string[] = [];
+  const fns: string[] = [];
+  const positions: number[] = [];
+  const depths: number[] = [];
+  // For call site associations: file, fn, callSiteKey
+  const csFiles: string[] = [];
+  const csFns: string[] = [];
+  const csKeys: string[] = [];
 
-  for (let i = 0; i < frames.length; i++) {
-    const f = frames[i];
-    const file = f.fileName ?? "";
-    const fn = (f.functionName ?? "").split("\n")[0].trim();
-    if (!file && !fn) continue;
-
-    await client.query(
-      `INSERT INTO frame_stats (project_id, file_name, function_name, total_seen, position_sum, stack_depth_sum, distinct_call_sites)
-       VALUES ($1, $2, $3, 1, $4, $5, 1)
-       ON CONFLICT (project_id, file_name, function_name) DO UPDATE SET
-         total_seen = frame_stats.total_seen + 1,
-         position_sum = frame_stats.position_sum + EXCLUDED.position_sum,
-         stack_depth_sum = frame_stats.stack_depth_sum + EXCLUDED.stack_depth_sum`,
-      [projectId, file, fn, i, frames.length],
-    );
+  for (const entry of batch) {
+    const depth = entry.frames.length;
+    for (let i = 0; i < entry.frames.length; i++) {
+      const file = entry.frames[i].fileName ?? "";
+      const fn = (entry.frames[i].functionName ?? "").split("\n")[0].trim();
+      if (!file && !fn) continue;
+      files.push(file);
+      fns.push(fn);
+      positions.push(i);
+      depths.push(depth);
+      csFiles.push(file);
+      csFns.push(fn);
+      csKeys.push(entry.callSiteKey);
+    }
   }
 
-  // Update distinct_call_sites count for each function in this trace.
-  // We track this separately so the upsert above stays fast (no JSON merging).
-  // Use a temp table pattern: count distinct call_site_keys per function across events.
-  // For now, we approximate: increment distinct_call_sites if this call_site_key
-  // hasn't been seen before for this function. We track this via a lightweight
-  // frame_stats_callsites junction table.
-  for (const f of frames) {
-    const file = f.fileName ?? "";
-    const fn = (f.functionName ?? "").split("\n")[0].trim();
-    if (!file && !fn) continue;
+  if (files.length === 0) return;
 
-    await client.query(
-      `INSERT INTO frame_stats_callsites (project_id, file_name, function_name, call_site_key)
-       VALUES ($1, $2, $3, $4)
-       ON CONFLICT DO NOTHING`,
-      [projectId, file, fn, callSiteKey],
-    );
-  }
+  // Query 1: batch upsert all frame stats using unnest
+  // Groups duplicates within the batch so each (file, fn) gets correct totals
+  await client.query(
+    `INSERT INTO frame_stats (project_id, file_name, function_name, total_seen, position_sum, stack_depth_sum, distinct_call_sites)
+     SELECT $1, f, n, COUNT(*)::int, SUM(p)::int, SUM(d)::int, 0
+     FROM unnest($2::text[], $3::text[], $4::int[], $5::int[]) AS t(f, n, p, d)
+     GROUP BY f, n
+     ON CONFLICT (project_id, file_name, function_name) DO UPDATE SET
+       total_seen = frame_stats.total_seen + EXCLUDED.total_seen,
+       position_sum = frame_stats.position_sum + EXCLUDED.position_sum,
+       stack_depth_sum = frame_stats.stack_depth_sum + EXCLUDED.stack_depth_sum`,
+    [projectId, files, fns, positions, depths],
+  );
+
+  // Query 2: batch upsert call site associations
+  await client.query(
+    `INSERT INTO frame_stats_callsites (project_id, file_name, function_name, call_site_key)
+     SELECT DISTINCT $1, f, n, k
+     FROM unnest($2::text[], $3::text[], $4::text[]) AS t(f, n, k)
+     ON CONFLICT DO NOTHING`,
+    [projectId, csFiles, csFns, csKeys],
+  );
 }
 
 /**

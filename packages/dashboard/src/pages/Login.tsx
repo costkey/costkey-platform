@@ -26,7 +26,11 @@ export default function Login() {
     setHideError(false);
     const ok = await login(email, password);
     setSubmitting(false);
-    if (ok) navigate("/");
+    if (ok) {
+      // If this is a CLI auth flow, redirect to the CLI auth handler
+      const isCli = searchParams.get("cli") === "1";
+      navigate(isCli ? "/cli-auth" : "/");
+    }
   };
 
   return (

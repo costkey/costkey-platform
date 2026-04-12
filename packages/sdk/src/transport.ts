@@ -25,6 +25,7 @@ export class Transport {
   private queue: CostKeyEvent[] = [];
   private timer: ReturnType<typeof setInterval> | null = null;
   private readonly maxQueueSize = 500;
+  private hasConfirmedConnection = false;
 
   constructor(private readonly options: TransportOptions) {}
 
@@ -95,10 +96,24 @@ export class Transport {
         return;
       }
 
+      if (response.status === 401 || response.status === 403) {
+        // Auth failures always log — developer needs to know their DSN is wrong
+        console.warn(
+          `[costkey] Authentication failed (${response.status}). Check your DSN at https://app.costkey.dev/settings`,
+        );
+        return;
+      }
+
       if (!response.ok && this.options.debug) {
         console.warn(
           `[costkey] Ingest returned ${response.status}: ${response.statusText}`,
         );
+      }
+
+      // One-time connection confirmation on first successful delivery
+      if (response.ok && !this.hasConfirmedConnection) {
+        this.hasConfirmedConnection = true;
+        console.log("[costkey] Connected. Tracking AI calls.");
       }
     } catch (err) {
       // Network error — fire and forget. Never crash user's app.

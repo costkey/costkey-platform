@@ -27,7 +27,11 @@ export default function Signup() {
     const result = await signup(email, password, name, orgName || name, inviteToken ?? undefined);
     setSubmitting(false);
     if (result) {
-      if (result.joinedViaInvite) {
+      // If this is a CLI auth flow, redirect to CLI auth handler instead of onboarding
+      const isCli = new URLSearchParams(window.location.search).get("cli") === "1";
+      if (isCli) {
+        navigate("/cli-auth");
+      } else if (result.joinedViaInvite) {
         navigate("/");
       } else {
         navigate("/onboarding");

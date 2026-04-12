@@ -441,6 +441,56 @@ export function createAuthRouter(): Router {
     }
   });
 
+  // ── CLI Auth Flow ──
+  // The CLI starts a localhost HTTP server, then opens the browser to this endpoint.
+  // After the user logs in (via normal login/signup/GitHub), the server redirects
+  // back to the CLI's localhost with a long-lived CLI token.
+
+  // GET /auth/cli — start CLI auth flow, redirect to login with cli callback info
+  router.get("/auth/cli", (req: Request, res: Response) => {
+    const port = req.query["port"] as string;
+    const state = req.query["state"] as string;
+    if (!port || !state) {
+      res.status(400).json({ error: "Missing port or state parameter" });
+      return;
+    }
+    // Store CLI callback info in a short-lived cookie so we can redirect after login
+    res.cookie("ck_cli_port", port, { maxAge: 10 * 60 * 1000, httpOnly: true, sameSite: "lax" });
+    res.cookie("ck_cli_state", state, { maxAge: 10 * 60 * 1000, httpOnly: true, sameSite: "lax" });
+    res.redirect("/login?cli=1");
+  });
+
+  // POST /auth/cli-token — generate a long-lived CLI token for an authenticated user
+  // Called by the dashboard after login when cli=1 query param is present
+  router.post("/auth/cli-token", async (req: Request, res: Response) => {
+    const authUser = (req as any).user as AuthUser | undefined;
+    if (!authUser) {
+      res.status(401).json({ error: "Not authenticated" });
+      return;
+    }
+
+    const port = req.cookies?.["ck_cli_port"];
+    const state = req.cookies?.["ck_cli_state"];
+
+    if (!port || !state) {
+      res.status(400).json({ error: "No CLI auth session found" });
+      return;
+    }
+
+    // Generate a long-lived CLI token (90 days)
+    const cliToken = jwt.sign(
+      { userId: authUser.id, orgId: authUser.orgId, role: authUser.role, type: "cli" },
+      JWT_SECRET,
+      { expiresIn: "90d" },
+    );
+
+    // Clear the CLI cookies
+    res.clearCookie("ck_cli_port");
+    res.clearCookie("ck_cli_state");
+
+    res.json({ token: cliToken, port, state });
+  });
+
   return router;
 }
 

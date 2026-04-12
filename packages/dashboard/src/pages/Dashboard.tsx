@@ -19,7 +19,7 @@ type TimeRange = "mtd" | "7d" | "30d" | "3m" | "6m" | "1y";
 
 const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
   { id: "overview", label: "Overview", icon: <BarChart3 size={14} /> },
-  { id: "insights", label: "Insights", icon: <Lightbulb size={14} /> },
+  // { id: "insights", label: "Insights", icon: <Lightbulb size={14} /> }, // TODO: re-enable after polish
   { id: "events", label: "Events", icon: <Activity size={14} /> },
   { id: "call-sites", label: "Call Sites", icon: <FileCode size={14} /> },
   { id: "traces", label: "Traces", icon: <Route size={14} /> },

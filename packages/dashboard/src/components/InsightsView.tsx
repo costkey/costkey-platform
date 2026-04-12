@@ -2,9 +2,10 @@ import { useState, useEffect, useCallback } from "react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from "recharts";
-import { TrendingUp, TrendingDown, Minus, FolderTree, Tag, Flame } from "lucide-react";
+import { TrendingUp, TrendingDown, Minus, FolderTree, Tag, Flame, LayoutGrid } from "lucide-react";
 import { getInsights, type InsightsData, type TimeRange } from "../api";
 import { formatCost, formatTokens, truncateFile } from "../utils";
+import CostTreemap from "./CostTreemap";
 
 interface Props {
   projectId: string;
@@ -107,6 +108,9 @@ export default function InsightsView({ projectId }: Props) {
           ))}
         </div>
       </div>
+
+      {/* Cost treemap — drillable from module → function */}
+      <CostTreemap data={data} projectId={projectId} />
 
       {/* Module cost breakdown + trend chart side by side */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

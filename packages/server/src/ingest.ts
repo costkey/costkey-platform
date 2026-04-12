@@ -46,7 +46,10 @@ const INTERNAL_FILE_PATTERNS = [
   "node_modules/node-fetch/",
   "node:internal/",
   "node:async_hooks",
+  "node:events",
+  "node:timers",
   // Frameworks
+  ".next/",
   "node_modules/next/",
   "node_modules/express/",
   "node_modules/fastify/",
@@ -108,6 +111,43 @@ export function filterFrames(frames: StackFrame[]): StackFrame[] {
 }
 
 /**
+ * Get context about what filterFrames removed.
+ * Returns the file of the innermost filtered frame (the SDK call),
+ * used by findBusinessLogicFrame to decide if frame[0] was adjacent to the SDK.
+ */
+export function getFilterContext(original: StackFrame[], filtered: StackFrame[]): {
+  /** Files that were removed by filtering */
+  removedFiles: Set<string>;
+  /** Was the innermost filtered frame[0] adjacent to the first surviving frame? */
+  frame0WasAdjacentToSDK: boolean;
+} {
+  const kept = new Set(filtered.map(f => f.fileName ?? ""));
+  const removedFiles = new Set<string>();
+  for (const f of original) {
+    const file = f.fileName ?? "";
+    if (file && !kept.has(file)) removedFiles.add(file);
+  }
+
+  // Check adjacency: was the first surviving frame directly next to a filtered frame?
+  let frame0WasAdjacentToSDK = false;
+  if (filtered.length > 0 && removedFiles.size > 0) {
+    const firstSurvivor = filtered[0];
+    for (let i = 0; i < original.length; i++) {
+      if (original[i] === firstSurvivor) {
+        // Check if the frame before this one was filtered
+        if (i > 0) {
+          const prevFile = original[i - 1].fileName ?? "";
+          if (removedFiles.has(prevFile)) frame0WasAdjacentToSDK = true;
+        }
+        break;
+      }
+    }
+  }
+
+  return { removedFiles, frame0WasAdjacentToSDK };
+}
+
+/**
  * Find the most meaningful "business logic" frame from in-app frames.
  *
  * Real stack traces look like:
@@ -165,11 +205,14 @@ function isServiceLayer(filePath: string): boolean {
   return SERVICE_LAYER_PATTERNS.some((p) => lower.includes(p));
 }
 
-export function findBusinessLogicFrame(frames: StackFrame[]): StackFrame | undefined {
+export function findBusinessLogicFrame(
+  frames: StackFrame[],
+  filterCtx?: { removedFiles: Set<string>; frame0WasAdjacentToSDK: boolean },
+): StackFrame | undefined {
   if (frames.length === 0) return undefined;
 
   // Filter out useless names
-  const useless = new Set(["<module>", "<anonymous>", "anonymous", "main", "_run", ""]);
+  const useless = new Set(["<module>", "<anonymous>", "anonymous", "<lambda>", "main", "_run", ""]);
   const meaningful = frames.filter((f) => {
     const fn = (f.functionName ?? "").split("\n")[0].trim();
     return fn && !useless.has(fn);
@@ -178,8 +221,18 @@ export function findBusinessLogicFrame(frames: StackFrame[]): StackFrame | undef
   const pool = meaningful.length > 0 ? meaningful : frames;
   if (pool.length <= 1) return pool[0];
 
-  // Collect candidate frames from different files, skipping wrappers
   const innerFile = pool[0].fileName ?? "";
+
+  // Fast-path: if frame[0] was DIRECTLY adjacent to a filtered SDK frame,
+  // AND it's not a wrapper function or service layer, it's the actual
+  // function that called the AI SDK — return it immediately.
+  if (filterCtx?.frame0WasAdjacentToSDK && !filterCtx.removedFiles.has(innerFile)) {
+    if (!isWrapperFn(pool[0]) && !isServiceLayer(innerFile)) {
+      return pool[0];
+    }
+  }
+
+  // Collect candidate frames from different files, skipping wrappers
   const candidates: StackFrame[] = [];
   for (let i = 1; i < pool.length; i++) {
     const file = pool[i].fileName ?? "";
@@ -402,9 +455,10 @@ export function createIngestRouter(pool: pg.Pool): Router {
           ) ?? event.costUsd ?? null; // Fall back to SDK-calculated cost if server can't resolve
 
           // Filter stack frames server-side (strips SDK/library internals for all languages)
-          let cleanFrames = event.callSite?.frames
-            ? filterFrames(event.callSite.frames)
-            : null;
+          const rawFrames = event.callSite?.frames ?? null;
+          let cleanFrames = rawFrames ? filterFrames(rawFrames) : null;
+          const filterCtx = rawFrames && cleanFrames
+            ? getFilterContext(rawFrames, cleanFrames) : undefined;
 
           // Translate minified frames using sourcemaps (if release + maps uploaded)
           if (cleanFrames && release) {
@@ -432,7 +486,7 @@ export function createIngestRouter(pool: pg.Pool): Router {
               const implicitGraph = await getImplicitGraph(pool, projectId);
               best = implicitGraph
                 ? findBusinessLogicFrameWithGraph(cleanFrames, implicitGraph)
-                : findBusinessLogicFrame(cleanFrames);
+                : findBusinessLogicFrame(cleanFrames, filterCtx);
             }
             if (best) {
               blFunction = (best.functionName ?? "").split("\n")[0].trim() || null;

@@ -4923,3 +4923,673 @@ describe("e2e: edge cases in function name formats", () => {
     assert.equal(r!.functionName, "<listcomp>");
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════
+// 555+ — Multi-provider fallbacks, error stacks, batching, embeddings,
+// vision, speech, fine-tuned models, proxy patterns, monorepo depths
+// ═══════════════════════════════════════════════════════════════════════
+
+describe("e2e: multi-provider fallback patterns", () => {
+  const frame = (fileName: string, functionName: string) => ({
+    fileName, functionName, lineNumber: 10, columnNumber: 0,
+  });
+  const pick = (frames: ReturnType<typeof frame>[]) => {
+    const filtered = filterFrames(frames);
+    const ctx = getFilterContext(frames, filtered);
+    return findBusinessLogicFrame(filtered, ctx);
+  };
+
+  it("OpenAI → Anthropic fallback — both SDKs in stack", () => {
+    const frames = [
+      frame("/venv/lib/python3.11/site-packages/anthropic/_client.py", "self._post"),
+      frame("/venv/lib/python3.11/site-packages/httpx/_client.py", "send"),
+      frame("src/fallback.py", "try_anthropic"),
+      frame("src/fallback.py", "call_with_fallback"),
+      frame("src/features/chat.py", "respond"),
+    ];
+    const r = pick(frames);
+    assert.equal(r!.functionName, "try_anthropic");
+  });
+
+  it("Multi-model router — dispatches to different providers", () => {
+    const frames = [
+      frame("node_modules/openai/src/core.ts", "makeRequest"),
+      frame("src/router/model-router.ts", "routeToProvider"),
+      frame("src/features/completion.ts", "complete"),
+    ];
+    const r = pick(frames);
+    assert.equal(r!.functionName, "routeToProvider");
+  });
+
+  it("LiteLLM proxy — wraps multiple providers", () => {
+    const frames = [
+      frame("/venv/lib/python3.11/site-packages/openai/_client.py", "self._request"),
+      frame("/venv/lib/python3.11/site-packages/litellm/main.py", "completion"),
+      frame("src/handler.py", "generate"),
+    ];
+    const r = pick(frames);
+    // openai/ filtered. litellm stays. generate adjacent? No — litellm is adjacent.
+    // litellm:completion is not wrapper. fast-path returns it.
+    assert.equal(r!.functionName, "completion");
+  });
+
+  it("Helicone proxy — logging layer between app and SDK", () => {
+    const frames = [
+      frame("node_modules/openai/src/core.ts", "makeRequest"),
+      frame("src/proxy/helicone.ts", "logAndForward"),
+      frame("src/features/search.ts", "aiSearch"),
+    ];
+    const r = pick(frames);
+    assert.equal(r!.functionName, "logAndForward");
+  });
+});
+
+describe("e2e: error and exception stacks", () => {
+  const frame = (fileName: string, functionName: string) => ({
+    fileName, functionName, lineNumber: 10, columnNumber: 0,
+  });
+  const pick = (frames: ReturnType<typeof frame>[]) => {
+    const filtered = filterFrames(frames);
+    const ctx = getFilterContext(frames, filtered);
+    return findBusinessLogicFrame(filtered, ctx);
+  };
+
+  it("SDK throws rate limit error — caught by user code", () => {
+    const frames = [
+      frame("/venv/lib/python3.11/site-packages/anthropic/_exceptions.py", "RateLimitError.__init__"),
+      frame("/venv/lib/python3.11/site-packages/anthropic/_client.py", "self._post"),
+      frame("src/resilient.py", "call_with_backoff"),
+    ];
+    const r = pick(frames);
+    assert.equal(r!.functionName, "call_with_backoff");
+  });
+
+  it("SDK throws auth error — user error handler", () => {
+    const frames = [
+      frame("node_modules/openai/src/error.ts", "AuthenticationError"),
+      frame("node_modules/openai/src/core.ts", "makeRequest"),
+      frame("src/error-handler.ts", "handleAPIError"),
+      frame("src/routes/chat.ts", "handleChat"),
+    ];
+    const r = pick(frames);
+    assert.equal(r!.functionName, "handleAPIError");
+  });
+
+  it("timeout error in async context", () => {
+    const frames = [
+      frame("/usr/lib/python3.11/asyncio/tasks.py", "wait_for"),
+      frame("/venv/lib/python3.11/site-packages/anthropic/_client.py", "self._post"),
+      frame("src/timeout_wrapper.py", "with_timeout"),
+      frame("src/features/analyze.py", "analyze"),
+    ];
+    const r = pick(frames);
+    // with_timeout: "withtimeout" is in WRAPPER_FN_NAMES? Let me check...
+    // "with_timeout" lowercased = "with_timeout", stripped = "with_timeout"
+    // WRAPPER_FN_NAMES has "withtimeout" not "with_timeout" — no match
+    // Adjacent to SDK → fast-path returns it
+    assert.equal(r!.functionName, "with_timeout");
+  });
+
+  it("connection error from httpcore", () => {
+    const frames = [
+      frame("/venv/lib/python3.11/site-packages/httpcore/_exceptions.py", "ConnectError"),
+      frame("/venv/lib/python3.11/site-packages/httpcore/_sync/connection.py", "connect"),
+      frame("/venv/lib/python3.11/site-packages/httpx/_client.py", "send"),
+      frame("/venv/lib/python3.11/site-packages/openai/_client.py", "self._request"),
+      frame("src/handler.py", "make_api_call"),
+    ];
+    const r = pick(frames);
+    assert.equal(r!.functionName, "make_api_call");
+  });
+});
+
+describe("e2e: embeddings, vision, speech, fine-tuned models", () => {
+  const frame = (fileName: string, functionName: string) => ({
+    fileName, functionName, lineNumber: 10, columnNumber: 0,
+  });
+  const pick = (frames: ReturnType<typeof frame>[]) => {
+    const filtered = filterFrames(frames);
+    const ctx = getFilterContext(frames, filtered);
+    return findBusinessLogicFrame(filtered, ctx);
+  };
+
+  it("OpenAI embeddings call", () => {
+    const frames = [
+      frame("node_modules/openai/src/resources/embeddings.ts", "create"),
+      frame("node_modules/openai/src/core.ts", "makeRequest"),
+      frame("src/embeddings/indexer.ts", "indexDocument"),
+    ];
+    const r = pick(frames);
+    assert.equal(r!.functionName, "indexDocument");
+  });
+
+  it("Anthropic vision — image analysis", () => {
+    const frames = [
+      frame("/venv/lib/python3.11/site-packages/anthropic/_client.py", "self._post"),
+      frame("src/vision/analyzer.py", "analyze_image"),
+      frame("src/api/upload.py", "handle_upload"),
+    ];
+    const r = pick(frames);
+    assert.equal(r!.functionName, "analyze_image");
+  });
+
+  it("OpenAI TTS — text to speech", () => {
+    const frames = [
+      frame("node_modules/openai/src/resources/audio/speech.ts", "create"),
+      frame("node_modules/openai/src/core.ts", "makeRequest"),
+      frame("src/audio/tts.ts", "generateSpeech"),
+    ];
+    const r = pick(frames);
+    assert.equal(r!.functionName, "generateSpeech");
+  });
+
+  it("OpenAI Whisper — speech to text", () => {
+    const frames = [
+      frame("node_modules/openai/src/resources/audio/transcriptions.ts", "create"),
+      frame("node_modules/openai/src/core.ts", "makeRequest"),
+      frame("src/audio/transcribe.ts", "transcribeAudio"),
+    ];
+    const r = pick(frames);
+    assert.equal(r!.functionName, "transcribeAudio");
+  });
+
+  it("OpenAI image generation — DALL-E", () => {
+    const frames = [
+      frame("node_modules/openai/src/resources/images.ts", "generate"),
+      frame("node_modules/openai/src/core.ts", "makeRequest"),
+      frame("src/images/generator.ts", "generateImage"),
+    ];
+    const r = pick(frames);
+    assert.equal(r!.functionName, "generateImage");
+  });
+
+  it("Fine-tuned model call — same SDK path", () => {
+    const frames = [
+      frame("/venv/lib/python3.11/site-packages/openai/_client.py", "self._request"),
+      frame("src/fine_tuned/classifier.py", "classify_intent"),
+    ];
+    const r = pick(frames);
+    assert.equal(r!.functionName, "classify_intent");
+  });
+
+  it("Anthropic batch API", () => {
+    const frames = [
+      frame("/venv/lib/python3.11/site-packages/anthropic/_client.py", "self._post"),
+      frame("/venv/lib/python3.11/site-packages/httpx/_client.py", "send"),
+      frame("src/batch/processor.py", "submit_batch"),
+    ];
+    const r = pick(frames);
+    assert.equal(r!.functionName, "submit_batch");
+  });
+});
+
+describe("e2e: monorepo and workspace patterns", () => {
+  const frame = (fileName: string, functionName: string) => ({
+    fileName, functionName, lineNumber: 10, columnNumber: 0,
+  });
+  const pick = (frames: ReturnType<typeof frame>[]) => {
+    const filtered = filterFrames(frames);
+    const ctx = getFilterContext(frames, filtered);
+    return findBusinessLogicFrame(filtered, ctx);
+  };
+
+  it("Turborepo — apps/web calling packages/ai", () => {
+    const frames = [
+      frame("node_modules/@anthropic-ai/sdk/src/index.ts", "create"),
+      frame("packages/ai/src/client.ts", "createCompletion"),
+      frame("apps/web/src/features/chat.ts", "handleChat"),
+    ];
+    const r = pick(frames);
+    // packages/ai not a service layer path → picked as adjacent
+    assert.equal(r!.functionName, "createCompletion");
+  });
+
+  it("Nx monorepo — libs/shared/ai is service layer, picks feature", () => {
+    const frames = [
+      frame("node_modules/openai/src/core.ts", "makeRequest"),
+      frame("libs/shared/ai/src/client.ts", "callAI"),       // /shared/ai → service layer
+      frame("libs/features/chat/src/handler.ts", "handleMessage"),
+      frame("apps/api/src/routes.ts", "chatRoute"),
+    ];
+    const r = pick(frames);
+    // callAI adjacent to SDK but service layer → fast-path skips
+    // candidates: handleMessage (not wrapper, not service) → picked
+    assert.equal(r!.functionName, "handleMessage");
+  });
+
+  it("Python monorepo — packages/ structure", () => {
+    const frames = [
+      frame("/venv/lib/python3.11/site-packages/anthropic/_client.py", "self._post"),
+      frame("/workspace/packages/ai-client/src/wrapper.py", "call_claude"),
+      frame("/workspace/packages/features/src/summarize.py", "summarize"),
+    ];
+    const r = pick(frames);
+    assert.equal(r!.functionName, "call_claude");
+  });
+
+  it("Lerna monorepo with hoisted node_modules", () => {
+    const frames = [
+      frame("../../node_modules/openai/src/core.ts", "makeRequest"),
+      frame("packages/api/src/handler.ts", "process"),
+    ];
+    // ../../node_modules/openai/ contains "node_modules/openai/" → filtered
+    const r = pick(frames);
+    assert.equal(r!.functionName, "process");
+  });
+
+  it("pnpm workspace with multiple package versions", () => {
+    const frames = [
+      frame("node_modules/.pnpm/@anthropic-ai+sdk@1.2.3/node_modules/@anthropic-ai/sdk/src/index.ts", "create"),
+      frame("node_modules/.pnpm/openai@4.0.0/node_modules/openai/src/core.ts", "makeRequest"),
+      frame("src/multi-model.ts", "callBestModel"),
+    ];
+    const r = pick(frames);
+    assert.equal(r!.functionName, "callBestModel");
+  });
+});
+
+describe("e2e: proxy and middleware injection patterns", () => {
+  const frame = (fileName: string, functionName: string) => ({
+    fileName, functionName, lineNumber: 10, columnNumber: 0,
+  });
+  const pick = (frames: ReturnType<typeof frame>[]) => {
+    const filtered = filterFrames(frames);
+    const ctx = getFilterContext(frames, filtered);
+    return findBusinessLogicFrame(filtered, ctx);
+  };
+
+  it("HTTP proxy between app and AI — mitmproxy style", () => {
+    const frames = [
+      frame("/venv/lib/python3.11/site-packages/openai/_client.py", "self._request"),
+      frame("/venv/lib/python3.11/site-packages/httpx/_client.py", "send"),
+      frame("src/proxy/ai_proxy.py", "forward_to_ai"),
+      frame("src/api/handler.py", "handle_request"),
+    ];
+    const r = pick(frames);
+    assert.equal(r!.functionName, "forward_to_ai");
+  });
+
+  it("OpenTelemetry auto-instrumentation wrapping SDK", () => {
+    const frames = [
+      frame("node_modules/@opentelemetry/instrumentation-http/build/src/http.js", "outgoingRequest"),
+      frame("node_modules/@opentelemetry/api/build/src/api/trace.js", "getTracer"),
+      frame("node_modules/openai/src/core.ts", "makeRequest"),
+      frame("src/traced-handler.ts", "processWithTracing"),
+    ];
+    const r = pick(frames);
+    // @opentelemetry/ and openai/ filtered
+    assert.equal(r!.functionName, "processWithTracing");
+  });
+
+  it("Datadog APM wrapping SDK call", () => {
+    const frames = [
+      frame("node_modules/dd-trace/packages/dd-trace/src/plugins/util/web.js", "finishSpan"),
+      frame("node_modules/@anthropic-ai/sdk/src/index.ts", "create"),
+      frame("src/handler.ts", "generate"),
+    ];
+    const r = pick(frames);
+    // @anthropic-ai/ filtered. dd-trace stays. generate adjacent → fast-path
+    assert.equal(r!.functionName, "generate");
+  });
+
+  it("Sentry performance monitoring wrapping call", () => {
+    const frames = [
+      frame("node_modules/@sentry/node/build/cjs/tracing/span.js", "startSpan"),
+      frame("node_modules/openai/src/core.ts", "makeRequest"),
+      frame("src/monitored.ts", "monitoredCall"),
+    ];
+    const r = pick(frames);
+    assert.equal(r!.functionName, "monitoredCall");
+  });
+
+  it("Custom retry middleware in Node", () => {
+    const frames = [
+      frame("node_modules/@anthropic-ai/sdk/src/index.ts", "create"),
+      frame("src/middleware/retry.ts", "retryWithExponentialBackoff"),
+      frame("src/features/generate.ts", "generateContent"),
+    ];
+    const r = pick(frames);
+    // retryWithExponentialBackoff: lowercased = "retrywithexponentialbackoff"
+    // Not in WRAPPER_FN_NAMES (has "retrywithbackoff" but not "retrywithexponentialbackoff")
+    // Adjacent → fast-path
+    assert.equal(r!.functionName, "retryWithExponentialBackoff");
+  });
+});
+
+describe("e2e: Python testing frameworks calling AI", () => {
+  const frame = (fileName: string, functionName: string) => ({
+    fileName, functionName, lineNumber: 10, columnNumber: 0,
+  });
+  const pick = (frames: ReturnType<typeof frame>[]) => {
+    const filtered = filterFrames(frames);
+    const ctx = getFilterContext(frames, filtered);
+    return findBusinessLogicFrame(filtered, ctx);
+  };
+
+  it("pytest fixture providing AI client", () => {
+    const frames = [
+      frame("/venv/lib/python3.11/site-packages/openai/_client.py", "self._request"),
+      frame("tests/conftest.py", "ai_client"),
+      frame("tests/test_chat.py", "test_chat_response"),
+    ];
+    const r = pick(frames);
+    assert.equal(r!.functionName, "ai_client");
+  });
+
+  it("unittest.TestCase method", () => {
+    const frames = [
+      frame("/venv/lib/python3.11/site-packages/anthropic/_client.py", "self._post"),
+      frame("tests/test_integration.py", "TestAI.test_completion"),
+    ];
+    const r = pick(frames);
+    assert.equal(r!.functionName, "TestAI.test_completion");
+  });
+
+  it("hypothesis property test", () => {
+    const frames = [
+      frame("/venv/lib/python3.11/site-packages/openai/_client.py", "self._request"),
+      frame("tests/property_tests.py", "test_api_idempotent"),
+    ];
+    const r = pick(frames);
+    assert.equal(r!.functionName, "test_api_idempotent");
+  });
+});
+
+describe("e2e: Node.js testing frameworks calling AI", () => {
+  const frame = (fileName: string, functionName: string) => ({
+    fileName, functionName, lineNumber: 10, columnNumber: 0,
+  });
+  const pick = (frames: ReturnType<typeof frame>[]) => {
+    const filtered = filterFrames(frames);
+    const ctx = getFilterContext(frames, filtered);
+    return findBusinessLogicFrame(filtered, ctx);
+  };
+
+  it("Vitest test function", () => {
+    const frames = [
+      frame("node_modules/openai/src/core.ts", "makeRequest"),
+      frame("src/__tests__/ai.test.ts", "should_generate_text"),
+    ];
+    const r = pick(frames);
+    assert.equal(r!.functionName, "should_generate_text");
+  });
+
+  it("Jest test with mock setup", () => {
+    const frames = [
+      frame("node_modules/@anthropic-ai/sdk/src/index.ts", "create"),
+      frame("__tests__/integration/chat.test.ts", "test_real_api"),
+    ];
+    const r = pick(frames);
+    assert.equal(r!.functionName, "test_real_api");
+  });
+
+  it("Playwright E2E test calling AI endpoint", () => {
+    const frames = [
+      frame("node_modules/openai/src/core.ts", "makeRequest"),
+      frame("e2e/chat.spec.ts", "test_chat_flow"),
+    ];
+    const r = pick(frames);
+    assert.equal(r!.functionName, "test_chat_flow");
+  });
+});
+
+describe("e2e: database and queue integration patterns", () => {
+  const frame = (fileName: string, functionName: string) => ({
+    fileName, functionName, lineNumber: 10, columnNumber: 0,
+  });
+  const pick = (frames: ReturnType<typeof frame>[]) => {
+    const filtered = filterFrames(frames);
+    const ctx = getFilterContext(frames, filtered);
+    return findBusinessLogicFrame(filtered, ctx);
+  };
+
+  it("Prisma transaction callback calling AI", () => {
+    const frames = [
+      frame("node_modules/@anthropic-ai/sdk/src/index.ts", "create"),
+      frame("src/db/transactions.ts", "enrichRecord"),
+      frame("src/services/import.ts", "importBatch"),
+    ];
+    const r = pick(frames);
+    assert.equal(r!.functionName, "enrichRecord");
+  });
+
+  it("SQLAlchemy session context calling AI", () => {
+    const frames = [
+      frame("/venv/lib/python3.11/site-packages/openai/_client.py", "self._request"),
+      frame("src/db/enrichment.py", "enrich_row"),
+      frame("src/jobs/backfill.py", "backfill_descriptions"),
+    ];
+    const r = pick(frames);
+    assert.equal(r!.functionName, "enrich_row");
+  });
+
+  it("Redis pub/sub handler calling AI", () => {
+    const frames = [
+      frame("node_modules/openai/src/core.ts", "makeRequest"),
+      frame("src/pubsub/handlers.ts", "onNewMessage"),
+    ];
+    const r = pick(frames);
+    assert.equal(r!.functionName, "onNewMessage");
+  });
+
+  it("Kafka consumer calling AI", () => {
+    const frames = [
+      frame("/venv/lib/python3.11/site-packages/anthropic/_client.py", "self._post"),
+      frame("src/consumers/enricher.py", "process_event"),
+    ];
+    const r = pick(frames);
+    assert.equal(r!.functionName, "process_event");
+  });
+
+  it("RabbitMQ consumer calling AI", () => {
+    const frames = [
+      frame("node_modules/@anthropic-ai/sdk/src/index.ts", "create"),
+      frame("src/workers/amqp-consumer.ts", "handleMessage"),
+    ];
+    const r = pick(frames);
+    assert.equal(r!.functionName, "handleMessage");
+  });
+
+  it("SQS Lambda handler", () => {
+    const frames = [
+      frame("node_modules/openai/src/core.ts", "makeRequest"),
+      frame("src/lambda/sqs-handler.ts", "processSQSEvent"),
+    ];
+    const r = pick(frames);
+    assert.equal(r!.functionName, "processSQSEvent");
+  });
+});
+
+describe("computeScores: more edge cases and distributions", () => {
+  it("50 functions with identical metrics — all same score, no NaN", () => {
+    const rows = Array.from({ length: 50 }, (_, i) => ({
+      file_name: `m${i}.py`, function_name: `f${i}`,
+      total_seen: 100, position_sum: 200, stack_depth_sum: 500, distinct_sites: "10",
+    }));
+    const graph = computeScores(rows);
+    const scores = Object.values(graph).map(e => e.score);
+    const first = scores[0];
+    for (const s of scores) {
+      assert.equal(s, first, `all scores should be equal, got ${s} vs ${first}`);
+      assert.ok(!isNaN(s));
+    }
+  });
+
+  it("bimodal distribution — cluster at edges", () => {
+    // 5 functions at position 0 (wrappers) and 5 at position 1 (entry points)
+    const rows = [
+      ...Array.from({ length: 5 }, (_, i) => ({
+        file_name: `wrapper${i}.py`, function_name: `wrap${i}`,
+        total_seen: 1000, position_sum: 0, stack_depth_sum: 10000, distinct_sites: "50",
+      })),
+      ...Array.from({ length: 5 }, (_, i) => ({
+        file_name: `entry${i}.py`, function_name: `main${i}`,
+        total_seen: 1000, position_sum: 9000, stack_depth_sum: 10000, distinct_sites: "50",
+      })),
+      // One lonely business logic function in the middle
+      {
+        file_name: "feature.py", function_name: "doWork",
+        total_seen: 10, position_sum: 50, stack_depth_sum: 100, distinct_sites: "1",
+      },
+    ];
+    const graph = computeScores(rows);
+    // doWork should win: low frequency, ideal position (0.5/9≈mid), low diversity
+    const doWork = graph["feature.py:doWork"];
+    assert.ok(doWork);
+    for (const [key, entry] of Object.entries(graph)) {
+      if (key !== "feature.py:doWork") {
+        assert.ok(doWork.score <= entry.score,
+          `doWork (${doWork.score}) should beat ${key} (${entry.score})`);
+      }
+    }
+  });
+
+  it("power law distribution — one function dominates", () => {
+    const rows = [
+      { file_name: "hot.py", function_name: "utility", total_seen: 10000, position_sum: 5000, stack_depth_sum: 50000, distinct_sites: "100" },
+      { file_name: "warm.py", function_name: "helper", total_seen: 100, position_sum: 300, stack_depth_sum: 500, distinct_sites: "20" },
+      { file_name: "cold.py", function_name: "feature", total_seen: 5, position_sum: 15, stack_depth_sum: 25, distinct_sites: "1" },
+    ];
+    const graph = computeScores(rows);
+    assert.ok(graph["cold.py:feature"].score < graph["warm.py:helper"].score);
+    assert.ok(graph["warm.py:helper"].score < graph["hot.py:utility"].score);
+  });
+
+  it("all diversity = 0 — diversity component has no effect", () => {
+    const rows = [
+      { file_name: "a.py", function_name: "fast", total_seen: 1, position_sum: 3, stack_depth_sum: 5, distinct_sites: "0" },
+      { file_name: "b.py", function_name: "slow", total_seen: 100, position_sum: 300, stack_depth_sum: 500, distinct_sites: "0" },
+    ];
+    const graph = computeScores(rows);
+    // Same diversity (0). Score differs by frequency and position.
+    assert.ok(isFinite(graph["a.py:fast"].score));
+    assert.ok(isFinite(graph["b.py:slow"].score));
+  });
+
+  it("position_sum > stack_depth_sum — clamped to 1.0", () => {
+    const rows = [
+      { file_name: "weird.py", function_name: "fn", total_seen: 10, position_sum: 1000, stack_depth_sum: 50, distinct_sites: "1" },
+    ];
+    const graph = computeScores(rows);
+    assert.ok(graph["weird.py:fn"].score >= 0);
+    assert.ok(graph["weird.py:fn"].score <= 10);
+  });
+});
+
+describe("groupIntoFeatures: more dispatcher and dedup scenarios", () => {
+  const mkFrame = (fileName: string, functionName: string) => ({
+    fileName, functionName, lineNumber: 10, columnNumber: 0,
+  });
+  const mkStat = (key: string, cost: number, calls = 1): any => ({
+    call_site_key: key, file_name: "f.py", function_name: "fn", line_number: 10,
+    total_calls: calls, total_cost_usd: cost, total_input_tokens: 100,
+    total_output_tokens: 50, avg_duration_ms: 200, avg_ttft: null, avg_tps: null,
+  });
+
+  it("20 call sites — mixed dispatcher and non-dispatcher", () => {
+    // 10 under one root (shared child = not dispatcher) + 10 under another (unique children = dispatcher)
+    const stats = Array.from({ length: 20 }, (_, i) => mkStat(`cs${i}`, i + 1));
+    const events = [
+      ...Array.from({ length: 10 }, (_, i) => ({
+        call_site_key: `cs${i}`,
+        frames: [mkFrame(`leaf${i}.py`, `leaf${i}`), mkFrame("shared.py", "common"), mkFrame("cohesive.py", "cohesiveRoot")],
+      })),
+      ...Array.from({ length: 10 }, (_, i) => ({
+        call_site_key: `cs${10 + i}`,
+        frames: [mkFrame(`leaf${10 + i}.py`, `leaf${10 + i}`), mkFrame(`unique${i}.py`, `unique${i}`), mkFrame("dispatcher.py", "dispatch")],
+      })),
+    ];
+    const features = groupIntoFeatures(stats, events);
+    // cohesiveRoot: 10 call sites sharing "common" child → NOT dispatcher → 1 group
+    // dispatch: 10 call sites with 10 unique children → IS dispatcher → 10 sub-groups
+    assert.equal(features.length, 11); // 1 cohesive + 10 split
+  });
+
+  it("cost aggregation across multiple models for same call site", () => {
+    const stats = [
+      { ...mkStat("cs1", 5, 10), model: "gpt-4o" } as any,
+      { ...mkStat("cs1", 3, 20), model: "gpt-4o-mini" } as any,
+    ];
+    const events = [{ call_site_key: "cs1", frames: [mkFrame("a.py", "fn"), mkFrame("root.py", "entry")] }];
+    const features = groupIntoFeatures(stats, events);
+    assert.equal(features.length, 1);
+    assert.equal(features[0].totalCost, 8); // 5 + 3
+    assert.equal(features[0].totalCalls, 30); // 10 + 20
+  });
+
+  it("deeply nested structure — shared children prevent split", () => {
+    // 27 call sites: 3 groups of 9, each sharing child frames
+    // Because children are shared (not unique), the root is NOT a dispatcher
+    const stats = Array.from({ length: 27 }, (_, i) => mkStat(`cs${i}`, 1));
+    const events = Array.from({ length: 27 }, (_, i) => {
+      const l1 = Math.floor(i / 9);
+      const l2 = Math.floor((i % 9) / 3);
+      return {
+        call_site_key: `cs${i}`,
+        frames: [
+          mkFrame(`leaf${i}.py`, `leaf${i}`),
+          mkFrame(`mid${l2}.py`, `mid${l2}`),  // 3 mid values, each shared by 9 call sites
+          mkFrame(`top${l1}.py`, `top${l1}`),  // 3 top values, each shared by 9 call sites
+          mkFrame("root.py", "dispatch"),
+        ],
+      };
+    });
+    const features = groupIntoFeatures(stats, events);
+    // root has 3 children (top0, top1, top2), each with 9 call sites
+    // uniqueChildren = 0 (all have size > 1) → NOT a dispatcher → stays as 1 group
+    assert.equal(features.length, 1);
+  });
+});
+
+describe("findBusinessLogicFrame: no filterCtx (backward compat)", () => {
+  const frame = (fileName: string, functionName: string) => ({
+    fileName, functionName, lineNumber: 10, columnNumber: 0,
+  });
+
+  it("works without filterCtx — old behavior", () => {
+    const frames = [
+      frame("sdk.py", "call"),
+      frame("handler.py", "process"),
+      frame("main.py", "entry"),
+    ];
+    // No filterCtx → no fast-path → old "different file" heuristic
+    const r = findBusinessLogicFrame(frames);
+    // "call" is wrapper → skip. handler.py:process is different file → picked
+    assert.equal(r!.functionName, "process");
+  });
+
+  it("works with empty filterCtx", () => {
+    const ctx = { removedFiles: new Set<string>(), frame0WasAdjacentToSDK: false };
+    const r = findBusinessLogicFrame([
+      frame("a.py", "fn1"), frame("b.py", "fn2"),
+    ], ctx);
+    assert.equal(r!.functionName, "fn2");
+  });
+
+  it("filterCtx with adjacency=true but frame[0] is wrapper → skips fast-path", () => {
+    const ctx = { removedFiles: new Set(["sdk.py"]), frame0WasAdjacentToSDK: true };
+    const r = findBusinessLogicFrame([
+      frame("utils.py", "retry"),  // wrapper name → fast-path skips
+      frame("handler.py", "process"),
+    ], ctx);
+    assert.equal(r!.functionName, "process");
+  });
+
+  it("filterCtx with adjacency=true but frame[0] is service layer → skips fast-path", () => {
+    const ctx = { removedFiles: new Set(["sdk.py"]), frame0WasAdjacentToSDK: true };
+    const r = findBusinessLogicFrame([
+      frame("src/services/ai.ts", "complete"),  // service layer → fast-path skips
+      frame("src/features/chat.ts", "handleChat"),
+    ], ctx);
+    assert.equal(r!.functionName, "handleChat");
+  });
+
+  it("filterCtx with adjacency=true and clean frame[0] → fast-path triggers", () => {
+    const ctx = { removedFiles: new Set(["sdk.py"]), frame0WasAdjacentToSDK: true };
+    const r = findBusinessLogicFrame([
+      frame("src/handler.py", "processRequest"),  // clean user code
+      frame("src/router.py", "dispatch"),
+    ], ctx);
+    assert.equal(r!.functionName, "processRequest");
+  });
+});

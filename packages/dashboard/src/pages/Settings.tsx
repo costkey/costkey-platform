@@ -161,29 +161,69 @@ function TeamTab({ org, members, user, refresh }: {
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteRole, setInviteRole] = useState("member");
   const [inviting, setInviting] = useState(false);
-  const [invites, setInvites] = useState<Array<{ id: string; email: string; role: string; status: string; expires_at: string }>>([]);
+  const [inviteError, setInviteError] = useState<string | null>(null);
+  const [invites, setInvites] = useState<Array<{
+    id: string; email: string; role: string; status: string;
+    expires_at: string; accepted_at: string | null; revoked_at: string | null;
+    resent_count: number; invited_by_name: string;
+  }>>([]);
+  const [busyInviteId, setBusyInviteId] = useState<string | null>(null);
 
-  useEffect(() => {
-    fetch("/api/v1/team/invites", { credentials: "include" })
-      .then((r) => r.json())
-      .then((d) => setInvites(d.invites ?? []))
-      .catch(() => {});
-  }, []);
+  const loadInvites = async () => {
+    const res = await fetch("/api/v1/team/invites", { credentials: "include" });
+    if (res.ok) {
+      const d = await res.json();
+      setInvites(d.invites ?? []);
+    }
+  };
+
+  useEffect(() => { void loadInvites(); }, []);
 
   const sendInvite = async () => {
-    if (!inviteEmail.trim()) return;
+    const trimmed = inviteEmail.trim();
+    if (!trimmed) return;
     setInviting(true);
+    setInviteError(null);
     const res = await fetch("/api/v1/team/invite", {
       method: "POST", credentials: "include",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email: inviteEmail, role: inviteRole }),
+      body: JSON.stringify({ email: trimmed, role: inviteRole }),
     });
+    const data = await res.json().catch(() => ({}));
     if (res.ok) {
       setInviteEmail("");
-      const data = await res.json();
-      setInvites((prev) => [{ id: data.id, email: data.email, role: data.role, status: "pending", expires_at: data.expiresAt }, ...prev]);
+      await loadInvites();
+    } else {
+      setInviteError(data.error ?? "Failed to send invite");
     }
     setInviting(false);
+  };
+
+  const revokeInvite = async (id: string, email: string) => {
+    if (!confirm(`Revoke the invite for ${email}?`)) return;
+    setBusyInviteId(id);
+    const res = await fetch(`/api/v1/team/invites/${id}`, {
+      method: "DELETE", credentials: "include",
+    });
+    if (res.ok) await loadInvites();
+    else {
+      const data = await res.json().catch(() => ({}));
+      alert(data.error ?? "Failed to revoke invite");
+    }
+    setBusyInviteId(null);
+  };
+
+  const resendInvite = async (id: string) => {
+    setBusyInviteId(id);
+    const res = await fetch(`/api/v1/team/invites/${id}/resend`, {
+      method: "POST", credentials: "include",
+    });
+    if (res.ok) await loadInvites();
+    else {
+      const data = await res.json().catch(() => ({}));
+      alert(data.error ?? "Failed to resend invite");
+    }
+    setBusyInviteId(null);
   };
 
   const removeMember = async (memberId: string, name: string) => {
@@ -215,6 +255,9 @@ function TeamTab({ org, members, user, refresh }: {
               <Send size={13} /> Invite
             </button>
           </div>
+          {inviteError && (
+            <div className="mt-3 text-xs text-red font-mono">{inviteError}</div>
+          )}
         </div>
       )}
 
@@ -254,25 +297,62 @@ function TeamTab({ org, members, user, refresh }: {
         </div>
       </div>
 
-      {/* Pending invites */}
-      {invites.filter((i) => i.status === "pending").length > 0 && (
+      {/* Invites (pending, expired, revoked — accepted ones become members) */}
+      {invites.filter((i) => i.status !== "accepted").length > 0 && (
         <div className="bg-surface-raised border border-border rounded-sm">
           <div className="p-4 border-b border-border">
-            <h3 className="text-sm font-medium text-text-secondary uppercase tracking-wider">Pending Invites</h3>
+            <h3 className="text-sm font-medium text-text-secondary uppercase tracking-wider">Invites</h3>
           </div>
           <div className="divide-y divide-border/50">
-            {invites.filter((i) => i.status === "pending").map((invite) => (
-              <div key={invite.id} className="flex items-center gap-4 px-4 py-3">
-                <div className="w-8 h-8 rounded-full bg-surface-overlay flex items-center justify-center font-mono text-xs text-text-muted">?</div>
-                <div className="flex-1">
-                  <div className="font-mono text-sm text-text-secondary">{invite.email}</div>
-                  <div className="font-mono text-xs text-text-muted">Expires {new Date(invite.expires_at).toLocaleDateString()}</div>
+            {invites.filter((i) => i.status !== "accepted").map((invite) => {
+              const isPending = invite.status === "pending";
+              const isExpired = invite.status === "expired";
+              const isRevoked = invite.status === "revoked";
+              const statusColors = isPending
+                ? "bg-amber-muted text-amber"
+                : isExpired
+                ? "bg-surface-overlay text-text-muted"
+                : "bg-red/10 text-red";
+              const subtitle = isPending
+                ? `Expires ${new Date(invite.expires_at).toLocaleDateString()}${invite.resent_count ? ` · resent ${invite.resent_count}×` : ""}`
+                : isExpired
+                ? `Expired ${new Date(invite.expires_at).toLocaleDateString()}`
+                : isRevoked && invite.revoked_at
+                ? `Revoked ${new Date(invite.revoked_at).toLocaleDateString()}`
+                : invite.status;
+              return (
+                <div key={invite.id} className="flex items-center gap-4 px-4 py-3">
+                  <div className="w-8 h-8 rounded-full bg-surface-overlay flex items-center justify-center font-mono text-xs text-text-muted">?</div>
+                  <div className="flex-1 min-w-0">
+                    <div className="font-mono text-sm text-text-secondary truncate">{invite.email}</div>
+                    <div className="font-mono text-xs text-text-muted">{subtitle}</div>
+                  </div>
+                  <span className={`font-mono text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-sm ${statusColors}`}>
+                    {invite.status}
+                  </span>
+                  {isOwner && (isPending || isExpired) && (
+                    <button
+                      onClick={() => resendInvite(invite.id)}
+                      disabled={busyInviteId === invite.id}
+                      className="font-mono text-xs text-text-secondary hover:text-text-primary px-2 py-1 border border-border rounded-sm cursor-pointer disabled:opacity-50"
+                      title={isExpired ? "Send a fresh invite" : "Re-send invite email with a new token"}
+                    >
+                      Resend
+                    </button>
+                  )}
+                  {isOwner && isPending && (
+                    <button
+                      onClick={() => revokeInvite(invite.id, invite.email)}
+                      disabled={busyInviteId === invite.id}
+                      aria-label="Revoke invite"
+                      className="text-text-muted hover:text-red transition-colors cursor-pointer p-1 disabled:opacity-50"
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  )}
                 </div>
-                <span className="font-mono text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-sm bg-amber-muted text-amber">
-                  pending
-                </span>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}

@@ -15,6 +15,7 @@ export default function Login() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const ghError = searchParams.get("error");
+  const inviteToken = searchParams.get("invite");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -29,7 +30,11 @@ export default function Login() {
     if (ok) {
       // If this is a CLI auth flow, redirect to the CLI auth handler
       const isCli = searchParams.get("cli") === "1";
-      navigate(isCli ? "/cli-auth" : "/");
+      // If arrived from an invite link, send the user back to finish acceptance
+      const invite = searchParams.get("invite");
+      if (isCli) navigate("/cli-auth");
+      else if (invite) navigate(`/invite/${invite}`);
+      else navigate("/");
     }
   };
 
@@ -47,7 +52,7 @@ export default function Login() {
 
           {/* GitHub button */}
           <a
-            href="/auth/github"
+            href={inviteToken ? `/auth/github?invite=${encodeURIComponent(inviteToken)}` : "/auth/github"}
             className="w-full flex items-center justify-center gap-2 bg-surface-overlay hover:bg-surface-hover border border-border rounded-sm px-3 py-3 text-sm text-text-primary font-medium mb-4 transition-colors"
           >
             <GitHubIcon size={16} />

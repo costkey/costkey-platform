@@ -53,7 +53,7 @@ export default function Signup() {
 
           {/* GitHub button */}
           <a
-            href="/auth/github"
+            href={inviteToken ? `/auth/github?invite=${encodeURIComponent(inviteToken)}` : "/auth/github"}
             className="w-full flex items-center justify-center gap-2 bg-surface-overlay hover:bg-surface-hover border border-border rounded-sm px-3 py-3 text-sm text-text-primary font-medium mb-4 transition-colors"
           >
             <GitHubIcon size={16} />

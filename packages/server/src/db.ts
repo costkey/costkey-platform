@@ -145,8 +145,23 @@ export async function initDatabase(): Promise<void> {
       token TEXT NOT NULL UNIQUE,
       status TEXT NOT NULL DEFAULT 'pending',
       created_at TIMESTAMPTZ DEFAULT NOW(),
-      expires_at TIMESTAMPTZ NOT NULL
+      expires_at TIMESTAMPTZ NOT NULL,
+      accepted_at TIMESTAMPTZ,
+      accepted_by TEXT REFERENCES users(id),
+      revoked_at TIMESTAMPTZ,
+      revoked_by TEXT REFERENCES users(id),
+      resent_count INTEGER NOT NULL DEFAULT 0,
+      last_resent_at TIMESTAMPTZ
     );
+    -- Enterprise audit columns (migration-safe for existing deployments)
+    ALTER TABLE team_invites ADD COLUMN IF NOT EXISTS accepted_at TIMESTAMPTZ;
+    ALTER TABLE team_invites ADD COLUMN IF NOT EXISTS accepted_by TEXT REFERENCES users(id);
+    ALTER TABLE team_invites ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMPTZ;
+    ALTER TABLE team_invites ADD COLUMN IF NOT EXISTS revoked_by TEXT REFERENCES users(id);
+    ALTER TABLE team_invites ADD COLUMN IF NOT EXISTS resent_count INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE team_invites ADD COLUMN IF NOT EXISTS last_resent_at TIMESTAMPTZ;
+    CREATE INDEX IF NOT EXISTS idx_team_invites_org_status ON team_invites(org_id, status);
+    CREATE INDEX IF NOT EXISTS idx_team_invites_email_status ON team_invites(LOWER(email), status);
     CREATE TABLE IF NOT EXISTS alerts (
       id TEXT PRIMARY KEY,
       org_id TEXT NOT NULL REFERENCES orgs(id),

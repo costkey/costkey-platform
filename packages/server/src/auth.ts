@@ -77,11 +77,11 @@ export function createAuthRouter(): Router {
   // POST /auth/signup
   router.post("/auth/signup", async (req: Request, res: Response) => {
     try {
-      const { email, password, name, orgName, inviteToken } = req.body as {
+      const { email: rawEmail, password, name, orgName, inviteToken } = req.body as {
         email: string; password: string; name: string; orgName?: string; inviteToken?: string;
       };
 
-      if (!email || !password || !name) {
+      if (!rawEmail || !password || !name) {
         res.status(400).json({ error: "Missing email, password, or name" });
         return;
       }
@@ -89,6 +89,8 @@ export function createAuthRouter(): Router {
         res.status(400).json({ error: "Password must be at least 8 characters" });
         return;
       }
+
+      const email = rawEmail.trim().toLowerCase();
 
       const existing = await db.select({ id: users.id }).from(users).where(eq(users.email, email));
       if (existing.length > 0) {
@@ -110,43 +112,96 @@ export function createAuthRouter(): Router {
       let orgSlug = "";
 
       if (inviteToken) {
+        // Fail closed — an invalid/expired/revoked invite must not silently
+        // degrade into a new-org signup (that's a silent-authorization bug).
+
+        // Sweep so an expired-but-not-flipped row gets the right status
+        await pool.query(
+          "UPDATE team_invites SET status = 'expired' WHERE status = 'pending' AND expires_at < NOW()",
+        );
+
         const invite = await pool.query(
-          "SELECT * FROM team_invites WHERE token = $1 AND status = 'pending'",
+          "SELECT id, org_id, email, role, status, expires_at FROM team_invites WHERE token = $1",
           [inviteToken],
         );
 
-        if (invite.rows.length > 0) {
-          const inv = invite.rows[0];
-          if (new Date(inv.expires_at) > new Date()) {
-            // Join the inviter's org
-            orgId = inv.org_id;
-            role = inv.role;
-            joinedViaInvite = true;
+        if (invite.rows.length === 0) {
+          res.status(400).json({ error: "Invalid invite token", code: "invite_not_found" });
+          return;
+        }
 
-            const orgResult = await pool.query("SELECT name, slug FROM orgs WHERE id = $1", [orgId]);
-            displayOrgName = orgResult.rows[0]?.name ?? "Team";
-            orgSlug = orgResult.rows[0]?.slug ?? "team";
+        const inv = invite.rows[0];
 
-            const client = await pool.connect();
-            try {
-              await client.query("BEGIN");
-              await client.query("INSERT INTO users (id, email, password_hash, name, org_id, role) VALUES ($1,$2,$3,$4,$5,$6)", [userId, email, passwordHash, name, orgId, role]);
-              await client.query("UPDATE team_invites SET status = 'accepted' WHERE id = $1", [inv.id]);
-              await client.query("COMMIT");
-            } catch (err) {
-              await client.query("ROLLBACK");
-              throw err;
-            } finally {
-              client.release();
-            }
+        if (inv.status === "revoked") {
+          res.status(410).json({ error: "This invite was revoked", code: "invite_revoked" });
+          return;
+        }
+        if (inv.status === "accepted") {
+          res.status(409).json({ error: "This invite has already been used", code: "invite_already_accepted" });
+          return;
+        }
+        if (inv.status === "expired") {
+          res.status(410).json({ error: "This invite has expired. Ask an admin to resend it.", code: "invite_expired" });
+          return;
+        }
+        if (inv.status !== "pending") {
+          res.status(400).json({ error: "Invalid invite state" });
+          return;
+        }
 
-            // Get first project for DSN
-            const proj = await pool.query("SELECT id, auth_key FROM projects WHERE org_id = $1 LIMIT 1", [orgId]);
-            if (proj.rows.length > 0) {
-              projectId = proj.rows[0].id;
-              authKey = proj.rows[0].auth_key;
-            }
+        // Enforce email match so the token can't be used to create an account
+        // under a different identity than the one that was invited.
+        if (email !== inv.email.trim().toLowerCase()) {
+          res.status(403).json({
+            error: `This invite was sent to ${inv.email}. Sign up with that email to accept it.`,
+            code: "invite_email_mismatch",
+          });
+          return;
+        }
+
+        orgId = inv.org_id;
+        role = inv.role;
+        joinedViaInvite = true;
+
+        const orgResult = await pool.query("SELECT name, slug FROM orgs WHERE id = $1", [orgId]);
+        displayOrgName = orgResult.rows[0]?.name ?? "Team";
+        orgSlug = orgResult.rows[0]?.slug ?? "team";
+
+        const client = await pool.connect();
+        try {
+          await client.query("BEGIN");
+          // User must exist before we can set accepted_by (FK constraint)
+          await client.query(
+            "INSERT INTO users (id, email, password_hash, name, org_id, role) VALUES ($1,$2,$3,$4,$5,$6)",
+            [userId, email, passwordHash, name, orgId, role],
+          );
+          // Atomic: only flip the invite if it's still pending — if two signup
+          // requests race we want exactly one to win.
+          const accepted = await client.query(
+            `UPDATE team_invites
+             SET status = 'accepted', accepted_at = NOW(), accepted_by = $1
+             WHERE id = $2 AND status = 'pending'
+             RETURNING id`,
+            [userId, inv.id],
+          );
+          if (accepted.rows.length === 0) {
+            await client.query("ROLLBACK");
+            res.status(409).json({ error: "Invite is no longer available", code: "invite_race" });
+            return;
           }
+          await client.query("COMMIT");
+        } catch (err) {
+          await client.query("ROLLBACK");
+          throw err;
+        } finally {
+          client.release();
+        }
+
+        // Get first project for DSN
+        const proj = await pool.query("SELECT id, auth_key FROM projects WHERE org_id = $1 LIMIT 1", [orgId]);
+        if (proj.rows.length > 0) {
+          projectId = proj.rows[0].id;
+          authKey = proj.rows[0].auth_key;
         }
       }
 
@@ -316,11 +371,22 @@ export function createAuthRouter(): Router {
   const GITHUB_CLIENT_ID = process.env["GITHUB_CLIENT_ID"] ?? "";
   const GITHUB_CLIENT_SECRET = process.env["GITHUB_CLIENT_SECRET"] ?? "";
 
-  // GET /auth/github — redirect to GitHub OAuth
-  router.get("/auth/github", (_req: Request, res: Response) => {
+  // GET /auth/github — redirect to GitHub OAuth. Accepts ?invite=TOKEN so the
+  // callback can consume the invite (avoids creating a new org for an invited user).
+  router.get("/auth/github", (req: Request, res: Response) => {
     if (!GITHUB_CLIENT_ID) {
       res.status(503).json({ error: "GitHub OAuth not configured" });
       return;
+    }
+    const invite = typeof req.query["invite"] === "string" ? req.query["invite"] : null;
+    if (invite) {
+      // Short-lived, HttpOnly cookie — survives the GitHub round-trip.
+      res.cookie("ck_invite_token", invite, {
+        maxAge: 10 * 60 * 1000,
+        httpOnly: true,
+        sameSite: "lax",
+        secure: process.env["NODE_ENV"] === "production",
+      });
     }
     const params = new URLSearchParams({
       client_id: GITHUB_CLIENT_ID,
@@ -360,81 +426,143 @@ export function createAuthRouter(): Router {
       const ghUser = await ghUserRes.json() as { id: number; login: string; name: string | null; email: string | null; avatar_url: string };
 
       // Fetch primary email if not public
-      let email = ghUser.email;
-      if (!email) {
+      let emailRaw = ghUser.email;
+      if (!emailRaw) {
         const emailsRes = await fetch("https://api.github.com/user/emails", {
           headers: { Authorization: `Bearer ${tokenData.access_token}`, "User-Agent": "CostKey" },
         });
         const emails = await emailsRes.json() as Array<{ email: string; primary: boolean; verified: boolean }>;
         const primary = emails.find((e) => e.primary && e.verified);
-        email = primary?.email ?? emails[0]?.email ?? null;
+        emailRaw = primary?.email ?? emails[0]?.email ?? null;
       }
 
-      if (!email) {
+      if (!emailRaw) {
         res.redirect("/login?error=github_no_email");
         return;
       }
 
+      const email = emailRaw.trim().toLowerCase();
       const githubId = String(ghUser.id);
       const name = ghUser.name ?? ghUser.login;
       const pool = getPool();
+
+      // Pull any pending invite handoff from the pre-redirect cookie, then clear it.
+      const inviteToken: string | null = req.cookies?.["ck_invite_token"] ?? null;
+      res.clearCookie("ck_invite_token");
+
+      // Validate the invite now so we can route new users straight into the
+      // inviting org (no throwaway org/project). Invalid invites fall through
+      // to normal sign-in; the /invite/TOKEN page will surface the error.
+      type ValidInvite = { id: string; orgId: string; role: string; email: string };
+      let validInvite: ValidInvite | null = null;
+      if (inviteToken) {
+        await pool.query(
+          "UPDATE team_invites SET status = 'expired' WHERE status = 'pending' AND expires_at < NOW()",
+        );
+        const inv = (await pool.query(
+          "SELECT id, org_id, email, role, status FROM team_invites WHERE token = $1",
+          [inviteToken],
+        )).rows[0];
+        if (inv && inv.status === "pending" && inv.email.trim().toLowerCase() === email) {
+          validInvite = { id: inv.id, orgId: inv.org_id, role: inv.role, email: inv.email };
+        }
+      }
 
       // Check if user exists by github_id
       let userRow = (await pool.query("SELECT id, email, name, org_id, role FROM users WHERE github_id = $1", [githubId])).rows[0];
 
       // Check if user exists by email (link accounts)
       if (!userRow) {
-        userRow = (await pool.query("SELECT id, email, name, org_id, role FROM users WHERE email = $1", [email])).rows[0];
+        userRow = (await pool.query("SELECT id, email, name, org_id, role FROM users WHERE LOWER(email) = $1", [email])).rows[0];
         if (userRow) {
           // Link GitHub to existing account
           await pool.query("UPDATE users SET github_id = $1 WHERE id = $2", [githubId, userRow.id]);
         }
       }
 
-      // Create new user + org if not found
+      // Create new user if not found. If we have a valid invite, join the
+      // inviter's org directly instead of spawning a new one.
       if (!userRow) {
         const userId = `usr_${randomId()}`;
-        const orgId = `org_${randomId()}`;
-        const projectId = `proj_${randomId()}`;
-        const authKey = `ck_${randomId()}`;
-        const orgSlug = slugify(name);
 
-        const client = await pool.connect();
-        try {
-          await client.query("BEGIN");
-          await client.query("INSERT INTO orgs (id, name, slug) VALUES ($1, $2, $3)", [orgId, `${name}'s Org`, orgSlug]);
-          await client.query(
-            "INSERT INTO users (id, email, password_hash, name, org_id, role, github_id) VALUES ($1,$2,NULL,$3,$4,'owner',$5)",
-            [userId, email, name, orgId, githubId],
-          );
-          await client.query("INSERT INTO projects (id, name, org_id, auth_key) VALUES ($1,$2,$3,$4)", [projectId, "Default Project", orgId, authKey]);
-          await client.query("COMMIT");
-        } catch (err) {
-          await client.query("ROLLBACK");
-          throw err;
-        } finally {
-          client.release();
+        if (validInvite) {
+          const client = await pool.connect();
+          try {
+            await client.query("BEGIN");
+            await client.query(
+              "INSERT INTO users (id, email, password_hash, name, org_id, role, github_id) VALUES ($1,$2,NULL,$3,$4,$5,$6)",
+              [userId, email, name, validInvite.orgId, validInvite.role, githubId],
+            );
+            const accepted = await client.query(
+              `UPDATE team_invites
+               SET status = 'accepted', accepted_at = NOW(), accepted_by = $1
+               WHERE id = $2 AND status = 'pending'
+               RETURNING id`,
+              [userId, validInvite.id],
+            );
+            if (accepted.rows.length === 0) {
+              // Raced with a concurrent accept — roll back and fall through to
+              // normal new-org creation so the user isn't stranded.
+              await client.query("ROLLBACK");
+              validInvite = null;
+            } else {
+              await client.query("COMMIT");
+              userRow = { id: userId, email, name, org_id: validInvite.orgId, role: validInvite.role };
+            }
+          } catch (err) {
+            await client.query("ROLLBACK");
+            throw err;
+          } finally {
+            client.release();
+          }
         }
 
-        userRow = { id: userId, email, name, org_id: orgId, role: "owner" };
+        if (!userRow) {
+          const orgId = `org_${randomId()}`;
+          const projectId = `proj_${randomId()}`;
+          const authKey = `ck_${randomId()}`;
+          const orgSlug = slugify(name);
 
-        // Redirect new users to onboarding
-        const token = jwt.sign({ userId, orgId, role: "owner" }, JWT_SECRET, { expiresIn: JWT_EXPIRES });
+          const client = await pool.connect();
+          try {
+            await client.query("BEGIN");
+            await client.query("INSERT INTO orgs (id, name, slug) VALUES ($1, $2, $3)", [orgId, `${name}'s Org`, orgSlug]);
+            await client.query(
+              "INSERT INTO users (id, email, password_hash, name, org_id, role, github_id) VALUES ($1,$2,NULL,$3,$4,'owner',$5)",
+              [userId, email, name, orgId, githubId],
+            );
+            await client.query("INSERT INTO projects (id, name, org_id, auth_key) VALUES ($1,$2,$3,$4)", [projectId, "Default Project", orgId, authKey]);
+            await client.query("COMMIT");
+          } catch (err) {
+            await client.query("ROLLBACK");
+            throw err;
+          } finally {
+            client.release();
+          }
+
+          userRow = { id: userId, email, name, org_id: orgId, role: "owner" };
+          const ghDsn = `https://${authKey}@app.costkey.dev/${projectId}`;
+          void sendWelcomeEmail(email, name, ghDsn);
+        }
+
+        const token = jwt.sign({ userId: userRow.id, orgId: userRow.org_id, role: userRow.role }, JWT_SECRET, { expiresIn: JWT_EXPIRES });
         setTokenCookie(res, token);
-        const ghDsn = `https://${authKey}@app.costkey.dev/${projectId}`;
-        void sendWelcomeEmail(email, name, ghDsn);
-        res.redirect("/onboarding");
+
+        // Invited users land in the dashboard; fresh signups go through onboarding.
+        res.redirect(validInvite ? "/" : "/onboarding");
         return;
       }
 
-      // Existing user — just sign in
+      // Existing user — sign in. If an invite token came through, send them to
+      // the Invite page so accept-invite runs with our centralized validation
+      // (email-match, sole-owner guard, atomic status flip).
       const token = jwt.sign(
         { userId: userRow.id, orgId: userRow.org_id, role: userRow.role },
         JWT_SECRET,
         { expiresIn: JWT_EXPIRES },
       );
       setTokenCookie(res, token);
-      res.redirect("/");
+      res.redirect(inviteToken ? `/invite/${inviteToken}` : "/");
     } catch (err) {
       console.error("[costkey] GitHub OAuth callback error:", err);
       res.redirect("/login?error=github_failed");

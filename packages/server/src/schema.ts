@@ -99,9 +99,16 @@ export const teamInvites = pgTable("team_invites", {
   role: text("role").notNull().default("member"),
   invitedBy: text("invited_by").notNull().references(() => users.id),
   token: text("token").notNull().unique(),
+  // status ∈ { pending, accepted, expired, revoked }
   status: text("status").notNull().default("pending"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  acceptedAt: timestamp("accepted_at", { withTimezone: true }),
+  acceptedBy: text("accepted_by").references(() => users.id),
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  revokedBy: text("revoked_by").references(() => users.id),
+  resentCount: integer("resent_count").notNull().default(0),
+  lastResentAt: timestamp("last_resent_at", { withTimezone: true }),
 });
 
 export const alerts = pgTable("alerts", {

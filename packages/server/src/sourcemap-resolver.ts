@@ -127,9 +127,10 @@ async function translateWithMaps(
 
     return { translated, wasTranslated };
   } finally {
-    // Destroy consumers to free WASM memory
+    // Destroy consumers to free WASM memory. Only v0.7+ (WASM-backed) defines
+    // destroy(); v0.6 has no-op cleanup, so guard with optional chaining.
     for (const consumer of consumers.values()) {
-      consumer.destroy();
+      (consumer as { destroy?: () => void }).destroy?.();
     }
   }
 }

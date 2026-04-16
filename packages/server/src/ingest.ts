@@ -61,6 +61,11 @@ const INTERNAL_FILE_PATTERNS = [
   "costkey/packages/sdk/",
   "node_modules/costkey/",
   "site-packages/costkey/",
+  // Webpack/Turbopack bundles the SDK into a single chunk where the original
+  // node_modules path is encoded into the FILENAME (not a directory). The
+  // node_modules/costkey/ pattern above misses these. Catch them by name.
+  "node_modules_costkey",
+  "_costkey_dist",
 ];
 
 /** Function name patterns that indicate library internals (Python/Node SDK methods) */
@@ -96,6 +101,13 @@ const INTERNAL_FN_PATTERNS = [
   "<anonymous>",
   "run_until_complete",
   "_run_once",
+  // CostKey SDK patched fetch — V8 names it `G.globalThis.fetch` after webpack
+  // minification. Guarantees we never attribute to ourselves even if the file
+  // path check fails to recognize a new bundler output layout.
+  "G.globalThis.fetch",
+  // Future-proof marker for when the SDK starts naming its patched fetch
+  // explicitly (e.g. __ck_patched_fetch__).
+  "__ck_",
 ];
 
 export function filterFrames(frames: StackFrame[]): StackFrame[] {
@@ -109,7 +121,15 @@ export function filterFrames(frames: StackFrame[]): StackFrame[] {
     if (file.includes("/lib/python") && !file.includes("site-packages")) return false;
     return true;
   });
-  return filtered.length > 0 ? filtered : frames;
+  // Intentional: when every frame is internal (SDK/framework/runtime), return
+  // an empty array instead of falling back to the raw stack. Downstream
+  // findBusinessLogicFrame → undefined → bl_function stays null.
+  //
+  // The prior fallback caused catastrophic misattribution for webpack/serverless
+  // deployments where the user's code is bundled so deeply that it never appears
+  // in a 10-frame stack trace. We'd attribute costs to our own SDK's patched
+  // fetch or the user's framework internals. Honest "unknown" beats loud wrong.
+  return filtered;
 }
 
 /**

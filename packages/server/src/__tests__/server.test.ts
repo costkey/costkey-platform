@@ -236,15 +236,40 @@ describe("filterFrames", () => {
     assert.equal(result.length, 0);
   });
 
-  it("all frames filtered returns original (fallback)", () => {
+  it("all frames filtered returns empty (no silent misattribution)", () => {
     const frames = [
       frame("/usr/lib/python3/site-packages/anthropic/_client.py", "create"),
       frame("/usr/lib/python3/site-packages/httpx/_client.py", "send"),
     ];
     const result = filterFrames(frames);
-    // Should return original frames as fallback
-    assert.equal(result.length, 2);
-    assert.deepEqual(result, frames);
+    // Returning raw frames here previously caused us to attribute costs to
+    // the user's SDK/framework internals when their real code was beyond
+    // V8's 10-frame default stackTraceLimit. Empty is correct: the caller
+    // resolves bl_function to null, which is honest.
+    assert.equal(result.length, 0);
+  });
+
+  it("webpack-bundled costkey SDK is filtered (Next.js regression)", () => {
+    // /var/task/.next/server/chunks/node_modules_costkey_dist_index_*.js — this
+    // is what webpack produces for a Next.js + serverless deploy. The original
+    // "node_modules/costkey/" substring filter missed it because webpack
+    // collapses the directory tree into an underscored filename.
+    const frames = [
+      frame("/var/task/.next/server/chunks/node_modules_costkey_dist_index_f7890fbe.js", "G.globalThis.fetch"),
+      frame("/var/task/node_modules/next/dist/compiled/next-server/app-route-turbo.runtime.prod.js", "n"),
+    ];
+    const result = filterFrames(frames);
+    assert.equal(result.length, 0, "all frames are framework/SDK — should be filtered");
+  });
+
+  it("SDK patched fetch is recognized by function name even when file path is novel", () => {
+    const frames = [
+      frame("/some/new/bundler/output.js", "G.globalThis.fetch"),
+      frame("/app/handlers/chat.ts", "handleChat"),
+    ];
+    const result = filterFrames(frames);
+    assert.equal(result.length, 1);
+    assert.equal(result[0].functionName, "handleChat");
   });
 
   it("function name patterns filtered", () => {
@@ -913,16 +938,50 @@ describe("end-to-end: filterFrames → findBusinessLogicFrame", () => {
     assert.equal(result!.functionName, "generate_summary");
   });
 
-  it("Stack with ONLY SDK internals — filterFrames falls back to original", () => {
+  it("Stack with ONLY SDK internals — returns undefined (no silent misattribution)", () => {
     const frames = [
       frame("/home/user/venv/lib/python3.11/site-packages/anthropic/_client.py", "self._post", 220),
       frame("/home/user/venv/lib/python3.11/site-packages/httpx/_client.py", "send", 827),
       frame("/home/user/venv/lib/python3.11/site-packages/httpcore/_sync/connection_pool.py", "handle_request", 262),
     ];
     const result = pick(frames);
-    // All filtered → filterFrames returns original frames
-    // All from different files. frame[0] = anthropic. First different: httpx → picked
-    assert.ok(result, "should return something even with all-SDK stack");
+    // All frames are SDK internals. Previously we would attribute to `httpx.send`
+    // or similar. Correct behavior: admit we don't know. Downstream writes
+    // bl_function=null, dashboard shows "unknown — SDK may be bundled by webpack".
+    assert.equal(result, undefined, "all-SDK stack should resolve to undefined");
+  });
+
+  it("Next.js regression — Next.js serverless stack attributes to null, not G.globalThis.fetch", () => {
+    // Exact stack from a user's event ba46b90... (2026-04-16 07:01:45 UTC).
+    // User: user@example.com, project proj_example... (customer).
+    // Before fix: attributed to "G.globalThis.fetch" (our own SDK!) or "dedupeFetch"
+    // (Next.js internal). After fix: undefined → bl_function=null.
+    const frames = [
+      frame("/var/task/.next/server/chunks/node_modules_costkey_dist_index_f7890fbe.js", null, 1),
+      frame("/var/task/.next/server/chunks/node_modules_costkey_dist_index_f7890fbe.js", "G.globalThis.fetch", 1),
+      frame("/var/task/node_modules/next/dist/compiled/next-server/app-route-turbo.runtime.prod.js", "n", 5),
+      frame("/var/task/node_modules/next/dist/compiled/next-server/app-route-turbo.runtime.prod.js", "q", 5),
+      frame("/var/task/node_modules/next/dist/compiled/next-server/app-route-turbo.runtime.prod.js", null, 5),
+      frame("/var/task/node_modules/next/dist/server/lib/trace/tracer.js", null, 185),
+      frame("/var/task/node_modules/next/dist/server/lib/router-utils/instrumentation-node-extensions.js", null, 93),
+      frame("/var/task/node_modules/next/dist/compiled/@opentelemetry/api/index.js", "NoopContextManager.with", 1),
+      frame("/var/task/node_modules/next/dist/compiled/@opentelemetry/api/index.js", "ContextAPI.with", 1),
+    ];
+    const result = pick(frames);
+    assert.equal(result, undefined, "entire stack is SDK+Next+OTel — must not misattribute");
+  });
+
+  it("Next.js regression — Next.js dev server stack with dedupeFetch attributes to null", () => {
+    // Exact stack pattern from event f8c34ee6... (2026-04-16 12:47:44 UTC).
+    // Path contains .next/dev/server/chunks/ssr/ → matches .next/ filter.
+    // Before fix: fallback returned raw stack, dedupeFetch (frame[0]) won.
+    const frames = [
+      frame("/Users/dev/Documents/GitHub/example-app/.next/dev/server/chunks/ssr/node_modules_e2d1c5df._.js", "dedupeFetch", 19564),
+      frame("/Users/dev/Documents/GitHub/example-app/.next/dev/server/chunks/ssr/node_modules_costkey_dist_index_72c50427._.js", "G.globalThis.fetch", 13206),
+      frame("/Users/dev/Documents/GitHub/example-app/.next/dev/server/chunks/[turbopack]_runtime.js", null, 1),
+    ];
+    const result = pick(frames);
+    assert.equal(result, undefined, "bundled Next.js stack with no user frames — must not misattribute");
   });
 
   it("Mixed Python + Node frames — picks direct SDK caller", () => {
@@ -3789,12 +3848,12 @@ describe("filterFrames: combination patterns", () => {
     assert.equal(r.length, 3);
   });
 
-  it("all frames are internal — returns original as fallback", () => {
+  it("all frames are internal — returns empty (no misattribution)", () => {
     const r = filterFrames(mk(
       ["/venv/lib/python3.11/site-packages/openai/_client.py", "request"],
       ["/venv/lib/python3.11/site-packages/httpx/_client.py", "send"],
     ));
-    assert.equal(r.length, 2); // fallback: returns original
+    assert.equal(r.length, 0); // correct: honest unknown > silent misattribution
   });
 
   it("mixed file + fn pattern filtering", () => {

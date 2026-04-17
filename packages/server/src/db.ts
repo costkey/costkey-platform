@@ -173,6 +173,37 @@ export async function initDatabase(): Promise<void> {
       enabled BOOLEAN DEFAULT TRUE,
       created_at TIMESTAMPTZ DEFAULT NOW()
     );
+
+    -- Per-project budgets + rate limits. One row per project; keys cascade.
+    CREATE TABLE IF NOT EXISTS project_budgets (
+      project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+      daily_usd DOUBLE PRECISION,
+      monthly_usd DOUBLE PRECISION,
+      calls_per_minute INTEGER,
+      tokens_per_minute INTEGER,
+      on_exceed TEXT NOT NULL DEFAULT 'warn',
+      alert_email TEXT,
+      alert_webhook_url TEXT,
+      alert_thresholds DOUBLE PRECISION[] NOT NULL DEFAULT ARRAY[0.5, 0.8, 1.0],
+      enabled BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    -- Dedupe table so we don't fire the same threshold alert repeatedly
+    -- within the same daily/monthly window. Unique constraint enforces.
+    CREATE TABLE IF NOT EXISTS budget_alert_firings (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      scope TEXT NOT NULL,
+      threshold DOUBLE PRECISION NOT NULL,
+      window_key TEXT NOT NULL,
+      fired_at TIMESTAMPTZ DEFAULT NOW(),
+      spent_usd DOUBLE PRECISION NOT NULL,
+      limit_usd DOUBLE PRECISION NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_budget_alert_fired_once
+      ON budget_alert_firings(project_id, scope, threshold, window_key);
     CREATE TABLE IF NOT EXISTS alert_history (
       id TEXT PRIMARY KEY,
       alert_id TEXT NOT NULL REFERENCES alerts(id),

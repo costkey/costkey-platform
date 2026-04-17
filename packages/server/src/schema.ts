@@ -111,6 +111,44 @@ export const teamInvites = pgTable("team_invites", {
   lastResentAt: timestamp("last_resent_at", { withTimezone: true }),
 });
 
+// ── Per-project budgets and rate limits ──────────────────────────────
+// A project has at most one budget row. Hard caps are in USD. onExceed tells
+// the SDK what to do when a cap is hit. alertThresholds are multiplied
+// against daily/monthly limits to decide when the server fires alerts.
+export const projectBudgets = pgTable("project_budgets", {
+  projectId: text("project_id").primaryKey().references(() => projects.id, { onDelete: "cascade" }),
+  dailyUsd: doublePrecision("daily_usd"),
+  monthlyUsd: doublePrecision("monthly_usd"),
+  callsPerMinute: integer("calls_per_minute"),
+  tokensPerMinute: integer("tokens_per_minute"),
+  // 'throw' | 'warn' | 'block' — applied client-side when SDK fetches config
+  onExceed: text("on_exceed").notNull().default("warn"),
+  alertEmail: text("alert_email"),
+  alertWebhookUrl: text("alert_webhook_url"),
+  // Default: fire at 50%, 80%, 100% of each cap
+  alertThresholds: doublePrecision("alert_thresholds").array().notNull().default([0.5, 0.8, 1.0]),
+  enabled: boolean("enabled").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+});
+
+// Tracks which budget thresholds have already been alerted in the current
+// window, so we don't fire the same 80%-daily alert every 10 minutes.
+// Cleared nightly for daily rows and monthly for monthly rows.
+export const budgetAlertFirings = pgTable("budget_alert_firings", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  scope: text("scope").notNull(),        // 'daily' | 'monthly'
+  threshold: doublePrecision("threshold").notNull(),  // e.g. 0.8
+  // ISO date bucket: '2026-04-17' for daily, '2026-04' for monthly
+  windowKey: text("window_key").notNull(),
+  firedAt: timestamp("fired_at", { withTimezone: true }).defaultNow(),
+  spentUsd: doublePrecision("spent_usd").notNull(),
+  limitUsd: doublePrecision("limit_usd").notNull(),
+}, (t) => [
+  uniqueIndex("idx_budget_alert_fired_once").on(t.projectId, t.scope, t.threshold, t.windowKey),
+]);
+
 export const alerts = pgTable("alerts", {
   id: text("id").primaryKey(),
   orgId: text("org_id").notNull().references(() => orgs.id),

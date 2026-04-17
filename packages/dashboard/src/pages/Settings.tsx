@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Settings as SettingsIcon, Users, Key, Bell, Copy, Check, RotateCw, LogOut, Plus, Trash2, Send, Shield, Server, Pencil, X } from "lucide-react";
+import { Settings as SettingsIcon, Users, Key, Bell, Copy, Check, RotateCw, LogOut, Plus, Trash2, Send, Shield, Server, Pencil, X, DollarSign } from "lucide-react";
 import { useAuth } from "../contexts/AuthContext";
 import { getCustomProviders, createCustomProvider, updateCustomProvider, deleteCustomProvider } from "../api";
 import type { CustomProvider } from "../api";
@@ -7,7 +7,7 @@ import type { CustomProvider } from "../api";
 export default function Settings() {
   const { user, org, projects, members, logout, refresh } = useAuth();
   const [copied, setCopied] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<"project" | "team" | "providers" | "alerts" | "account">("project");
+  const [activeTab, setActiveTab] = useState<"project" | "team" | "providers" | "budgets" | "alerts" | "account">("project");
 
   const copy = (text: string, key: string) => {
     navigator.clipboard.writeText(text);
@@ -19,6 +19,7 @@ export default function Settings() {
     { id: "project" as const, label: "Projects & Keys", icon: <Key size={14} /> },
     { id: "team" as const, label: "Team", icon: <Users size={14} /> },
     { id: "providers" as const, label: "Custom Providers", icon: <Server size={14} /> },
+    { id: "budgets" as const, label: "Budgets", icon: <DollarSign size={14} /> },
     { id: "alerts" as const, label: "Alerts", icon: <Bell size={14} /> },
     { id: "account" as const, label: "Account", icon: <SettingsIcon size={14} /> },
   ];
@@ -44,6 +45,7 @@ export default function Settings() {
       {activeTab === "project" && <ProjectsTab projects={projects} copied={copied} copy={copy} refresh={refresh} />}
       {activeTab === "team" && <TeamTab org={org} members={members} user={user} refresh={refresh} />}
       {activeTab === "providers" && <CustomProvidersTab projects={projects} />}
+      {activeTab === "budgets" && <BudgetsTab projects={projects} userRole={user?.role ?? "member"} />}
       {activeTab === "alerts" && <AlertsTab />}
       {activeTab === "account" && <AccountTab user={user} org={org} logout={logout} />}
     </div>
@@ -350,6 +352,302 @@ function TeamTab({ org, members, user, refresh }: {
                       <Trash2 size={12} />
                     </button>
                   )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Budgets Tab ──
+interface BudgetConfig {
+  project_id: string;
+  daily_usd: number | null;
+  monthly_usd: number | null;
+  calls_per_minute: number | null;
+  tokens_per_minute: number | null;
+  on_exceed: "throw" | "warn" | "block";
+  alert_email: string | null;
+  alert_webhook_url: string | null;
+  alert_thresholds: number[];
+  enabled: boolean;
+}
+interface BudgetStatus {
+  daily: { spent: number; limit: number | null; pct: number | null };
+  monthly: { spent: number; limit: number | null; pct: number | null };
+  callsPerMinute: { observed: number; limit: number | null };
+  tokensPerMinute: { observed: number; limit: number | null };
+}
+
+function SpendBar({ label, spent, limit, pct }: { label: string; spent: number; limit: number | null; pct: number | null }) {
+  if (limit == null) {
+    return (
+      <div className="flex items-center justify-between px-4 py-3 border border-border rounded-sm bg-surface">
+        <span className="text-xs font-mono uppercase tracking-wider text-text-muted">{label}</span>
+        <span className="text-sm font-mono text-text-muted">${spent.toFixed(2)} (no limit)</span>
+      </div>
+    );
+  }
+  const p = Math.min(1, pct ?? spent / limit);
+  const over = p >= 1;
+  const warn = p >= 0.8 && !over;
+  const color = over ? "bg-red" : warn ? "bg-amber" : "bg-accent";
+  return (
+    <div className="px-4 py-3 border border-border rounded-sm bg-surface">
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-xs font-mono uppercase tracking-wider text-text-muted">{label}</span>
+        <span className={`text-sm font-mono ${over ? "text-red" : warn ? "text-amber" : "text-text-primary"}`}>
+          ${spent.toFixed(2)} / ${limit.toFixed(2)} ({Math.round(p * 100)}%)
+        </span>
+      </div>
+      <div className="h-1.5 bg-surface-overlay rounded-sm overflow-hidden">
+        <div className={`h-full ${color} transition-all`} style={{ width: `${Math.min(100, p * 100)}%` }} />
+      </div>
+    </div>
+  );
+}
+
+function BudgetsTab({ projects, userRole }: {
+  projects: Array<{ id: string; name: string; authKey: string; createdAt: string }>;
+  userRole: string;
+}) {
+  const canEdit = userRole === "owner" || userRole === "admin";
+  const [selectedId, setSelectedId] = useState<string>(projects[0]?.id ?? "");
+  const [config, setConfig] = useState<BudgetConfig | null>(null);
+  const [status, setStatus] = useState<BudgetStatus | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saveMsg, setSaveMsg] = useState<string | null>(null);
+  const [firings, setFirings] = useState<Array<{
+    id: string; scope: string; threshold: number; window_key: string; fired_at: string; spent_usd: number; limit_usd: number;
+  }>>([]);
+
+  // Form state
+  const [dailyUsd, setDailyUsd] = useState("");
+  const [monthlyUsd, setMonthlyUsd] = useState("");
+  const [callsPerMinute, setCallsPerMinute] = useState("");
+  const [tokensPerMinute, setTokensPerMinute] = useState("");
+  const [onExceed, setOnExceed] = useState<"throw" | "warn" | "block">("warn");
+  const [alertEmail, setAlertEmail] = useState("");
+  const [alertWebhook, setAlertWebhook] = useState("");
+  const [enabled, setEnabled] = useState(true);
+
+  const load = async (projectId: string) => {
+    if (!projectId) return;
+    setLoading(true);
+    try {
+      const [budgetRes, firingsRes] = await Promise.all([
+        fetch(`/api/v1/projects/${projectId}/budget`, { credentials: "include" }),
+        fetch(`/api/v1/projects/${projectId}/budget/firings`, { credentials: "include" }),
+      ]);
+      if (budgetRes.ok) {
+        const d = await budgetRes.json() as { config: BudgetConfig | null; status: BudgetStatus };
+        setConfig(d.config);
+        setStatus(d.status);
+        setDailyUsd(d.config?.daily_usd != null ? String(d.config.daily_usd) : "");
+        setMonthlyUsd(d.config?.monthly_usd != null ? String(d.config.monthly_usd) : "");
+        setCallsPerMinute(d.config?.calls_per_minute != null ? String(d.config.calls_per_minute) : "");
+        setTokensPerMinute(d.config?.tokens_per_minute != null ? String(d.config.tokens_per_minute) : "");
+        setOnExceed(d.config?.on_exceed ?? "warn");
+        setAlertEmail(d.config?.alert_email ?? "");
+        setAlertWebhook(d.config?.alert_webhook_url ?? "");
+        setEnabled(d.config?.enabled ?? true);
+      }
+      if (firingsRes.ok) {
+        const f = await firingsRes.json() as { firings: typeof firings };
+        setFirings(f.firings);
+      }
+    } finally { setLoading(false); }
+  };
+
+  useEffect(() => { void load(selectedId); }, [selectedId]);
+
+  const save = async () => {
+    setSaving(true);
+    setSaveMsg(null);
+    try {
+      const res = await fetch(`/api/v1/projects/${selectedId}/budget`, {
+        method: "PUT", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          dailyUsd: dailyUsd === "" ? null : Number(dailyUsd),
+          monthlyUsd: monthlyUsd === "" ? null : Number(monthlyUsd),
+          callsPerMinute: callsPerMinute === "" ? null : Number(callsPerMinute),
+          tokensPerMinute: tokensPerMinute === "" ? null : Number(tokensPerMinute),
+          onExceed,
+          alertEmail: alertEmail || null,
+          alertWebhookUrl: alertWebhook || null,
+          enabled,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setSaveMsg("Saved");
+        await load(selectedId);
+        setTimeout(() => setSaveMsg(null), 2000);
+      } else {
+        setSaveMsg(data.error ?? "Failed to save");
+      }
+    } finally { setSaving(false); }
+  };
+
+  const remove = async () => {
+    if (!confirm("Remove budget configuration? Alerts will stop firing.")) return;
+    const res = await fetch(`/api/v1/projects/${selectedId}/budget`, { method: "DELETE", credentials: "include" });
+    if (res.ok) await load(selectedId);
+  };
+
+  if (projects.length === 0) {
+    return <div className="text-sm text-text-muted">Create a project first to configure budgets.</div>;
+  }
+
+  return (
+    <div className="flex flex-col gap-5">
+      {/* Project picker */}
+      <div className="flex items-center gap-3">
+        <label className="text-xs font-mono uppercase tracking-wider text-text-muted">Project</label>
+        <select
+          value={selectedId}
+          onChange={(e) => setSelectedId(e.target.value)}
+          className="bg-surface border border-border rounded-sm px-3 py-2 text-sm text-text-primary font-mono cursor-pointer"
+        >
+          {projects.map((p) => (<option key={p.id} value={p.id}>{p.name}</option>))}
+        </select>
+        {loading && <span className="text-xs text-text-muted font-mono">loading...</span>}
+      </div>
+
+      {/* Live spend bars */}
+      {status && (
+        <div className="flex flex-col gap-2">
+          <SpendBar label="Daily spend" spent={status.daily.spent} limit={status.daily.limit} pct={status.daily.pct} />
+          <SpendBar label="Monthly spend" spent={status.monthly.spent} limit={status.monthly.limit} pct={status.monthly.pct} />
+          {(status.callsPerMinute.limit || status.tokensPerMinute.limit) && (
+            <div className="grid grid-cols-2 gap-2">
+              <div className="flex items-center justify-between px-4 py-3 border border-border rounded-sm bg-surface">
+                <span className="text-xs font-mono uppercase tracking-wider text-text-muted">Calls / min</span>
+                <span className="text-sm font-mono text-text-secondary">{status.callsPerMinute.observed} / {status.callsPerMinute.limit ?? "∞"}</span>
+              </div>
+              <div className="flex items-center justify-between px-4 py-3 border border-border rounded-sm bg-surface">
+                <span className="text-xs font-mono uppercase tracking-wider text-text-muted">Tokens / min</span>
+                <span className="text-sm font-mono text-text-secondary">{status.tokensPerMinute.observed.toLocaleString()} / {status.tokensPerMinute.limit?.toLocaleString() ?? "∞"}</span>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Config form */}
+      <div className="bg-surface-raised border border-border rounded-sm p-5">
+        <h3 className="text-sm font-medium text-text-primary mb-4">Budget & Rate Limits</h3>
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="block text-xs font-mono uppercase tracking-wider text-text-muted mb-1.5">Daily cap (USD)</label>
+            <input type="number" min="0" step="0.01" value={dailyUsd} onChange={(e) => setDailyUsd(e.target.value)}
+              disabled={!canEdit}
+              placeholder="e.g. 50"
+              className="w-full bg-surface border border-border rounded-sm px-3 py-2 text-sm text-text-primary font-mono focus:outline-none focus:border-border-bright disabled:opacity-50" />
+          </div>
+          <div>
+            <label className="block text-xs font-mono uppercase tracking-wider text-text-muted mb-1.5">Monthly cap (USD)</label>
+            <input type="number" min="0" step="0.01" value={monthlyUsd} onChange={(e) => setMonthlyUsd(e.target.value)}
+              disabled={!canEdit}
+              placeholder="e.g. 1000"
+              className="w-full bg-surface border border-border rounded-sm px-3 py-2 text-sm text-text-primary font-mono focus:outline-none focus:border-border-bright disabled:opacity-50" />
+          </div>
+          <div>
+            <label className="block text-xs font-mono uppercase tracking-wider text-text-muted mb-1.5">Calls / minute</label>
+            <input type="number" min="0" step="1" value={callsPerMinute} onChange={(e) => setCallsPerMinute(e.target.value)}
+              disabled={!canEdit}
+              placeholder="e.g. 60"
+              className="w-full bg-surface border border-border rounded-sm px-3 py-2 text-sm text-text-primary font-mono focus:outline-none focus:border-border-bright disabled:opacity-50" />
+          </div>
+          <div>
+            <label className="block text-xs font-mono uppercase tracking-wider text-text-muted mb-1.5">Tokens / minute</label>
+            <input type="number" min="0" step="1" value={tokensPerMinute} onChange={(e) => setTokensPerMinute(e.target.value)}
+              disabled={!canEdit}
+              placeholder="e.g. 100000"
+              className="w-full bg-surface border border-border rounded-sm px-3 py-2 text-sm text-text-primary font-mono focus:outline-none focus:border-border-bright disabled:opacity-50" />
+          </div>
+          <div className="col-span-2">
+            <label className="block text-xs font-mono uppercase tracking-wider text-text-muted mb-1.5">When exceeded (applied by SDK)</label>
+            <div className="flex gap-2">
+              {(["warn", "throw", "block"] as const).map((p) => (
+                <button key={p} disabled={!canEdit}
+                  onClick={() => setOnExceed(p)}
+                  className={`flex-1 px-3 py-2 text-xs font-mono uppercase tracking-wider border rounded-sm transition-colors disabled:opacity-50 cursor-pointer ${onExceed === p ? "border-accent bg-accent-muted text-accent" : "border-border bg-surface text-text-secondary hover:border-border-bright"}`}>
+                  {p}
+                </button>
+              ))}
+            </div>
+            <p className="text-[11px] font-mono text-text-muted mt-2">
+              <span className="text-text-secondary">warn</span>: log & proceed &middot;{" "}
+              <span className="text-text-secondary">throw</span>: raise <code>CostKeyBudgetExceeded</code> &middot;{" "}
+              <span className="text-text-secondary">block</span>: return synthetic 429 (graceful)
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* Alert channels */}
+      <div className="bg-surface-raised border border-border rounded-sm p-5">
+        <h3 className="text-sm font-medium text-text-primary mb-1">Alert channels</h3>
+        <p className="text-xs text-text-muted mb-4 font-mono">Fires at 50%, 80%, 100% of each cap. Deduped per window.</p>
+        <div className="flex flex-col gap-3">
+          <div>
+            <label className="block text-xs font-mono uppercase tracking-wider text-text-muted mb-1.5">Webhook URL (Slack-compatible)</label>
+            <input type="url" value={alertWebhook} onChange={(e) => setAlertWebhook(e.target.value)}
+              disabled={!canEdit}
+              placeholder="https://hooks.slack.com/services/..."
+              className="w-full bg-surface border border-border rounded-sm px-3 py-2 text-sm text-text-primary font-mono focus:outline-none focus:border-border-bright disabled:opacity-50" />
+          </div>
+          <div>
+            <label className="block text-xs font-mono uppercase tracking-wider text-text-muted mb-1.5">Email</label>
+            <input type="email" value={alertEmail} onChange={(e) => setAlertEmail(e.target.value)}
+              disabled={!canEdit}
+              placeholder="oncall@yourcompany.com"
+              className="w-full bg-surface border border-border rounded-sm px-3 py-2 text-sm text-text-primary font-mono focus:outline-none focus:border-border-bright disabled:opacity-50" />
+          </div>
+          <label className="flex items-center gap-2 text-xs font-mono text-text-secondary cursor-pointer mt-1">
+            <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} disabled={!canEdit} />
+            Enabled
+          </label>
+        </div>
+      </div>
+
+      {canEdit && (
+        <div className="flex items-center gap-3">
+          <button onClick={save} disabled={saving}
+            className="bg-accent hover:bg-accent-hover text-black font-mono text-xs px-5 py-2.5 rounded-sm transition-colors disabled:opacity-50 cursor-pointer">
+            {saving ? "Saving..." : "Save"}
+          </button>
+          {config && (
+            <button onClick={remove}
+              className="bg-surface-overlay hover:bg-surface-hover text-text-secondary font-mono text-xs px-4 py-2.5 rounded-sm border border-border transition-colors cursor-pointer">
+              Remove budget
+            </button>
+          )}
+          {saveMsg && <span className={`text-xs font-mono ${saveMsg === "Saved" ? "text-green" : "text-red"}`}>{saveMsg}</span>}
+        </div>
+      )}
+
+      {/* Alert history */}
+      {firings.length > 0 && (
+        <div className="bg-surface-raised border border-border rounded-sm">
+          <div className="p-4 border-b border-border">
+            <h3 className="text-sm font-medium text-text-secondary uppercase tracking-wider">Recent alerts</h3>
+          </div>
+          <div className="divide-y divide-border/50">
+            {firings.slice(0, 20).map((f) => {
+              const pct = Math.round(f.threshold * 100);
+              const over = pct >= 100;
+              return (
+                <div key={f.id} className="flex items-center gap-4 px-4 py-3">
+                  <span className={`font-mono text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-sm ${over ? "bg-red/10 text-red" : pct >= 80 ? "bg-amber-muted text-amber" : "bg-surface-overlay text-text-muted"}`}>{f.scope} {pct}%</span>
+                  <span className="flex-1 font-mono text-xs text-text-secondary">${Number(f.spent_usd).toFixed(2)} / ${Number(f.limit_usd).toFixed(2)}</span>
+                  <span className="font-mono text-[10px] text-text-muted">{new Date(f.fired_at).toLocaleString()}</span>
                 </div>
               );
             })}

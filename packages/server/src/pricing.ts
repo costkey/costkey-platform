@@ -3,7 +3,7 @@
  * This is the authoritative pricing source — the SDK no longer calculates costs.
  * Source: provider pricing pages as of 2026-04.
  */
-import { filterFrames, findBusinessLogicFrame, findBusinessLogicFrameWithGraph, callGraphCache } from "./ingest.js";
+import { filterFrames, findBusinessLogicFrame, findBusinessLogicFrameWithGraph, getFilterContext, callGraphCache } from "./ingest.js";
 interface ModelPricing {
   input: number;
   output: number;
@@ -337,10 +337,11 @@ async function rebuildCallSiteStats(pool: import("pg").Pool): Promise<void> {
       ? JSON.parse(row.call_site_frames) : row.call_site_frames;
     if (!frames || frames.length === 0) continue;
     const filtered = filterFrames(frames);
+    const filterCtx = getFilterContext(frames, filtered);
     const graph = callGraphCache.get(row.project_id);
     const best = graph
-      ? findBusinessLogicFrameWithGraph(filtered, graph)
-      : findBusinessLogicFrame(filtered);
+      ? findBusinessLogicFrameWithGraph(filtered, graph, filterCtx)
+      : findBusinessLogicFrame(filtered, filterCtx);
     if (best) {
       const fn = (best.functionName ?? "").split("\n")[0].trim() || null;
       await pool.query(

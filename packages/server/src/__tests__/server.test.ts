@@ -2043,6 +2043,69 @@ describe("findBusinessLogicFrameWithGraph", () => {
     // beta has score 5 but NOT < 5, doesn't replace. Same for gamma.
     assert.equal(result?.functionName, "alpha");
   });
+
+  // Kahu regression: before this fix the picker chose `run_pipeline` over
+  // the direct AI-caller `run_l3_sonnet` because the implicit-graph formula
+  // penalizes position-0 frames (IDEAL_POSITION = 0.6). Post-filter, the
+  // position-0 frame IS the user's AI-calling function, not an SDK wrapper,
+  // so the penalty is wrong. filterCtx.frame0WasAdjacentToSDK lets us detect
+  // that case and apply an adjustment that beats deeper orchestrator frames.
+  it("frame[0] adjacent to SDK wins ties even when graph score is slightly better elsewhere", () => {
+    const frames = [
+      frame("/app/ai/sonnet_l3.py", "run_l3_sonnet", 52),
+      frame("/app/rules/engine.py", "run_rules", 134),
+      frame("/app/pipeline/orchestrator.py", "run_pipeline", 348),
+    ];
+    // Graph scores: frame[0] penalized for position (IDEAL_POSITION=0.6);
+    // run_pipeline scores better on position alone. Before fix: picker
+    // would prefer run_pipeline (6.0 < 6.1). After fix: F0_ADJUSTMENT = -3
+    // pulls frame[0] to 3.1, winning cleanly.
+    const graph: Record<string, { score: number; fan_in: number; calls_ai: boolean }> = {
+      "app/ai/sonnet_l3.py:run_l3_sonnet": { score: 6.1, fan_in: 1, calls_ai: true },
+      "app/rules/engine.py:run_rules": { score: 6.5, fan_in: 2, calls_ai: false },
+      "app/pipeline/orchestrator.py:run_pipeline": { score: 6.0, fan_in: 5, calls_ai: false },
+    };
+    const filterCtx = { removedFiles: new Set(["anthropic/_client.py"]), frame0WasAdjacentToSDK: true };
+    const result = findBusinessLogicFrameWithGraph(frames, graph, filterCtx);
+    assert.equal(result?.functionName, "run_l3_sonnet");
+  });
+
+  it("frame[0] adjustment does NOT fire when frame[0] is a known wrapper", () => {
+    const frames = [
+      frame("/app/ai/anthropic_client.py", "_messages_create_with_backoff", 168),
+      frame("/app/ai/anthropic_client.py", "call_haiku", 343),
+      frame("/app/pipeline/stage2_haiku.py", "_process_file_group", 217),
+    ];
+    // `_process_file_group` is the true business logic. Adjustment should
+    // NOT apply to `_messages_create_with_backoff` because it's in the same
+    // file as `call_haiku` (wrapper pattern), plus graph rightly penalizes
+    // high-frequency wrapper functions.
+    const graph: Record<string, { score: number; fan_in: number; calls_ai: boolean }> = {
+      "app/ai/anthropic_client.py:_messages_create_with_backoff": { score: 7.8, fan_in: 50, calls_ai: true },
+      "app/ai/anthropic_client.py:call_haiku": { score: 7.0, fan_in: 20, calls_ai: true },
+      "app/pipeline/stage2_haiku.py:_process_file_group": { score: 4.0, fan_in: 3, calls_ai: false },
+    };
+    const filterCtx = { removedFiles: new Set(["anthropic/_client.py"]), frame0WasAdjacentToSDK: true };
+    const result = findBusinessLogicFrameWithGraph(frames, graph, filterCtx);
+    // F0_ADJUSTMENT would pull `_messages_create_with_backoff` to 4.8, but
+    // `_process_file_group` is 4.0. The business-logic frame still wins.
+    assert.equal(result?.functionName, "_process_file_group");
+  });
+
+  it("frame[0] adjustment does NOT fire when filterCtx is missing", () => {
+    const frames = [
+      frame("/app/ai/sonnet_l3.py", "run_l3_sonnet", 52),
+      frame("/app/pipeline/orchestrator.py", "run_pipeline", 348),
+    ];
+    const graph: Record<string, { score: number; fan_in: number; calls_ai: boolean }> = {
+      "app/ai/sonnet_l3.py:run_l3_sonnet": { score: 6.1, fan_in: 1, calls_ai: true },
+      "app/pipeline/orchestrator.py:run_pipeline": { score: 6.0, fan_in: 5, calls_ai: false },
+    };
+    // No filterCtx — preserves legacy behavior for any caller that doesn't
+    // have filter context (shouldn't exist in practice, but defensive).
+    const result = findBusinessLogicFrameWithGraph(frames, graph);
+    assert.equal(result?.functionName, "run_pipeline");
+  });
 });
 
 // ─── Sourcemap Resolver ──────────────────────────────────────────────

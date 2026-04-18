@@ -293,10 +293,28 @@ export const callGraphCache = new Map<string, Record<string, { score: number; fa
 export function findBusinessLogicFrameWithGraph(
   frames: StackFrame[],
   graph: Record<string, { score: number; fan_in: number; calls_ai: boolean }>,
+  filterCtx?: { removedFiles: Set<string>; frame0WasAdjacentToSDK: boolean },
 ): StackFrame | undefined {
   let bestFrame: StackFrame | null = null;
   let bestScore = Infinity;
   const scoredFrames: { frame: StackFrame; score: number }[] = [];
+
+  // If frame[0] sits DIRECTLY next to where we filtered out SDK frames, it's
+  // the user's AI-calling function. The graph's edge-position penalty is
+  // miscalibrated for this case — it was tuned against stacks that still
+  // include SDK wrappers, so position 0 scores badly as "SDK-adjacent."
+  // Post-filter, position 0 IS the business logic. Give it a negative score
+  // adjustment so it beats deeper frames when they'd otherwise tie.
+  //
+  // We still defer to the graph when frame[0] is a known wrapper (by name or
+  // by being in a service-layer path), because those patterns are reliable
+  // signals that an orchestrator frame will be more useful.
+  const F0_ADJUSTMENT = -3.0;
+  const f0 = frames[0];
+  const f0Qualifies = filterCtx?.frame0WasAdjacentToSDK
+    && f0
+    && !isWrapperFn(f0)
+    && !isServiceLayer(f0.fileName ?? "");
 
   const graphKeys = Object.keys(graph);
 
@@ -348,9 +366,11 @@ export function findBusinessLogicFrameWithGraph(
     }
 
     if (frameScore < Infinity) {
-      scoredFrames.push({ frame, score: frameScore });
-      if (frameScore < bestScore) {
-        bestScore = frameScore;
+      // Apply the adjacent-to-SDK bonus for frame[0] when it qualifies.
+      const effectiveScore = (frame === f0 && f0Qualifies) ? frameScore + F0_ADJUSTMENT : frameScore;
+      scoredFrames.push({ frame, score: effectiveScore });
+      if (effectiveScore < bestScore) {
+        bestScore = effectiveScore;
         bestFrame = frame;
       }
     }
@@ -503,11 +523,11 @@ export function createIngestRouter(pool: pg.Pool): Router {
             const explicitGraph = callGraphCache.get(projectId);
             let best;
             if (explicitGraph) {
-              best = findBusinessLogicFrameWithGraph(cleanFrames, explicitGraph);
+              best = findBusinessLogicFrameWithGraph(cleanFrames, explicitGraph, filterCtx);
             } else {
               const implicitGraph = await getImplicitGraph(pool, projectId);
               best = implicitGraph
-                ? findBusinessLogicFrameWithGraph(cleanFrames, implicitGraph)
+                ? findBusinessLogicFrameWithGraph(cleanFrames, implicitGraph, filterCtx)
                 : findBusinessLogicFrame(cleanFrames, filterCtx);
             }
             if (best) {

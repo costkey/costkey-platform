@@ -83,14 +83,15 @@ async function initApp() {
 
   await seedIfEmpty(pool);
 
+  // SDK router MUST be mounted BEFORE any router that uses `router.use(requireAuth)`.
+  // Those routers 401 every request passing through them, even requests whose
+  // paths they wouldn't have matched, because router.use(mw) runs unconditionally
+  // on mount. Teams, alerts, and dashboard-budgets all do this.
+  app.use(createSdkBudgetsRouter(pool));
   app.use(createAuthRouter());
   app.use(createIngestRouter(pool));
   app.use(createTeamsRouter(pool));
   app.use(createAlertsRouter(pool));
-  // SDK router MUST be mounted before the dashboard router — the dashboard
-  // router uses `router.use(requireAuth)` which 401's every request passing
-  // through it, even those targeting paths the router doesn't define.
-  app.use(createSdkBudgetsRouter(pool));
   app.use(createBudgetsRouter(pool));
   app.use(createSourcemapsRouter(pool));
   app.use(createApiRouter(pool));

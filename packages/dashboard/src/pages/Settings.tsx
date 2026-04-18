@@ -363,8 +363,19 @@ function TeamTab({ org, members, user, refresh }: {
 }
 
 // ── Budgets Tab ──
-interface BudgetConfig {
+interface BudgetStatus {
+  daily: { spent: number; limit: number | null; pct: number | null };
+  monthly: { spent: number; limit: number | null; pct: number | null };
+  callsPerMinute: { observed: number; limit: number | null };
+  tokensPerMinute: { observed: number; limit: number | null };
+}
+
+interface BudgetRule {
+  id: string;
   project_id: string;
+  name: string | null;
+  scope_model: string | null;
+  scope_function: string | null;
   daily_usd: number | null;
   monthly_usd: number | null;
   calls_per_minute: number | null;
@@ -374,41 +385,48 @@ interface BudgetConfig {
   alert_webhook_url: string | null;
   alert_thresholds: number[];
   enabled: boolean;
-}
-interface BudgetStatus {
-  daily: { spent: number; limit: number | null; pct: number | null };
-  monthly: { spent: number; limit: number | null; pct: number | null };
-  callsPerMinute: { observed: number; limit: number | null };
-  tokensPerMinute: { observed: number; limit: number | null };
+  status: BudgetStatus;
 }
 
-function SpendBar({ label, spent, limit, pct }: { label: string; spent: number; limit: number | null; pct: number | null }) {
-  if (limit == null) {
-    return (
-      <div className="flex items-center justify-between px-4 py-3 border border-border rounded-sm bg-surface">
-        <span className="text-xs font-mono uppercase tracking-wider text-text-muted">{label}</span>
-        <span className="text-sm font-mono text-text-muted">${spent.toFixed(2)} (no limit)</span>
-      </div>
-    );
-  }
-  const p = Math.min(1, pct ?? spent / limit);
-  const over = p >= 1;
-  const warn = p >= 0.8 && !over;
+function describeScope(r: Pick<BudgetRule, "scope_model" | "scope_function">): string {
+  const bits: string[] = [];
+  if (r.scope_model) bits.push(`model: ${r.scope_model}`);
+  if (r.scope_function) bits.push(`fn: ${r.scope_function}`);
+  return bits.length === 0 ? "Project-wide" : bits.join(" · ");
+}
+
+function MiniBar({ spent, limit, label }: { spent: number; limit: number | null; label: string }) {
+  if (limit == null) return null;
+  const p = Math.min(1, spent / limit);
+  const over = p >= 1, warn = p >= 0.8 && !over;
   const color = over ? "bg-red" : warn ? "bg-amber" : "bg-accent";
   return (
-    <div className="px-4 py-3 border border-border rounded-sm bg-surface">
-      <div className="flex items-center justify-between mb-2">
-        <span className="text-xs font-mono uppercase tracking-wider text-text-muted">{label}</span>
-        <span className={`text-sm font-mono ${over ? "text-red" : warn ? "text-amber" : "text-text-primary"}`}>
-          ${spent.toFixed(2)} / ${limit.toFixed(2)} ({Math.round(p * 100)}%)
-        </span>
+    <div className="flex items-center gap-2 min-w-0">
+      <span className="text-[10px] font-mono uppercase tracking-wider text-text-muted shrink-0">{label}</span>
+      <div className="flex-1 h-1 bg-surface-overlay rounded-sm overflow-hidden min-w-[40px]">
+        <div className={`h-full ${color}`} style={{ width: `${Math.min(100, p * 100)}%` }} />
       </div>
-      <div className="h-1.5 bg-surface-overlay rounded-sm overflow-hidden">
-        <div className={`h-full ${color} transition-all`} style={{ width: `${Math.min(100, p * 100)}%` }} />
-      </div>
+      <span className={`text-[10px] font-mono shrink-0 ${over ? "text-red" : warn ? "text-amber" : "text-text-secondary"}`}>
+        ${spent.toFixed(2)}/${limit.toFixed(2)}
+      </span>
     </div>
   );
 }
+
+const EMPTY_FORM = {
+  name: "",
+  scopeModel: "",
+  scopeFunction: "",
+  dailyUsd: "",
+  monthlyUsd: "",
+  callsPerMinute: "",
+  tokensPerMinute: "",
+  onExceed: "warn" as "warn" | "throw" | "block",
+  alertEmail: "",
+  alertWebhook: "",
+  enabled: true,
+};
+type RuleForm = typeof EMPTY_FORM;
 
 function BudgetsTab({ projects, userRole }: {
   projects: Array<{ id: string; name: string; authKey: string; createdAt: string }>;
@@ -416,87 +434,100 @@ function BudgetsTab({ projects, userRole }: {
 }) {
   const canEdit = userRole === "owner" || userRole === "admin";
   const [selectedId, setSelectedId] = useState<string>(projects[0]?.id ?? "");
-  const [config, setConfig] = useState<BudgetConfig | null>(null);
-  const [status, setStatus] = useState<BudgetStatus | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [saveMsg, setSaveMsg] = useState<string | null>(null);
+  const [rules, setRules] = useState<BudgetRule[]>([]);
   const [firings, setFirings] = useState<Array<{
-    id: string; scope: string; threshold: number; window_key: string; fired_at: string; spent_usd: number; limit_usd: number;
+    id: string; rule_id: string; rule_name: string | null;
+    scope_model: string | null; scope_function: string | null;
+    scope: string; threshold: number; window_key: string;
+    fired_at: string; spent_usd: number; limit_usd: number;
   }>>([]);
-
-  // Form state
-  const [dailyUsd, setDailyUsd] = useState("");
-  const [monthlyUsd, setMonthlyUsd] = useState("");
-  const [callsPerMinute, setCallsPerMinute] = useState("");
-  const [tokensPerMinute, setTokensPerMinute] = useState("");
-  const [onExceed, setOnExceed] = useState<"throw" | "warn" | "block">("warn");
-  const [alertEmail, setAlertEmail] = useState("");
-  const [alertWebhook, setAlertWebhook] = useState("");
-  const [enabled, setEnabled] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [editing, setEditing] = useState<string | "new" | null>(null);
+  const [form, setForm] = useState<RuleForm>(EMPTY_FORM);
+  const [saveMsg, setSaveMsg] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
 
   const load = async (projectId: string) => {
     if (!projectId) return;
     setLoading(true);
     try {
-      const [budgetRes, firingsRes] = await Promise.all([
-        fetch(`/api/v1/projects/${projectId}/budget`, { credentials: "include" }),
+      const [rRes, fRes] = await Promise.all([
+        fetch(`/api/v1/projects/${projectId}/budget/rules`, { credentials: "include" }),
         fetch(`/api/v1/projects/${projectId}/budget/firings`, { credentials: "include" }),
       ]);
-      if (budgetRes.ok) {
-        const d = await budgetRes.json() as { config: BudgetConfig | null; status: BudgetStatus };
-        setConfig(d.config);
-        setStatus(d.status);
-        setDailyUsd(d.config?.daily_usd != null ? String(d.config.daily_usd) : "");
-        setMonthlyUsd(d.config?.monthly_usd != null ? String(d.config.monthly_usd) : "");
-        setCallsPerMinute(d.config?.calls_per_minute != null ? String(d.config.calls_per_minute) : "");
-        setTokensPerMinute(d.config?.tokens_per_minute != null ? String(d.config.tokens_per_minute) : "");
-        setOnExceed(d.config?.on_exceed ?? "warn");
-        setAlertEmail(d.config?.alert_email ?? "");
-        setAlertWebhook(d.config?.alert_webhook_url ?? "");
-        setEnabled(d.config?.enabled ?? true);
+      if (rRes.ok) {
+        const d = await rRes.json() as { rules: BudgetRule[] };
+        setRules(d.rules);
       }
-      if (firingsRes.ok) {
-        const f = await firingsRes.json() as { firings: typeof firings };
-        setFirings(f.firings);
+      if (fRes.ok) {
+        const d = await fRes.json() as { firings: typeof firings };
+        setFirings(d.firings);
       }
     } finally { setLoading(false); }
   };
 
   useEffect(() => { void load(selectedId); }, [selectedId]);
 
+  const startEdit = (r: BudgetRule) => {
+    setEditing(r.id);
+    setForm({
+      name: r.name ?? "",
+      scopeModel: r.scope_model ?? "",
+      scopeFunction: r.scope_function ?? "",
+      dailyUsd: r.daily_usd != null ? String(r.daily_usd) : "",
+      monthlyUsd: r.monthly_usd != null ? String(r.monthly_usd) : "",
+      callsPerMinute: r.calls_per_minute != null ? String(r.calls_per_minute) : "",
+      tokensPerMinute: r.tokens_per_minute != null ? String(r.tokens_per_minute) : "",
+      onExceed: r.on_exceed,
+      alertEmail: r.alert_email ?? "",
+      alertWebhook: r.alert_webhook_url ?? "",
+      enabled: r.enabled,
+    });
+  };
+  const startNew = () => { setEditing("new"); setForm(EMPTY_FORM); };
+  const cancel = () => { setEditing(null); setSaveMsg(null); };
+
   const save = async () => {
     setSaving(true);
     setSaveMsg(null);
     try {
-      const res = await fetch(`/api/v1/projects/${selectedId}/budget`, {
-        method: "PUT", credentials: "include",
+      const body = JSON.stringify({
+        name: form.name || null,
+        scopeModel: form.scopeModel || null,
+        scopeFunction: form.scopeFunction || null,
+        dailyUsd: form.dailyUsd === "" ? null : Number(form.dailyUsd),
+        monthlyUsd: form.monthlyUsd === "" ? null : Number(form.monthlyUsd),
+        callsPerMinute: form.callsPerMinute === "" ? null : Number(form.callsPerMinute),
+        tokensPerMinute: form.tokensPerMinute === "" ? null : Number(form.tokensPerMinute),
+        onExceed: form.onExceed,
+        alertEmail: form.alertEmail || null,
+        alertWebhookUrl: form.alertWebhook || null,
+        enabled: form.enabled,
+      });
+      const url = editing === "new"
+        ? `/api/v1/projects/${selectedId}/budget/rules`
+        : `/api/v1/projects/${selectedId}/budget/rules/${editing}`;
+      const method = editing === "new" ? "POST" : "PUT";
+      const res = await fetch(url, {
+        method, credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          dailyUsd: dailyUsd === "" ? null : Number(dailyUsd),
-          monthlyUsd: monthlyUsd === "" ? null : Number(monthlyUsd),
-          callsPerMinute: callsPerMinute === "" ? null : Number(callsPerMinute),
-          tokensPerMinute: tokensPerMinute === "" ? null : Number(tokensPerMinute),
-          onExceed,
-          alertEmail: alertEmail || null,
-          alertWebhookUrl: alertWebhook || null,
-          enabled,
-        }),
+        body,
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
-        setSaveMsg("Saved");
+        setEditing(null);
         await load(selectedId);
-        setTimeout(() => setSaveMsg(null), 2000);
       } else {
         setSaveMsg(data.error ?? "Failed to save");
       }
     } finally { setSaving(false); }
   };
 
-  const remove = async () => {
-    if (!confirm("Remove budget configuration? Alerts will stop firing.")) return;
-    const res = await fetch(`/api/v1/projects/${selectedId}/budget`, { method: "DELETE", credentials: "include" });
+  const remove = async (ruleId: string) => {
+    if (!confirm("Delete this rule? Alerts for it will stop firing.")) return;
+    const res = await fetch(`/api/v1/projects/${selectedId}/budget/rules/${ruleId}`, {
+      method: "DELETE", credentials: "include",
+    });
     if (res.ok) await load(selectedId);
   };
 
@@ -517,121 +548,172 @@ function BudgetsTab({ projects, userRole }: {
           {projects.map((p) => (<option key={p.id} value={p.id}>{p.name}</option>))}
         </select>
         {loading && <span className="text-xs text-text-muted font-mono">loading...</span>}
-      </div>
-
-      {/* Live spend bars */}
-      {status && (
-        <div className="flex flex-col gap-2">
-          <SpendBar label="Daily spend" spent={status.daily.spent} limit={status.daily.limit} pct={status.daily.pct} />
-          <SpendBar label="Monthly spend" spent={status.monthly.spent} limit={status.monthly.limit} pct={status.monthly.pct} />
-          {(status.callsPerMinute.limit || status.tokensPerMinute.limit) && (
-            <div className="grid grid-cols-2 gap-2">
-              <div className="flex items-center justify-between px-4 py-3 border border-border rounded-sm bg-surface">
-                <span className="text-xs font-mono uppercase tracking-wider text-text-muted">Calls / min</span>
-                <span className="text-sm font-mono text-text-secondary">{status.callsPerMinute.observed} / {status.callsPerMinute.limit ?? "∞"}</span>
-              </div>
-              <div className="flex items-center justify-between px-4 py-3 border border-border rounded-sm bg-surface">
-                <span className="text-xs font-mono uppercase tracking-wider text-text-muted">Tokens / min</span>
-                <span className="text-sm font-mono text-text-secondary">{status.tokensPerMinute.observed.toLocaleString()} / {status.tokensPerMinute.limit?.toLocaleString() ?? "∞"}</span>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Config form */}
-      <div className="bg-surface-raised border border-border rounded-sm p-5">
-        <h3 className="text-sm font-medium text-text-primary mb-4">Budget & Rate Limits</h3>
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <label className="block text-xs font-mono uppercase tracking-wider text-text-muted mb-1.5">Daily cap (USD)</label>
-            <input type="number" min="0" step="0.01" value={dailyUsd} onChange={(e) => setDailyUsd(e.target.value)}
-              disabled={!canEdit}
-              placeholder="e.g. 50"
-              className="w-full bg-surface border border-border rounded-sm px-3 py-2 text-sm text-text-primary font-mono focus:outline-none focus:border-border-bright disabled:opacity-50" />
-          </div>
-          <div>
-            <label className="block text-xs font-mono uppercase tracking-wider text-text-muted mb-1.5">Monthly cap (USD)</label>
-            <input type="number" min="0" step="0.01" value={monthlyUsd} onChange={(e) => setMonthlyUsd(e.target.value)}
-              disabled={!canEdit}
-              placeholder="e.g. 1000"
-              className="w-full bg-surface border border-border rounded-sm px-3 py-2 text-sm text-text-primary font-mono focus:outline-none focus:border-border-bright disabled:opacity-50" />
-          </div>
-          <div>
-            <label className="block text-xs font-mono uppercase tracking-wider text-text-muted mb-1.5">Calls / minute</label>
-            <input type="number" min="0" step="1" value={callsPerMinute} onChange={(e) => setCallsPerMinute(e.target.value)}
-              disabled={!canEdit}
-              placeholder="e.g. 60"
-              className="w-full bg-surface border border-border rounded-sm px-3 py-2 text-sm text-text-primary font-mono focus:outline-none focus:border-border-bright disabled:opacity-50" />
-          </div>
-          <div>
-            <label className="block text-xs font-mono uppercase tracking-wider text-text-muted mb-1.5">Tokens / minute</label>
-            <input type="number" min="0" step="1" value={tokensPerMinute} onChange={(e) => setTokensPerMinute(e.target.value)}
-              disabled={!canEdit}
-              placeholder="e.g. 100000"
-              className="w-full bg-surface border border-border rounded-sm px-3 py-2 text-sm text-text-primary font-mono focus:outline-none focus:border-border-bright disabled:opacity-50" />
-          </div>
-          <div className="col-span-2">
-            <label className="block text-xs font-mono uppercase tracking-wider text-text-muted mb-1.5">When exceeded (applied by SDK)</label>
-            <div className="flex gap-2">
-              {(["warn", "throw", "block"] as const).map((p) => (
-                <button key={p} disabled={!canEdit}
-                  onClick={() => setOnExceed(p)}
-                  className={`flex-1 px-3 py-2 text-xs font-mono uppercase tracking-wider border rounded-sm transition-colors disabled:opacity-50 cursor-pointer ${onExceed === p ? "border-accent bg-accent-muted text-accent" : "border-border bg-surface text-text-secondary hover:border-border-bright"}`}>
-                  {p}
-                </button>
-              ))}
-            </div>
-            <p className="text-[11px] font-mono text-text-muted mt-2">
-              <span className="text-text-secondary">warn</span>: log & proceed &middot;{" "}
-              <span className="text-text-secondary">throw</span>: raise <code>CostKeyBudgetExceeded</code> &middot;{" "}
-              <span className="text-text-secondary">block</span>: return synthetic 429 (graceful)
-            </p>
-          </div>
-        </div>
-      </div>
-
-      {/* Alert channels */}
-      <div className="bg-surface-raised border border-border rounded-sm p-5">
-        <h3 className="text-sm font-medium text-text-primary mb-1">Alert channels</h3>
-        <p className="text-xs text-text-muted mb-4 font-mono">Fires at 50%, 80%, 100% of each cap. Deduped per window.</p>
-        <div className="flex flex-col gap-3">
-          <div>
-            <label className="block text-xs font-mono uppercase tracking-wider text-text-muted mb-1.5">Webhook URL (Slack-compatible)</label>
-            <input type="url" value={alertWebhook} onChange={(e) => setAlertWebhook(e.target.value)}
-              disabled={!canEdit}
-              placeholder="https://hooks.slack.com/services/..."
-              className="w-full bg-surface border border-border rounded-sm px-3 py-2 text-sm text-text-primary font-mono focus:outline-none focus:border-border-bright disabled:opacity-50" />
-          </div>
-          <div>
-            <label className="block text-xs font-mono uppercase tracking-wider text-text-muted mb-1.5">Email</label>
-            <input type="email" value={alertEmail} onChange={(e) => setAlertEmail(e.target.value)}
-              disabled={!canEdit}
-              placeholder="oncall@yourcompany.com"
-              className="w-full bg-surface border border-border rounded-sm px-3 py-2 text-sm text-text-primary font-mono focus:outline-none focus:border-border-bright disabled:opacity-50" />
-          </div>
-          <label className="flex items-center gap-2 text-xs font-mono text-text-secondary cursor-pointer mt-1">
-            <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} disabled={!canEdit} />
-            Enabled
-          </label>
-        </div>
-      </div>
-
-      {canEdit && (
-        <div className="flex items-center gap-3">
-          <button onClick={save} disabled={saving}
-            className="bg-accent hover:bg-accent-hover text-black font-mono text-xs px-5 py-2.5 rounded-sm transition-colors disabled:opacity-50 cursor-pointer">
-            {saving ? "Saving..." : "Save"}
+        {canEdit && editing == null && (
+          <button onClick={startNew}
+            className="ml-auto flex items-center gap-1.5 bg-accent hover:bg-accent-hover text-black font-mono text-xs px-3 py-2 rounded-sm transition-colors cursor-pointer">
+            <Plus size={12} /> New rule
           </button>
-          {config && (
-            <button onClick={remove}
-              className="bg-surface-overlay hover:bg-surface-hover text-text-secondary font-mono text-xs px-4 py-2.5 rounded-sm border border-border transition-colors cursor-pointer">
-              Remove budget
-            </button>
-          )}
-          {saveMsg && <span className={`text-xs font-mono ${saveMsg === "Saved" ? "text-green" : "text-red"}`}>{saveMsg}</span>}
+        )}
+      </div>
+
+      {/* Editor (inline above the list when active) */}
+      {editing != null && (
+        <div className="bg-surface-raised border border-accent/50 rounded-sm p-5">
+          <h3 className="text-sm font-medium text-text-primary mb-4">
+            {editing === "new" ? "New budget rule" : "Edit rule"}
+          </h3>
+          <div className="flex flex-col gap-4">
+            <div>
+              <label className="block text-xs font-mono uppercase tracking-wider text-text-muted mb-1.5">Name (optional)</label>
+              <input type="text" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })}
+                placeholder="e.g. Opus prod cap"
+                className="w-full bg-surface border border-border rounded-sm px-3 py-2 text-sm text-text-primary font-mono focus:outline-none focus:border-border-bright" />
+            </div>
+
+            {/* Scope */}
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-mono uppercase tracking-wider text-text-muted mb-1.5">Model glob (optional)</label>
+                <input type="text" value={form.scopeModel} onChange={(e) => setForm({ ...form, scopeModel: e.target.value })}
+                  placeholder="e.g. claude-opus-4*"
+                  className="w-full bg-surface border border-border rounded-sm px-3 py-2 text-sm text-text-primary font-mono focus:outline-none focus:border-border-bright" />
+              </div>
+              <div>
+                <label className="block text-xs font-mono uppercase tracking-wider text-text-muted mb-1.5">Function glob (optional)</label>
+                <input type="text" value={form.scopeFunction} onChange={(e) => setForm({ ...form, scopeFunction: e.target.value })}
+                  placeholder="e.g. generateReport*"
+                  className="w-full bg-surface border border-border rounded-sm px-3 py-2 text-sm text-text-primary font-mono focus:outline-none focus:border-border-bright" />
+              </div>
+              <p className="col-span-2 text-[11px] font-mono text-text-muted">
+                Leave both empty for project-wide. Set model to cap a specific model family. Set function to cap a specific file:function pattern. Set both for a combo. Globs support <code>*</code> and <code>?</code>.
+              </p>
+            </div>
+
+            {/* Caps */}
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-mono uppercase tracking-wider text-text-muted mb-1.5">Daily cap (USD)</label>
+                <input type="number" min="0" step="0.01" value={form.dailyUsd} onChange={(e) => setForm({ ...form, dailyUsd: e.target.value })}
+                  placeholder="e.g. 50"
+                  className="w-full bg-surface border border-border rounded-sm px-3 py-2 text-sm text-text-primary font-mono focus:outline-none focus:border-border-bright" />
+              </div>
+              <div>
+                <label className="block text-xs font-mono uppercase tracking-wider text-text-muted mb-1.5">Monthly cap (USD)</label>
+                <input type="number" min="0" step="0.01" value={form.monthlyUsd} onChange={(e) => setForm({ ...form, monthlyUsd: e.target.value })}
+                  placeholder="e.g. 1000"
+                  className="w-full bg-surface border border-border rounded-sm px-3 py-2 text-sm text-text-primary font-mono focus:outline-none focus:border-border-bright" />
+              </div>
+              <div>
+                <label className="block text-xs font-mono uppercase tracking-wider text-text-muted mb-1.5">Calls / minute</label>
+                <input type="number" min="0" step="1" value={form.callsPerMinute} onChange={(e) => setForm({ ...form, callsPerMinute: e.target.value })}
+                  placeholder="e.g. 60"
+                  className="w-full bg-surface border border-border rounded-sm px-3 py-2 text-sm text-text-primary font-mono focus:outline-none focus:border-border-bright" />
+              </div>
+              <div>
+                <label className="block text-xs font-mono uppercase tracking-wider text-text-muted mb-1.5">Tokens / minute</label>
+                <input type="number" min="0" step="1" value={form.tokensPerMinute} onChange={(e) => setForm({ ...form, tokensPerMinute: e.target.value })}
+                  placeholder="e.g. 100000"
+                  className="w-full bg-surface border border-border rounded-sm px-3 py-2 text-sm text-text-primary font-mono focus:outline-none focus:border-border-bright" />
+              </div>
+            </div>
+
+            {/* Policy */}
+            <div>
+              <label className="block text-xs font-mono uppercase tracking-wider text-text-muted mb-1.5">When exceeded (applied by SDK)</label>
+              <div className="flex gap-2">
+                {(["warn", "throw", "block"] as const).map((p) => (
+                  <button key={p}
+                    onClick={() => setForm({ ...form, onExceed: p })}
+                    className={`flex-1 px-3 py-2 text-xs font-mono uppercase tracking-wider border rounded-sm transition-colors cursor-pointer ${form.onExceed === p ? "border-accent bg-accent-muted text-accent" : "border-border bg-surface text-text-secondary hover:border-border-bright"}`}>
+                    {p}
+                  </button>
+                ))}
+              </div>
+              <p className="text-[11px] font-mono text-text-muted mt-2">
+                <span className="text-text-secondary">warn</span>: log & proceed &middot;{" "}
+                <span className="text-text-secondary">throw</span>: raise <code>CostKeyBudgetExceeded</code> &middot;{" "}
+                <span className="text-text-secondary">block</span>: synthetic 429 (graceful)
+              </p>
+            </div>
+
+            {/* Alerts */}
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-mono uppercase tracking-wider text-text-muted mb-1.5">Webhook URL</label>
+                <input type="url" value={form.alertWebhook} onChange={(e) => setForm({ ...form, alertWebhook: e.target.value })}
+                  placeholder="https://hooks.slack.com/..."
+                  className="w-full bg-surface border border-border rounded-sm px-3 py-2 text-sm text-text-primary font-mono focus:outline-none focus:border-border-bright" />
+              </div>
+              <div>
+                <label className="block text-xs font-mono uppercase tracking-wider text-text-muted mb-1.5">Email</label>
+                <input type="email" value={form.alertEmail} onChange={(e) => setForm({ ...form, alertEmail: e.target.value })}
+                  placeholder="oncall@company.com"
+                  className="w-full bg-surface border border-border rounded-sm px-3 py-2 text-sm text-text-primary font-mono focus:outline-none focus:border-border-bright" />
+              </div>
+            </div>
+
+            <label className="flex items-center gap-2 text-xs font-mono text-text-secondary cursor-pointer">
+              <input type="checkbox" checked={form.enabled} onChange={(e) => setForm({ ...form, enabled: e.target.checked })} />
+              Enabled
+            </label>
+
+            <div className="flex items-center gap-3 pt-2">
+              <button onClick={save} disabled={saving}
+                className="bg-accent hover:bg-accent-hover text-black font-mono text-xs px-5 py-2.5 rounded-sm transition-colors disabled:opacity-50 cursor-pointer">
+                {saving ? "Saving..." : editing === "new" ? "Create rule" : "Save"}
+              </button>
+              <button onClick={cancel}
+                className="bg-surface-overlay hover:bg-surface-hover text-text-secondary font-mono text-xs px-4 py-2.5 rounded-sm border border-border cursor-pointer">
+                Cancel
+              </button>
+              {saveMsg && <span className="text-xs font-mono text-red">{saveMsg}</span>}
+            </div>
+          </div>
         </div>
       )}
+
+      {/* Rules list */}
+      {rules.length === 0 && editing == null && (
+        <div className="text-center py-8 text-sm text-text-muted bg-surface-raised border border-border rounded-sm">
+          No budget rules yet. {canEdit ? "Click 'New rule' to add one." : "Ask an admin to add one."}
+        </div>
+      )}
+      {rules.map((r) => (
+        <div key={r.id} className={`bg-surface-raised border rounded-sm p-4 ${r.enabled ? "border-border" : "border-border opacity-60"}`}>
+          <div className="flex items-start justify-between gap-4 mb-3">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 mb-1">
+                <h4 className="text-sm font-medium text-text-primary truncate">{r.name ?? describeScope(r)}</h4>
+                {!r.enabled && <span className="font-mono text-[10px] uppercase tracking-wider px-1.5 py-0.5 bg-surface-overlay text-text-muted rounded-sm">disabled</span>}
+                <span className={`font-mono text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded-sm ${
+                  r.on_exceed === "block" ? "bg-red/10 text-red" : r.on_exceed === "throw" ? "bg-amber-muted text-amber" : "bg-surface-overlay text-text-secondary"
+                }`}>{r.on_exceed}</span>
+              </div>
+              <div className="font-mono text-[11px] text-text-muted">{describeScope(r)}</div>
+            </div>
+            {canEdit && (
+              <div className="flex items-center gap-1 shrink-0">
+                <button onClick={() => startEdit(r)} className="text-text-muted hover:text-text-primary p-1.5 cursor-pointer" aria-label="Edit rule"><Pencil size={12} /></button>
+                <button onClick={() => remove(r.id)} className="text-text-muted hover:text-red p-1.5 cursor-pointer" aria-label="Delete rule"><Trash2 size={12} /></button>
+              </div>
+            )}
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <MiniBar label="day" spent={r.status.daily.spent} limit={r.status.daily.limit} />
+            <MiniBar label="mo"  spent={r.status.monthly.spent} limit={r.status.monthly.limit} />
+            {(r.status.callsPerMinute.limit || r.status.tokensPerMinute.limit) && (
+              <div className="flex items-center gap-4 text-[10px] font-mono text-text-muted pt-1">
+                {r.status.callsPerMinute.limit && (
+                  <span>calls/min: <span className="text-text-secondary">{r.status.callsPerMinute.observed} / {r.status.callsPerMinute.limit}</span></span>
+                )}
+                {r.status.tokensPerMinute.limit && (
+                  <span>tokens/min: <span className="text-text-secondary">{r.status.tokensPerMinute.observed.toLocaleString()} / {r.status.tokensPerMinute.limit.toLocaleString()}</span></span>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      ))}
 
       {/* Alert history */}
       {firings.length > 0 && (
@@ -643,11 +725,13 @@ function BudgetsTab({ projects, userRole }: {
             {firings.slice(0, 20).map((f) => {
               const pct = Math.round(f.threshold * 100);
               const over = pct >= 100;
+              const ruleLabel = f.rule_name ?? describeScope({ scope_model: f.scope_model, scope_function: f.scope_function });
               return (
                 <div key={f.id} className="flex items-center gap-4 px-4 py-3">
-                  <span className={`font-mono text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-sm ${over ? "bg-red/10 text-red" : pct >= 80 ? "bg-amber-muted text-amber" : "bg-surface-overlay text-text-muted"}`}>{f.scope} {pct}%</span>
-                  <span className="flex-1 font-mono text-xs text-text-secondary">${Number(f.spent_usd).toFixed(2)} / ${Number(f.limit_usd).toFixed(2)}</span>
-                  <span className="font-mono text-[10px] text-text-muted">{new Date(f.fired_at).toLocaleString()}</span>
+                  <span className={`font-mono text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-sm shrink-0 ${over ? "bg-red/10 text-red" : pct >= 80 ? "bg-amber-muted text-amber" : "bg-surface-overlay text-text-muted"}`}>{f.scope} {pct}%</span>
+                  <span className="font-mono text-xs text-text-secondary shrink-0">${Number(f.spent_usd).toFixed(2)} / ${Number(f.limit_usd).toFixed(2)}</span>
+                  <span className="flex-1 font-mono text-xs text-text-muted truncate">{ruleLabel}</span>
+                  <span className="font-mono text-[10px] text-text-muted shrink-0">{new Date(f.fired_at).toLocaleString()}</span>
                 </div>
               );
             })}

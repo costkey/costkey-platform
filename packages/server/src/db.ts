@@ -174,9 +174,14 @@ export async function initDatabase(): Promise<void> {
       created_at TIMESTAMPTZ DEFAULT NOW()
     );
 
-    -- Per-project budgets + rate limits. One row per project; keys cascade.
-    CREATE TABLE IF NOT EXISTS project_budgets (
-      project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+    -- Budget rules: N per project, each with an optional scope (NULL = match
+    -- all) and caps. A call must satisfy every matching rule.
+    CREATE TABLE IF NOT EXISTS budget_rules (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      name TEXT,
+      scope_model TEXT,
+      scope_function TEXT,
       daily_usd DOUBLE PRECISION,
       monthly_usd DOUBLE PRECISION,
       calls_per_minute INTEGER,
@@ -189,11 +194,13 @@ export async function initDatabase(): Promise<void> {
       created_at TIMESTAMPTZ DEFAULT NOW(),
       updated_at TIMESTAMPTZ DEFAULT NOW()
     );
+    CREATE INDEX IF NOT EXISTS idx_budget_rules_project ON budget_rules(project_id);
 
-    -- Dedupe table so we don't fire the same threshold alert repeatedly
-    -- within the same daily/monthly window. Unique constraint enforces.
+    -- Dedupe per (rule, scope, threshold, window) so a per-model rule's 80%
+    -- alert is independent from the project-wide rule's 80% alert.
     CREATE TABLE IF NOT EXISTS budget_alert_firings (
       id TEXT PRIMARY KEY,
+      rule_id TEXT NOT NULL REFERENCES budget_rules(id) ON DELETE CASCADE,
       project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
       scope TEXT NOT NULL,
       threshold DOUBLE PRECISION NOT NULL,
@@ -203,7 +210,31 @@ export async function initDatabase(): Promise<void> {
       limit_usd DOUBLE PRECISION NOT NULL
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_budget_alert_fired_once
-      ON budget_alert_firings(project_id, scope, threshold, window_key);
+      ON budget_alert_firings(rule_id, scope, threshold, window_key);
+
+    -- Migration: prior version had project_budgets (1:1 with projects) and
+    -- budget_alert_firings keyed by project_id. Move any existing rows to
+    -- budget_rules (as scope-less project-wide rules), then drop.
+    DO $mig$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='project_budgets') THEN
+        INSERT INTO budget_rules (
+          id, project_id, name, scope_model, scope_function,
+          daily_usd, monthly_usd, calls_per_minute, tokens_per_minute,
+          on_exceed, alert_email, alert_webhook_url, alert_thresholds,
+          enabled, created_at, updated_at
+        )
+        SELECT
+          'rule_' || substr(md5(random()::text || project_id), 1, 24),
+          project_id, 'Project-wide', NULL, NULL,
+          daily_usd, monthly_usd, calls_per_minute, tokens_per_minute,
+          on_exceed, alert_email, alert_webhook_url, alert_thresholds,
+          enabled, created_at, updated_at
+        FROM project_budgets
+        ON CONFLICT DO NOTHING;
+        DROP TABLE project_budgets CASCADE;
+      END IF;
+    END $mig$;
     CREATE TABLE IF NOT EXISTS alert_history (
       id TEXT PRIMARY KEY,
       alert_id TEXT NOT NULL REFERENCES alerts(id),

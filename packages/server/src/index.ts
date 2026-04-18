@@ -10,7 +10,7 @@ import { createApiRouter } from "./api.js";
 import { createAuthRouter, authMiddleware } from "./auth.js";
 import { createTeamsRouter } from "./teams.js";
 import { createAlertsRouter, checkAlerts } from "./alerts.js";
-import { createBudgetsRouter, runBudgetChecks } from "./budgets.js";
+import { createBudgetsRouter, createSdkBudgetsRouter, runBudgetChecks } from "./budgets.js";
 import { rateLimit } from "./middleware.js";
 import { initAnomalyTable, detectAnomalies } from "./anomaly.js";
 import { seedIfEmpty } from "./seed.js";
@@ -88,6 +88,7 @@ async function initApp() {
   app.use(createTeamsRouter(pool));
   app.use(createAlertsRouter(pool));
   app.use(createBudgetsRouter(pool));
+  app.use(createSdkBudgetsRouter(pool));
   app.use(createSourcemapsRouter(pool));
   app.use(createApiRouter(pool));
 

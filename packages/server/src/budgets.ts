@@ -20,6 +20,56 @@ import type pg from "pg";
 import { Resend } from "resend";
 import { requireAuth } from "./auth.js";
 
+// ─── SDK-facing router (auth key, no JWT) ─────────────────────────────
+
+export function createSdkBudgetsRouter(pool: pg.Pool): Router {
+  const router = createRouter();
+  // GET /api/v1/sdk/budget/rules — called by SDK at init + on a poll
+  router.get("/api/v1/sdk/budget/rules", async (req: Request, res: Response) => {
+    try {
+      const h = req.headers.authorization;
+      if (!h?.startsWith("Bearer ")) {
+        res.status(401).json({ error: "Missing or invalid authorization" });
+        return;
+      }
+      const authKey = h.slice(7);
+      const proj = await pool.query("SELECT id FROM projects WHERE auth_key = $1", [authKey]);
+      if (proj.rows.length === 0) {
+        res.status(401).json({ error: "Invalid auth key" });
+        return;
+      }
+      const projectId = proj.rows[0].id;
+      const r = await pool.query(
+        `SELECT id, name, scope_model, scope_function,
+                daily_usd, monthly_usd, calls_per_minute, tokens_per_minute,
+                on_exceed, enabled
+         FROM budget_rules
+         WHERE project_id = $1 AND enabled = TRUE`,
+        [projectId],
+      );
+      // Shape: camelCase for SDK ergonomics, coerce numeric strings.
+      const rules = r.rows.map((x) => ({
+        id: x.id,
+        name: x.name,
+        scopeModel: x.scope_model,
+        scopeFunction: x.scope_function,
+        dailyUsd: x.daily_usd != null ? Number(x.daily_usd) : null,
+        monthlyUsd: x.monthly_usd != null ? Number(x.monthly_usd) : null,
+        callsPerMinute: x.calls_per_minute,
+        tokensPerMinute: x.tokens_per_minute,
+        onExceed: x.on_exceed,
+      }));
+      // Very short cache + ETag-friendly headers. SDK polls every 5min.
+      res.set("Cache-Control", "private, max-age=60");
+      res.json({ rules, fetchedAt: new Date().toISOString() });
+    } catch (err) {
+      console.error("[costkey] GET sdk rules error:", err);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+  return router;
+}
+
 const resend = new Resend(process.env["RESEND_API_KEY"]!);
 
 function randomId(): string {

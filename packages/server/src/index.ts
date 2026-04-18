@@ -87,8 +87,11 @@ async function initApp() {
   app.use(createIngestRouter(pool));
   app.use(createTeamsRouter(pool));
   app.use(createAlertsRouter(pool));
-  app.use(createBudgetsRouter(pool));
+  // SDK router MUST be mounted before the dashboard router — the dashboard
+  // router uses `router.use(requireAuth)` which 401's every request passing
+  // through it, even those targeting paths the router doesn't define.
   app.use(createSdkBudgetsRouter(pool));
+  app.use(createBudgetsRouter(pool));
   app.use(createSourcemapsRouter(pool));
   app.use(createApiRouter(pool));
 

@@ -201,6 +201,28 @@ export function createApiRouter(pool: pg.Pool): Router {
         }
       }
 
+      // Empty-stack hint: if a meaningful fraction of recent events have zero
+      // frames at all, the SDK couldn't capture a stack (usually Vercel Edge
+      // runtime or a similarly restricted environment). Sourcemaps don't help
+      // here — the user needs to tag calls via CostKey.withContext.
+      const stackShape = await pool.query(
+        `SELECT
+           COUNT(*) FILTER (WHERE call_site_frames IS NULL OR jsonb_array_length(call_site_frames) = 0) AS no_frames,
+           COUNT(*) AS total
+         FROM events
+         WHERE project_id = $1
+           AND timestamp > NOW() - INTERVAL '7 days'`,
+        [projectId],
+      );
+      const { no_frames, total } = stackShape.rows[0] ?? { no_frames: 0, total: 0 };
+      if (Number(total) >= 20 && Number(no_frames) / Number(total) >= 0.3) {
+        hints.push({
+          type: "empty_stacks",
+          message: `${Math.round((Number(no_frames) / Number(total)) * 100)}% of recent AI calls arrive with empty stack traces — usually Edge runtime or restricted environments. Use CostKey.withContext({ taskName }) at your route handlers so we can attribute without relying on stack capture.`,
+          link: "/docs/context",
+        });
+      }
+
       res.json({ status, lastEventAt: lastAt, eventsLastHour, hints });
     } catch (err) {
       console.error("[costkey] Health check error:", err);

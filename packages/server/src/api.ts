@@ -3,7 +3,7 @@ import { Router as createRouter } from "express";
 import type pg from "pg";
 import { Resend } from "resend";
 import { groupIntoFeatures } from "./grouping.js";
-import { getAnomalies } from "./anomaly.js";
+import { getAnomalies, dismissAnomaly } from "./anomaly.js";
 import { orgScope } from "./middleware.js";
 import { requireAuth } from "./auth.js";
 
@@ -562,8 +562,22 @@ export function createApiRouter(pool: pg.Pool): Router {
     try {
       const { projectId } = req.params;
       const includeResolved = req.query["resolved"] === "true";
-      const anomalies = await getAnomalies(pool, projectId, includeResolved);
+      const includeDismissed = req.query["dismissed"] === "true";
+      const anomalies = await getAnomalies(pool, projectId, includeResolved, includeDismissed);
       res.json({ anomalies });
+    } catch (err) {
+      console.error("[costkey] API error:", err);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  // POST /api/v1/projects/:projectId/anomalies/:anomalyId/dismiss
+  router.post("/api/v1/projects/:projectId/anomalies/:anomalyId/dismiss", async (req, res) => {
+    try {
+      const { projectId, anomalyId } = req.params;
+      const ok = await dismissAnomaly(pool, projectId, anomalyId);
+      if (!ok) { res.status(404).json({ error: "Anomaly not found" }); return; }
+      res.json({ ok: true });
     } catch (err) {
       console.error("[costkey] API error:", err);
       res.status(500).json({ error: "Internal server error" });

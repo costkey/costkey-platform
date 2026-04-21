@@ -56,6 +56,15 @@ export async function initAnomalyTable(pool: pg.Pool): Promise<void> {
       notified BOOLEAN DEFAULT FALSE
     );
     CREATE INDEX IF NOT EXISTS idx_anomalies_project ON anomalies(project_id, detected_at DESC);
+    -- Repeat-detection tracking so the same anomaly UPDATES in place
+    -- instead of inserting new rows every 5min (which is what caused the
+    -- alert-list spam).
+    ALTER TABLE anomalies ADD COLUMN IF NOT EXISTS first_detected_at TIMESTAMPTZ;
+    ALTER TABLE anomalies ADD COLUMN IF NOT EXISTS occurrence_count INTEGER NOT NULL DEFAULT 1;
+    ALTER TABLE anomalies ADD COLUMN IF NOT EXISTS dismissed BOOLEAN NOT NULL DEFAULT FALSE;
+    ALTER TABLE anomalies ADD COLUMN IF NOT EXISTS dismissed_at TIMESTAMPTZ;
+    -- Backfill first_detected_at for existing rows
+    UPDATE anomalies SET first_detected_at = detected_at WHERE first_detected_at IS NULL;
   `);
 }
 
@@ -84,34 +93,35 @@ export async function detectAnomalies(pool: pg.Pool): Promise<Anomaly[]> {
       // Skip projects with no baseline data
       if (parseInt(baselineCheck.rows[0].cnt) < 10) continue;
 
-      // For a simpler and more reliable approach, compare per-function baselines
-      // Get 7-day baseline per function
+      // Use the already-computed bl_function/bl_file (set at ingest via
+      // findBusinessLogicFrameWithGraph + filterCtx). Reading those is
+      // infinitely more accurate than re-parsing raw frame[0] which is
+      // typically an SDK wrapper. Also skip NULL attributions — lumping
+      // them produces meaningless baselines and duplicate alerts because
+      // SQL's NULL-equality isn't reflexive.
       const fnBaselines = await pool.query(`
         SELECT
-          parsed.fn as function_name,
-          parsed.f as file_name,
+          bl_function as function_name,
+          bl_file as file_name,
           AVG(cost_usd) as baseline_cost,
           AVG(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)) as baseline_tokens,
           AVG(duration_ms) as baseline_latency,
           COUNT(*) as total_calls
-        FROM events e
-        JOIN LATERAL (
-          SELECT (call_site_frames->0->>'functionName') as fn,
-                 (call_site_frames->0->>'fileName') as f
-        ) parsed ON TRUE
+        FROM events
         WHERE project_id = $1
           AND timestamp >= NOW() - INTERVAL '7 days'
           AND timestamp < NOW() - INTERVAL '1 hour'
-          AND call_site_frames IS NOT NULL
-        GROUP BY parsed.fn, parsed.f
+          AND bl_function IS NOT NULL
+          AND bl_function <> ''
+        GROUP BY bl_function, bl_file
         HAVING COUNT(*) >= 10
       `, [projectId]);
 
-      // Get last-hour stats per function
+      // Get last-hour stats per function (same filter: bl_function required)
       const recent = await pool.query(`
         SELECT
-          (call_site_frames->0->>'functionName') as function_name,
-          (call_site_frames->0->>'fileName') as file_name,
+          bl_function as function_name,
+          bl_file as file_name,
           AVG(cost_usd) as recent_cost,
           AVG(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)) as recent_tokens,
           AVG(duration_ms) as recent_latency,
@@ -119,8 +129,9 @@ export async function detectAnomalies(pool: pg.Pool): Promise<Anomaly[]> {
         FROM events
         WHERE project_id = $1
           AND timestamp >= NOW() - INTERVAL '1 hour'
-          AND call_site_frames IS NOT NULL
-        GROUP BY (call_site_frames->0->>'functionName'), (call_site_frames->0->>'fileName')
+          AND bl_function IS NOT NULL
+          AND bl_function <> ''
+        GROUP BY bl_function, bl_file
         HAVING COUNT(*) >= 3
       `, [projectId]);
 
@@ -147,14 +158,46 @@ export async function detectAnomalies(pool: pg.Pool): Promise<Anomaly[]> {
           const multiplier = check.recentVal / check.baselineVal;
 
           if (multiplier >= check.threshold) {
-            // Check if we already have an unresolved anomaly for this
+            const baselineRounded = Math.round(check.baselineVal * 10000) / 10000;
+            const currentRounded = Math.round(check.recentVal * 10000) / 10000;
+            const multiplierRounded = Math.round(multiplier * 10) / 10;
+
+            // Upsert: one row per (project, fn, file, type) while unresolved.
+            // Re-detection updates current_value / multiplier / last_detected_at
+            // and bumps occurrence_count instead of inserting duplicates. Also
+            // un-dismisses if the user previously dismissed but the anomaly
+            // is actively new-multiplier-higher (e.g. got worse).
             const existing = await pool.query(
-              `SELECT id FROM anomalies
-               WHERE project_id = $1 AND function_name = $2 AND type = $3 AND resolved = FALSE`,
-              [projectId, r.function_name, check.type],
+              `SELECT id, dismissed, multiplier FROM anomalies
+               WHERE project_id = $1
+                 AND function_name = $2
+                 AND file_name IS NOT DISTINCT FROM $3
+                 AND type = $4
+                 AND resolved = FALSE`,
+              [projectId, r.function_name, r.file_name, check.type],
             );
 
-            if (existing.rows.length > 0) continue; // Already tracked
+            if (existing.rows.length > 0) {
+              const row = existing.rows[0];
+              // If the user dismissed AND the multiplier hasn't materially
+              // increased, keep it dismissed — don't nag.
+              const prevMult = parseFloat(row.multiplier);
+              const materiallyWorse = multiplierRounded > prevMult * 1.25; // 25% worse
+              const shouldUnDismiss = row.dismissed && materiallyWorse;
+
+              await pool.query(
+                `UPDATE anomalies
+                 SET current_value = $1,
+                     multiplier = $2,
+                     detected_at = NOW(),
+                     occurrence_count = occurrence_count + 1,
+                     dismissed = CASE WHEN $3 THEN FALSE ELSE dismissed END,
+                     dismissed_at = CASE WHEN $3 THEN NULL ELSE dismissed_at END
+                 WHERE id = $4`,
+                [currentRounded, multiplierRounded, shouldUnDismiss, row.id],
+              );
+              continue; // Not a new detection — don't webhook-spam
+            }
 
             const anomaly: Anomaly = {
               id: `anom_${randomId()}`,
@@ -164,16 +207,19 @@ export async function detectAnomalies(pool: pg.Pool): Promise<Anomaly[]> {
               fileName: r.file_name,
               model: null,
               type: check.type,
-              baselineValue: Math.round(check.baselineVal * 10000) / 10000,
-              currentValue: Math.round(check.recentVal * 10000) / 10000,
-              multiplier: Math.round(multiplier * 10) / 10,
+              baselineValue: baselineRounded,
+              currentValue: currentRounded,
+              multiplier: multiplierRounded,
               detectedAt: new Date().toISOString(),
               resolved: false,
             };
 
             await pool.query(
-              `INSERT INTO anomalies (id, project_id, call_site_key, function_name, file_name, model, type, baseline_value, current_value, multiplier)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+              `INSERT INTO anomalies (
+                 id, project_id, call_site_key, function_name, file_name, model,
+                 type, baseline_value, current_value, multiplier,
+                 first_detected_at, occurrence_count
+               ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), 1)`,
               [anomaly.id, anomaly.projectId, anomaly.callSiteKey, anomaly.functionName, anomaly.fileName, anomaly.model, anomaly.type, anomaly.baselineValue, anomaly.currentValue, anomaly.multiplier],
             );
 
@@ -269,15 +315,43 @@ async function fireAnomalyWebhooks(pool: pg.Pool, anomalies: Anomaly[]): Promise
 }
 
 /**
- * API: Get anomalies for a project.
+ * API: Get anomalies for a project. Dismissed anomalies are hidden by default
+ * so a user's "X" click in the banner actually persists across page loads.
  */
-export async function getAnomalies(pool: pg.Pool, projectId: string, includeResolved = false): Promise<Anomaly[]> {
+export async function getAnomalies(
+  pool: pg.Pool,
+  projectId: string,
+  includeResolved = false,
+  includeDismissed = false,
+): Promise<Anomaly[]> {
+  const conditions = ["project_id = $1"];
+  if (!includeResolved) conditions.push("resolved = FALSE");
+  if (!includeDismissed) conditions.push("dismissed = FALSE");
   const result = await pool.query(
     `SELECT * FROM anomalies
-     WHERE project_id = $1 ${includeResolved ? "" : "AND resolved = FALSE"}
+     WHERE ${conditions.join(" AND ")}
      ORDER BY detected_at DESC
      LIMIT 50`,
     [projectId],
   );
   return result.rows;
+}
+
+/**
+ * Mark an anomaly as user-dismissed. Stays dismissed until either:
+ *   (a) the anomaly auto-resolves (falls out of detection), or
+ *   (b) the multiplier gets materially worse (>25% higher than when dismissed).
+ */
+export async function dismissAnomaly(
+  pool: pg.Pool,
+  projectId: string,
+  anomalyId: string,
+): Promise<boolean> {
+  const r = await pool.query(
+    `UPDATE anomalies SET dismissed = TRUE, dismissed_at = NOW()
+     WHERE id = $1 AND project_id = $2
+     RETURNING id`,
+    [anomalyId, projectId],
+  );
+  return r.rows.length > 0;
 }

@@ -571,6 +571,126 @@ export function createApiRouter(pool: pg.Pool): Router {
     }
   });
 
+  // GET /api/v1/projects/:projectId/attribution-health
+  // Surfaces how many recent events couldn't be attributed to a user
+  // function + a best-guess cause, so the dashboard can suggest a concrete
+  // action (almost always: upload sourcemaps).
+  router.get("/api/v1/projects/:projectId/attribution-health", async (req, res) => {
+    try {
+      const { projectId } = req.params;
+      const sinceHours = Math.min(
+        168, // hard cap at 7 days
+        Math.max(1, parseInt((req.query["hours"] as string) ?? "168", 10) || 168),
+      );
+
+      // Totals + attribution success rate
+      const totalsResult = await pool.query(
+        `SELECT
+           COUNT(*) AS total,
+           COUNT(*) FILTER (WHERE bl_function IS NOT NULL AND bl_function <> '') AS attributed,
+           COUNT(*) FILTER (WHERE bl_function IS NULL OR bl_function = '') AS unattributed,
+           COUNT(*) FILTER (WHERE call_site_frames IS NULL
+                              OR jsonb_array_length(call_site_frames) = 0) AS no_frames
+         FROM events
+         WHERE project_id = $1
+           AND timestamp >= NOW() - ($2::int * INTERVAL '1 hour')`,
+        [projectId, sinceHours],
+      );
+      const totals = totalsResult.rows[0] ?? { total: 0, attributed: 0, unattributed: 0, no_frames: 0 };
+
+      // Of the unattributed events, bucket by the "shape" of their raw frames
+      // so we can suggest a targeted fix. We care specifically about Next.js
+      // bundled paths (most common failure mode) because sourcemap upload
+      // solves them directly.
+      const shapeResult = await pool.query(
+        `WITH unattributed AS (
+           SELECT id, call_site_frames
+           FROM events
+           WHERE project_id = $1
+             AND timestamp >= NOW() - ($2::int * INTERVAL '1 hour')
+             AND (bl_function IS NULL OR bl_function = '')
+             AND call_site_frames IS NOT NULL
+             AND jsonb_array_length(call_site_frames) > 0
+         )
+         SELECT
+           COUNT(*) FILTER (WHERE EXISTS (
+             SELECT 1 FROM jsonb_array_elements(call_site_frames) AS f
+             WHERE f->>'fileName' LIKE '%.next/server/chunks/%'
+                OR f->>'fileName' LIKE '%.next/static/chunks/%'
+                OR f->>'fileName' LIKE '%.next/dev/server/chunks/%'
+           )) AS bundled_nextjs,
+           COUNT(*) FILTER (WHERE EXISTS (
+             SELECT 1 FROM jsonb_array_elements(call_site_frames) AS f
+             WHERE f->>'fileName' LIKE '%/webpack-internal%'
+                OR f->>'fileName' LIKE 'webpack://%'
+           )) AS bundled_webpack,
+           COUNT(*) AS with_frames_but_unattributed
+         FROM unattributed`,
+        [projectId, sinceHours],
+      );
+      const shapes = shapeResult.rows[0] ?? { bundled_nextjs: 0, bundled_webpack: 0, with_frames_but_unattributed: 0 };
+
+      // Has this project ever uploaded sourcemaps?
+      const smResult = await pool.query(
+        `SELECT COUNT(*)::int AS cnt,
+                MAX(created_at) AS latest
+         FROM sourcemaps WHERE project_id = $1`,
+        [projectId],
+      );
+      const sourcemaps = smResult.rows[0] ?? { cnt: 0, latest: null };
+
+      // Figure out the dominant cause + a concrete suggestion
+      const total = Number(totals.total);
+      const unattr = Number(totals.unattributed);
+      const bundled = Number(shapes.bundled_nextjs) + Number(shapes.bundled_webpack);
+      const noFrames = Number(totals.no_frames);
+      const attrRate = total > 0 ? Number(totals.attributed) / total : 1;
+
+      let primaryCause: "ok" | "bundled_needs_sourcemaps" | "no_frames" | "mixed" = "ok";
+      let suggestion: string | null = null;
+      if (unattr > 0 && attrRate < 0.9) {
+        if (bundled >= unattr * 0.5) {
+          primaryCause = "bundled_needs_sourcemaps";
+          suggestion = sourcemaps.cnt > 0
+            ? "Upload sourcemaps for your latest release so CostKey can translate bundled paths back to source."
+            : "Your AI calls happen inside bundled JS chunks. Upload sourcemaps with `npx costkey sourcemaps upload` so we can attribute to your source files.";
+        } else if (noFrames >= unattr * 0.5) {
+          primaryCause = "no_frames";
+          suggestion = "Some AI calls are reaching us with empty stack traces — likely from Edge runtime or restricted environments. Use `CostKey.withContext({ taskName: '...' })` at your route handlers to preserve semantic info.";
+        } else {
+          primaryCause = "mixed";
+          suggestion = "Mixed attribution gaps. Upload sourcemaps for your release and add `CostKey.withContext` at entry points.";
+        }
+      }
+
+      res.json({
+        windowHours: sinceHours,
+        totals: {
+          total,
+          attributed: Number(totals.attributed),
+          unattributed: unattr,
+          noFrames,
+          attributionRate: Math.round(attrRate * 1000) / 1000,
+        },
+        unattributedBreakdown: {
+          bundledNextjs: Number(shapes.bundled_nextjs),
+          bundledWebpack: Number(shapes.bundled_webpack),
+          withFramesButUnattributed: Number(shapes.with_frames_but_unattributed),
+          noFrames,
+        },
+        sourcemaps: {
+          uploaded: Number(sourcemaps.cnt),
+          latestAt: sourcemaps.latest,
+        },
+        primaryCause,
+        suggestion,
+      });
+    } catch (err) {
+      console.error("[costkey] API error:", err);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
   // POST /api/v1/projects/:projectId/anomalies/:anomalyId/dismiss
   router.post("/api/v1/projects/:projectId/anomalies/:anomalyId/dismiss", async (req, res) => {
     try {

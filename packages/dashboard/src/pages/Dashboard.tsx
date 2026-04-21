@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { BarChart3, Route, FileCode, Activity, Search, AlertCircle, X, ExternalLink, Lightbulb } from "lucide-react";
 import AnomalyBanner from "../components/AnomalyBanner";
+import AttributionHealthBanner from "../components/AttributionHealthBanner";
 import SummaryView from "../components/SummaryView";
 import { getHealth, type HealthHint } from "../api";
 import StatCards from "../components/StatCards";
@@ -53,6 +54,7 @@ export default function Dashboard({ demoMode = false }: { demoMode?: boolean }) 
 
   return (
     <main className="max-w-[1440px] mx-auto px-4 md:px-6 pt-5 pb-6 flex flex-col gap-0 min-h-[calc(100vh-56px)]">
+      <AttributionHealthBanner projectId={projectId} />
       <AnomalyBanner projectId={projectId} />
 
       {/* Setup hints banner */}

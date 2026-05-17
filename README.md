@@ -1,142 +1,157 @@
 # CostKey
 
-> Sentry for AI costs. Open-source SDK + dashboard that auto-tracks every AI API call.
+[![GitHub stars](https://img.shields.io/github/stars/costkey/platform?style=social)](https://github.com/costkey/platform)
+[![TypeScript SDK](https://img.shields.io/npm/v/costkey?label=npm%20costkey)](https://www.npmjs.com/package/costkey)
+[![Python SDK](https://img.shields.io/pypi/v/costkey?label=PyPI%20costkey)](https://pypi.org/project/costkey/)
 
-## What is CostKey?
-
-CostKey is a proxy-less AI cost observability platform. One line of code gives you:
-
-- **Cost tracking** — per-call, per-function, per-feature cost attribution
-- **Stack trace attribution** — automatically shows which business logic function made each AI call
-- **Streaming metrics** — TTFT, tokens/sec, stream duration
-- **Request tracing** — group related AI calls into traces
-- **Anomaly detection** — alerts on cost spikes, latency spikes, token spikes
-- **15 providers** — OpenAI, Anthropic, Google, Groq, xAI, Mistral, DeepSeek, Cohere, Together, Fireworks, Perplexity, Cerebras, OpenRouter, Bedrock, Azure OpenAI
-- **Sourcemap support** — translate minified JS/TS stack traces to original source
-
-## Quick Start
-
-### Python
+CostKey is AI cost observability for production teams. It tells you which function, route, feature, customer, deploy, prompt, tool call, or agent run spent your AI budget.
 
 ```bash
-pip install costkey
+npx costkey setup
+# or
+pipx run costkey setup
 ```
 
-```python
-import costkey
+## Why It Exists
 
-costkey.init(dsn="https://ck_key@app.costkey.dev/proj_id")
+Provider dashboards tell you how much you spent. They do not tell you which line of code spent it.
 
-# Every AI call is now tracked. No wrapping needed.
-response = client.messages.create(model="claude-sonnet-4-5", ...)
-```
+CostKey connects AI spend back to the source code and product behavior that caused it:
+
+- `generateSummary()` in `src/features/search.ts:47` spent `$1,200`
+- `POST /api/search` triggers 4 model calls and 2 tool calls
+- deploy `a1b2c3d` increased cost per request by 38%
+- customer `cus_123` is driving 22% of spend
+- an agent loop started retrying and crossed budget
+
+No proxy. No provider migration. No wrapper-first rewrite.
+
+## Product Surface
+
+- **TypeScript SDK** - patches `fetch`, supports setup CLI, no-code preload, budgets, traces, prompt/tool metadata, sourcemaps, and custom providers.
+- **Python SDK** - patches `httpx` and `requests`, supports setup CLI, FastAPI/Django/Flask detection, call graph analysis, traces, prompt/tool metadata, and custom providers.
+- **Server** - ingests events, validates DSNs, calculates costs, filters stack traces, resolves sourcemaps, stores data in PostgreSQL.
+- **Dashboard** - shows spend trends, cost by function, traces, event details, prompt/tool metadata, custom providers, budgets, alerts, and deploy comparisons.
+- **Docs and landing** - static docs and marketing site deployed to Firebase.
+
+## Repositories
+
+| Repo | Purpose |
+| --- | --- |
+| [`costkey/platform`](https://github.com/costkey/platform) | SaaS app, server, dashboard, landing, docs, monorepo SDK copy |
+| [`costkey/costkey`](https://github.com/costkey/costkey) | TypeScript SDK published to npm |
+| [`costkey/costkey-python`](https://github.com/costkey/costkey-python) | Python SDK published to PyPI |
+
+If you are using CostKey, starring the SDK repos helps other developers find it:
+
+- [Star the TypeScript SDK](https://github.com/costkey/costkey)
+- [Star the Python SDK](https://github.com/costkey/costkey-python)
+- [Star the platform](https://github.com/costkey/platform)
+
+## Quick Start
 
 ### TypeScript / Node.js
 
 ```bash
-npm install costkey
+npx costkey setup
 ```
 
-```typescript
-import { CostKey } from 'costkey'
+Manual entrypoint setup:
 
-CostKey.init({ dsn: 'https://ck_key@app.costkey.dev/proj_id' })
+```ts
+import { CostKey } from "costkey";
 
-// Every fetch to AI providers is now tracked.
-const response = await openai.chat.completions.create({ ... })
+CostKey.init({
+  dsn: process.env.COSTKEY_DSN,
+});
+```
+
+No-code preload:
+
+```bash
+NODE_OPTIONS=--import costkey/register npm start
+```
+
+### Python
+
+```bash
+pipx run costkey setup
+```
+
+Manual entrypoint setup:
+
+```py
+import os
+import costkey
+
+costkey.init(dsn=os.environ["COSTKEY_DSN"])
+```
+
+No-code bootstrap:
+
+```bash
+PYTHONPATH="$PWD/.costkey:$PYTHONPATH" uvicorn app:app
 ```
 
 ## Architecture
 
 ```
-Your App                    CostKey Server              Dashboard
-┌──────────┐    events     ┌──────────────┐           ┌──────────┐
-│ SDK      │ ──────────>   │ Ingest API   │           │ React    │
-│ (patches │               │ - Cost calc  │           │ SPA      │
-│  fetch/  │               │ - Frame      │ <──────── │          │
-│  httpx)  │               │   filtering  │    API    │          │
-└──────────┘               │ - Sourcemaps │           └──────────┘
-                           └──────────────┘
+Your app                  CostKey server              Dashboard
+---------                 --------------              ---------
+SDK patches fetch/httpx   ingest events               trends
+detects AI providers      calculate cost              traces
+captures stack traces     resolve sourcemaps          event detail
+scrubs payloads           group call sites            budgets
+ships async events        store in PostgreSQL         alerts
 ```
 
-**SDK** patches `fetch` (Node) or `httpx`/`requests` (Python). Detects AI provider calls by URL hostname, extracts usage from responses, captures stack traces. Sends raw events to server.
-
-**Server** calculates costs (server-side pricing table), filters library frames from stack traces, detects business logic functions, translates sourcemaps, stores in PostgreSQL.
-
-**Dashboard** shows cost trends, call sites, traces, events. Click any event for full details (input/output, tokens, stack trace).
-
-## Monorepo Structure
-
-```
-packages/
-  sdk/          TypeScript SDK (patches globalThis.fetch)
-  server/       Express.js API server + PostgreSQL
-  dashboard/    React SPA (Vite, Tailwind, Recharts)
-  shared/       Shared types between SDK and server
-  cli/          CLI tools (costkey sourcemaps upload)
-  landing/      Landing page (costkey.dev)
-```
+The SDKs never proxy provider traffic. AI calls still go directly from your app to OpenAI, Anthropic, Google, or your gateway. CostKey sends observability events in the background.
 
 ## Development
 
 ```bash
 npm install
-npm run dev        # Starts server (4100) + dashboard (5180)
-npm run build      # Builds shared → server → dashboard
-npm test           # Runs all tests
+npm run dev
+npm run build
+npm test
 ```
 
-### Server Tests
-```bash
-npx tsx --test packages/server/src/__tests__/server.test.ts
-```
+Local services:
 
-### SDK Tests
-```bash
-npx vitest run packages/sdk/src/__tests__/
-```
+- server: `http://localhost:4100`
+- dashboard: `http://localhost:5180`
 
-## Key Features
+## Deploy
 
-### Server-Side Cost Calculation
-
-The SDK sends raw usage data. The server calculates costs using a fuzzy model matching system — `claude-sonnet-4-5-20250514` matches `claude-sonnet-4`, `ft:gpt-4o:my-org:abc` matches `gpt-4o`. No SDK update needed when prices change.
-
-### Smart Stack Trace Attribution
-
-Library frames (AI SDK internals, HTTP clients, threading) are stripped server-side. The "business logic frame" is detected by finding the first frame from a **different file** than the direct API caller — skipping wrapper/client utility functions automatically.
-
-### Sourcemap Translation
-
-For minified JS/TS builds:
+Railway deploys the server/dashboard app:
 
 ```bash
-# In your CI/CD pipeline
-costkey sourcemaps upload \
-  --release $GIT_SHA \
-  --auth-key $COSTKEY_AUTH_KEY \
-  ./dist/*.map
+railway up --service costkey-app --environment production
 ```
 
-```typescript
-CostKey.init({
-  dsn: '...',
-  release: process.env.GIT_SHA
-})
-```
-
-The server translates `bundle.js:1:43829` → `UserProfile.tsx:47:handleClick` on ingest.
-
-## Deployment
-
-**Server**: Dockerfile included, deploy on Railway/Fly/Render. Needs PostgreSQL.
+Firebase deploys the landing/docs site:
 
 ```bash
-docker build -t costkey .
-docker run -p 4100:4100 -e DATABASE_URL=postgres://... costkey
+firebase deploy --only hosting --project costkey-dev
 ```
 
-**Dashboard**: Built into the server binary, served as static files.
+SDK publishing happens from GitHub Releases in the SDK repos, not from local machines.
+
+## Release Checklist
+
+For SDK releases:
+
+1. Update version in the SDK repo.
+2. Merge to `main`.
+3. Create GitHub Release tag `vX.Y.Z`.
+4. GitHub Actions runs tests/builds and publishes to npm or PyPI through trusted publishing.
+
+For platform deploys:
+
+1. Run `npm run build`.
+2. Deploy Railway.
+3. Deploy Firebase if landing/docs changed.
+4. Smoke test `https://app.costkey.dev/auth/me` and `https://costkey-dev.web.app`.
 
 ## License
 

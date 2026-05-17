@@ -10,6 +10,7 @@ import { findExtractor } from "./providers/registry.js";
 import { captureCallSite } from "./stack.js";
 import { getCurrentContext } from "./context.js";
 import { Transport } from "./transport.js";
+import { randomBytes } from "node:crypto";
 const TRACE_HEADER = "x-costkey-trace-id";
 const TRACE_NAME_HEADER = "x-costkey-trace-name";
 
@@ -709,9 +710,7 @@ function scrubCredentials(body: unknown): unknown {
 
 /** Generate a random event ID */
 function generateId(): string {
-  const bytes = new Uint8Array(16);
-  crypto.getRandomValues(bytes);
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  return randomBytes(16).toString("hex");
 }
 
 /**

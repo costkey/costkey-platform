@@ -119,6 +119,8 @@ export async function initDatabase(): Promise<void> {
     ALTER TABLE events ADD COLUMN IF NOT EXISTS bl_function TEXT;
     ALTER TABLE events ADD COLUMN IF NOT EXISTS bl_file TEXT;
     ALTER TABLE events ADD COLUMN IF NOT EXISTS bl_line INTEGER;
+    ALTER TABLE events ADD COLUMN IF NOT EXISTS system_prompt TEXT;
+    ALTER TABLE events ADD COLUMN IF NOT EXISTS metadata JSONB;
 
     -- GitHub OAuth: add github_id, make password_hash nullable
     ALTER TABLE users ADD COLUMN IF NOT EXISTS github_id TEXT;

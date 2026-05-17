@@ -58,6 +58,8 @@ export const events = pgTable("events", {
   traceId: text("trace_id"),
   traceName: text("trace_name"),
   context: jsonb("context"),
+  metadata: jsonb("metadata"),
+  systemPrompt: text("system_prompt"),
   requestBody: jsonb("request_body"),
   responseBody: jsonb("response_body"),
 

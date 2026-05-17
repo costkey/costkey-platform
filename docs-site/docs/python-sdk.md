@@ -9,10 +9,18 @@ description: Full API reference for the CostKey Python SDK.
 The CostKey Python SDK auto-instruments `httpx` and `requests` to capture every AI API call. No wrappers, no decorators.
 
 ```bash
-pip install costkey
+pipx run costkey setup
 ```
 
-**Current version:** 0.3.0
+**Current version:** 0.5.1
+
+`pipx run costkey setup` logs you in, creates a CostKey project, writes `COSTKEY_DSN`, detects FastAPI, Django, Flask, and plain Python apps, and writes `.costkey/setup.md`.
+
+For no-code Python bootstrapping, setup writes `.costkey/sitecustomize.py`. Put that directory on `PYTHONPATH` when starting your app:
+
+```bash
+PYTHONPATH="$PWD/.costkey:$PYTHONPATH" uvicorn app:app
+```
 
 ## How it works
 

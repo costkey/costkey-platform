@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { ArrowDown, ArrowUp, Zap, X, Copy, Check } from "lucide-react";
+import { ArrowDown, ArrowUp, Check, Copy, Search, Shield, Wrench, X, Zap } from "lucide-react";
 import type { EventRow } from "../hooks/useApi";
 import { getEvent } from "../api";
 import ProviderLogo from "./ProviderLogo";
@@ -27,6 +27,47 @@ function safeJsonParse(str: string): unknown {
   try { return JSON.parse(str); } catch { return null; }
 }
 
+function textFromContent(content: unknown): string | null {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return null;
+  const parts = content
+    .map((c) => {
+      if (typeof c === "string") return c;
+      if (!c || typeof c !== "object") return "";
+      const obj = c as Record<string, unknown>;
+      return typeof obj["text"] === "string" ? obj["text"] : "";
+    })
+    .filter(Boolean);
+  return parts.length ? parts.join("\n") : null;
+}
+
+function extractSystemPrompt(body: unknown): string | null {
+  if (!body) return null;
+  const b = typeof body === "string" ? safeJsonParse(body) : body;
+  if (!b || typeof b !== "object") return null;
+  const obj = b as Record<string, unknown>;
+
+  const direct = textFromContent(obj["system"] ?? obj["system_prompt"] ?? obj["systemPrompt"]);
+  if (direct) return direct;
+
+  const systemInstruction = obj["system_instruction"] ?? obj["systemInstruction"];
+  if (systemInstruction && typeof systemInstruction === "object") {
+    const fromParts = textFromContent((systemInstruction as Record<string, unknown>)["parts"]);
+    if (fromParts) return fromParts;
+  }
+
+  const messages = obj["messages"] as Array<Record<string, unknown>> | undefined;
+  if (messages?.length) {
+    const prompts = messages
+      .filter((msg) => msg["role"] === "system" || msg["role"] === "developer")
+      .map((msg) => textFromContent(msg["content"]))
+      .filter((text): text is string => !!text);
+    if (prompts.length) return prompts.join("\n\n");
+  }
+
+  return null;
+}
+
 function extractPrompt(body: unknown): string | null {
   if (!body) return null;
   const b = typeof body === "string" ? safeJsonParse(body) : body;
@@ -35,11 +76,10 @@ function extractPrompt(body: unknown): string | null {
 
   const messages = obj["messages"] as Array<Record<string, unknown>> | undefined;
   if (messages?.length) {
-    const last = messages[messages.length - 1];
-    const content = last?.["content"];
-    if (typeof content === "string") return content;
-    if (Array.isArray(content))
-      return content.map((c: Record<string, unknown>) => (typeof c === "string" ? c : c["text"] ?? "")).filter(Boolean).join("\n");
+    const promptMessages = messages.filter((msg) => msg["role"] !== "system" && msg["role"] !== "developer");
+    const last = promptMessages[promptMessages.length - 1] ?? messages[messages.length - 1];
+    const content = textFromContent(last?.["content"]);
+    if (content) return content;
   }
 
   const contents = obj["contents"] as Array<Record<string, unknown>> | undefined;
@@ -83,6 +123,23 @@ function extractCompletion(body: unknown): string | null {
   return null;
 }
 
+function parseMetadata(metadata: unknown): Record<string, unknown> | null {
+  if (!metadata) return null;
+  if (typeof metadata === "string") {
+    const parsed = safeJsonParse(metadata);
+    return parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : null;
+  }
+  return typeof metadata === "object" ? metadata as Record<string, unknown> : null;
+}
+
+function metadataCount(value: unknown): number {
+  return Array.isArray(value) ? value.length : value ? 1 : 0;
+}
+
+function metadataPreview(value: unknown): string {
+  return JSON.stringify(value, null, 2);
+}
+
 export default function EventPanel({ event, projectId, onClose }: Props) {
   const [detail, setDetail] = useState<EventRow | null>(null);
   const [loading, setLoading] = useState(true);
@@ -105,10 +162,12 @@ export default function EventPanel({ event, projectId, onClose }: Props) {
     ? (typeof event.call_site_frames === "string" ? JSON.parse(event.call_site_frames) : event.call_site_frames)
     : [];
   const fnName = event.bl_function ?? "unknown";
+  const metadata = detail ? parseMetadata(detail.metadata) : null;
+  const systemPrompt = detail ? detail.system_prompt ?? extractSystemPrompt(detail.request_body) : null;
   const prompt = detail ? extractPrompt(detail.request_body) : null;
   const completion = detail ? extractCompletion(detail.response_body) : null;
-  const [copied, setCopied] = useState<"input" | "output" | null>(null);
-  const copyText = (text: string, key: "input" | "output") => {
+  const [copied, setCopied] = useState<"system" | "input" | "output" | null>(null);
+  const copyText = (text: string, key: "system" | "input" | "output") => {
     navigator.clipboard.writeText(text);
     setCopied(key);
     setTimeout(() => setCopied(null), 1500);
@@ -164,6 +223,70 @@ export default function EventPanel({ event, projectId, onClose }: Props) {
                   </div>
                 )}
               </div>
+
+              {/* System prompt */}
+              {systemPrompt && (
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-1.5">
+                      <Shield size={12} className="text-amber-400" />
+                      <span className="text-xs uppercase tracking-wider font-medium text-text-muted">System Prompt</span>
+                    </div>
+                    <button onClick={() => copyText(systemPrompt, "system")} className="flex items-center gap-1 text-[10px] font-mono text-text-muted hover:text-text-primary transition-colors cursor-pointer">
+                      {copied === "system" ? <><Check size={10} className="text-green" /> Copied</> : <><Copy size={10} /> Copy</>}
+                    </button>
+                  </div>
+                  <pre className="bg-surface border border-border rounded-sm px-4 py-3 font-mono text-xs text-text-secondary whitespace-pre-wrap break-words max-h-72 overflow-y-auto leading-relaxed">
+                    {truncateText(systemPrompt, 3000)}
+                  </pre>
+                </div>
+              )}
+
+              {/* Tools and sources */}
+              {metadata && (
+                <div className="grid grid-cols-1 gap-3">
+                  {metadata["toolDefinitions"] && (
+                    <MetadataSection
+                      icon={<Wrench size={12} className="text-purple-300" />}
+                      label="Tool Definitions"
+                      count={metadataCount(metadata["toolDefinitions"])}
+                      value={metadataPreview(metadata["toolDefinitions"])}
+                    />
+                  )}
+                  {metadata["toolCalls"] && (
+                    <MetadataSection
+                      icon={<Wrench size={12} className="text-purple-300" />}
+                      label="Tool Calls"
+                      count={metadataCount(metadata["toolCalls"])}
+                      value={metadataPreview(metadata["toolCalls"])}
+                    />
+                  )}
+                  {metadata["toolResults"] && (
+                    <MetadataSection
+                      icon={<Wrench size={12} className="text-green" />}
+                      label="Tool Results"
+                      count={metadataCount(metadata["toolResults"])}
+                      value={metadataPreview(metadata["toolResults"])}
+                    />
+                  )}
+                  {metadata["webSearches"] && (
+                    <MetadataSection
+                      icon={<Search size={12} className="text-cyan" />}
+                      label="Web Search / Grounding"
+                      count={metadataCount(metadata["webSearches"])}
+                      value={metadataPreview(metadata["webSearches"])}
+                    />
+                  )}
+                  {metadata["citations"] && (
+                    <MetadataSection
+                      icon={<Search size={12} className="text-cyan" />}
+                      label="Citations"
+                      count={metadataCount(metadata["citations"])}
+                      value={metadataPreview(metadata["citations"])}
+                    />
+                  )}
+                </div>
+              )}
 
               {/* Input */}
               {prompt && (
@@ -257,5 +380,22 @@ function TokenBlock({ icon, label, value, color }: { icon: React.ReactNode; labe
       </div>
       <div className="font-mono text-base text-text-primary">{value?.toLocaleString() ?? "—"}</div>
     </div>
+  );
+}
+
+function MetadataSection({ icon, label, count, value }: { icon: React.ReactNode; label: string; count: number; value: string }) {
+  return (
+    <details className="bg-surface border border-border rounded-sm group">
+      <summary className="flex items-center justify-between px-4 py-3 cursor-pointer list-none">
+        <div className="flex items-center gap-1.5">
+          {icon}
+          <span className="text-xs uppercase tracking-wider font-medium text-text-muted">{label}</span>
+        </div>
+        <span className="font-mono text-[10px] text-text-muted">{count.toLocaleString()}</span>
+      </summary>
+      <pre className="border-t border-border px-4 py-3 font-mono text-xs text-text-secondary whitespace-pre-wrap break-words max-h-72 overflow-y-auto leading-relaxed">
+        {truncateText(value, 5000)}
+      </pre>
+    </details>
   );
 }

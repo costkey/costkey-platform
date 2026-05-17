@@ -17,6 +17,7 @@ export type {
   NormalizedUsage,
   CallSite,
   StreamTiming,
+  EventMetadata,
 } from "@costkey/shared";
 
 let transport: Transport | null = null;

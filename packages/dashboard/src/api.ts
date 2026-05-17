@@ -63,6 +63,8 @@ export interface EventRow {
   call_site_raw: string | null;
   call_site_frames: unknown[] | string | null;
   context: Record<string, unknown> | string | null;
+  metadata?: Record<string, unknown> | string | null;
+  system_prompt?: string | null;
   request_body?: string | null;
   response_body?: string | null;
   bl_function?: string | null;

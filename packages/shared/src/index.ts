@@ -9,6 +9,7 @@ export type {
   StreamTiming,
   BeforeSendHook,
   EventContext,
+  EventMetadata,
 } from "./types.js";
 
 export { Provider } from "./types.js";

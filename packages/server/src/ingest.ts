@@ -6,6 +6,181 @@ import { computeCost } from "./pricing.js";
 import { translateFrames } from "./sourcemap-resolver.js";
 import { updateFrameStatsBatch, getImplicitGraph, invalidateImplicitGraph } from "./implicit-graph.js";
 
+function textFromContent(content: unknown): string | null {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return null;
+  const parts = content
+    .map((part) => {
+      if (typeof part === "string") return part;
+      if (!part || typeof part !== "object") return "";
+      const obj = part as Record<string, unknown>;
+      return typeof obj["text"] === "string" ? obj["text"] : "";
+    })
+    .filter(Boolean);
+  return parts.length ? parts.join("\n") : null;
+}
+
+function extractSystemPrompt(body: unknown): string | null {
+  if (!body) return null;
+  let parsed = body;
+  if (typeof body === "string") {
+    try {
+      parsed = JSON.parse(body);
+    } catch {
+      return null;
+    }
+  }
+  if (!parsed || typeof parsed !== "object") return null;
+  const obj = parsed as Record<string, unknown>;
+
+  const system = obj["system"] ?? obj["system_prompt"] ?? obj["systemPrompt"];
+  const direct = textFromContent(system);
+  if (direct) return direct;
+
+  const systemInstruction = obj["system_instruction"] ?? obj["systemInstruction"];
+  if (systemInstruction && typeof systemInstruction === "object") {
+    const parts = (systemInstruction as Record<string, unknown>)["parts"];
+    const fromParts = textFromContent(parts);
+    if (fromParts) return fromParts;
+  }
+
+  const messages = obj["messages"];
+  if (Array.isArray(messages)) {
+    const prompts = messages
+      .filter((msg): msg is Record<string, unknown> => !!msg && typeof msg === "object")
+      .filter((msg) => msg["role"] === "system" || msg["role"] === "developer")
+      .map((msg) => textFromContent(msg["content"]))
+      .filter((text): text is string => !!text);
+    if (prompts.length) return prompts.join("\n\n");
+  }
+
+  return null;
+}
+
+function collectToolResults(messages: unknown): unknown[] {
+  if (!Array.isArray(messages)) return [];
+  const results: unknown[] = [];
+  for (const message of messages) {
+    if (!message || typeof message !== "object") continue;
+    const msg = message as Record<string, unknown>;
+    if (msg["role"] === "tool" || msg["role"] === "function") results.push(msg);
+    const content = msg["content"];
+    if (Array.isArray(content)) {
+      results.push(
+        ...content.filter((block) => !!block && typeof block === "object" && (block as Record<string, unknown>)["type"] === "tool_result"),
+      );
+    }
+  }
+  return results;
+}
+
+function collectResponseItems(responseBody: unknown): {
+  toolCalls: unknown[];
+  webSearches: unknown[];
+  citations: unknown[];
+} {
+  const toolCalls: unknown[] = [];
+  const webSearches: unknown[] = [];
+  const citations: unknown[] = [];
+  if (!responseBody || typeof responseBody !== "object") {
+    return { toolCalls, webSearches, citations };
+  }
+  const body = responseBody as Record<string, unknown>;
+
+  const choices = body["choices"];
+  if (Array.isArray(choices)) {
+    for (const choice of choices) {
+      if (!choice || typeof choice !== "object") continue;
+      const message = (choice as Record<string, unknown>)["message"];
+      if (message && typeof message === "object") {
+        const msg = message as Record<string, unknown>;
+        if (Array.isArray(msg["tool_calls"])) toolCalls.push(...msg["tool_calls"]);
+        if (msg["function_call"]) toolCalls.push(msg["function_call"]);
+        const annotations = msg["annotations"];
+        if (Array.isArray(annotations)) citations.push(...annotations);
+      }
+    }
+  }
+
+  const output = body["output"];
+  if (Array.isArray(output)) {
+    for (const item of output) {
+      if (!item || typeof item !== "object") continue;
+      const obj = item as Record<string, unknown>;
+      const type = String(obj["type"] ?? "");
+      if (type.includes("function_call") || type.includes("tool_call")) toolCalls.push(obj);
+      if (type.includes("web_search")) webSearches.push(obj);
+      if (Array.isArray(obj["content"])) {
+        for (const content of obj["content"]) {
+          if (!content || typeof content !== "object") continue;
+          const annotations = (content as Record<string, unknown>)["annotations"];
+          if (Array.isArray(annotations)) citations.push(...annotations);
+        }
+      }
+    }
+  }
+
+  const content = body["content"];
+  if (Array.isArray(content)) {
+    for (const block of content) {
+      if (!block || typeof block !== "object") continue;
+      const obj = block as Record<string, unknown>;
+      if (obj["type"] === "tool_use") toolCalls.push(obj);
+      if (Array.isArray(obj["citations"])) citations.push(...obj["citations"]);
+    }
+  }
+
+  const functionCalls = body["functionCalls"] ?? body["function_calls"];
+  if (Array.isArray(functionCalls)) toolCalls.push(...functionCalls);
+
+  const candidates = body["candidates"];
+  if (Array.isArray(candidates)) {
+    for (const candidate of candidates) {
+      if (!candidate || typeof candidate !== "object") continue;
+      const grounding = (candidate as Record<string, unknown>)["groundingMetadata"]
+        ?? (candidate as Record<string, unknown>)["grounding_metadata"];
+      if (grounding) webSearches.push(grounding);
+    }
+  }
+
+  const usage = body["usage"];
+  if (usage && typeof usage === "object") {
+    const serverToolUse = (usage as Record<string, unknown>)["server_tool_use"];
+    if (serverToolUse) webSearches.push({ usage: serverToolUse });
+  }
+
+  return { toolCalls, webSearches, citations };
+}
+
+function extractMetadata(requestBody: unknown, responseBody: unknown): CostKeyEvent["metadata"] {
+  if ((!requestBody || typeof requestBody !== "object") && (!responseBody || typeof responseBody !== "object")) return null;
+  const req = requestBody && typeof requestBody === "object" ? requestBody as Record<string, unknown> : {};
+  const prompts = Array.isArray(req["messages"])
+    ? req["messages"].map((message) => {
+      if (!message || typeof message !== "object") return { role: "unknown", content: message };
+      const msg = message as Record<string, unknown>;
+      return { role: String(msg["role"] ?? "unknown"), content: msg["content"] };
+    })
+    : Array.isArray(req["contents"])
+      ? req["contents"].map((content) => ({ role: String((content as Record<string, unknown>)["role"] ?? "user"), content }))
+      : req["input"] != null
+        ? [{ role: "input", content: req["input"] }]
+        : undefined;
+  const { toolCalls, webSearches, citations } = collectResponseItems(responseBody);
+  const toolResults = collectToolResults(req["messages"]);
+  const metadata: NonNullable<CostKeyEvent["metadata"]> = {};
+
+  if (prompts?.length) metadata.prompts = prompts;
+  if (Array.isArray(req["tools"]) && req["tools"].length) metadata.toolDefinitions = req["tools"];
+  if (req["tool_choice"] != null || req["toolChoice"] != null) metadata.toolChoice = req["tool_choice"] ?? req["toolChoice"];
+  if (toolCalls.length) metadata.toolCalls = toolCalls;
+  if (toolResults.length) metadata.toolResults = toolResults;
+  if (webSearches.length) metadata.webSearches = webSearches;
+  if (citations.length) metadata.citations = citations;
+
+  return Object.keys(metadata).length ? metadata : null;
+}
+
 /**
  * Server-side stack frame filtering.
  * Strips AI SDK internals, HTTP clients, language runtime frames
@@ -546,9 +721,9 @@ export function createIngestRouter(pool: pg.Pool): Router {
               cost_usd, duration_ms, streaming,
               ttft, tps, stream_duration, chunk_count,
               call_site_raw, call_site_frames,
-              trace_id, trace_name, context, request_body, response_body, release,
+              trace_id, trace_name, context, metadata, system_prompt, request_body, response_body, release,
               bl_function, bl_file, bl_line
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32)
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34)
             ON CONFLICT (id) DO NOTHING`,
             [
               event.id, event.timestamp, projectId,
@@ -564,6 +739,8 @@ export function createIngestRouter(pool: pg.Pool): Router {
               event.context?.traceId ?? null,
               event.context?.traceName ?? null,
               event.context ? JSON.stringify(event.context) : null,
+              JSON.stringify(event.metadata ?? extractMetadata(event.requestBody, event.responseBody)),
+              event.systemPrompt ?? extractSystemPrompt(event.requestBody),
               truncateBody(event.requestBody),
               truncateBody(event.responseBody),
               release,

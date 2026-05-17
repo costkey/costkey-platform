@@ -9,10 +9,20 @@ description: Full API reference for the CostKey TypeScript/Node.js SDK.
 The CostKey TypeScript SDK patches `globalThis.fetch` to capture every AI API call. Works with any AI SDK that uses `fetch` under the hood (OpenAI, Anthropic, Google, Vercel AI SDK, etc.).
 
 ```bash
-npm install costkey
+npx costkey setup
 ```
 
-**Current version:** 0.2.1
+**Current version:** 0.5.1
+
+`npx costkey setup` logs you in, creates a CostKey project, writes `COSTKEY_DSN`, detects frameworks like Next.js, Vite, Express, Fastify, Hono, Koa, NestJS, Remix, Astro, and SvelteKit, and writes `.costkey/setup.md`.
+
+For no-code server preloading, use:
+
+```bash
+NODE_OPTIONS=--import costkey/register npm start
+```
+
+Bundled apps such as Next.js, Vite, Remix, Astro, and SvelteKit should also configure [sourcemaps](/sourcemaps) so production stack traces resolve to original source.
 
 ## How it works
 

@@ -7,9 +7,9 @@ description: Start tracking AI costs in under 60 seconds with CostKey.
 
 # Getting Started
 
-CostKey is an SDK that auto-tracks every AI API call's cost, tokens, and latency. One line of code, zero wrappers, zero proxies.
+CostKey is an SDK that auto-tracks every AI API call's cost, tokens, latency, prompts, tool calls, and agent metadata. One CLI command, zero wrappers, zero proxies.
 
-## Install
+## Setup
 
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
@@ -18,22 +18,26 @@ import TabItem from '@theme/TabItem';
 <TabItem value="python" label="Python">
 
 ```bash
-pip install costkey
+pipx run costkey setup
 ```
 
 </TabItem>
 <TabItem value="typescript" label="TypeScript">
 
 ```bash
-npm install costkey
+npx costkey setup
 ```
 
 </TabItem>
 </Tabs>
 
-## Initialize
+The setup command authenticates with CostKey in your browser, creates a project, writes `COSTKEY_DSN` to `.env`, detects your framework, and writes `.costkey/setup.md` with the exact snippet and no-code preload option.
 
-Get your DSN from the [CostKey dashboard](https://app.costkey.dev) or by running `costkey init my-project`.
+Supported detections include Next.js, Vite, Express, Fastify, Hono, Koa, NestJS, Remix, Astro, SvelteKit, Node/TypeScript, FastAPI, Django, Flask, and plain Python. Bundled JavaScript apps get a sourcemap warning with a link to [sourcemap setup](/sourcemaps).
+
+## Initialize Manually
+
+Prefer the setup command above. If you need to wire CostKey manually, get your DSN from the [CostKey dashboard](https://app.costkey.dev) and initialize before your first AI call.
 
 <Tabs>
 <TabItem value="python" label="Python">
@@ -62,9 +66,23 @@ CostKey.init({
 </TabItem>
 </Tabs>
 
+## No-code preload
+
+For Node servers, setup writes `.costkey/node-options.env`:
+
+```bash
+NODE_OPTIONS=--import costkey/register npm start
+```
+
+For Python servers, setup writes `.costkey/sitecustomize.py`:
+
+```bash
+PYTHONPATH="$PWD/.costkey:$PYTHONPATH" uvicorn app:app
+```
+
 ## That's it
 
-Every AI API call your app makes is now tracked automatically. No wrappers, no decorators, no code changes.
+Every AI API call your app makes is now tracked automatically. No wrappers, no decorators, no proxy migration.
 
 <Tabs>
 <TabItem value="python" label="Python">
@@ -116,6 +134,8 @@ Open the [dashboard](https://app.costkey.dev) and you'll see:
 - **Stack trace** showing which function in your code made the call
 - **Call site grouping** so you can see which parts of your code cost the most
 - **Body capture** — inspect the exact prompt and completion for any call
+- **System prompts and tool calls** — inspect prompt roles, tool/function calls, errors, and provider metadata
+- **Agent runs** — group model calls, tool calls, retries, and errors into one trace
 - **Cost per deploy** — set `release` to see how costs change across deployments
 - **Executive summary** — a plain-English summary of your AI spend for stakeholders
 

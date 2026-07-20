@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { BarChart3, Route, FileCode, Activity, Search, AlertCircle, X, ExternalLink, Lightbulb } from "lucide-react";
+import { BarChart3, Route, FileCode, Activity, Search, AlertCircle, X, ExternalLink } from "lucide-react";
 import AnomalyBanner from "../components/AnomalyBanner";
 import SummaryView from "../components/SummaryView";
 import { getHealth, type HealthHint } from "../api";
@@ -13,6 +13,7 @@ import EmptyState from "../components/EmptyState";
 import InsightsView from "../components/InsightsView";
 import { useSummary, useOverview, useCallSites, useEvents, useTrends, useTraces } from "../hooks/useApi";
 import { useAuth } from "../contexts/AuthContext";
+import { analytics } from "../analytics";
 
 type Tab = "overview" | "insights" | "traces" | "call-sites" | "events";
 type TimeRange = "mtd" | "7d" | "30d" | "3m" | "6m" | "1y";
@@ -51,6 +52,17 @@ export default function Dashboard({ demoMode = false }: { demoMode?: boolean }) 
 
   const showSearch = activeTab !== "overview";
 
+  const selectTab = (tab: Tab) => {
+    setActiveTab(tab);
+    setSearch("");
+    if (!demoMode) analytics.capture("dashboard_tab_viewed", { tab, project_id: projectId });
+  };
+
+  const dismissHint = (hint: HealthHint) => {
+    setDismissedHints((prev) => new Set([...prev, hint.type]));
+    if (!demoMode) analytics.capture("health_hint_dismissed", { hint_type: hint.type, project_id: projectId });
+  };
+
   return (
     <main className="max-w-[1440px] mx-auto px-4 md:px-6 pt-5 pb-6 flex flex-col gap-0 min-h-[calc(100vh-56px)]">
       <AnomalyBanner projectId={projectId} />
@@ -69,7 +81,7 @@ export default function Dashboard({ demoMode = false }: { demoMode?: boolean }) 
             Setup guide <ExternalLink size={11} />
           </a>
           <button
-            onClick={() => setDismissedHints((prev) => new Set([...prev, hint.type]))}
+            onClick={() => dismissHint(hint)}
             className="text-text-muted hover:text-text-secondary cursor-pointer shrink-0"
           >
             <X size={14} />
@@ -83,7 +95,7 @@ export default function Dashboard({ demoMode = false }: { demoMode?: boolean }) 
           {TABS.map((tab) => (
             <button
               key={tab.id}
-              onClick={() => { setActiveTab(tab.id); setSearch(""); }}
+              onClick={() => selectTab(tab.id)}
               className={`flex items-center gap-2 px-4 py-3 text-sm font-medium cursor-pointer transition-colors border-b-2 -mb-px whitespace-nowrap ${
                 activeTab === tab.id
                   ? "text-text-primary border-text-primary"
@@ -125,9 +137,15 @@ export default function Dashboard({ demoMode = false }: { demoMode?: boolean }) 
                     byModel={trends.data?.byModel}
                     loading={trends.loading}
                     timeRange={timeRange}
-                    onTimeRangeChange={setTimeRange}
+                    onTimeRangeChange={(range) => {
+                      setTimeRange(range);
+                      if (!demoMode) analytics.capture("dashboard_time_range_changed", { range, project_id: projectId });
+                    }}
                     groupByModel={groupByModel}
-                    onGroupByModelChange={setGroupByModel}
+                    onGroupByModelChange={(enabled) => {
+                      setGroupByModel(enabled);
+                      if (!demoMode) analytics.capture("dashboard_model_grouping_changed", { enabled, project_id: projectId });
+                    }}
                   />
                   <ModelBreakdown models={overview.data?.byModel ?? null} loading={overview.loading} />
                 </div>
@@ -154,7 +172,7 @@ export default function Dashboard({ demoMode = false }: { demoMode?: boolean }) 
         {activeTab === "events" && (
           !events.loading && events.data && events.data.length === 0
             ? <EmptyState tab="events" />
-            : <RecentEvents events={events.data} loading={events.loading} search={search} projectId={projectId} />
+            : <RecentEvents events={events.data} loading={events.loading} search={search} projectId={projectId} demoMode={demoMode} />
         )}
       </div>
     </main>

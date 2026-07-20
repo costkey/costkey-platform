@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from "react";
+import { analytics } from "../analytics";
 
 interface User {
   id: string;
@@ -81,6 +82,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => { refresh(); }, []);
 
+  useEffect(() => {
+    if (!user) return;
+    analytics.identify(user.id, {
+      email: user.email,
+      name: user.name,
+      role: user.role,
+    });
+    if (org) analytics.group("organization", org.id, { name: org.name, slug: org.slug });
+  }, [user, org]);
+
   const login = async (email: string, password: string): Promise<boolean> => {
     setError(null);
     try {
@@ -107,6 +118,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setCurrentProjectId(data.projects[0].id);
         }
       }
+      analytics.capture("user_logged_in");
       return true;
     } catch {
       setError("Network error");
@@ -131,6 +143,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return null;
       }
       await refresh();
+      analytics.capture("user_signed_up", { joined_via_invite: data.joinedViaInvite ?? false });
       return {
         dsn: data.dsn ?? "",
         projectId: data.project?.id ?? "",
@@ -143,11 +156,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const logout = async () => {
+    analytics.capture("user_logged_out");
     await fetch("/auth/logout", { method: "POST", credentials: "include" });
     setUser(null);
     setOrg(null);
     setProjects([]);
     setCurrentProjectId(null);
+    analytics.reset();
   };
 
   return (

@@ -2,17 +2,31 @@ import { useState } from "react";
 import type { EventRow } from "../hooks/useApi";
 import ProviderLogo from "./ProviderLogo";
 import EventPanel from "./EventPanel";
-import { truncateModel, timeAgo, formatDuration, cleanFunctionName } from "../utils";
+import { truncateModel, timeAgo, formatDuration } from "../utils";
+import { analytics } from "../analytics";
 
 interface Props {
   events: EventRow[] | null;
   loading: boolean;
   search?: string;
   projectId: string;
+  demoMode?: boolean;
 }
 
-export default function RecentEvents({ events, loading, search = "", projectId }: Props) {
+export default function RecentEvents({ events, loading, search = "", projectId, demoMode = false }: Props) {
   const [selectedEvent, setSelectedEvent] = useState<EventRow | null>(null);
+
+  const openEvent = (event: EventRow) => {
+    setSelectedEvent(event);
+    if (!demoMode) {
+      analytics.capture("event_detail_opened", {
+        project_id: projectId,
+        provider: event.provider,
+        model: event.model,
+        has_function_attribution: Boolean(event.bl_function),
+      });
+    }
+  };
 
   if (loading || !events) {
     return (
@@ -71,7 +85,7 @@ export default function RecentEvents({ events, loading, search = "", projectId }
                 return (
                   <tr
                     key={event.id}
-                    onClick={() => setSelectedEvent(event)}
+                    onClick={() => openEvent(event)}
                     className="row-hover row-striped cursor-pointer border-b border-border/10 last:border-b-0"
                   >
                     <td className="px-5 py-3 w-[3%]">

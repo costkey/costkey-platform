@@ -600,9 +600,34 @@ const MAX_BODY_BYTES = 100_000;
 export function truncateBody(body: unknown): string | null {
   if (!body) return null;
   const json = JSON.stringify(body);
-  if (json.length <= MAX_BODY_BYTES) return json;
-  // Truncate and add marker
-  return json.slice(0, MAX_BODY_BYTES) + '..."[TRUNCATED]"}';
+  const originalBytes = Buffer.byteLength(json, "utf8");
+  if (originalBytes <= MAX_BODY_BYTES) return json;
+
+  // JSONB rejects a raw slice because it can end in the middle of a string,
+  // object, or UTF-8 sequence. Store the slice as a string inside a valid
+  // envelope so one large prompt cannot abort the entire ingest transaction.
+  const envelope = {
+    __costkey_truncated__: true,
+    original_bytes: originalBytes,
+    notice: "[TRUNCATED]",
+    preview: "",
+  };
+  const emptyEnvelopeBytes = Buffer.byteLength(JSON.stringify(envelope), "utf8");
+  let previewBytes = Math.max(0, MAX_BODY_BYTES - emptyEnvelopeBytes);
+  const source = Buffer.from(json, "utf8");
+  let result = "";
+
+  // JSON escaping can expand the preview, so tighten it until the serialized
+  // envelope respects the byte limit. This normally completes in one pass.
+  do {
+    envelope.preview = source.subarray(0, previewBytes).toString("utf8");
+    result = JSON.stringify(envelope);
+    const excess = Buffer.byteLength(result, "utf8") - MAX_BODY_BYTES;
+    if (excess <= 0) break;
+    previewBytes = Math.max(0, previewBytes - excess);
+  } while (previewBytes > 0);
+
+  return result;
 }
 
 export function createIngestRouter(pool: pg.Pool): Router {
@@ -739,7 +764,7 @@ export function createIngestRouter(pool: pg.Pool): Router {
               event.context?.traceId ?? null,
               event.context?.traceName ?? null,
               event.context ? JSON.stringify(event.context) : null,
-              JSON.stringify(event.metadata ?? extractMetadata(event.requestBody, event.responseBody)),
+              truncateBody(event.metadata ?? extractMetadata(event.requestBody, event.responseBody)),
               event.systemPrompt ?? extractSystemPrompt(event.requestBody),
               truncateBody(event.requestBody),
               truncateBody(event.responseBody),

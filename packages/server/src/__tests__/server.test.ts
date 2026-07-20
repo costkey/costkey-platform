@@ -1,7 +1,11 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import type { AddressInfo } from "node:net";
+import express from "express";
+import type { Express } from "express";
 import { computeCost, findPricing } from "../pricing.js";
-import { filterFrames, findBusinessLogicFrame, findBusinessLogicFrameWithGraph, truncateBody } from "../ingest.js";
+import { createIngestRouter, filterFrames, findBusinessLogicFrame, findBusinessLogicFrameWithGraph, truncateBody } from "../ingest.js";
+import { configureRequestParsing } from "../request-parsing.js";
 
 // ─── Pricing: findPricing ─────────────────────────────────────────────
 
@@ -1554,8 +1558,9 @@ describe("truncateBody", () => {
     const body = { content: bigContent };
     const result = truncateBody(body);
     assert.ok(result);
-    assert.ok(result.length <= 100_100); // 100KB + small marker overhead
+    assert.ok(Buffer.byteLength(result, "utf8") <= 100_000);
     assert.ok(result.includes("[TRUNCATED]"));
+    assert.doesNotThrow(() => JSON.parse(result));
   });
 
   it("null body returns null", () => {
@@ -1570,11 +1575,33 @@ describe("truncateBody", () => {
     assert.equal(truncateBody(""), null);
   });
 
-  it("truncated body includes [TRUNCATED] marker", () => {
+  it("truncated body uses a valid JSON envelope with a preview", () => {
     const body = { data: "y".repeat(200_000) };
     const result = truncateBody(body);
     assert.ok(result);
-    assert.ok(result.endsWith('..."[TRUNCATED]"}'));
+    const parsed = JSON.parse(result);
+    assert.equal(parsed.__costkey_truncated__, true);
+    assert.equal(parsed.original_bytes, Buffer.byteLength(JSON.stringify(body), "utf8"));
+    assert.equal(parsed.notice, "[TRUNCATED]");
+    assert.ok(parsed.preview.startsWith('{"data":"yyyy'));
+  });
+
+  it("keeps truncated unicode bodies valid and within the byte limit", () => {
+    const body = { content: "🛋️".repeat(80_000) };
+    const result = truncateBody(body);
+    assert.ok(result);
+    assert.ok(Buffer.byteLength(result, "utf8") <= 100_000);
+    assert.doesNotThrow(() => JSON.parse(result));
+  });
+
+  it("accounts for JSON escape expansion in the preview envelope", () => {
+    const body = { content: '\\"'.repeat(100_000) };
+    const result = truncateBody(body);
+    assert.ok(result);
+    assert.ok(Buffer.byteLength(result, "utf8") <= 100_000);
+    const parsed = JSON.parse(result);
+    assert.equal(parsed.__costkey_truncated__, true);
+    assert.ok(parsed.preview.length > 0);
   });
 
   it("body at exactly MAX_BODY_BYTES passes through", () => {
@@ -1586,6 +1613,118 @@ describe("truncateBody", () => {
     assert.ok(result);
     assert.equal(result.length, 100_000);
     assert.ok(!result.includes("[TRUNCATED]"));
+  });
+});
+
+describe("large request ingestion", () => {
+  async function withServer(
+    configure: (app: Express) => void,
+    run: (baseUrl: string) => Promise<void>,
+  ): Promise<void> {
+    const app = express();
+    configure(app);
+    const server = app.listen(0, "127.0.0.1");
+    await new Promise<void>((resolve) => server.once("listening", resolve));
+    const { port } = server.address() as AddressInfo;
+    try {
+      await run(`http://127.0.0.1:${port}`);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
+    }
+  }
+
+  it("accepts a 6MB multimodal batch and commits bounded valid JSONB", async () => {
+    const statements: string[] = [];
+    let insertParams: unknown[] | undefined;
+    const client = {
+      async query(sql: string, params?: unknown[]) {
+        statements.push(sql);
+        if (sql.includes("INSERT INTO events")) insertParams = params;
+        return { rows: [], rowCount: 1 };
+      },
+      release() {},
+    };
+    const pool = {
+      async query(sql: string) {
+        if (sql.includes("SELECT id FROM projects")) return { rows: [{ id: "proj_test" }] };
+        return { rows: [] };
+      },
+      async connect() { return client; },
+    };
+
+    await withServer((app) => {
+      configureRequestParsing(app);
+      app.use(createIngestRouter(pool as never));
+    }, async (baseUrl) => {
+      const largeContent = `data:image/png;base64,${"a".repeat(6 * 1024 * 1024)}`;
+      const response = await fetch(`${baseUrl}/api/v1/events`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer test-key" },
+        body: JSON.stringify({
+          sdkVersion: "test",
+          events: [{
+            id: "evt_large",
+            timestamp: new Date().toISOString(),
+            provider: "google",
+            model: "gemini-2.5-flash",
+            requestBody: { messages: [{ role: "user", content: largeContent }] },
+            responseBody: { candidates: [{ content: { parts: [{ text: "done" }] } }] },
+          }],
+        }),
+      });
+
+      assert.equal(response.status, 202);
+      assert.deepEqual(await response.json(), { accepted: 1 });
+    });
+
+    assert.ok(statements.includes("BEGIN"));
+    assert.ok(statements.includes("COMMIT"));
+    assert.ok(insertParams);
+    for (const index of [27, 28, 29]) {
+      const value = insertParams[index];
+      if (value == null) continue;
+      assert.equal(typeof value, "string");
+      assert.ok(Buffer.byteLength(value as string, "utf8") <= 100_000);
+      assert.doesNotThrow(() => JSON.parse(value as string));
+    }
+  });
+
+  it("rejects ingest bodies over 12MB and unrelated bodies over 5MB", async () => {
+    await withServer((app) => {
+      configureRequestParsing(app);
+      app.post("/api/v1/events", (_req, res) => res.sendStatus(202));
+      app.post("/other", (_req, res) => res.sendStatus(200));
+    }, async (baseUrl) => {
+      const over12Mb = JSON.stringify({ data: "x".repeat(12 * 1024 * 1024) });
+      const ingestResponse = await fetch(`${baseUrl}/api/v1/events`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: over12Mb,
+      });
+      assert.equal(ingestResponse.status, 413);
+
+      const over5Mb = JSON.stringify({ data: "x".repeat(5 * 1024 * 1024) });
+      const otherResponse = await fetch(`${baseUrl}/other`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: over5Mb,
+      });
+      assert.equal(otherResponse.status, 413);
+    });
+  });
+
+  it("rate-limits the 61st ingest request before route handling", async () => {
+    await withServer((app) => {
+      configureRequestParsing(app);
+      app.post("/api/v1/events", (_req, res) => res.sendStatus(202));
+    }, async (baseUrl) => {
+      for (let i = 0; i < 60; i += 1) {
+        const response = await fetch(`${baseUrl}/api/v1/events`, {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+        });
+        assert.equal(response.status, 202);
+      }
+      const limited = await fetch(`${baseUrl}/api/v1/events`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+      });
+      assert.equal(limited.status, 429);
+    });
   });
 });
 

@@ -41,6 +41,14 @@ function textFromContent(content: unknown): string | null {
   return parts.length ? parts.join("\n") : null;
 }
 
+function truncatedPreview(obj: Record<string, unknown>): string | null {
+  if (obj["__costkey_truncated__"] !== true || typeof obj["preview"] !== "string") return null;
+  const originalBytes = typeof obj["original_bytes"] === "number"
+    ? ` from ${obj["original_bytes"].toLocaleString()} bytes`
+    : "";
+  return `[Truncated${originalBytes}]\n${obj["preview"]}`;
+}
+
 function extractSystemPrompt(body: unknown): string | null {
   if (!body) return null;
   const b = typeof body === "string" ? safeJsonParse(body) : body;
@@ -73,6 +81,8 @@ function extractPrompt(body: unknown): string | null {
   const b = typeof body === "string" ? safeJsonParse(body) : body;
   if (!b || typeof b !== "object") return null;
   const obj = b as Record<string, unknown>;
+  const preview = truncatedPreview(obj);
+  if (preview) return preview;
 
   const messages = obj["messages"] as Array<Record<string, unknown>> | undefined;
   if (messages?.length) {
@@ -97,6 +107,8 @@ function extractCompletion(body: unknown): string | null {
   const b = typeof body === "string" ? safeJsonParse(body) : body;
   if (!b || typeof b !== "object") return null;
   const obj = b as Record<string, unknown>;
+  const preview = truncatedPreview(obj);
+  if (preview) return preview;
 
   // OpenAI format: choices[0].message.content
   const choices = obj["choices"] as Array<Record<string, unknown>> | undefined;

@@ -17,6 +17,7 @@ import { seedIfEmpty } from "./seed.js";
 import { backfillCosts } from "./pricing.js";
 import { createSourcemapsRouter } from "./sourcemaps.js";
 import { initSourceMaps } from "./sourcemap-resolver.js";
+import { configureRequestParsing } from "./request-parsing.js";
 
 const PORT = parseInt(process.env["PORT"] ?? "4100", 10);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -25,7 +26,11 @@ const hasDashboard = fs.existsSync(path.join(dashboardDist, "index.html"));
 
 const app = express();
 app.use(cors({ origin: true, credentials: true }));
-app.use(express.json({ limit: "5mb" }));
+// Multimodal AI requests commonly contain base64 images. The ingest route
+// truncates stored bodies to 100KB, but it must first be able to parse the SDK
+// batch. Rate-limit it before parsing, then keep the larger ceiling scoped to
+// ingestion so unrelated endpoints retain the tighter default limit.
+configureRequestParsing(app);
 app.use(cookieParser());
 app.use((_req, res, next) => {
   res.setHeader("X-Frame-Options", "DENY");
@@ -80,7 +85,6 @@ async function initApp() {
     windowMs: 60 * 1000, max: 1000,
     keyFn: (req) => req.headers.authorization?.slice(7) ?? req.ip ?? "unknown",
   }));
-
   await seedIfEmpty(pool);
 
   // SDK router MUST be mounted BEFORE any router that uses `router.use(requireAuth)`.
@@ -133,4 +137,3 @@ async function initApp() {
 
   console.log("[costkey] Ready");
 }
-

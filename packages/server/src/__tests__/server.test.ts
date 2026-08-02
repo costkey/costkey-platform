@@ -56,6 +56,19 @@ describe("findPricing", () => {
     assert.equal(p.output, 0.6);
   });
 
+  it("newer, specific model patterns win over their legacy family", () => {
+    const gpt41 = findPricing("gpt-4.1-mini-2025-04-14");
+    assert.deepEqual(gpt41, { input: 0.4, output: 1.6, cacheRead: 0.1 });
+
+    const opus = findPricing("claude-opus-4-8-20260701");
+    assert.deepEqual(opus, { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 });
+  });
+
+  it("uses the corrected Claude Haiku 3 cache and token pricing", () => {
+    const p = findPricing("claude-haiku-3-20240307");
+    assert.deepEqual(p, { input: 0.25, output: 1.25, cacheRead: 0.03, cacheWrite: 0.3 });
+  });
+
   it("case-insensitive matching", () => {
     const p = findPricing("GPT-4O");
     assert.ok(p);
@@ -65,19 +78,19 @@ describe("findPricing", () => {
   it("all major model families have at least one match", () => {
     const families = [
       // OpenAI
-      "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo", "o1", "o3-mini", "o4-mini",
+      "gpt-4.1", "gpt-4.1-mini", "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo", "o1", "o3-mini", "o4-mini",
       // Anthropic
-      "claude-opus-4", "claude-sonnet-4", "claude-3-5-sonnet", "claude-3-haiku",
+      "claude-opus-4", "claude-opus-4-8", "claude-sonnet-4", "claude-3-5-sonnet", "claude-3-haiku",
       // Google
-      "gemini-2.5-pro", "gemini-2.0-flash",
+      "gemini-3.5-flash", "gemini-2.5-pro", "gemini-2.0-flash",
       // xAI
-      "grok-3",
+      "grok-4.5", "grok-3",
       // Llama
       "llama-3.1-70b",
       // Mistral
       "mistral-large", "codestral",
       // DeepSeek
-      "deepseek-chat", "deepseek-reasoner",
+      "deepseek-v4-flash", "deepseek-v4-pro", "deepseek-chat", "deepseek-reasoner",
       // Cohere
       "command-r-plus", "command-a",
       // Perplexity

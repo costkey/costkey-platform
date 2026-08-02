@@ -1,7 +1,8 @@
 /**
  * Server-side pricing table: cost per 1M tokens in USD.
  * This is the authoritative pricing source — the SDK no longer calculates costs.
- * Source: provider pricing pages as of 2026-04.
+ * Source: provider pricing pages as of 2026-08. These are standard API rates;
+ * batch, priority, long-context, and provider-reseller rates may differ.
  */
 import { filterFrames, findBusinessLogicFrame, findBusinessLogicFrameWithGraph, getFilterContext, callGraphCache } from "./ingest.js";
 interface ModelPricing {
@@ -21,6 +22,10 @@ interface ModelPricing {
  */
 const PRICING: [string, ModelPricing][] = [
   // OpenAI — specific first
+  // https://openai.com/index/introducing-gpt-4-1/
+  ["gpt-4.1-nano", { input: 0.1, output: 0.4, cacheRead: 0.025 }],
+  ["gpt-4.1-mini", { input: 0.4, output: 1.6, cacheRead: 0.1 }],
+  ["gpt-4.1", { input: 2, output: 8, cacheRead: 0.5 }],
   ["gpt-4o-mini", { input: 0.15, output: 0.6 }],
   ["gpt-4o", { input: 2.5, output: 10 }],
   ["gpt-4-turbo", { input: 10, output: 30 }],
@@ -34,10 +39,15 @@ const PRICING: [string, ModelPricing][] = [
   ["o4-mini", { input: 1.1, output: 4.4 }],
 
   // Anthropic — match family name regardless of version suffix
+  // https://www-cdn.anthropic.com/files/4zrzovbb/website/3684c2faafb97418665782cea0001f439f74b1d2.pdf
+  ["claude-opus-4-8", { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 }],
+  ["claude-opus-4-7", { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 }],
   ["claude-opus-4", { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 }],
   ["claude-sonnet-4", { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }],
   ["claude-haiku-4", { input: 0.8, output: 4, cacheRead: 0.08, cacheWrite: 1 }],
-  ["claude-haiku-3", { input: 0.8, output: 4, cacheRead: 0.08, cacheWrite: 1 }],
+  ["claude-haiku-3-5", { input: 0.8, output: 4, cacheRead: 0.08, cacheWrite: 1 }],
+  // Claude Haiku 3 is materially cheaper than Haiku 3.5.
+  ["claude-haiku-3", { input: 0.25, output: 1.25, cacheRead: 0.03, cacheWrite: 0.3 }],
   ["claude-3-5-sonnet", { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }],
   ["claude-3-5-haiku", { input: 0.8, output: 4, cacheRead: 0.08, cacheWrite: 1 }],
   ["claude-3-opus", { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 }],
@@ -45,6 +55,8 @@ const PRICING: [string, ModelPricing][] = [
   ["claude-3-haiku", { input: 0.25, output: 1.25 }],
 
   // Google Gemini
+  // https://ai.google.dev/gemini-api/docs/pricing
+  ["gemini-3.5-flash", { input: 1.5, output: 9, cacheRead: 0.15 }],
   ["gemini-2.5-pro", { input: 1.25, output: 10 }],
   ["gemini-2.5-flash", { input: 0.15, output: 0.6 }],
   ["gemini-2.0-flash-lite", { input: 0.02, output: 0.1 }],
@@ -53,6 +65,8 @@ const PRICING: [string, ModelPricing][] = [
   ["gemini-1.5-flash", { input: 0.075, output: 0.3 }],
 
   // xAI (Grok)
+  // https://docs.x.ai/developers/models
+  ["grok-4.5", { input: 2, output: 6 }],
   ["grok-3-mini", { input: 0.3, output: 0.5 }],
   ["grok-3", { input: 3, output: 15 }],
   ["grok-4", { input: 3, output: 15 }],
@@ -80,6 +94,9 @@ const PRICING: [string, ModelPricing][] = [
   ["open-mistral-nemo", { input: 0.15, output: 0.15 }],
 
   // DeepSeek
+  // https://api-docs.deepseek.com/quick_start/pricing
+  ["deepseek-v4-flash", { input: 0.14, output: 0.28, cacheRead: 0.0028 }],
+  ["deepseek-v4-pro", { input: 0.435, output: 0.87, cacheRead: 0.003625 }],
   ["deepseek-reasoner", { input: 0.55, output: 2.19, cacheRead: 0.055 }],
   ["deepseek-chat", { input: 0.14, output: 0.28, cacheRead: 0.014 }],
 

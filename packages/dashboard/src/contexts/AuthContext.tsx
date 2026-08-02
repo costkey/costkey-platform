@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from "react";
 import { analytics } from "../analytics";
+import { UNAUTHENTICATED_EVENT } from "../api";
 
 interface User {
   id: string;
@@ -81,6 +82,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [currentProjectId]);
 
   useEffect(() => { refresh(); }, []);
+
+  useEffect(() => {
+    const clearExpiredSession = () => {
+      setUser(null);
+      setOrg(null);
+      setProjects([]);
+      setMembers([]);
+      setCurrentProjectId(null);
+      setLoading(false);
+      analytics.reset();
+    };
+
+    window.addEventListener(UNAUTHENTICATED_EVENT, clearExpiredSession);
+    return () => window.removeEventListener(UNAUTHENTICATED_EVENT, clearExpiredSession);
+  }, []);
 
   useEffect(() => {
     if (!user) return;

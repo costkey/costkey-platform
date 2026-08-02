@@ -1,5 +1,11 @@
 const API_BASE = "/api/v1";
 
+export const UNAUTHENTICATED_EVENT = "costkey:unauthenticated";
+
+function notifyUnauthenticated(): void {
+  window.dispatchEvent(new Event(UNAUTHENTICATED_EVENT));
+}
+
 export interface Overview {
   total_calls: number;
   total_cost: number;
@@ -90,7 +96,8 @@ export interface Project {
 }
 
 async function get<T>(path: string): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`);
+  const res = await fetch(`${API_BASE}${path}`, { credentials: "include" });
+  if (res.status === 401) notifyUnauthenticated();
   if (!res.ok) throw new Error(`API error: ${res.status}`);
   return res.json() as Promise<T>;
 }

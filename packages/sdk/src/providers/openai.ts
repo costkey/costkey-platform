@@ -25,6 +25,9 @@ export const openaiExtractor: ProviderExtractor = {
     const usage = b["usage"] as Record<string, unknown> | undefined;
     if (!usage) return null;
 
+    const inputDetails = usage["input_tokens_details"] as Record<string, unknown> | undefined;
+    const promptDetails = usage["prompt_tokens_details"] as Record<string, unknown> | undefined;
+
     // Chat Completions format: prompt_tokens, completion_tokens
     // Responses API format: input_tokens, output_tokens
     const inputTokens =
@@ -50,7 +53,7 @@ export const openaiExtractor: ProviderExtractor = {
       outputTokens,
       totalTokens,
       reasoningTokens,
-      cacheReadTokens: null,
+      cacheReadTokens: asNumber(inputDetails?.["cached_tokens"]) ?? asNumber(promptDetails?.["cached_tokens"]),
       cacheCreationTokens: null,
     };
   },

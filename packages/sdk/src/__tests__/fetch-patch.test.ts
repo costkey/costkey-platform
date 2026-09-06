@@ -151,6 +151,55 @@ describe("Fetch Patch", () => {
     expect(event["provider"]).toBe("anthropic");
   });
 
+  it("does not ship multimodal image bytes in telemetry", async () => {
+    const imageData = `data:image/png;base64,${"a".repeat(2_000_000)}`;
+    const openrouterResponse = {
+      model: "google/gemini-3.1-flash-image",
+      choices: [{ message: { content: "generated" } }],
+      data: [{ b64_json: "a".repeat(2_000_000) }],
+      usage: { prompt_tokens: 12, completion_tokens: 4, total_tokens: 16, cost: 0.0672 },
+    };
+
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(openrouterResponse), { status: 200 }),
+    );
+
+    const { transport, events } = createMockTransport();
+    patchFetch({
+      transport,
+      projectId: "test",
+      captureBody: true,
+      beforeSend: null,
+      defaultContext: {},
+      debug: false,
+    });
+
+    await globalThis.fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      body: JSON.stringify({
+        model: "google/gemini-3.1-flash-image",
+        messages: [{
+          role: "user",
+          content: [
+            { type: "text", text: "Describe this" },
+            { type: "image_url", image_url: { url: imageData } },
+            { type: "inlineData", mimeType: "image/png", data: "a".repeat(2_000_000) },
+          ],
+        }],
+      }),
+    });
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(events).toHaveLength(1);
+    const event = events[0] as Record<string, unknown>;
+    expect(event["costUsd"]).toBe(0.0672);
+    const serialized = JSON.stringify(event);
+    expect(serialized).not.toContain("a".repeat(10_000));
+    expect(Buffer.byteLength(serialized, "utf8")).toBeLessThan(100_000);
+    expect(serialized).toContain("image/png");
+  });
+
   it("injects stream_options for OpenAI streaming requests", async () => {
     globalThis.fetch = vi.fn().mockResolvedValue(
       new Response("data: [DONE]\n\n", { status: 200 }),

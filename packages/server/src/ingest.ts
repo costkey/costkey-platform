@@ -2,7 +2,7 @@ import type { Router } from "express";
 import { Router as createRouter } from "express";
 import type pg from "pg";
 import type { CostKeyEvent, TransportPayload, StackFrame } from "@costkey/shared";
-import { computeCost } from "./pricing.js";
+import { resolveEventCost } from "./billing.js";
 import { translateFrames } from "./sourcemap-resolver.js";
 import { updateFrameStatsBatch, getImplicitGraph, invalidateImplicitGraph } from "./implicit-graph.js";
 
@@ -687,14 +687,7 @@ export function createIngestRouter(pool: pg.Pool): Router {
             } catch { /* invalid URL, ignore */ }
           }
 
-          // Server-side cost calculation — authoritative source
-          const costUsd = computeCost(
-            event.model,
-            event.usage?.inputTokens ?? null,
-            event.usage?.outputTokens ?? null,
-            event.usage?.cacheReadTokens ?? null,
-            event.usage?.cacheCreationTokens ?? null,
-          ) ?? event.costUsd ?? null; // Fall back to SDK-calculated cost if server can't resolve
+          const costUsd = resolveEventCost(event);
 
           // Filter stack frames server-side (strips SDK/library internals for all languages)
           const rawFrames = event.callSite?.frames ?? null;
@@ -738,7 +731,7 @@ export function createIngestRouter(pool: pg.Pool): Router {
 
           }
 
-          await client.query(
+          const inserted = await client.query(
             `INSERT INTO events (
               id, timestamp, project_id, provider, model, url, method, status_code,
               input_tokens, output_tokens, total_tokens, reasoning_tokens,
@@ -774,6 +767,7 @@ export function createIngestRouter(pool: pg.Pool): Router {
           );
 
           // Upsert call site stats and frame stats — use bl_ values (single source of truth)
+          if (inserted.rowCount === 0) continue;
           const callSiteKey = blFunction ? `${blFile ?? "unknown"}:${blFunction}:${blLine ?? 0}` : null;
 
           // Collect frame stats for batch insert after the loop

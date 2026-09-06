@@ -26,6 +26,7 @@ export class Transport {
   private timer: ReturnType<typeof setInterval> | null = null;
   private readonly maxQueueSize = 500;
   private hasConfirmedConnection = false;
+  private inFlight: Promise<void> | null = null;
 
   constructor(private readonly options: TransportOptions) {}
 
@@ -66,55 +67,70 @@ export class Transport {
   }
 
   /** Flush all queued events. Best-effort, never throws. */
-  async flush(): Promise<void> {
-    if (this.queue.length === 0) return;
+  flush(): Promise<void> {
+    if (this.inFlight) return this.inFlight;
+    if (this.queue.length === 0) return Promise.resolve();
+    this.inFlight = this.sendBatch().finally(() => { this.inFlight = null; });
+    return this.inFlight;
+  }
 
-    const batch = this.queue.splice(0, this.options.maxBatchSize);
-    const payload: TransportPayload = {
-      sdkVersion: SDK_VERSION,
-      release: this.options.release,
-      events: batch,
-    };
-
+  private async sendBatch(): Promise<void> {
     try {
-      const response = await fetch(this.options.endpoint, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${this.options.authKey}`,
-          "User-Agent": `costkey-sdk/${SDK_VERSION}`,
-        },
-        body: JSON.stringify(payload),
-      });
+      const batch = this.queue.splice(0, this.options.maxBatchSize);
+      const payload: TransportPayload = {
+        sdkVersion: SDK_VERSION,
+        release: this.options.release,
+        events: batch,
+      };
 
-      if (response.status === 429) {
-        // Rate limited — put events back and let the interval retry
-        this.queue.unshift(...batch);
-        if (this.options.debug) {
-          console.warn("[costkey] Rate limited, will retry");
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 15_000);
+
+      try {
+        const response = await fetch(this.options.endpoint, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${this.options.authKey}`,
+            "User-Agent": `costkey-sdk/${SDK_VERSION}`,
+          },
+          body: JSON.stringify(payload),
+          signal: controller.signal,
+        });
+
+        if (response.status === 429) {
+          // Rate limited — put events back and let the interval retry
+          this.queue.unshift(...batch);
+          if (this.options.debug) {
+            console.warn("[costkey] Rate limited, will retry");
+          }
+          return;
         }
-        return;
+
+        if (response.status === 401 || response.status === 403) {
+          // Auth failures always log — developer needs to know their DSN is wrong
+          console.warn(
+            `[costkey] Authentication failed (${response.status}). Check your DSN at https://app.costkey.dev/settings`,
+          );
+          return;
+        }
+
+        if (!response.ok && this.options.debug) {
+          console.warn(
+            `[costkey] Ingest returned ${response.status}: ${response.statusText}`,
+          );
+        }
+
+        // One-time connection confirmation on first successful delivery
+        if (response.ok && !this.hasConfirmedConnection) {
+          this.hasConfirmedConnection = true;
+          console.log("[costkey] Connected. Tracking AI calls.");
+        }
+      } finally {
+        clearTimeout(timeout);
       }
 
-      if (response.status === 401 || response.status === 403) {
-        // Auth failures always log — developer needs to know their DSN is wrong
-        console.warn(
-          `[costkey] Authentication failed (${response.status}). Check your DSN at https://app.costkey.dev/settings`,
-        );
-        return;
-      }
-
-      if (!response.ok && this.options.debug) {
-        console.warn(
-          `[costkey] Ingest returned ${response.status}: ${response.statusText}`,
-        );
-      }
-
-      // One-time connection confirmation on first successful delivery
-      if (response.ok && !this.hasConfirmedConnection) {
-        this.hasConfirmedConnection = true;
-        console.log("[costkey] Connected. Tracking AI calls.");
-      }
+      return;
     } catch (err) {
       // Network error — fire and forget. Never crash user's app.
       if (this.options.debug) {

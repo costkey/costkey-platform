@@ -5,7 +5,7 @@ import express from "express";
 import type { Express } from "express";
 import { computeCost, findPricing } from "../pricing.js";
 import { createIngestRouter, filterFrames, findBusinessLogicFrame, findBusinessLogicFrameWithGraph, truncateBody } from "../ingest.js";
-import { configureRequestParsing } from "../request-parsing.js";
+import { configureRequestParsing, requestParseErrorHandler } from "../request-parsing.js";
 
 // ─── Pricing: findPricing ─────────────────────────────────────────────
 
@@ -62,6 +62,12 @@ describe("findPricing", () => {
 
     const opus = findPricing("claude-opus-4-8-20260701");
     assert.deepEqual(opus, { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 });
+
+    const openRouterFlash = findPricing("google/gemini-2.5-flash");
+    assert.deepEqual(openRouterFlash, { input: 0.3, output: 2.5, cacheRead: 0.03, cacheWrite: 0.0833333333 });
+
+    const latestFlash = findPricing("gemini-3.8-flash-20260901");
+    assert.deepEqual(latestFlash, { input: 0.75, output: 3.75, cacheRead: 0.075 });
   });
 
   it("uses the corrected Claude Haiku 3 cache and token pricing", () => {
@@ -78,11 +84,11 @@ describe("findPricing", () => {
   it("all major model families have at least one match", () => {
     const families = [
       // OpenAI
-      "gpt-4.1", "gpt-4.1-mini", "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo", "o1", "o3-mini", "o4-mini",
+      "gpt-4.1", "gpt-4.1-mini", "text-embedding-3-small", "gpt-5.4-image-2", "gpt-5-image", "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo", "o1", "o3-mini", "o4-mini",
       // Anthropic
       "claude-opus-4", "claude-opus-4-8", "claude-sonnet-4", "claude-3-5-sonnet", "claude-3-haiku",
       // Google
-      "gemini-3.5-flash", "gemini-2.5-pro", "gemini-2.0-flash",
+      "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.1-pro-preview", "gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite-image", "gemini-3.1-flash-image", "gemini-2.5-flash-image", "gemini-3-pro-image", "gemini-3-flash-preview", "gemini-3.5-flash", "gemini-2.5-pro", "gemini-2.0-flash",
       // xAI
       "grok-4.5", "grok-3",
       // Llama
@@ -123,6 +129,28 @@ describe("computeCost", () => {
     assert.equal(withCache, 2.025);
   });
 
+  it("does not double-charge Gemini cached prompt tokens", () => {
+    // Google promptTokenCount includes cachedContentTokenCount; the cached
+    // subset is billed at the reduced cache rate instead of the input rate.
+    const cost = computeCost("gemini-2.5-flash", 1_000_000, 0, 200_000, null, "google");
+    assert.equal(cost, 0.246);
+
+    const openRouterCost = computeCost("google/gemini-2.5-flash", 1_000_000, 0, 200_000, null, "openrouter");
+    assert.equal(openRouterCost, 0.246);
+  });
+
+  it("uses current OpenAI reasoning-model rates", () => {
+    assert.equal(computeCost("o1-mini", 1_000_000, 1_000_000), 5.5);
+    assert.equal(computeCost("o3", 1_000_000, 1_000_000), 10);
+  });
+
+  it("selects DeepSeek's UTC peak/off-peak rates", () => {
+    const peak = computeCost("deepseek-v4-flash", 1_000_000, 1_000_000, null, null, "deepseek", "2026-09-01T02:00:00Z");
+    const offPeak = computeCost("deepseek-v4-flash", 1_000_000, 1_000_000, null, null, "deepseek", "2026-09-01T12:00:00Z");
+    assert.equal(peak, 1.76);
+    assert.equal(offPeak, 0.88);
+  });
+
   it("null model returns null", () => {
     assert.equal(computeCost(null, 100, 100), null);
   });
@@ -131,10 +159,9 @@ describe("computeCost", () => {
     assert.equal(computeCost("unknown-model-abc", 100, 100), null);
   });
 
-  it("null tokens return null-ish cost (0 if model known)", () => {
-    // With null tokens but known model, cost is 0
+  it("missing usage remains unpriced", () => {
     const cost = computeCost("gpt-4o", null, null);
-    assert.equal(cost, 0);
+    assert.equal(cost, null);
   });
 
   it("zero tokens return 0 cost", () => {
@@ -150,9 +177,9 @@ describe("computeCost", () => {
   });
 
   it("cache tokens ignored when model has no cache pricing", () => {
-    // gpt-4o has no cacheRead/cacheWrite
-    const withCache = computeCost("gpt-4o", 1000, 500, 2000, 3000);
-    const withoutCache = computeCost("gpt-4o", 1000, 500);
+    // gpt-4-turbo has no cacheRead/cacheWrite
+    const withCache = computeCost("gpt-4-turbo", 1000, 500, 2000, 3000);
+    const withoutCache = computeCost("gpt-4-turbo", 1000, 500);
     assert.equal(withCache, withoutCache);
   });
 
@@ -160,6 +187,12 @@ describe("computeCost", () => {
     // gpt-4o: 1M input tokens = $2.50
     const cost = computeCost("gpt-4o", 1_000_000, 0);
     assert.equal(cost, 2.5);
+  });
+
+  it("prices observed image and embedding model families", () => {
+    assert.equal(computeCost("google/gemini-3.1-flash-image", 1_972, 1_120, null, null, "openrouter", null, 1120), 0.068186);
+    assert.equal(computeCost("text-embedding-3-small", 1_000_000, 0), 0.02);
+    assert.equal(computeCost("google/gemini-3-pro-image", 560, 1_120, null, null, "openrouter", null, 1120), 0.13552);
   });
 });
 
@@ -1702,9 +1735,97 @@ describe("large request ingestion", () => {
     }
   });
 
+  it("uses a provider-reported cost when a router supplies one", async () => {
+    let insertParams: unknown[] | undefined;
+    const client = {
+      async query(sql: string, params?: unknown[]) {
+        if (sql.includes("INSERT INTO events")) insertParams = params;
+        return { rows: [], rowCount: 1 };
+      },
+      release() {},
+    };
+    const pool = {
+      async query(sql: string) {
+        if (sql.includes("SELECT id FROM projects")) return { rows: [{ id: "proj_test" }] };
+        return { rows: [] };
+      },
+      async connect() { return client; },
+    };
+
+    await withServer((app) => {
+      configureRequestParsing(app);
+      app.use(createIngestRouter(pool as never));
+    }, async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/api/v1/events`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer test-key" },
+        body: JSON.stringify({
+          sdkVersion: "test",
+          events: [{
+            id: "evt_router_cost",
+            timestamp: new Date().toISOString(),
+            provider: "openrouter",
+            model: "google/gemini-3.1-flash-image",
+            usage: { inputTokens: 1_972, outputTokens: 1_120, totalTokens: 3_092, costUsd: 0.0672 },
+          }],
+        }),
+      });
+      assert.equal(response.status, 202);
+    });
+
+    assert.ok(insertParams);
+    assert.equal(insertParams[14], 0.0672);
+  });
+
+  it("returns JSON 413 for oversized ingest bodies", async () => {
+    await withServer((app) => {
+      configureRequestParsing(app);
+      app.use(requestParseErrorHandler);
+      app.post("/api/v1/events", (_req, res) => res.sendStatus(202));
+    }, async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/api/v1/events`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ data: "x".repeat(12 * 1024 * 1024) }),
+      });
+      assert.equal(response.status, 413);
+      assert.deepEqual(await response.json(), { error: "Request body too large" });
+    });
+  });
+
+  it("classifies an aborted upload without emitting an Express stack trace", () => {
+    let statusCode: number | undefined;
+    let responseBody: unknown;
+    let passedToNext = false;
+    const logs: string[] = [];
+    const originalInfo = console.info;
+    console.info = (...args: unknown[]) => logs.push(args.join(" "));
+    try {
+      requestParseErrorHandler(
+        { type: "request.aborted", code: "ECONNABORTED", received: 512, expected: 2048 },
+        { method: "POST", originalUrl: "/api/v1/events", destroyed: false } as never,
+        {
+          headersSent: false,
+          status(code: number) { statusCode = code; return this; },
+          json(value: unknown) { responseBody = value; return this; },
+        } as never,
+        () => { passedToNext = true; },
+      );
+    } finally {
+      console.info = originalInfo;
+    }
+
+    assert.equal(statusCode, 499);
+    assert.deepEqual(responseBody, { error: "Request aborted" });
+    assert.equal(passedToNext, false);
+    assert.equal(logs.length, 1);
+    assert.match(logs[0], /POST \/api\/v1\/events \(512\/2048 bytes\)/);
+  });
+
   it("rejects ingest bodies over 12MB and unrelated bodies over 5MB", async () => {
     await withServer((app) => {
       configureRequestParsing(app);
+      app.use(requestParseErrorHandler);
       app.post("/api/v1/events", (_req, res) => res.sendStatus(202));
       app.post("/other", (_req, res) => res.sendStatus(200));
     }, async (baseUrl) => {

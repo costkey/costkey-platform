@@ -25,7 +25,7 @@ export function createApiRouter(pool: pg.Pool): Router {
         `SELECT
           COALESCE(SUM(cost_usd), 0) as cost,
           COUNT(*)::int as calls,
-          COALESCE(SUM(input_tokens + output_tokens), 0)::bigint as tokens
+          COALESCE(SUM(COALESCE(total_tokens, COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0))), 0)::bigint as tokens
         FROM events WHERE project_id = $1
           AND timestamp >= date_trunc('month', NOW())`,
         [projectId],
@@ -36,7 +36,7 @@ export function createApiRouter(pool: pg.Pool): Router {
         `SELECT
           COALESCE(SUM(cost_usd), 0) as cost,
           COUNT(*)::int as calls,
-          COALESCE(SUM(input_tokens + output_tokens), 0)::bigint as tokens
+          COALESCE(SUM(COALESCE(total_tokens, COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0))), 0)::bigint as tokens
         FROM events WHERE project_id = $1
           AND timestamp >= date_trunc('month', NOW() - INTERVAL '1 month')
           AND timestamp < date_trunc('month', NOW())`,
@@ -170,6 +170,17 @@ export function createApiRouter(pool: pg.Pool): Router {
 
       // Detect minified/bundled code without sourcemaps
       const hints: Array<{ type: string; message: string; link: string }> = [];
+      const unpriced = await pool.query(
+        "SELECT COUNT(*)::int AS cnt FROM events WHERE project_id = $1 AND cost_usd IS NULL",
+        [projectId],
+      );
+      if (unpriced.rows[0].cnt > 0) {
+        hints.push({
+          type: "unpriced_calls",
+          message: `${unpriced.rows[0].cnt} calls have no reliable price yet. Spend totals exclude these calls and may be incomplete.`,
+          link: "/docs/providers",
+        });
+      }
 
       const minifiedCheck = await pool.query(
         `SELECT COUNT(*)::int as cnt FROM events
@@ -252,6 +263,7 @@ export function createApiRouter(pool: pg.Pool): Router {
 
       const byModel = await pool.query(
         `SELECT model, provider, COUNT(*)::int as calls,
+          COUNT(*) FILTER (WHERE cost_usd IS NULL)::int as unpriced_calls,
           COALESCE(SUM(cost_usd), 0) as cost,
           COALESCE(SUM(input_tokens), 0)::int as input_tokens,
           COALESCE(SUM(output_tokens), 0)::int as output_tokens,
@@ -1018,7 +1030,7 @@ export function createApiRouter(pool: pg.Pool): Router {
           END as module,
           COUNT(*)::int as calls,
           COALESCE(SUM(cost_usd), 0) as cost,
-          COALESCE(SUM(input_tokens + output_tokens), 0)::bigint as tokens,
+          COALESCE(SUM(COALESCE(total_tokens, COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0))), 0)::bigint as tokens,
           COUNT(DISTINCT bl_function) as functions
         FROM events WHERE project_id = $1 ${timeClause}
         GROUP BY module
@@ -1061,7 +1073,7 @@ export function createApiRouter(pool: pg.Pool): Router {
           value as context_value,
           COUNT(*)::int as calls,
           COALESCE(SUM(cost_usd), 0) as cost,
-          COALESCE(SUM(input_tokens + output_tokens), 0)::bigint as tokens
+          COALESCE(SUM(COALESCE(total_tokens, COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0))), 0)::bigint as tokens
         FROM events, jsonb_each_text(context) AS kv(key, value)
         WHERE project_id = $1 ${timeClause}
           AND context IS NOT NULL AND context != '{}'::jsonb
@@ -1093,7 +1105,7 @@ export function createApiRouter(pool: pg.Pool): Router {
           COUNT(*)::int as calls,
           COALESCE(SUM(cost_usd), 0) as cost,
           COALESCE(AVG(cost_usd), 0) as avg_cost,
-          COALESCE(SUM(input_tokens + output_tokens), 0)::bigint as tokens
+          COALESCE(SUM(COALESCE(total_tokens, COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0))), 0)::bigint as tokens
         FROM events WHERE project_id = $1 ${timeClause}
           AND bl_function IS NOT NULL AND bl_function != ''
         GROUP BY bl_function, bl_file
@@ -1146,7 +1158,7 @@ export function createApiRouter(pool: pg.Pool): Router {
         `SELECT
           COUNT(*)::int as calls,
           COALESCE(SUM(cost_usd), 0) as cost,
-          COALESCE(SUM(input_tokens + output_tokens), 0)::bigint as tokens
+          COALESCE(SUM(COALESCE(total_tokens, COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0))), 0)::bigint as tokens
         FROM events WHERE project_id = $1 ${timeClause}`,
         [projectId],
       );

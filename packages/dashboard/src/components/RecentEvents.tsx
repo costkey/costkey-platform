@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { EventRow } from "../hooks/useApi";
 import ProviderLogo from "./ProviderLogo";
 import EventPanel from "./EventPanel";
-import { truncateModel, timeAgo, formatDuration } from "../utils";
+import { truncateModel, timeAgo, formatDuration, formatCost } from "../utils";
 import { analytics } from "../analytics";
 
 interface Props {
@@ -120,7 +120,7 @@ export default function RecentEvents({ events, loading, search = "", projectId, 
                     </td>
                     <td className="px-5 py-3 w-[10%] text-right">
                       <span className="font-mono text-sm font-semibold text-green">
-                        ${(event.cost_usd ?? 0).toFixed(4)}
+                        {formatCost(event.cost_usd)}
                       </span>
                     </td>
                   </tr>

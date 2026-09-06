@@ -13,6 +13,8 @@ function extractOpenAIUsage(body: unknown): NormalizedUsage | null {
   const usage = b["usage"] as Record<string, unknown> | undefined;
   if (!usage) return null;
 
+  const costUsd = asNumber(usage["cost"]);
+
   return {
     inputTokens: asNumber(usage["prompt_tokens"]) ?? asNumber(usage["input_tokens"]),
     outputTokens: asNumber(usage["completion_tokens"]) ?? asNumber(usage["output_tokens"]),
@@ -20,6 +22,7 @@ function extractOpenAIUsage(body: unknown): NormalizedUsage | null {
     reasoningTokens: null,
     cacheReadTokens: null,
     cacheCreationTokens: null,
+    ...(costUsd != null ? { costUsd } : {}),
   };
 }
 

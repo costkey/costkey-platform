@@ -129,6 +129,19 @@ describe("OpenAI Extractor", () => {
       assert.strictEqual(usage!.reasoningTokens, 200);
     });
 
+    it("extracts cached input tokens from Responses API details", () => {
+      const usage = openaiExtractor.extractUsage({
+        model: "gpt-4.1",
+        usage: {
+          input_tokens: 200,
+          output_tokens: 80,
+          total_tokens: 280,
+          input_tokens_details: { cached_tokens: 120 },
+        },
+      });
+      assert.strictEqual(usage!.cacheReadTokens, 120);
+    });
+
     it("computes totalTokens when not provided", () => {
       const body = {
         model: "gpt-4o",
@@ -654,6 +667,37 @@ describe("OpenRouter Extractor", () => {
       const usage = openrouterExtractor.extractUsage(body);
       assert.strictEqual(usage!.cacheReadTokens, 80);
       assert.strictEqual(usage!.cacheCreationTokens, 20);
+    });
+
+    it("extracts nested cache details", () => {
+      const usage = openrouterExtractor.extractUsage({
+        usage: {
+          prompt_tokens: 100,
+          completion_tokens: 50,
+          total_tokens: 150,
+          prompt_tokens_details: { cached_tokens: 80, cache_write_tokens: 20 },
+          completion_tokens_details: { reasoning_tokens: 5 },
+        },
+      });
+      assert.strictEqual(usage!.cacheReadTokens, 80);
+      assert.strictEqual(usage!.cacheCreationTokens, 20);
+      assert.strictEqual(usage!.reasoningTokens, 5);
+    });
+
+    it("supports Responses API input/output token aliases", () => {
+      const usage = openrouterExtractor.extractUsage({
+        usage: { input_tokens: 12, output_tokens: 4 },
+      });
+      assert.strictEqual(usage!.inputTokens, 12);
+      assert.strictEqual(usage!.outputTokens, 4);
+      assert.strictEqual(usage!.totalTokens, 16);
+    });
+
+    it("extracts provider-reported cost", () => {
+      const usage = openrouterExtractor.extractUsage({
+        usage: { prompt_tokens: 10, completion_tokens: 20, total_tokens: 30, cost: 0.0672 },
+      });
+      assert.strictEqual(usage!.costUsd, 0.0672);
     });
   });
 
@@ -1404,6 +1448,39 @@ describe("Transport", () => {
     transport.start();
     transport.start(); // second call should be no-op
     transport.stop();
+  });
+
+  it("does not overlap a second flush while the first is in flight", async () => {
+    const originalFetch = globalThis.fetch;
+    let calls = 0;
+    let resolveFetch: ((response: Response) => void) | undefined;
+    globalThis.fetch = async () => {
+      calls++;
+      return new Promise<Response>((resolve) => { resolveFetch = resolve; });
+    };
+
+    try {
+      const transport = new Transport({
+        endpoint: "https://ingest.costkey.dev/v1/events",
+        authKey: "test-key",
+        maxBatchSize: 50,
+        flushInterval: 60000,
+        debug: false,
+      });
+      transport.enqueue(makeEvent());
+
+      const firstFlush = transport.flush();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const secondFlush = transport.flush();
+      assert.strictEqual(secondFlush, firstFlush);
+      assert.strictEqual(calls, 1);
+
+      resolveFetch!(new Response(null, { status: 202 }));
+      await firstFlush;
+      await secondFlush;
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });
 

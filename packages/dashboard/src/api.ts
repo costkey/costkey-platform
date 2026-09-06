@@ -20,6 +20,7 @@ export interface ModelBreakdown {
   model: string;
   provider: string;
   calls: number;
+  unpriced_calls?: number;
   cost: number;
   input_tokens: number;
   output_tokens: number;

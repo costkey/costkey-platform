@@ -5,7 +5,7 @@ import { getEvents } from "../api";
 import ProviderLogo from "./ProviderLogo";
 import EventPanel from "./EventPanel";
 import {
-  formatTokens, formatDuration, truncateFile, truncateModel, timeAgo,
+  formatTokens, formatDuration, formatCost, truncateFile, truncateModel, timeAgo,
 } from "../utils";
 
 interface Props {
@@ -142,7 +142,7 @@ function CallSiteRow({ row, maxCost, projectId, onSelectEvent }: {
                       {formatDuration(event.duration_ms)}
                     </span>
                     <span className="font-mono text-xs font-medium text-green w-14 text-right shrink-0">
-                      ${(event.cost_usd ?? 0).toFixed(4)}
+                      {formatCost(event.cost_usd)}
                     </span>
                   </button>
                 );

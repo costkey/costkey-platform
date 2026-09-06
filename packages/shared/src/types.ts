@@ -28,6 +28,10 @@ export interface NormalizedUsage {
   /** Cache-related tokens (Anthropic prompt caching) */
   cacheReadTokens: number | null;
   cacheCreationTokens: number | null;
+  /** Provider-reported total cost in USD (for routers such as OpenRouter). */
+  costUsd?: number | null;
+  /** Image tokens included in outputTokens; absent means the breakdown is unknown. */
+  imageOutputTokens?: number | null;
 }
 
 /** Timing data for streaming responses */
@@ -151,7 +155,7 @@ export type BeforeSendHook = (
 export interface CostKeyOptions {
   /** DSN in format https://<key>@costkey.dev/<project-id>. Falls back to COSTKEY_DSN env var. Omit both to disable (test mode). */
   dsn?: string;
-  /** Capture request/response bodies (default: true) */
+  /** Capture request/response bodies (default: true; media bytes are omitted and captures are bounded) */
   captureBody?: boolean;
   /** Hook to modify/filter events before sending */
   beforeSend?: BeforeSendHook;

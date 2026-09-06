@@ -1,7 +1,9 @@
 /**
- * Server-side pricing table: cost per 1M tokens in USD.
- * This is the authoritative pricing source — the SDK no longer calculates costs.
- * Source: provider pricing pages as of 2026-08. These are standard API rates;
+ * Server-side pricing fallback: cost per 1M tokens in USD.
+ * Provider-reported totals are preferred when a router supplies them; this
+ * table covers direct APIs and historical events without a reported total.
+ * Selected entries refreshed from provider pricing pages in 2026-09;
+ * legacy entries remain estimates. These are standard API rates;
  * batch, priority, long-context, and provider-reseller rates may differ.
  */
 import { filterFrames, findBusinessLogicFrame, findBusinessLogicFrameWithGraph, getFilterContext, callGraphCache } from "./ingest.js";
@@ -10,6 +12,10 @@ interface ModelPricing {
   output: number;
   cacheRead?: number;
   cacheWrite?: number;
+  imageOutput?: number;
+  /** DeepSeek direct rates vary by UTC peak/off-peak schedule. */
+  peak?: Pick<ModelPricing, "input" | "output" | "cacheRead">;
+  offPeak?: Pick<ModelPricing, "input" | "output" | "cacheRead">;
 }
 
 /**
@@ -26,22 +32,44 @@ const PRICING: [string, ModelPricing][] = [
   ["gpt-4.1-nano", { input: 0.1, output: 0.4, cacheRead: 0.025 }],
   ["gpt-4.1-mini", { input: 0.4, output: 1.6, cacheRead: 0.1 }],
   ["gpt-4.1", { input: 2, output: 8, cacheRead: 0.5 }],
-  ["gpt-4o-mini", { input: 0.15, output: 0.6 }],
-  ["gpt-4o", { input: 2.5, output: 10 }],
+  // https://developers.openai.com/api/docs/models/text-embedding-3-small
+  ["text-embedding-3-large", { input: 0.13, output: 0 }],
+  ["text-embedding-3-small", { input: 0.02, output: 0 }],
+  ["text-embedding-ada-002", { input: 0.1, output: 0 }],
+  // OpenRouter's catalogue exposes image_output separately from text output.
+  // https://openrouter.ai/docs/api/api-reference/models/get-models
+  ["gpt-5.4-image-2", { input: 8, output: 15, imageOutput: 30 }],
+  ["gpt-5-image", { input: 10, output: 10, imageOutput: 40 }],
+  ["gpt-4o-mini", { input: 0.15, output: 0.6, cacheRead: 0.075 }],
+  ["gpt-4o", { input: 2.5, output: 10, cacheRead: 1.25 }],
   ["gpt-4-turbo", { input: 10, output: 30 }],
   ["gpt-4", { input: 30, output: 60 }],
   ["gpt-3.5-turbo", { input: 0.5, output: 1.5 }],
-  ["o1-mini", { input: 3, output: 12 }],
+  ["o1-mini", { input: 1.1, output: 4.4, cacheRead: 0.55 }],
   ["o1-pro", { input: 150, output: 600 }],
-  ["o1", { input: 15, output: 60 }],
-  ["o3-mini", { input: 1.1, output: 4.4 }],
-  ["o3", { input: 10, output: 40 }],
-  ["o4-mini", { input: 1.1, output: 4.4 }],
+  ["o1", { input: 15, output: 60, cacheRead: 7.5 }],
+  ["o3-mini", { input: 1.1, output: 4.4, cacheRead: 0.55 }],
+  ["o3", { input: 2, output: 8, cacheRead: 0.5 }],
+  ["o4-mini", { input: 1.1, output: 4.4, cacheRead: 0.275 }],
 
   // Anthropic — match family name regardless of version suffix
   // https://www-cdn.anthropic.com/files/4zrzovbb/website/3684c2faafb97418665782cea0001f439f74b1d2.pdf
+  ["claude-opus-5", { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 }],
+  ["claude-opus-4.8", { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 }],
   ["claude-opus-4-8", { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 }],
+  ["claude-opus-4.7", { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 }],
   ["claude-opus-4-7", { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 }],
+  ["claude-opus-4.6", { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 }],
+  ["claude-opus-4-6", { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 }],
+  ["claude-opus-4.5", { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 }],
+  ["claude-opus-4-5", { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 }],
+  ["claude-sonnet-5", { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 }],
+  ["claude-sonnet-4.6", { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }],
+  ["claude-sonnet-4-6", { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }],
+  ["claude-sonnet-4.5", { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }],
+  ["claude-sonnet-4-5", { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }],
+  ["claude-haiku-4.5", { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 }],
+  ["claude-haiku-4-5", { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 }],
   ["claude-opus-4", { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 }],
   ["claude-sonnet-4", { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }],
   ["claude-haiku-4", { input: 0.8, output: 4, cacheRead: 0.08, cacheWrite: 1 }],
@@ -56,9 +84,34 @@ const PRICING: [string, ModelPricing][] = [
 
   // Google Gemini
   // https://ai.google.dev/gemini-api/docs/pricing
+  ["gemini-3.1-flash-lite-image", { input: 0.25, output: 1.5, imageOutput: 30 }],
+  ["gemini-3.1-flash-image", { input: 0.5, output: 3, imageOutput: 60 }],
+  ["gemini-2.5-flash-image", { input: 0.3, output: 2.5, imageOutput: 30 }],
+  ["gemini-3-pro-image-preview", { input: 2, output: 12, imageOutput: 120 }],
+  ["gemini-3-pro-image", { input: 2, output: 12, imageOutput: 120 }],
+  // OpenRouter's live catalogue can differ from the direct API rate card;
+  // keep namespaced fallbacks ahead of unqualified direct-model entries.
+  // https://openrouter.ai/api/v1/models
+  // Gemini 3.6/3.7/3.8 promotional standard rates run through 2026-12-31.
+  ["google/gemini-2.5-pro", { input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0.375 }],
+  ["google/gemini-2.5-flash-lite", { input: 0.1, output: 0.4, cacheRead: 0.01, cacheWrite: 0.0833333333 }],
+  ["google/gemini-2.5-flash", { input: 0.3, output: 2.5, cacheRead: 0.03, cacheWrite: 0.0833333333 }],
+  ["google/gemini-3.8-flash", { input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0.0416666667 }],
+  ["google/gemini-3.7-flash", { input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0.0416666667 }],
+  ["google/gemini-3.6-flash", { input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0.0416666667 }],
+  ["google/gemini-3.1-pro-preview", { input: 2, output: 12, cacheRead: 0.2, cacheWrite: 0.375 }],
+  ["google/gemini-3.5-flash-lite", { input: 0.3, output: 2.5, cacheRead: 0.03, cacheWrite: 0.0833333333 }],
+  ["gemini-3-flash-preview", { input: 0.5, output: 3, cacheRead: 0.05, cacheWrite: 0.0833333333 }],
+  ["gemini-3.8-flash", { input: 0.75, output: 3.75, cacheRead: 0.075 }],
+  ["gemini-3.7-flash", { input: 0.75, output: 3.75, cacheRead: 0.075 }],
+  ["gemini-3.6-flash", { input: 0.75, output: 3.75, cacheRead: 0.075 }],
+  ["gemini-3.1-pro-preview", { input: 2, output: 12, cacheRead: 0.2 }],
+  ["gemini-3.1-flash-lite", { input: 0.25, output: 1.5, cacheRead: 0.025 }],
+  ["gemini-3.5-flash-lite", { input: 0.3, output: 2.5, cacheRead: 0.03 }],
   ["gemini-3.5-flash", { input: 1.5, output: 9, cacheRead: 0.15 }],
   ["gemini-2.5-pro", { input: 1.25, output: 10 }],
-  ["gemini-2.5-flash", { input: 0.15, output: 0.6 }],
+  ["gemini-2.5-flash-lite", { input: 0.1, output: 0.4, cacheRead: 0.01 }],
+  ["gemini-2.5-flash", { input: 0.3, output: 2.5, cacheRead: 0.03 }],
   ["gemini-2.0-flash-lite", { input: 0.02, output: 0.1 }],
   ["gemini-2.0-flash", { input: 0.1, output: 0.4 }],
   ["gemini-1.5-pro", { input: 1.25, output: 5 }],
@@ -66,10 +119,12 @@ const PRICING: [string, ModelPricing][] = [
 
   // xAI (Grok)
   // https://docs.x.ai/developers/models
-  ["grok-4.5", { input: 2, output: 6 }],
-  ["grok-3-mini", { input: 0.3, output: 0.5 }],
-  ["grok-3", { input: 3, output: 15 }],
-  ["grok-4", { input: 3, output: 15 }],
+  ["grok-4.6", { input: 2, output: 6, cacheRead: 0.5 }],
+  ["grok-4.5", { input: 2, output: 6, cacheRead: 0.3 }],
+  ["grok-4.3", { input: 1.25, output: 2.5, cacheRead: 0.2 }],
+  // xAI retired grok-3 and redirects it to grok-4.3.
+  ["grok-3", { input: 1.25, output: 2.5, cacheRead: 0.2 }],
+  ["grok-4", { input: 1.25, output: 2.5, cacheRead: 0.2 }],
 
   // Llama variants (Groq, Together, Fireworks, etc.)
   ["llama-3.3-70b", { input: 0.59, output: 0.79 }],
@@ -84,7 +139,6 @@ const PRICING: [string, ModelPricing][] = [
   ["llama-3-8b", { input: 0.05, output: 0.08 }],
   ["mixtral-8x7b", { input: 0.24, output: 0.24 }],
   ["gemma2-9b", { input: 0.2, output: 0.2 }],
-  ["qwen", { input: 0.2, output: 0.2 }],
 
   // Mistral
   ["mistral-large", { input: 2, output: 6 }],
@@ -95,8 +149,18 @@ const PRICING: [string, ModelPricing][] = [
 
   // DeepSeek
   // https://api-docs.deepseek.com/quick_start/pricing
-  ["deepseek-v4-flash", { input: 0.14, output: 0.28, cacheRead: 0.0028 }],
-  ["deepseek-v4-pro", { input: 0.435, output: 0.87, cacheRead: 0.003625 }],
+  ["deepseek/deepseek-v4-flash", { input: 0.08078, output: 0.16156, cacheRead: 0.016156 }],
+  ["deepseek/deepseek-v4-pro", { input: 0.687648, output: 1.375296, cacheRead: 0.057304 }],
+  ["deepseek-v4-flash", {
+    input: 0.44, output: 1.32, cacheRead: 0.014,
+    peak: { input: 0.44, output: 1.32, cacheRead: 0.014 },
+    offPeak: { input: 0.22, output: 0.66, cacheRead: 0.007 },
+  }],
+  ["deepseek-v4-pro", {
+    input: 1.32, output: 3.96, cacheRead: 0.044,
+    peak: { input: 1.32, output: 3.96, cacheRead: 0.044 },
+    offPeak: { input: 0.66, output: 1.98, cacheRead: 0.022 },
+  }],
   ["deepseek-reasoner", { input: 0.55, output: 2.19, cacheRead: 0.055 }],
   ["deepseek-chat", { input: 0.14, output: 0.28, cacheRead: 0.014 }],
 
@@ -125,36 +189,110 @@ export function computeCost(
   outputTokens: number | null,
   cacheReadTokens?: number | null,
   cacheCreationTokens?: number | null,
+  provider?: string | null,
+  timestamp?: string | null,
+  imageOutputTokens?: number | null,
 ): number | null {
   if (!model) return null;
+  for (const tokens of [inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, imageOutputTokens]) {
+    if (tokens != null && (!Number.isFinite(tokens) || tokens < 0)) return null;
+  }
+  if (inputTokens == null && outputTokens == null) return null;
 
   const pricing = findPricing(model);
   if (!pricing) return null;
+  // Mixed text/image output cannot be priced without a modality breakdown.
+  if (pricing.imageOutput != null && imageOutputTokens == null) return null;
+  if (imageOutputTokens != null && (outputTokens == null || imageOutputTokens > outputTokens)) return null;
 
+  let effectivePricing = selectPricing(pricing, model, provider, timestamp);
+  const lowerModel = model.toLowerCase();
+  if (inputTokens != null && inputTokens > 200_000) {
+    if (lowerModel.includes("gemini-2.5-pro")) {
+      effectivePricing = { ...effectivePricing, input: 2.5, output: 15, cacheRead: 0.25 };
+    } else if (lowerModel.includes("gemini-3.1-pro-preview")) {
+      effectivePricing = { ...effectivePricing, input: 4, output: 18, cacheRead: 0.4 };
+    } else if (/grok-4[.][356]/.test(lowerModel)) {
+      effectivePricing = { ...effectivePricing, input: pricing.input * 2,
+        output: pricing.output * 2, cacheRead: (pricing.cacheRead ?? 0) * 2 };
+    }
+  }
+  const isDeepSeekDirect = (provider === "deepseek" && lowerModel.includes("deepseek-v4"))
+    || (!provider && !lowerModel.includes("/") && lowerModel.includes("deepseek-v4"));
   let cost = 0;
 
   if (inputTokens != null) {
-    cost += (inputTokens / 1_000_000) * pricing.input;
+    // Google reports promptTokenCount as the full prompt, with cached content
+    // included as a separately-priced subset. OpenRouter follows the same
+    // convention for prompt_tokens_details. Anthropic's input_tokens already
+    // excludes cache reads, so only adjust these two providers/model families.
+    const cacheIncludedInInput = provider === "google"
+      || provider === "openai"
+      || provider === "openrouter"
+      || lowerModel.includes("gemini");
+    const includedCacheTokens = cacheIncludedInInput
+      ? (effectivePricing.cacheRead != null ? (cacheReadTokens ?? 0) : 0)
+        + (provider === "openrouter" && effectivePricing.cacheWrite != null ? (cacheCreationTokens ?? 0) : 0)
+      : isDeepSeekDirect
+        ? (cacheReadTokens ?? 0) + (cacheCreationTokens ?? 0)
+      : 0;
+    const billableInputTokens = Math.max(0, inputTokens - includedCacheTokens);
+    cost += (billableInputTokens / 1_000_000) * effectivePricing.input;
+    // DeepSeek calls expose prompt_cache_miss_tokens as a subset of
+    // prompt_tokens. It is regular input, not a cache-write surcharge.
+    if (isDeepSeekDirect && cacheCreationTokens != null) {
+      cost += (cacheCreationTokens / 1_000_000) * effectivePricing.input;
+    }
   }
   if (outputTokens != null) {
-    cost += (outputTokens / 1_000_000) * pricing.output;
+    cost += ((outputTokens - (imageOutputTokens ?? 0)) / 1_000_000) * effectivePricing.output;
+    cost += ((imageOutputTokens ?? 0) / 1_000_000) * (effectivePricing.imageOutput ?? effectivePricing.output);
   }
-  if (cacheReadTokens != null && pricing.cacheRead != null) {
-    cost += (cacheReadTokens / 1_000_000) * pricing.cacheRead;
+  if (cacheReadTokens != null && effectivePricing.cacheRead != null) {
+    cost += (cacheReadTokens / 1_000_000) * effectivePricing.cacheRead;
   }
-  if (cacheCreationTokens != null && pricing.cacheWrite != null) {
-    cost += (cacheCreationTokens / 1_000_000) * pricing.cacheWrite;
+  if (cacheCreationTokens != null && effectivePricing.cacheWrite != null) {
+    cost += (cacheCreationTokens / 1_000_000) * effectivePricing.cacheWrite;
   }
 
-  return Math.round(cost * 1_000_000) / 1_000_000;
+  return Math.round(cost * 1_000_000_000_000) / 1_000_000_000_000;
 }
 
 export function findPricing(model: string): ModelPricing | null {
   const lower = model.toLowerCase();
+  if (/:(free|batch|extended|nitro|floor)\b/.test(lower)) return null;
   for (const [pattern, pricing] of PRICING) {
-    if (lower.includes(pattern.toLowerCase())) return pricing;
+    const offset = lower.indexOf(pattern.toLowerCase());
+    if (offset < 0) continue;
+    const before = lower.slice(0, offset);
+    const suffix = lower.slice(offset + pattern.length);
+    if (before && !/[/:.]$/.test(before)) continue;
+    // Accept known snapshot/hosting suffixes, not arbitrary new model variants.
+    if (suffix && !/^(:|-(?:[0-9]{4}|latest|instruct|0-))/.test(suffix)) continue;
+    return pricing;
   }
   return null;
+}
+
+function selectPricing(
+  pricing: ModelPricing,
+  model: string,
+  provider?: string | null,
+  timestamp?: string | null,
+): ModelPricing {
+  if (!pricing.peak || !pricing.offPeak) return pricing;
+  if (provider !== "deepseek" && !(provider == null && !model.includes("/") && model.toLowerCase().includes("deepseek"))) {
+    return pricing;
+  }
+
+  const instant = timestamp ? new Date(timestamp) : null;
+  if (!instant || Number.isNaN(instant.getTime())) return pricing;
+
+  const day = instant.getUTCDay();
+  const hour = instant.getUTCHours() + instant.getUTCMinutes() / 60;
+  const isWeekday = day >= 1 && day <= 5;
+  const isPeakWindow = (hour >= 1 && hour < 4) || (hour >= 6 && hour < 10);
+  return { ...pricing, ...(isWeekday && isPeakWindow ? pricing.peak : pricing.offPeak) };
 }
 
 /**
@@ -167,7 +305,7 @@ export async function backfillCosts(pool: import("pg").Pool): Promise<void> {
   await runOnce(pool, "backfill_costs_v1", async () => {
     try {
       const result = await pool.query(
-        `SELECT id, model, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens
+        `SELECT id, provider, model, timestamp, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens
          FROM events
          WHERE (cost_usd IS NULL OR cost_usd = 0)
            AND model IS NOT NULL
@@ -189,6 +327,8 @@ export async function backfillCosts(pool: import("pg").Pool): Promise<void> {
           row.output_tokens,
           row.cache_read_tokens,
           row.cache_creation_tokens,
+          row.provider,
+          row.timestamp,
         );
         if (cost != null && cost > 0) {
           await pool.query(
@@ -227,6 +367,7 @@ export async function backfillCosts(pool: import("pg").Pool): Promise<void> {
       console.error("[costkey] Cost backfill error:", err);
     }
   });
+
 
   // Also clean up stack frames for existing events (also runs once)
   await backfillFrames(pool);

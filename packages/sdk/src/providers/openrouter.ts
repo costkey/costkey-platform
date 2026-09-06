@@ -18,13 +18,23 @@ export const openrouterExtractor: ProviderExtractor = {
     const usage = b["usage"] as Record<string, unknown> | undefined;
     if (!usage) return null;
 
+    const promptDetails = usage["prompt_tokens_details"] as Record<string, unknown> | undefined;
+    const inputDetails = usage["input_tokens_details"] as Record<string, unknown> | undefined;
+    const completionDetails = usage["completion_tokens_details"] as Record<string, unknown> | undefined;
+
+    const inputTokens = asNumber(usage["prompt_tokens"]) ?? asNumber(usage["input_tokens"]);
+    const outputTokens = asNumber(usage["completion_tokens"]) ?? asNumber(usage["output_tokens"]);
+    const costUsd = asNumber(usage["cost"]);
     return {
-      inputTokens: asNumber(usage["prompt_tokens"]),
-      outputTokens: asNumber(usage["completion_tokens"]),
-      totalTokens: asNumber(usage["total_tokens"]),
-      reasoningTokens: null,
-      cacheReadTokens: asNumber(usage["cached_tokens"]),
-      cacheCreationTokens: asNumber(usage["cache_write_tokens"]),
+      inputTokens,
+      outputTokens,
+      totalTokens: asNumber(usage["total_tokens"]) ?? (inputTokens != null && outputTokens != null ? inputTokens + outputTokens : null),
+      reasoningTokens: asNumber(usage["reasoning_tokens"]) ?? asNumber(completionDetails?.["reasoning_tokens"]),
+      cacheReadTokens: asNumber(usage["cached_tokens"]) ?? asNumber(promptDetails?.["cached_tokens"]) ?? asNumber(inputDetails?.["cached_tokens"]),
+      cacheCreationTokens: asNumber(usage["cache_write_tokens"]) ?? asNumber(promptDetails?.["cache_write_tokens"]) ?? asNumber(inputDetails?.["cache_write_tokens"]),
+      ...(costUsd != null ? { costUsd } : {}),
+      ...(asNumber(completionDetails?.["image_tokens"]) != null
+        ? { imageOutputTokens: asNumber(completionDetails?.["image_tokens"]) } : {}),
     };
   },
 

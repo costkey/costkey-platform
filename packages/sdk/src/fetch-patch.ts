@@ -448,17 +448,106 @@ function buildEvent(params: BuildEventParams): CostKeyEvent {
     method: params.method,
     statusCode: params.statusCode,
     usage: params.usage,
-    costUsd: null, // Server calculates cost from usage + model
+    // Routers can return the exact billed amount, including image/request fees.
+    // The server validates and prefers this over its static fallback table.
+    costUsd: params.usage?.costUsd ?? null,
     durationMs: Math.round(params.durationMs * 100) / 100,
     streaming: params.streaming,
     streamTiming: params.streamTiming,
     callSite: params.callSite,
     context: params.context,
-    metadata: scrubCredentials(extractMetadata(params.requestBody, params.responseBody)) as CostKeyEvent["metadata"],
-    systemPrompt: systemPrompt ? (scrubCredentials(systemPrompt) as string) : null,
-    requestBody: params.requestBody ? scrubCredentials(params.requestBody) : null,
-    responseBody: params.responseBody ? scrubCredentials(params.responseBody) : null,
+    metadata: captureBody(extractMetadata(params.requestBody, params.responseBody)) as CostKeyEvent["metadata"],
+    systemPrompt: systemPrompt ? (sanitizeCapturedValue(scrubCredentials(systemPrompt)) as string) : null,
+    requestBody: params.requestBody ? captureBody(params.requestBody) : null,
+    responseBody: params.responseBody ? captureBody(params.responseBody) : null,
   };
+}
+
+/**
+ * Keep telemetry bounded before it is put on the wire. Multimodal providers
+ * commonly return megabytes of base64 image data; forwarding that data a second
+ * time in the CostKey batch can exceed the ingest/proxy limit and abort the
+ * connection. Preserve the useful shape and media metadata, never the bytes.
+ */
+const MAX_CAPTURED_BODY_BYTES = 32 * 1024;
+const MAX_CAPTURED_TEXT_CHARS = 16 * 1024;
+const BINARY_VALUE_KEYS = new Set([
+  "b64_json", "base64", "base64_data", "image_data", "inline_data", "bytes",
+]);
+const IMAGE_DATA_URI = /^data:(image\/[a-z0-9.+-]+)(?:;[^,]*)?,/i;
+
+function captureBody(body: unknown): unknown {
+  const prepared = sanitizeCapturedValue(scrubCredentials(body));
+  const json = JSON.stringify(prepared);
+  if (json == null || Buffer.byteLength(json, "utf8") <= MAX_CAPTURED_BODY_BYTES) {
+    return prepared;
+  }
+
+  const originalBytes = Buffer.byteLength(json, "utf8");
+  const source = Buffer.from(json, "utf8");
+  let previewBytes = MAX_CAPTURED_BODY_BYTES / 2;
+  const envelope = {
+    __costkey_truncated__: true,
+    original_bytes: originalBytes,
+    preview: source.subarray(0, previewBytes).toString("utf8"),
+  };
+  while (Buffer.byteLength(JSON.stringify(envelope), "utf8") > MAX_CAPTURED_BODY_BYTES) {
+    previewBytes = Math.floor(previewBytes / 2);
+    envelope.preview = source.subarray(0, previewBytes).toString("utf8");
+  }
+  return envelope;
+}
+
+function sanitizeCapturedValue(value: unknown, key?: string): unknown {
+  if (typeof value === "string") {
+    const image = value.match(IMAGE_DATA_URI);
+    if (image) {
+      const comma = value.indexOf(",");
+      const encodedBytes = Math.max(0, value.length - comma - 1);
+      const approxBytes = Math.floor(encodedBytes * 3 / 4);
+      return `[image data omitted: ${image[1]}; ~${approxBytes} bytes]`;
+    }
+
+    if (key && BINARY_VALUE_KEYS.has(key.toLowerCase()) && value.length > 256) {
+      return `[binary data omitted: ${value.length} chars]`;
+    }
+
+    if (value.length > MAX_CAPTURED_TEXT_CHARS) {
+      return `${value.slice(0, MAX_CAPTURED_TEXT_CHARS)}… [truncated from ${value.length} chars]`;
+    }
+    return value;
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeCapturedValue(item, key));
+  }
+
+  if (value && typeof value === "object") {
+    const objectValue = value as Record<string, unknown>;
+    const mimeType = typeof objectValue["media_type"] === "string"
+      ? objectValue["media_type"]
+      : typeof objectValue["mimeType"] === "string"
+      ? objectValue["mimeType"]
+      : typeof objectValue["mime_type"] === "string"
+        ? objectValue["mime_type"]
+        : null;
+    const imagePayload = (mimeType?.toLowerCase().startsWith("image/") ?? false)
+      || objectValue["type"] === "image"
+      || objectValue["type"] === "input_image"
+      || objectValue["type"] === "base64";
+    const result: Record<string, unknown> = {};
+    for (const [entryKey, entryValue] of Object.entries(value as Record<string, unknown>)) {
+      if (imagePayload && entryKey.toLowerCase() === "data" && typeof entryValue === "string") {
+        const encodedBytes = entryValue.length;
+        result[entryKey] = `[image data omitted: ${mimeType ?? "image/*"}; ~${Math.floor(encodedBytes * 3 / 4)} bytes]`;
+      } else {
+        result[entryKey] = sanitizeCapturedValue(entryValue, entryKey);
+      }
+    }
+    return result;
+  }
+
+  return value;
 }
 
 function collectToolResults(messages: unknown): unknown[] {

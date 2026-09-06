@@ -13,7 +13,9 @@ export function formatTokens(tokens: number): string {
 }
 
 /** Format cost — show enough precision to be meaningful */
-export function formatCost(cost: number): string {
+export function formatCost(cost: number | null | undefined): string {
+  if (cost == null || !Number.isFinite(cost)) return "Unpriced";
+  if (cost > 0 && cost < 0.0001) return "<$0.0001";
   if (cost >= 1000) return `$${(cost / 1000).toFixed(1)}k`;
   if (cost >= 1) return `$${cost.toFixed(2)}`;
   if (cost >= 0.01) return `$${cost.toFixed(2)}`;

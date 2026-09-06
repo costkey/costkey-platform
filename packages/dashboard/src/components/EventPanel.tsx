@@ -3,7 +3,7 @@ import { ArrowDown, ArrowUp, Check, Copy, Search, Shield, Wrench, X, Zap } from 
 import type { EventRow } from "../hooks/useApi";
 import { getEvent } from "../api";
 import ProviderLogo from "./ProviderLogo";
-import { truncateModel, formatDuration } from "../utils";
+import { truncateModel, formatDuration, formatCost } from "../utils";
 
 interface Props {
   event: EventRow;
@@ -215,7 +215,7 @@ export default function EventPanel({ event, projectId, onClose }: Props) {
             <>
               {/* Stats */}
               <div className="grid grid-cols-3 gap-4">
-                <Stat label="Cost" value={`$${(event.cost_usd ?? 0).toFixed(4)}`} accent />
+                <Stat label="Cost" value={formatCost(detail.cost_usd)} accent />
                 <Stat label="Duration" value={formatDuration(event.duration_ms)} />
                 <Stat label="Status" value={`${event.status_code ?? "—"}`} />
               </div>

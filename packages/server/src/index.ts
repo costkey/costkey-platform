@@ -17,7 +17,7 @@ import { seedIfEmpty } from "./seed.js";
 import { backfillCosts } from "./pricing.js";
 import { createSourcemapsRouter } from "./sourcemaps.js";
 import { initSourceMaps } from "./sourcemap-resolver.js";
-import { configureRequestParsing } from "./request-parsing.js";
+import { configureRequestParsing, requestParseErrorHandler } from "./request-parsing.js";
 
 const PORT = parseInt(process.env["PORT"] ?? "4100", 10);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -31,6 +31,9 @@ app.use(cors({ origin: true, credentials: true }));
 // batch. Rate-limit it before parsing, then keep the larger ceiling scoped to
 // ingestion so unrelated endpoints retain the tighter default limit.
 configureRequestParsing(app);
+// Keep malformed/aborted body uploads from falling through to Express's
+// default HTML stack trace (and make image-upload failures diagnosable).
+app.use(requestParseErrorHandler);
 app.use(cookieParser());
 app.use((_req, res, next) => {
   res.setHeader("X-Frame-Options", "DENY");
@@ -50,10 +53,15 @@ if (hasDashboard) {
 }
 
 // 3. Start HTTP server immediately (healthcheck + dashboard work instantly)
-app.listen(PORT, "0.0.0.0", () => {
+const httpServer = app.listen(PORT, "0.0.0.0", () => {
   console.log(`[costkey] Listening on 0.0.0.0:${PORT}`);
   initApp().catch((err) => console.error("[costkey] Init error:", err));
 });
+// A stalled upload should fail promptly instead of holding Railway's edge
+// connection for its 300-second timeout. The SDK also aborts telemetry after
+// 15 seconds, while this server-side guard covers other clients.
+httpServer.requestTimeout = 60_000;
+httpServer.headersTimeout = 65_000;
 
 // 4. Async: connect DB, mount API routes
 async function initApp() {

@@ -25,6 +25,13 @@ export const openrouterExtractor: ProviderExtractor = {
     const inputTokens = asNumber(usage["prompt_tokens"]) ?? asNumber(usage["input_tokens"]);
     const outputTokens = asNumber(usage["completion_tokens"]) ?? asNumber(usage["output_tokens"]);
     const costUsd = asNumber(usage["cost"]);
+    const imageOutputTokens = firstNumber([
+      completionDetails?.["image_tokens"],
+      completionDetails?.["image_output_tokens"],
+      usage["image_tokens"],
+      usage["image_output_tokens"],
+      usage["native_tokens_completion_images"],
+    ]);
     return {
       inputTokens,
       outputTokens,
@@ -33,8 +40,7 @@ export const openrouterExtractor: ProviderExtractor = {
       cacheReadTokens: asNumber(usage["cached_tokens"]) ?? asNumber(promptDetails?.["cached_tokens"]) ?? asNumber(inputDetails?.["cached_tokens"]),
       cacheCreationTokens: asNumber(usage["cache_write_tokens"]) ?? asNumber(promptDetails?.["cache_write_tokens"]) ?? asNumber(inputDetails?.["cache_write_tokens"]),
       ...(costUsd != null ? { costUsd } : {}),
-      ...(asNumber(completionDetails?.["image_tokens"]) != null
-        ? { imageOutputTokens: asNumber(completionDetails?.["image_tokens"]) } : {}),
+      ...(imageOutputTokens != null ? { imageOutputTokens } : {}),
     };
   },
 
@@ -58,5 +64,13 @@ export const openrouterExtractor: ProviderExtractor = {
 
 function asNumber(val: unknown): number | null {
   if (typeof val === "number" && !Number.isNaN(val)) return val;
+  return null;
+}
+
+function firstNumber(values: unknown[]): number | null {
+  for (const value of values) {
+    const number = asNumber(value);
+    if (number != null && Number.isInteger(number) && number >= 0) return number;
+  }
   return null;
 }

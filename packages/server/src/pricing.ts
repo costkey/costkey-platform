@@ -180,6 +180,32 @@ const PRICING: [string, ModelPricing][] = [
 ];
 
 /**
+ * Fixed image-token units documented by Google for legacy image responses.
+ * Only these exact values are safe to infer when an old SDK recorded the
+ * aggregate completion token count but lost completion_tokens_details.
+ *
+ * Sources:
+ * - https://ai.google.dev/gemini-api/docs/pricing
+ * - https://ai.google.dev/gemini-api/docs/image-generation
+ */
+const LEGACY_IMAGE_TOKEN_UNITS: Array<{ pattern: string; tokens: readonly number[] }> = [
+  { pattern: "gemini-3.1-flash-image", tokens: [747, 1120, 1680, 2520] },
+  { pattern: "gemini-2.5-flash-image", tokens: [1290] },
+];
+
+/**
+ * Recover an image-only output token count from old telemetry when the value
+ * is one of the provider's fixed image units. Mixed text/image completions
+ * deliberately return null rather than silently overcharging them.
+ */
+export function inferImageOutputTokens(model: string | null, outputTokens: number | null): number | null {
+  if (!model || outputTokens == null || !Number.isInteger(outputTokens) || outputTokens <= 0) return null;
+  const lower = model.toLowerCase();
+  const match = LEGACY_IMAGE_TOKEN_UNITS.find((entry) => lower.includes(entry.pattern));
+  return match?.tokens.includes(outputTokens) ? outputTokens : null;
+}
+
+/**
  * Compute the estimated cost in USD for a given model + usage.
  * Returns null if the model is unknown.
  */
@@ -302,6 +328,77 @@ function selectPricing(
 export async function backfillCosts(pool: import("pg").Pool): Promise<void> {
   const { runOnce } = await import("./db.js");
 
+  // Older SDKs captured OpenRouter's numeric usage.cost in response_body but
+  // did not copy it into cost_usd. Repair every historical event, not only a
+  // recent date window, so the dashboard warning reflects real unknowns.
+  await runOnce(pool, "backfill_openrouter_reported_costs_v2", async () => {
+    const result = await pool.query(
+      `SELECT id, project_id, model, cost_usd, bl_function, bl_file, bl_line,
+              response_body->'usage'->>'cost' AS reported_cost
+       FROM events
+       WHERE provider = 'openrouter'
+         AND cost_usd IS NULL
+         AND jsonb_typeof(response_body->'usage'->'cost') = 'number'`,
+    );
+
+    const changes: Array<{
+      id: string; projectId: string; model: string | null;
+      oldCost: number | null; newCost: number;
+      blFunction: string | null; blFile: string | null; blLine: number | null;
+    }> = [];
+    for (const row of result.rows) {
+      if (row.reported_cost == null || row.reported_cost === "") continue;
+      const reported = Number(row.reported_cost);
+      if (!Number.isFinite(reported) || reported < 0) continue;
+      changes.push({
+        id: row.id, projectId: row.project_id, model: row.model,
+        oldCost: row.cost_usd, newCost: reported,
+        blFunction: row.bl_function, blFile: row.bl_file, blLine: row.bl_line,
+      });
+    }
+    await applyCostChanges(pool, changes);
+    console.log(`[costkey] Repaired ${changes.length} historical OpenRouter reported costs`);
+  });
+
+  // A few old OpenRouter image responses exposed only the aggregate
+  // completion count. Price the rows whose count exactly matches Google's
+  // fixed image units; leave mixed/unknown rows unpriced until the SDK sends
+  // completion_tokens_details.image_tokens or the router supplies usage.cost.
+  await runOnce(pool, "backfill_openrouter_image_costs_v2", async () => {
+    const result = await pool.query(
+      `SELECT id, project_id, model, timestamp, input_tokens, output_tokens,
+              cache_read_tokens, cache_creation_tokens, cost_usd,
+              bl_function, bl_file, bl_line
+       FROM events
+       WHERE provider = 'openrouter'
+         AND cost_usd IS NULL
+         AND model IS NOT NULL
+         AND output_tokens IS NOT NULL`,
+    );
+    const changes: Array<{
+      id: string; projectId: string; model: string | null;
+      oldCost: number | null; newCost: number;
+      blFunction: string | null; blFile: string | null; blLine: number | null;
+    }> = [];
+    for (const row of result.rows) {
+      const imageOutputTokens = inferImageOutputTokens(row.model, row.output_tokens);
+      if (imageOutputTokens == null) continue;
+      const cost = computeCost(
+        row.model, row.input_tokens, row.output_tokens,
+        row.cache_read_tokens, row.cache_creation_tokens,
+        "openrouter", row.timestamp, imageOutputTokens,
+      );
+      if (cost == null || !Number.isFinite(cost) || cost < 0) continue;
+      changes.push({
+        id: row.id, projectId: row.project_id, model: row.model,
+        oldCost: row.cost_usd, newCost: cost,
+        blFunction: row.bl_function, blFile: row.bl_file, blLine: row.bl_line,
+      });
+    }
+    await applyCostChanges(pool, changes);
+    console.log(`[costkey] Repaired ${changes.length} exact legacy OpenRouter image costs`);
+  });
+
   await runOnce(pool, "backfill_costs_v1", async () => {
     try {
       const result = await pool.query(
@@ -371,6 +468,43 @@ export async function backfillCosts(pool: import("pg").Pool): Promise<void> {
 
   // Also clean up stack frames for existing events (also runs once)
   await backfillFrames(pool);
+}
+
+type CostBackfillChange = {
+  id: string;
+  projectId: string;
+  model: string | null;
+  oldCost: number | null;
+  newCost: number;
+  blFunction: string | null;
+  blFile: string | null;
+  blLine: number | null;
+};
+
+async function applyCostChanges(pool: import("pg").Pool, changes: CostBackfillChange[]): Promise<void> {
+  if (changes.length === 0) return;
+
+  const deltas = new Map<string, { projectId: string; model: string; callSiteKey: string; delta: number }>();
+  for (const row of changes) {
+    await pool.query("UPDATE events SET cost_usd = $1 WHERE id = $2", [row.newCost, row.id]);
+    if (!row.blFunction) continue;
+    const model = row.model ?? "unknown";
+    const callSiteKey = `${row.blFile ?? "unknown"}:${row.blFunction}:${row.blLine ?? 0}`;
+    const key = `${row.projectId}\u0000${callSiteKey}\u0000${model}`;
+    const current = deltas.get(key);
+    const delta = row.newCost - (row.oldCost ?? 0);
+    if (current) current.delta += delta;
+    else deltas.set(key, { projectId: row.projectId, model, callSiteKey, delta });
+  }
+
+  for (const entry of deltas.values()) {
+    await pool.query(
+      `UPDATE call_site_stats
+       SET total_cost_usd = total_cost_usd + $1
+       WHERE project_id = $2 AND call_site_key = $3 AND model = $4`,
+      [entry.delta, entry.projectId, entry.callSiteKey, entry.model],
+    );
+  }
 }
 
 const INTERNAL_FILE_PATTERNS = [

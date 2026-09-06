@@ -21,6 +21,19 @@ test("mixed image output uses separate rates and unknown breakdown stays unprice
   assert.equal(computeCost("text-embedding-3-small", 3, 0), 0.00000006);
 });
 
+test("legacy OpenRouter image events infer only exact image-token units", () => {
+  const exact = {
+    provider: "openrouter",
+    model: "google/gemini-3.1-flash-image",
+    usage: { inputTokens: 1_972, outputTokens: 1_120 },
+    responseBody: { usage: { prompt_tokens: 1_972, completion_tokens: 1_120 } },
+  } as CostKeyEvent;
+  assert.equal(resolveEventCost(exact), 0.068186);
+
+  const mixed = { ...exact, usage: { inputTokens: 1_972, outputTokens: 1_485 } } as CostKeyEvent;
+  assert.equal(resolveEventCost(mixed), null);
+});
+
 test("invalid billing cannot turn a request into a negative charge", () => {
   const event = { provider: "openrouter", model: "unknown", usage: { costUsd: -1 }, costUsd: -1 } as CostKeyEvent;
   assert.equal(resolveEventCost(event), null);

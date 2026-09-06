@@ -88,6 +88,7 @@ export async function initDatabase(): Promise<void> {
       context JSONB,
       request_body JSONB,
       response_body JSONB,
+      image_output_tokens INTEGER,
       created_at TIMESTAMPTZ DEFAULT NOW()
     );
     CREATE INDEX IF NOT EXISTS idx_events_project_ts ON events(project_id, timestamp DESC);
@@ -121,6 +122,7 @@ export async function initDatabase(): Promise<void> {
     ALTER TABLE events ADD COLUMN IF NOT EXISTS bl_line INTEGER;
     ALTER TABLE events ADD COLUMN IF NOT EXISTS system_prompt TEXT;
     ALTER TABLE events ADD COLUMN IF NOT EXISTS metadata JSONB;
+    ALTER TABLE events ADD COLUMN IF NOT EXISTS image_output_tokens INTEGER;
 
     -- GitHub OAuth: add github_id, make password_hash nullable
     ALTER TABLE users ADD COLUMN IF NOT EXISTS github_id TEXT;

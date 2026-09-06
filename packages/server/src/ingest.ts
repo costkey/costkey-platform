@@ -740,8 +740,8 @@ export function createIngestRouter(pool: pg.Pool): Router {
               ttft, tps, stream_duration, chunk_count,
               call_site_raw, call_site_frames,
               trace_id, trace_name, context, metadata, system_prompt, request_body, response_body, release,
-              bl_function, bl_file, bl_line
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34)
+              bl_function, bl_file, bl_line, image_output_tokens
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35)
             ON CONFLICT (id) DO NOTHING`,
             [
               event.id, event.timestamp, projectId,
@@ -763,6 +763,7 @@ export function createIngestRouter(pool: pg.Pool): Router {
               truncateBody(event.responseBody),
               release,
               blFunction, blFile, blLine,
+              event.usage?.imageOutputTokens ?? null,
             ],
           );
 

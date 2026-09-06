@@ -12,10 +12,9 @@ try {
   await client.query(apply ? "BEGIN" : "BEGIN READ ONLY");
   const result = await client.query(`
     SELECT id, project_id, model, cost_usd, response_body->'usage' AS usage,
-      input_tokens, bl_file, bl_function, bl_line
+      input_tokens, output_tokens, bl_file, bl_function, bl_line
     FROM events
-    WHERE provider = 'openrouter' AND timestamp >= '2026-08-17T00:00:00Z'
-      AND timestamp < '2026-09-07T00:00:00Z'
+    WHERE provider = 'openrouter' AND cost_usd IS NULL
     ORDER BY id ${apply ? "FOR UPDATE" : ""}
   `);
   const changes = [];
@@ -26,14 +25,20 @@ try {
     if (typeof reported === "number" && Number.isFinite(reported) && reported >= 0) {
       next = reported;
       reason = "saved_openrouter_usage_cost";
+    } else if (row.model === "google/gemini-3.1-flash-image"
+      && [747, 1120, 1680, 2520].includes(row.output_tokens ?? -1)
+      && row.input_tokens != null) {
+      next = (row.input_tokens / 1_000_000) * 0.5
+        + ((row.output_tokens ?? 0) / 1_000_000) * 60;
+      reason = "legacy_gemini_31_image_unit";
+    } else if (row.model === "google/gemini-2.5-flash-image"
+      && row.output_tokens === 1290 && row.input_tokens != null) {
+      next = (row.input_tokens / 1_000_000) * 0.3
+        + (row.output_tokens / 1_000_000) * 30;
+      reason = "legacy_gemini_25_image_unit";
     } else if (row.model === "text-embedding-3-small" && row.cost_usd == null && row.input_tokens != null) {
       next = row.input_tokens * 0.02 / 1_000_000;
       reason = "embedding_standard_estimate";
-    } else if (row.model?.includes("-image") && row.cost_usd != null && row.cost_usd !== 0) {
-      // Old fuzzy matching applied ordinary text prices to image output.
-      // Without the original usage cost or modality breakdown this is unknown.
-      next = null;
-      reason = "image_modality_breakdown_missing";
     }
     if (next !== row.cost_usd) changes.push({ ...row, next, reason });
   }

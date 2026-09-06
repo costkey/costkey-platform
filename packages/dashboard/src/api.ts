@@ -62,6 +62,7 @@ export interface EventRow {
   input_tokens: number | null;
   output_tokens: number | null;
   total_tokens: number | null;
+  image_output_tokens?: number | null;
   cost_usd: number | null;
   duration_ms: number;
   streaming: boolean;

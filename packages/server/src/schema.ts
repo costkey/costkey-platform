@@ -62,6 +62,8 @@ export const events = pgTable("events", {
   systemPrompt: text("system_prompt"),
   requestBody: jsonb("request_body"),
   responseBody: jsonb("response_body"),
+  /** Provider-reported image output token breakdown when available. */
+  imageOutputTokens: integer("image_output_tokens"),
 
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
 }, (t) => [

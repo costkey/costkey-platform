@@ -699,6 +699,17 @@ describe("OpenRouter Extractor", () => {
       });
       assert.strictEqual(usage!.costUsd, 0.0672);
     });
+
+    it("extracts image output token breakdowns from OpenRouter variants", () => {
+      for (const body of [
+        { usage: { prompt_tokens: 10, completion_tokens: 1120, completion_tokens_details: { image_tokens: 1120 } } },
+        { usage: { prompt_tokens: 10, completion_tokens: 1120, completion_tokens_details: { image_output_tokens: 1120 } } },
+        { usage: { prompt_tokens: 10, completion_tokens: 1120, image_tokens: 1120 } },
+        { usage: { prompt_tokens: 10, completion_tokens: 1120, native_tokens_completion_images: 1120 } },
+      ]) {
+        assert.strictEqual(openrouterExtractor.extractUsage(body)!.imageOutputTokens, 1120);
+      }
+    });
   });
 
   describe("stream options injection", () => {

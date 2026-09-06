@@ -56,9 +56,6 @@
   "engines": {
     "node": ">=18"
   },
-  "dependencies": {
-    "@costkey/shared": "*"
-  },
   "devDependencies": {
     "vitest": "^3.2.4"
   }

@@ -1,4 +1,4 @@
-import type { CallSite, StackFrame } from "@costkey/shared";
+import type { CallSite, StackFrame } from "./types.js";
 
 /** Frames from these packages are internal and should be stripped */
 const INTERNAL_PATTERNS = [

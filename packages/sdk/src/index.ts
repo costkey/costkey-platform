@@ -3,7 +3,7 @@ import type {
   EventContext,
   BeforeSendHook,
   ProviderExtractor,
-} from "@costkey/shared";
+} from "./types.js";
 import { parseDSN } from "./dsn.js";
 import { patchFetch, unpatchFetch } from "./fetch-patch.js";
 import { Transport } from "./transport.js";
@@ -11,14 +11,14 @@ import { withContext, getCurrentContext, startTrace, getCurrentTraceId } from ".
 import { registerExtractor } from "./providers/registry.js";
 
 export type { CostKeyOptions, EventContext, BeforeSendHook, ProviderExtractor };
-export { Provider } from "@costkey/shared";
+export { Provider } from "./types.js";
 export type {
   CostKeyEvent,
   NormalizedUsage,
   CallSite,
   StreamTiming,
   EventMetadata,
-} from "@costkey/shared";
+} from "./types.js";
 
 let transport: Transport | null = null;
 let initialized = false;

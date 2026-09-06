@@ -1,4 +1,4 @@
-import type { CostKeyEvent, TransportPayload } from "@costkey/shared";
+import type { CostKeyEvent, TransportPayload } from "./types.js";
 import { SDK_VERSION } from "./version.js";
 
 export interface TransportOptions {

@@ -4,8 +4,8 @@ import type {
   StreamTiming,
   BeforeSendHook,
   EventContext,
-} from "@costkey/shared";
-import { Provider } from "@costkey/shared";
+} from "./types.js";
+import { Provider } from "./types.js";
 import { findExtractor } from "./providers/registry.js";
 import { captureCallSite } from "./stack.js";
 import { getCurrentContext } from "./context.js";

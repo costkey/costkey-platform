@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import type { EventContext } from "@costkey/shared";
+import type { EventContext } from "./types.js";
 
 const storage = new AsyncLocalStorage<EventContext>();
 

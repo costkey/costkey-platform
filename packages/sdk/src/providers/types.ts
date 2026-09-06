@@ -1,4 +1,4 @@
 export type {
   ProviderExtractor,
   NormalizedUsage,
-} from "@costkey/shared";
+} from "../types.js";

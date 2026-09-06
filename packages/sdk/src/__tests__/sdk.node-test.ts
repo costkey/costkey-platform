@@ -30,7 +30,7 @@ import { Transport } from "../transport.js";
 
 // ── Types ──
 import type { ProviderExtractor } from "../providers/types.js";
-import { Provider } from "@costkey/shared";
+import { Provider } from "../types.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  OPENAI
@@ -1278,7 +1278,7 @@ describe("Stack Trace Capture", () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("Transport", () => {
-  function makeEvent(overrides: Partial<import("@costkey/shared").CostKeyEvent> = {}): import("@costkey/shared").CostKeyEvent {
+  function makeEvent(overrides: Partial<import("../types.js").CostKeyEvent> = {}): import("../types.js").CostKeyEvent {
     return {
       id: "evt_" + Math.random().toString(36).slice(2),
       timestamp: new Date().toISOString(),

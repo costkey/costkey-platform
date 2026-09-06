@@ -1766,7 +1766,7 @@ describe("large request ingestion", () => {
             timestamp: new Date().toISOString(),
             provider: "openrouter",
             model: "google/gemini-3.1-flash-image",
-            usage: { inputTokens: 1_972, outputTokens: 1_120, totalTokens: 3_092, costUsd: 0.0672 },
+            usage: { inputTokens: 1_972, outputTokens: 1_120, totalTokens: 3_092, costUsd: 0.0672, imageOutputTokens: 1_120 },
           }],
         }),
       });
@@ -1775,6 +1775,7 @@ describe("large request ingestion", () => {
 
     assert.ok(insertParams);
     assert.equal(insertParams[14], 0.0672);
+    assert.equal(insertParams[34], 1_120);
   });
 
   it("returns JSON 413 for oversized ingest bodies", async () => {

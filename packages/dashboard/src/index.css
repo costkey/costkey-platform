@@ -1244,7 +1244,7 @@ textarea {
   font-size: 15px;
 }
 .auth-scene {
-  position: relative;
+  position: static;
   z-index: 0;
   display: flex;
   flex: 1 1 auto;
@@ -1254,7 +1254,13 @@ textarea {
   margin: 0;
   pointer-events: none;
 }
-.auth-telescope { width: min(78%, 380px); height: auto; }
+.auth-telescope { position: relative; width: min(92%, 620px); height: auto; overflow: visible; }
+.auth-starfield { position: absolute; inset: 0; width: 100%; height: 100%; }
+.auth-starfield .auth-star { opacity: 0.35; }
+.auth-star { fill: #f3e9c8; opacity: 0.45; animation: auth-twinkle 6s ease-in-out infinite; }
+.auth-target { animation: auth-twinkle 6s ease-in-out infinite; }
+@keyframes auth-twinkle { 0%, 100% { opacity: 0.45; } 50% { opacity: 0.9; } }
+@media (prefers-reduced-motion: reduce) { .auth-star, .auth-target { animation: none; } }
 
 
 .auth-panel {

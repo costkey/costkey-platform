@@ -963,3 +963,91 @@ export async function getInsights(projectId: string, range?: TimeRange): Promise
   const qs = params.toString() ? `?${params}` : "";
   return get(`/projects/${projectId}/insights${qs}`);
 }
+
+export interface RunGroup {
+  name: string;
+  runs: number;
+  cost: number | null;
+  costPerRun: number | null;
+  partlyPricedRuns: number;
+  calls: number;
+  p50Ms: number | null;
+  p95Ms: number | null;
+  failedRuns: number;
+  avgSteps: number | null;
+  avgTools: number | null;
+  lastRun: string | null;
+}
+
+export interface AgentDetail {
+  agent: RunGroup;
+  runs: Array<{ traceId: string; startedAt: string; cost: number | null; unpriced: number; calls: number; steps: number; tools: number; failed: boolean; durationMs: number | null; userId: string | null }>;
+  tools: Array<{ name: string; calls: number; avgMs: number | null; failed: number; cost: number | null }>;
+  models: Array<{ model: string; provider: string; calls: number; cost: number | null }>;
+  subagents: Array<{ name: string; runs: number }>;
+}
+
+export interface ErrorSummary {
+  totals: { calls: number; failedCalls: number; retries: number; wastedCost: number };
+  failedCalls: Array<{ provider: string; model: string; statusCode: number | null; calls: number; runs: number; cost: number | null; lastSeen: string; sampleTraceId: string | null }>;
+  retries: Array<{ model: string; provider: string; retries: number; cost: number | null; lastSeen: string }>;
+  failedSpans: Array<{ kind: string; name: string; errorType: string | null; failures: number; lastSeen: string; sampleTraceId: string | null }>;
+}
+
+export interface InsightScope {
+  from: string;
+  to: string;
+  environment?: string;
+}
+
+function scopeQuery(scope: InsightScope): string {
+  const params = new URLSearchParams({ from: scope.from, to: scope.to });
+  if (scope.environment && scope.environment !== "all") params.set("environment", scope.environment);
+  return params.toString();
+}
+
+export function getWorkflows(projectId: string, scope: InsightScope): Promise<{ workflows: RunGroup[] }> {
+  return get(`/projects/${encodeURIComponent(projectId)}/workflows?${scopeQuery(scope)}`);
+}
+
+export function getAgents(projectId: string, scope: InsightScope): Promise<{ agents: RunGroup[] }> {
+  return get(`/projects/${encodeURIComponent(projectId)}/agents?${scopeQuery(scope)}`);
+}
+
+export function getAgentDetail(projectId: string, name: string, scope: InsightScope): Promise<AgentDetail> {
+  return get(`/projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(name)}?${scopeQuery(scope)}`);
+}
+
+export function getErrors(projectId: string, scope: InsightScope): Promise<ErrorSummary> {
+  return get(`/projects/${encodeURIComponent(projectId)}/errors?${scopeQuery(scope)}`);
+}
+
+export interface TabModel {
+  model: string;
+  provider: string;
+  calls: number;
+  runs: number;
+  cost: number | null;
+  topOwners: string[];
+}
+
+export function getTabModels(projectId: string, kind: "agent" | "workflow", scope: InsightScope): Promise<{ models: TabModel[] }> {
+  return get(`/projects/${encodeURIComponent(projectId)}/insights/models?kind=${kind}&${scopeQuery(scope)}`);
+}
+
+export interface BudgetPolicy {
+  id: string;
+  name?: string | null;
+  scope?: Record<string, string | string[]>;
+  mode: "monitor" | "enforce";
+  status: "active" | "paused" | "archived";
+  unit: "money" | "calls" | "tokens";
+  allowance: number;
+  currency?: string | null;
+  window: string;
+  usage?: { observed?: number | null } | null;
+}
+
+export function getBudgetPolicies(projectId: string): Promise<{ policies: BudgetPolicy[] }> {
+  return get(`/projects/${encodeURIComponent(projectId)}/budget/policies`);
+}

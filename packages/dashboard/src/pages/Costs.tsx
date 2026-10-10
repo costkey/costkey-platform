@@ -250,7 +250,7 @@ function FeatureMappingManager({ projectId, period, timezone, environment, curre
   </Panel></div>;
 }
 
-export default function Costs() {
+export default function Costs({ defaultGroup = "feature", title = "Costs" }: { defaultGroup?: GroupBy; title?: string } = {}) {
   const { currentProjectId, projects, user, org, workspaceSettings } = useAuth();
   const projectId = currentProjectId ?? projects[0]?.id ?? null;
   const [searchParams, setSearchParams] = useSearchParams();
@@ -260,7 +260,7 @@ export default function Costs() {
   const requestedTo = searchParams.get("to");
   const scopeOverride = requestedFrom && requestedTo && Number.isFinite(new Date(requestedFrom).getTime()) && Number.isFinite(new Date(requestedTo).getTime()) && new Date(requestedFrom) < new Date(requestedTo) ? { from: requestedFrom, to: requestedTo } : null;
   const requestedGroupBy = searchParams.get("groupBy");
-  const groupBy: GroupBy = requestedGroupBy === "function" || requestedGroupBy === "customer" || requestedGroupBy === "model" || requestedGroupBy === "provider" || requestedGroupBy === "context" || requestedGroupBy === "agent" || requestedGroupBy === "tool" ? requestedGroupBy : "feature";
+  const groupBy: GroupBy = requestedGroupBy === "function" || requestedGroupBy === "customer" || requestedGroupBy === "model" || requestedGroupBy === "provider" || requestedGroupBy === "context" || requestedGroupBy === "agent" || requestedGroupBy === "tool" ? requestedGroupBy : defaultGroup;
   const groupValue = searchParams.get("groupValue");
   const contextKey = searchParams.get("contextKey");
   const requestedLimit = Number(searchParams.get("limit"));
@@ -294,7 +294,7 @@ export default function Costs() {
     setSelected(null);
     setSearchParams((current) => { current.set("period", "custom"); current.set("from", nextFrom); current.set("to", nextTo); current.delete("offset"); return current; });
   };
-  if (!projectId) return <div className="ck-main-inner"><PageHeader title="Costs" /><Panel><EmptyPanel illustration="first-light" title="Ready for your first run" body="Connect a project to start." action={<Link className="ck-button ck-button-primary" to="/onboarding">Connect a project</Link>} /></Panel></div>;
+  if (!projectId) return <div className="ck-main-inner"><PageHeader title={title} /><Panel><EmptyPanel illustration="first-light" title="Ready for your first run" body="Connect a project to start." action={<Link className="ck-button ck-button-primary" to="/onboarding">Connect a project</Link>} /></Panel></div>;
   const explicitState = prototypeState(searchParams);
   const effectiveRole = prototypeRole(searchParams, user?.role ?? "viewer");
   const namedState = PrototypeStatePanel({ state: explicitState, family: "Costs", backHref: "/overview", retryHref: `/costs${window.location.search}`, loadingRows: 7 });
@@ -305,7 +305,7 @@ export default function Costs() {
   else scopeLinkParams.set("period", period);
   if (environment !== "all") scopeLinkParams.set("environment", environment);
   const scopeLink = `?${scopeLinkParams.toString()}`;
-  return <div className="ck-main-inner prototype-costs-route"><PageHeader title="Costs" actions={<><ScopeToolbar period={toolbarPeriod} onPeriodChange={changePeriod} customFrom={scopeOverride?.from} customTo={scopeOverride?.to} onCustomRangeChange={changeCustomRange} environment={environment} onEnvironmentChange={(next) => setSearchParams((current) => { if (next === "all") current.delete("environment"); else current.set("environment", next); current.delete("offset"); return current; })} environmentOptions={environmentOptions} currency={reportingCurrency} currencyNote={currencyNote} timezone={timezone ?? undefined} /><a className="ck-button ck-button-secondary" href={`/api/v1/projects/${encodeURIComponent(projectId)}/export?format=csv&includeContent=false`}><Download size={14} aria-hidden="true" /> Export CSV</a></>} />
+  return <div className="ck-main-inner prototype-costs-route"><PageHeader title={title} actions={<><ScopeToolbar period={toolbarPeriod} onPeriodChange={changePeriod} customFrom={scopeOverride?.from} customTo={scopeOverride?.to} onCustomRangeChange={changeCustomRange} environment={environment} onEnvironmentChange={(next) => setSearchParams((current) => { if (next === "all") current.delete("environment"); else current.set("environment", next); current.delete("offset"); return current; })} environmentOptions={environmentOptions} currency={reportingCurrency} currencyNote={currencyNote} timezone={timezone ?? undefined} /><a className="ck-button ck-button-secondary" href={`/api/v1/projects/${encodeURIComponent(projectId)}/export?format=csv&includeContent=false`}><Download size={14} aria-hidden="true" /> Export CSV</a></>} />
     <div className="ck-cost-group-row"><span className="ck-cost-group-label">Split by</span><GroupSelector value={groupBy} onChange={(next) => { setSearchParams((current) => { current.set("groupBy", next); if (next !== "context") { current.delete("groupValue"); current.delete("contextKey"); } current.delete("offset"); return current; }); setSelected(null); }} available={availableDimensions} />{groupBy === "context" && <ContextKeySelector value={contextKey} onChange={(next) => { setSelected(null); setSearchParams((current) => { if (next) current.set("contextKey", next); else current.delete("contextKey"); current.delete("offset"); return current; }); }} contextKeys={resource.contextKeys} />}</div>
     <PrototypeStateNotice state={explicitState} family="cost breakdown" role={effectiveRole} onRetry={() => setReload((value) => value + 1)} />
     {resource.error && <div className="ck-alert" style={{ marginBottom: 18 }}><CircleAlert size={15} aria-hidden="true" /><div><strong>Couldn’t load this breakdown.</strong> {resource.error}</div></div>}

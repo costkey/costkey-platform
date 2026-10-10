@@ -20,7 +20,7 @@ import { Router as createRouter } from "express";
 import type pg from "pg";
 import { Resend } from "resend";
 import { requireAuth } from "./auth.js";
-import { createPostgresObservedUsageSource, DEFAULT_PROVIDER_CAPABILITY_REGISTRY, normalizeSpendingPolicy, policyWindowKey, type AdmissionRequest, type PolicyCurrency, type PolicyMode, type PolicyUnit, type PolicyWindow, type SpendingPolicy } from "./admission.js";
+import { createPostgresObservedUsageSource, DEFAULT_PROVIDER_CAPABILITY_REGISTRY, isIdentityWindow, normalizeScopeValue, normalizeSpendingPolicy, perCallUsageSummary, POLICY_SCOPE_KEYS, POLICY_SCOPE_MAX_VALUE_LENGTH, POLICY_SCOPE_MAX_VALUES, policyScopeClauses, policyWindowKey, scopeValues, type AdmissionRequest, type PolicyCurrency, type PolicyMode, type PolicyScope, type PolicyUnit, type PolicyWindow, type SpendingPolicy } from "./admission.js";
 import { PostgresReservationStore } from "./reservation.js";
 import { dispatchEnforcementNotification, dispatchFindingNotification, dispatchPolicyWarning, dispatchWebhook, isSafeWebhookUrl } from "./notifications.js";
 export { ensurePolicySchema } from "./policy-storage.js";
@@ -219,7 +219,7 @@ function sanitizeRule(body: Record<string, unknown>): ParsedRule | { error: stri
 
 interface ParsedPolicy {
   name: string | null;
-  scope: Record<string, string>;
+  scope: PolicyScope;
   mode: PolicyMode;
   status: "active" | "paused" | "archived";
   unit: PolicyUnit;
@@ -244,11 +244,14 @@ export interface WorkspaceFxSnapshot {
   asOf: string | null;
 }
 
-const POLICY_SCOPE_FIELDS = ["feature", "customer", "function", "provider", "model", "group"] as const;
 const POLICY_UNITS = new Set<PolicyUnit>(["money", "calls", "tokens"]);
 const POLICY_WINDOWS = new Set<PolicyWindow>([
-  "per_trace", "per_execution", "calendar_minute", "calendar_day", "calendar_month",
+  "per_trace", "per_execution", "per_call", "calendar_minute", "calendar_day", "calendar_month",
 ]);
+
+const PER_CALL_USAGE_LOOKBACK_MS = 24 * 60 * 60 * 1000;
+// Covers one checker interval past the hour so a late-hour call is not missed.
+const PER_CALL_WARNING_LOOKBACK_MS = 65 * 60 * 1000;
 
 function finitePolicyNumber(value: unknown): number | null {
   if (value === null || value === undefined || value === "") return null;
@@ -302,7 +305,7 @@ async function workspaceTimezoneForProject(pool: pg.Pool, projectId: string): Pr
   return timezone && isValidTimezone(timezone) ? timezone : "UTC";
 }
 
-function policyScope(body: Record<string, unknown>): Record<string, string> {
+function policyScope(body: Record<string, unknown>): PolicyScope | { error: string } {
   const raw = body["scope"];
   const source = typeof raw === "string" ? (() => { try { return JSON.parse(raw) as unknown; } catch { return {}; } })() : raw;
   const scope = source !== null && typeof source === "object" && !Array.isArray(source)
@@ -315,27 +318,44 @@ function policyScope(body: Record<string, unknown>): Record<string, string> {
     provider: ["provider", "scopeProvider"],
     model: ["model", "scopeModel"],
     group: ["group", "scopeGroup"],
+    agent: ["agent", "scopeAgent"],
+    tool: ["tool", "scopeTool"],
+    user: ["user", "scopeUser"],
+    workflow: ["workflow", "scopeWorkflow"],
   };
-  const result: Record<string, string> = {};
-  for (const field of POLICY_SCOPE_FIELDS) {
+  const result: PolicyScope = {};
+  for (const field of POLICY_SCOPE_KEYS) {
     const candidates = aliases[field];
-    const value = candidates.map((key) => scope[key] ?? body[key]).find((candidate) => typeof candidate === "string" && candidate.trim());
-    if (typeof value === "string") result[field] = value.trim();
+    const raw = candidates.map((key) => scope[key] ?? body[key])
+      .find((candidate) => (typeof candidate === "string" && candidate.trim()) || Array.isArray(candidate));
+    if (raw === undefined) continue;
+    if (Array.isArray(raw) && raw.some((entry) => typeof entry !== "string")) return { error: `scope.${field} values must be strings` };
+    const value = normalizeScopeValue(raw);
+    if (!value) continue;
+    const values = scopeValues(value);
+    if (values.length > POLICY_SCOPE_MAX_VALUES) return { error: `scope.${field} allows at most ${POLICY_SCOPE_MAX_VALUES} values` };
+    if (values.some((entry) => entry.length > POLICY_SCOPE_MAX_VALUE_LENGTH)) return { error: `scope.${field} values must be at most ${POLICY_SCOPE_MAX_VALUE_LENGTH} characters` };
+    result[field] = value;
   }
   return result;
 }
 
-function serverCapabilityReview(scope: Record<string, string>): Record<string, unknown> {
+function serverCapabilityReview(scope: PolicyScope): Record<string, unknown> {
   // Capability evidence is derived only from the server registry and the
   // policy's provider/model scope. A request-body capabilityReview is never
-  // used as authorization material.
-  return DEFAULT_PROVIDER_CAPABILITY_REGISTRY.review?.(scope.provider ?? null, scope.model ?? null) ?? {
+  // used as authorization material. A group is reviewable only if every
+  // member is.
+  const unavailable = {
     supported: false,
     admissionSupported: false,
     verified: false,
     source: "server_registry",
     reason: "Server provider capability review is unavailable",
   };
+  const providers: Array<string | null> = scopeValues(scope.provider).length ? scopeValues(scope.provider) : [null];
+  const models: Array<string | null> = scopeValues(scope.model).length ? scopeValues(scope.model) : [null];
+  const reviews = providers.flatMap((provider) => models.map((model) => DEFAULT_PROVIDER_CAPABILITY_REGISTRY.review?.(provider, model) ?? unavailable));
+  return reviews.find((review) => !capabilityAllowsEnforcement(review)) ?? reviews[0] ?? unavailable;
 }
 
 function capabilityAllowsEnforcement(capability: Record<string, unknown>): boolean {
@@ -345,18 +365,22 @@ function capabilityAllowsEnforcement(capability: Record<string, unknown>): boole
     && capability.source === "server_registry";
 }
 
-function scopesMayOverlap(left: Record<string, string>, right: Record<string, string>): boolean {
-  for (const field of POLICY_SCOPE_FIELDS) {
-    const a = left[field];
-    const b = right[field];
-    if (!a || !b) continue;
-    if (a === b || a.includes("*") || a.includes("?") || b.includes("*") || b.includes("?")) continue;
-    if (a !== b) return false;
+function hasWildcard(value: string): boolean {
+  return value.includes("*") || value.includes("?");
+}
+
+function scopesMayOverlap(left: PolicyScope, right: PolicyScope): boolean {
+  for (const field of POLICY_SCOPE_KEYS) {
+    const a = scopeValues(left[field]);
+    const b = scopeValues(right[field]);
+    if (a.length === 0 || b.length === 0) continue;
+    if (a.some(hasWildcard) || b.some(hasWildcard) || a.some((value) => b.includes(value))) continue;
+    return false;
   }
   return true;
 }
 
-async function overlappingPolicyReview(pool: pg.Pool, projectId: string, scope: Record<string, string>): Promise<Array<Record<string, unknown>>> {
+async function overlappingPolicyReview(pool: pg.Pool, projectId: string, scope: PolicyScope): Promise<Array<Record<string, unknown>>> {
   try {
     const result = await pool.query(
       `SELECT id, name, scope, mode, unit, allowance, currency,
@@ -401,7 +425,8 @@ function sanitizePolicy(body: Record<string, unknown>, workspaceFx?: WorkspaceFx
   const unitValue = String(body["unit"] ?? "money").toLowerCase() as PolicyUnit;
   if (!POLICY_UNITS.has(unitValue)) return { error: "unit must be money, calls, or tokens" };
   const windowValue = String(body["window"] ?? body["windowKind"] ?? body["window_kind"] ?? "calendar_day").toLowerCase() as PolicyWindow;
-  if (!POLICY_WINDOWS.has(windowValue)) return { error: "window must be per_trace, per_execution, calendar_minute, calendar_day, or calendar_month" };
+  if (!POLICY_WINDOWS.has(windowValue)) return { error: "window must be per_trace, per_execution, per_call, calendar_minute, calendar_day, or calendar_month" };
+  if (windowValue === "per_call" && unitValue === "calls") return { error: "a per_call policy must cap money or tokens" };
 
   const allowance = finitePolicyNumber(body["allowance"] ?? body["limit"] ?? body["limitAmount"]);
   if (allowance == null) return { error: "allowance must be a finite non-negative number" };
@@ -428,6 +453,7 @@ function sanitizePolicy(body: Record<string, unknown>, workspaceFx?: WorkspaceFx
   }
 
   const scope = policyScope(body);
+  if ("error" in scope) return { error: String(scope.error) };
   // Deliberately discard body capability claims. The route derives a review
   // from the server registry after validation and persists that evidence for
   // the policy version when enforcement is activated.
@@ -515,9 +541,21 @@ async function publicPolicyWithUsage(pool: pg.Pool, row: Record<string, unknown>
       },
     };
   }
+  if (policy.window === "per_call") {
+    // Nothing accumulates; show the largest call in the last day instead.
+    try {
+      const to = new Date();
+      const since = new Date(to.getTime() - PER_CALL_USAGE_LOOKBACK_MS);
+      const summary = await perCallUsageSummary(pool, policy, since, to);
+      usage = { ...usage, observed: summary.largest, largestCall: summary.largest, overLimit: summary.overLimit, since: since.toISOString() };
+    } catch (error) {
+      if ((error as { code?: string })?.code !== "42P01") throw error;
+    }
+    return { ...publicPolicy(row), usage };
+  }
   try {
     let windowKey: string | null = null;
-    if (policy.window !== "per_trace" && policy.window !== "per_execution") {
+    if (!isIdentityWindow(policy.window)) {
       try {
         windowKey = policyWindowKey(policy, new Date());
       } catch {
@@ -582,33 +620,15 @@ async function publicPolicyWithUsage(pool: pg.Pool, row: Record<string, unknown>
   return { ...publicPolicy(row), usage };
 }
 
-function scopedEventWhere(projectId: string, scope: Record<string, string>): { sql: string; params: unknown[] } {
-  const clauses = ["project_id = $1"];
+function scopedEventWhere(projectId: string, scope: PolicyScope): { sql: string; params: unknown[] } {
   const params: unknown[] = [projectId];
-  let index = 1;
-  const add = (expression: string, value: string): void => {
-    index += 1;
-    clauses.push(`${expression} LIKE $${index} ESCAPE '\\'`);
-    params.push(globToLike(value));
-  };
-  if (scope["feature"]) add("COALESCE(context->>'feature', '')", scope["feature"]);
-  if (scope["customer"]) add("COALESCE(context->>'customer', context->>'customerId', '')", scope["customer"]);
-  if (scope["function"]) {
-    index += 1;
-    params.push(globToLike(scope["function"]));
-    clauses.push(`(COALESCE(bl_file, '') || ':' || COALESCE(bl_function, '') LIKE $${index} ESCAPE '\\' OR COALESCE(bl_function, '') LIKE $${index} ESCAPE '\\')`);
-  }
-  if (scope["provider"]) add("COALESCE(provider, '')", scope["provider"]);
-  if (scope["model"]) add("COALESCE(model, '')", scope["model"]);
-  if (scope["group"]) add("COALESCE(group_name, context->>'group', '')", scope["group"]);
-  if (scope["agent"]) add("COALESCE(context->>'agent', '')", scope["agent"]);
-  if (scope["tool"]) add("COALESCE(context->>'tool', '')", scope["tool"]);
+  const clauses = ["project_id = $1", ...policyScopeClauses(scope, params)];
   return { sql: clauses.join(" AND "), params };
 }
 
 async function seedPolicyObservedUsage(pool: pg.Pool, row: Record<string, unknown>): Promise<number> {
   const policy = normalizeSpendingPolicy(row);
-  if (policy.window === "per_trace" || policy.window === "per_execution") return 0;
+  if (isIdentityWindow(policy.window)) return 0;
   // Activation-start policies still backfill post-activation charges. The
   // observed source applies the explicit cutoff; only a malformed activation
   // row is skipped here (admission itself fails closed for that row).
@@ -731,6 +751,36 @@ async function persistCanonicalPolicyFinding(
   }
 }
 
+/**
+ * A per-call cap warns through the same outbox as window thresholds. The
+ * window key is the UTC hour of the latest offending call, so the outbox
+ * dedupe sends at most one warning per policy per hour.
+ */
+async function warnPerCallOverages(pool: pg.Pool, policy: SpendingPolicy, orgId: string): Promise<void> {
+  const now = new Date();
+  let summary;
+  try {
+    summary = await perCallUsageSummary(pool, policy, new Date(now.getTime() - PER_CALL_WARNING_LOOKBACK_MS), now);
+  } catch (error) {
+    if ((error as { code?: string })?.code === "42P01") return;
+    throw error;
+  }
+  if (summary.overLimit === 0 || !summary.lastOverAt) return;
+  try {
+    await dispatchPolicyWarning(pool, {
+      orgId,
+      projectId: policy.projectId,
+      policyId: policy.id,
+      threshold: 1,
+      windowKey: `call:${summary.lastOverAt.toISOString().slice(0, 13)}`,
+      allowance: policy.allowance,
+      observedUsage: summary.largest ?? policy.allowance,
+    });
+  } catch (error) {
+    console.error(`[costkey] per-call policy warning dispatch failed for ${policy.id}:`, error);
+  }
+}
+
 export async function runCanonicalPolicyWarnings(pool: pg.Pool): Promise<void> {
   let rows: Array<Record<string, unknown>>;
   try {
@@ -749,8 +799,12 @@ export async function runCanonicalPolicyWarnings(pool: pg.Pool): Promise<void> {
   for (const row of rows) {
     const policy = normalizeSpendingPolicy(row);
     if (!policy.id || !policy.projectId || policy.valid === false
-      || policy.window === "per_trace" || policy.window === "per_execution"
       || !Number.isFinite(policy.allowance) || policy.allowance < 0) continue;
+    if (policy.window === "per_call") {
+      await warnPerCallOverages(pool, policy, String(row.org_id ?? ""));
+      continue;
+    }
+    if (isIdentityWindow(policy.window)) continue;
     let currentWindow: string;
     try {
       currentWindow = policyWindowKey(policy, new Date());
@@ -987,7 +1041,7 @@ export function createBudgetsRouter(pool: pg.Pool): Router {
       );
       const row = matching.rows[0] ?? {};
       const wildcardFields = Object.entries(parsed.scope)
-        .filter(([, value]) => value.includes("*") || value.includes("?"))
+        .filter(([, value]) => !Array.isArray(value) && hasWildcard(value))
         .map(([field]) => field);
       res.json({
         policy: { projectId: id, ...parsed },

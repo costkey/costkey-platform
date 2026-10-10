@@ -611,6 +611,25 @@ export async function initDatabase(): Promise<void> {
     ALTER TABLE events ADD COLUMN IF NOT EXISTS native_units JSONB;
     CREATE INDEX IF NOT EXISTS idx_events_span ON events(project_id, span_id) WHERE span_id IS NOT NULL;
 
+    -- Judge, human and code scores on runs. Upserted by id so a re-graded
+    -- run replaces its score; the comment is content and follows capture.
+    CREATE TABLE IF NOT EXISTS scores (
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      id TEXT NOT NULL,
+      trace_id TEXT,
+      span_id TEXT,
+      name TEXT NOT NULL,
+      value DOUBLE PRECISION NOT NULL,
+      label TEXT,
+      comment TEXT,
+      source TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      timestamp TIMESTAMPTZ NOT NULL,
+      PRIMARY KEY (project_id, id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_scores_project_name_ts ON scores(project_id, name, timestamp DESC);
+    CREATE INDEX IF NOT EXISTS idx_scores_trace ON scores(project_id, trace_id);
+
     CREATE TABLE IF NOT EXISTS credits (
       id TEXT PRIMARY KEY,
       project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,

@@ -220,13 +220,38 @@ export interface NotificationPreferences {
   weeklySummaryEnabled: boolean;
   weeklySummaryHour: number;
   weeklySummaryWeekday: number;
+  /** Older servers omit the daily summary fields; treat them as off at 09:00. */
+  dailySummaryEnabled?: boolean;
+  dailySummaryHour?: number;
   timezone: string;
   findingsEnabled: boolean;
   policyWarningThresholds: number[];
   enforcementEnabled: boolean;
+  /** Older servers gate budget alerts with enforcementEnabled. */
+  budgetAlertsEnabled?: boolean;
   executionReceiptsEnabled: boolean;
   updatedAt: string | null;
 }
+
+export type NotificationEventType =
+  | "weekly_summary"
+  | "daily_summary"
+  | "finding"
+  | "policy_warning"
+  | "enforcement"
+  | "execution_receipt";
+
+/** New destinations subscribe to every event; preferences decide what is sent. */
+export const ALL_NOTIFICATION_EVENT_TYPES: NotificationEventType[] = [
+  "weekly_summary",
+  "daily_summary",
+  "finding",
+  "policy_warning",
+  "enforcement",
+  "execution_receipt",
+];
+
+export type NotificationDestinationKind = "email" | "webhook" | "slack";
 
 export interface NotificationPreferencesResponse {
   preferences: NotificationPreferences;
@@ -247,7 +272,8 @@ export interface NotificationDestination {
   id: string;
   project_id: string | null;
   owner_user_id: string | null;
-  kind: "email" | "webhook" | string;
+  kind: NotificationDestinationKind | string;
+  /** Slack webhook URLs are secrets: the server only ever returns a masked form. */
   address: string;
   event_types: string[];
   enabled: boolean;
@@ -262,7 +288,7 @@ export function getNotificationDestinations(): Promise<{ destinations: Notificat
 }
 
 export function createNotificationDestination(input: {
-  kind: "email" | "webhook";
+  kind: NotificationDestinationKind;
   address: string;
   secret?: string;
   eventTypes: string[];

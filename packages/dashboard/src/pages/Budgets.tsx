@@ -11,13 +11,13 @@ import "./PrototypeRoute.css";
 type PolicyMode = "monitor" | "enforce";
 type PolicyStatus = "active" | "paused" | "archived";
 type PolicyUnit = "money" | "calls" | "tokens";
-type PolicyWindow = "per_trace" | "per_execution" | "calendar_minute" | "calendar_day" | "calendar_month";
+type PolicyWindow = "per_trace" | "per_execution" | "per_call" | "calendar_minute" | "calendar_day" | "calendar_month";
 
 interface Policy {
   id: string;
   projectId: string;
   name: string | null;
-  scope: Record<string, string>;
+  scope: Record<string, string | string[]>;
   mode: PolicyMode;
   status: PolicyStatus;
   unit: PolicyUnit;
@@ -31,9 +31,16 @@ interface Policy {
 const POLICY_TABS = ["Active", "Paused", "Archived"] as const;
 type PolicyTab = typeof POLICY_TABS[number];
 
+/** "search, answer +1": a group shows its first two values. */
+function scopeValueText(value: string | string[]): string {
+  const values = Array.isArray(value) ? value : [value];
+  return values.length > 2 ? `${values.slice(0, 2).join(", ")} +${values.length - 2}` : values.join(", ");
+}
+
 function policyScope(policy: Policy): string {
-  const [key, value] = Object.entries(policy.scope ?? {})[0] ?? [];
-  if (!key || !value) return "Whole project";
+  const [key, rawValue] = Object.entries(policy.scope ?? {})[0] ?? [];
+  if (!key || !rawValue || rawValue.length === 0) return "Whole project";
+  const value = scopeValueText(rawValue);
   if (isPrototypePreview()) {
     if (key === "project") return "Atlas · All environments";
     if (key === "feature" && value === "Search") return "Feature: Search · All environments";
@@ -47,6 +54,7 @@ function formatWindow(value: PolicyWindow): string {
   return ({
     per_trace: "Per run",
     per_execution: "Per batch",
+    per_call: "Per call",
     calendar_minute: "Per minute",
     calendar_day: "Daily",
     calendar_month: "Monthly",
@@ -74,6 +82,7 @@ function budgetStatus(policy: Policy): { tone: "good" | "warn" | "critical" | "n
 
 function actionText(policy: Policy): string {
   if (policy.status !== "active") return "Not checking";
+  if (policy.window === "per_call") return policy.mode === "enforce" ? "Refuse calls over the limit" : "Alert on calls over the limit";
   return policy.mode === "enforce" ? "Stop new calls" : "Alert at 80% and 100%";
 }
 
@@ -97,7 +106,7 @@ function editorPath(projectId: string, policy?: Policy): string {
     params.set("id", policy.id);
     const [scopeDimension, scopeValue] = Object.entries(policy.scope ?? {})[0] ?? [];
     if (scopeDimension) params.set("scopeDimension", scopeDimension);
-    if (scopeValue) params.set("scopeValue", scopeValue);
+    if (scopeValue) params.set("scopeValue", Array.isArray(scopeValue) ? scopeValue.join(", ") : scopeValue);
   }
   return `/policy-edit?${params.toString()}`;
 }

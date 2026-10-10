@@ -25,6 +25,12 @@ const Onboarding = lazy(() => import("./pages/Onboarding"));
 const SettingsPage = lazy(() => import("./pages/Settings"));
 const Signup = lazy(() => import("./pages/Signup"));
 const Traces = lazy(() => import("./pages/Traces"));
+const Workflows = lazy(() => import("./pages/RunGroups").then((module) => ({ default: module.Workflows })));
+const Agents = lazy(() => import("./pages/RunGroups").then((module) => ({ default: module.Agents })));
+const AgentDetailPage = lazy(() => import("./pages/RunGroups").then((module) => ({ default: module.AgentDetailPage })));
+const Errors = lazy(() => import("./pages/Errors"));
+const Quality = lazy(() => import("./pages/Quality"));
+const Alerting = lazy(() => import("./pages/Alerting"));
 const ContributorPage = lazy(() => import("./pages/ProductParityRoutes").then((module) => ({ default: module.ContributorPage })));
 const FindingDrawerPage = lazy(() => import("./pages/ProductParityRoutes").then((module) => ({ default: module.FindingDrawerPage })));
 const ComparePage = lazy(() => import("./pages/ProductParityRoutes").then((module) => ({ default: module.ComparePage })));
@@ -272,26 +278,29 @@ function AppShell() {
     };
   }, [sidebarPanel]);
 
-  // Navigation follows the design language: Overview, Runs, Experiments,
-  // Forecasts, Budgets, Settings. Costs (the attribution explorer) sits with
-  // Runs because it answers "where did the spend go".
+  // Six tabs. Spend by model, budgets, forecasts and alerts are features
+  // inside them; the logo opens the overview.
   const navItems = useMemo(() => [
-    { to: "/", label: "Overview", icon: "overview" as PrototypeIconName },
-    { to: "/traces", label: "Runs", icon: "trace" as PrototypeIconName },
-    { to: "/costs", label: "Costs", icon: "cost" as PrototypeIconName },
-    { to: "/executions", label: "Experiments", icon: "flask" as PrototypeIconName },
-    { to: "/forecast", label: "Forecasts", icon: "telescope" as PrototypeIconName },
-    { to: "/budgets", label: "Budgets", icon: "shield" as PrototypeIconName },
-    { to: "/settings", label: "Settings", icon: "settings" as PrototypeIconName },
+    { to: "/workflows", label: "Workflows", icon: "workflow" as PrototypeIconName },
+    { to: "/agents", label: "Agents", icon: "agent" as PrototypeIconName },
+    { to: "/traces", label: "Traces", icon: "trace" as PrototypeIconName },
+    { to: "/evals", label: "Evals", icon: "flask" as PrototypeIconName },
+    { to: "/errors", label: "Errors", icon: "alert" as PrototypeIconName },
+    { to: "/quality", label: "Quality", icon: "quality" as PrototypeIconName },
   ], []);
 
   function navSection(pathname: string): string {
     if (pathname === "/" || pathname === "/overview" || pathname.startsWith("/finding")) return "/";
+    if (pathname.startsWith("/workflows")) return "/workflows";
+    if (pathname.startsWith("/agents")) return "/agents";
     if (pathname.startsWith("/traces") || pathname === "/trace" || pathname.startsWith("/compare")) return "/traces";
-    if (pathname.startsWith("/costs") || pathname.startsWith("/contributor")) return "/costs";
-    if (pathname.startsWith("/executions") || pathname.startsWith("/group")) return "/executions";
+    if (pathname.startsWith("/evals") || pathname.startsWith("/executions") || pathname.startsWith("/group")) return "/evals";
+    if (pathname.startsWith("/errors")) return "/errors";
+    if (pathname.startsWith("/quality")) return "/quality";
+    if (pathname.startsWith("/models") || pathname.startsWith("/costs") || pathname.startsWith("/contributor")) return "/models";
     if (pathname.startsWith("/forecast")) return "/forecast";
     if (pathname.startsWith("/budgets") || pathname.startsWith("/policy")) return "/budgets";
+    if (pathname.startsWith("/alerting")) return "/alerting";
     if (pathname.startsWith("/settings")) return "/settings";
     return pathname;
   }
@@ -304,18 +313,11 @@ function AppShell() {
 
   const pageTitle = (() => {
     const pathname = location.pathname;
-    if (pathname === "/trace" || pathname.startsWith("/trace/")) return "Run detail";
-    if (pathname.startsWith("/traces/")) return "Run detail";
-    if (pathname.startsWith("/traces")) return "Runs";
-    if (pathname.startsWith("/costs")) return "Costs";
-    if (pathname.startsWith("/forecast")) return "Forecasts";
-    if (pathname.startsWith("/executions") || pathname.startsWith("/group")) return "Experiments";
+    if (pathname === "/trace" || pathname.startsWith("/trace/") || pathname.startsWith("/traces/")) return "Run detail";
+    const section = navItems.find((item) => item.to !== "/" && navSection(pathname) === item.to);
+    if (section) return section.label;
     if (pathname.startsWith("/findings") || pathname.startsWith("/finding")) return "Needs a look";
-    if (pathname.startsWith("/contributor")) return "Cost detail";
     if (pathname.startsWith("/compare")) return "Compare";
-    if (pathname.startsWith("/policy-edit")) return new URLSearchParams(location.search).get("id") ? "Edit budget" : "New budget";
-    if (pathname.startsWith("/policy")) return "Budget detail";
-    if (pathname.startsWith("/budgets")) return "Budgets";
     if (pathname.startsWith("/settings")) return "Settings";
     return "Overview";
   })();
@@ -341,6 +343,9 @@ function AppShell() {
               <PrototypeIcon name={icon} size={18} /><span>{label}</span>
             </Link>
           ))}
+          <Link className={`ck-nav-link ${isActive("/settings") ? "active" : ""}`} to="/settings" onClick={closeMenu} aria-current={isActive("/settings") ? "page" : undefined}>
+            <PrototypeIcon name="settings" size={18} /><span>Settings</span>
+          </Link>
         </nav>
         <div className="ck-sidebar-bottom">
           <button className="ck-utility-link ck-help-link" type="button" onClick={() => setSidebarPanel((panel) => panel === "help" ? null : "help")} aria-expanded={sidebarPanel === "help"} aria-haspopup="dialog"><PrototypeIcon name="help" size={18} /><span>Help</span></button>
@@ -408,6 +413,14 @@ export default function App() {
             <RouterRoute path="/traces/:traceId" element={<Traces />} />
             <RouterRoute path="/trace" element={<Traces />} />
             <RouterRoute path="/costs" element={<Costs />} />
+            <RouterRoute path="/models" element={<Costs defaultGroup="model" title="Models" />} />
+            <RouterRoute path="/workflows" element={<Workflows />} />
+            <RouterRoute path="/agents" element={<Agents />} />
+            <RouterRoute path="/agents/:name" element={<AgentDetailPage />} />
+            <RouterRoute path="/errors" element={<Errors />} />
+            <RouterRoute path="/quality" element={<Quality />} />
+            <RouterRoute path="/alerting" element={<Alerting />} />
+            <RouterRoute path="/evals" element={<Executions />} />
             <RouterRoute path="/forecast" element={<Forecast />} />
             <RouterRoute path="/executions" element={<Executions />} />
             <RouterRoute path="/executions/:executionId" element={<Executions />} />

@@ -22,7 +22,7 @@ export async function ensurePolicySchema(pool: pg.Pool): Promise<void> {
       allowance DOUBLE PRECISION NOT NULL CHECK (allowance >= 0),
       currency TEXT,
       window_kind TEXT NOT NULL
-        CHECK (window_kind IN ('per_trace', 'per_execution', 'calendar_minute', 'calendar_day', 'calendar_month')),
+        CHECK (window_kind IN ('per_trace', 'per_execution', 'per_call', 'calendar_minute', 'calendar_day', 'calendar_month')),
       timezone TEXT NOT NULL DEFAULT 'UTC',
       period_start_mode TEXT NOT NULL DEFAULT 'calendar'
         CHECK (period_start_mode IN ('calendar', 'activation')),
@@ -137,6 +137,24 @@ export async function ensurePolicySchema(pool: pg.Pool): Promise<void> {
     ALTER TABLE policy_observations ADD COLUMN IF NOT EXISTS unknown BOOLEAN NOT NULL DEFAULT FALSE;
     ALTER TABLE policy_decisions ADD COLUMN IF NOT EXISTS policy_id TEXT;
     ALTER TABLE policy_decisions ADD COLUMN IF NOT EXISTS policy_version INTEGER;
+  `);
+
+  // Widen the window check for per-call caps once; later boots skip the
+  // table-locking rewrite because the constraint already names per_call.
+  await client.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'spending_policies'::regclass
+          AND conname = 'spending_policies_window_kind_check'
+          AND pg_get_constraintdef(oid) LIKE '%per_call%'
+      ) THEN
+        ALTER TABLE spending_policies DROP CONSTRAINT IF EXISTS spending_policies_window_kind_check;
+        ALTER TABLE spending_policies ADD CONSTRAINT spending_policies_window_kind_check
+          CHECK (window_kind IN ('per_trace', 'per_execution', 'per_call', 'calendar_minute', 'calendar_day', 'calendar_month'));
+      END IF;
+    END $$;
   `);
   });
 }

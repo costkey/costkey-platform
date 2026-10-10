@@ -14,7 +14,7 @@ import {
 } from "./accounting.js";
 import { enrichFeatureContext } from "./feature-mappings.js";
 import { scheduleFindingsRefresh } from "./findings.js";
-import { stripIngestEventPrivacy } from "./privacy.js";
+import { redactCapturedContent, stripIngestEventPrivacy } from "./privacy.js";
 
 function textFromContent(content: unknown): string | null {
   if (typeof content === "string") return content;
@@ -881,6 +881,16 @@ export function createIngestRouter(pool: pg.Pool): Router {
                 if (!allowBody) stripSpanContent(rawEvent);
                 for (const key of ["startedAt", "endedAt"]) {
                   if (typeof rawEvent[key] === "string") rawEvent[key] = trustedEventTimestamp(rawEvent[key]);
+                }
+                await recordAccountingEvent(client, projectId, rawEvent);
+                return;
+              }
+              if (accounting.eventType === "score") {
+                // Scores annotate runs: they upsert into the scores table only.
+                // A grader's comment is content, so it follows body capture.
+                if (!allowBody) delete rawEvent["comment"];
+                else if (projectSettings.redaction_enabled !== false && typeof rawEvent["comment"] === "string") {
+                  rawEvent["comment"] = redactCapturedContent(rawEvent["comment"]);
                 }
                 await recordAccountingEvent(client, projectId, rawEvent);
                 return;

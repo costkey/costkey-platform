@@ -28,7 +28,8 @@ export type PolicyWindow =
   | "per_execution"
   | "calendar_minute"
   | "calendar_day"
-  | "calendar_month";
+  | "calendar_month"
+  | "per_call";
 export type PolicyPeriodStart = "calendar" | "activation";
 
 export const POLICY_SCOPE_KEYS = [
@@ -40,9 +41,15 @@ export const POLICY_SCOPE_KEYS = [
   "group",
   "agent",
   "tool",
+  "user",
+  "workflow",
 ] as const;
 export type PolicyScopeKey = (typeof POLICY_SCOPE_KEYS)[number];
-export type PolicyScope = Partial<Record<PolicyScopeKey, string>>;
+/** One pattern, or a pooled group of exact values sharing one allowance. */
+export type PolicyScopeValue = string | string[];
+export type PolicyScope = Partial<Record<PolicyScopeKey, PolicyScopeValue>>;
+export const POLICY_SCOPE_MAX_VALUES = 50;
+export const POLICY_SCOPE_MAX_VALUE_LENGTH = 200;
 
 export interface SpendingPolicy {
   id: string;
@@ -296,7 +303,8 @@ export type AdmissionRefusalReason =
   | "unsupported_integration"
   | "unbounded_request"
   | "missing_context"
-  | "idempotency_conflict";
+  | "idempotency_conflict"
+  | "call_too_expensive";
 
 export interface AdmissionRefusal {
   decision: "refuse";
@@ -473,6 +481,25 @@ function nonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+/** Every value a scope dimension holds; a plain string is a one-value list. */
+export function scopeValues(value: PolicyScopeValue | null | undefined): string[] {
+  if (Array.isArray(value)) return value;
+  return value ? [value] : [];
+}
+
+/** Trimmed and deduplicated; a single value stays a plain string as stored before groups existed. */
+export function normalizeScopeValue(value: unknown): PolicyScopeValue | null {
+  if (!Array.isArray(value)) return nonEmptyString(value);
+  const values = [...new Set(value.map(nonEmptyString).filter((entry): entry is string => entry != null))];
+  if (values.length === 0) return null;
+  return values.length === 1 ? values[0]! : values;
+}
+
+/** Windows keyed by a run, batch or single call rather than the calendar. */
+export function isIdentityWindow(window: PolicyWindow): boolean {
+  return window === "per_trace" || window === "per_execution" || window === "per_call";
+}
+
 function dateString(value: unknown): string | null {
   if (value instanceof Date && Number.isFinite(value.getTime())) return value.toISOString();
   return nonEmptyString(value);
@@ -512,6 +539,7 @@ function normalizeWindow(value: unknown): PolicyWindow | null {
   const window = String(value ?? "").toLowerCase();
   if (["trace", "per_trace", "per-trace"].includes(window)) return "per_trace";
   if (["execution", "per_execution", "per-execution"].includes(window)) return "per_execution";
+  if (["call", "per_call", "per-call", "each_call"].includes(window)) return "per_call";
   if (["minute", "rolling_minute", "calendar_minute", "calls_per_minute", "tokens_per_minute"].includes(window)) return "calendar_minute";
   if (["day", "daily", "calendar_day"].includes(window)) return "calendar_day";
   if (["month", "monthly", "calendar_month"].includes(window)) return "calendar_month";
@@ -535,8 +563,13 @@ function normalizeStatus(value: unknown, row: Record<string, unknown>): PolicySt
 export function normalizeSpendingPolicy(row: Record<string, unknown>): SpendingPolicy {
   const scopeRaw = parseJsonObject(row.scope);
   const scope: PolicyScope = {};
+  const scopeAliases: Partial<Record<PolicyScopeKey, string[]>> = {
+    function: ["functionName"],
+    user: ["userId", "user_id"],
+    workflow: ["traceName", "trace_name"],
+  };
   for (const key of POLICY_SCOPE_KEYS) {
-    const value = nonEmptyString(aliasValue(scopeRaw, key, key === "function" ? "functionName" : key));
+    const value = normalizeScopeValue(aliasValue(scopeRaw, key, ...(scopeAliases[key] ?? [])));
     if (value) scope[key] = value;
   }
   const legacyScope: Array<[PolicyScopeKey, string[]]> = [
@@ -548,6 +581,8 @@ export function normalizeSpendingPolicy(row: Record<string, unknown>): SpendingP
     ["group", ["scope_group", "group_name"]],
     ["agent", ["scope_agent", "agent_name"]],
     ["tool", ["scope_tool", "tool_name"]],
+    ["user", ["scope_user"]],
+    ["workflow", ["scope_workflow"]],
   ];
   for (const [key, aliases] of legacyScope) {
     if (!scope[key]) {
@@ -623,6 +658,8 @@ export function normalizeSpendingPolicy(row: Record<string, unknown>): SpendingP
         && (parsedAllowance != null || daily != null || monthly != null || cpm != null || tpm != null)
         && projectIdValue != null
         && idValue != null
+        // One call is always one call; a per-call cap needs money or tokens.
+        && !(window === "per_call" && unit === "calls")
       : false,
   };
 }
@@ -762,6 +799,7 @@ export function policyWindowKey(
     if (!identity?.executionId) throw new AdmissionInputError("A per-execution policy requires executionId at admission");
     return `execution:${identity.executionId}`;
   }
+  if (policy.window === "per_call") throw new AdmissionInputError("A per-call policy caps each call and has no shared window");
   const local = localDateParts(at, policy.timezone);
   const date = `${local.year}-${local.month}-${local.day}`;
   if (policy.window === "calendar_month") return `${local.year}-${local.month}`;
@@ -780,7 +818,7 @@ export function policyWindowBounds(
   at: Date,
   identity?: { traceId?: string | null; executionId?: string | null },
 ): PolicyWindowBounds {
-  if (policy.window === "per_trace" || policy.window === "per_execution") return { from: null, to: null };
+  if (isIdentityWindow(policy.window)) return { from: null, to: null };
   const current = policyWindowKey(policy, at);
   const minute = 60_000;
   const maxMinutes = policy.window === "calendar_month" ? 46 * 24 * 60 : policy.window === "calendar_day" ? 3 * 24 * 60 : 3;
@@ -821,8 +859,13 @@ function matchesScopePattern(pattern: string, actual: string): boolean {
   }
 }
 
-function requestScope(request: AdmissionRequest): PolicyScope {
-  const scope: PolicyScope = { ...(request.scope ?? {}) };
+function requestScope(request: AdmissionRequest): Partial<Record<PolicyScopeKey, string>> {
+  const scope: Partial<Record<PolicyScopeKey, string>> = {};
+  const declared = asRecord(request.scope);
+  for (const key of POLICY_SCOPE_KEYS) {
+    const value = nonEmptyString(declared[key]);
+    if (value) scope[key] = value;
+  }
   const context = asRecord(request.context);
   const aliases: Record<PolicyScopeKey, string[]> = {
     feature: ["feature", "featureName"],
@@ -833,6 +876,8 @@ function requestScope(request: AdmissionRequest): PolicyScope {
     group: ["group", "groupName", "executionGroup"],
     agent: ["agent", "agentName"],
     tool: ["tool", "toolName"],
+    user: ["userId", "user_id"],
+    workflow: ["workflow", "traceName", "trace_name"],
   };
   for (const key of POLICY_SCOPE_KEYS) {
     if (scope[key]) continue;
@@ -854,11 +899,13 @@ type ScopeMatch = "match" | "no-match" | "unknown";
 function matchScope(policy: SpendingPolicy, request: AdmissionRequest): ScopeMatch {
   const actual = requestScope(request);
   for (const key of POLICY_SCOPE_KEYS) {
-    const pattern = policy.scope[key];
-    if (!pattern) continue;
+    const expected = policy.scope[key];
+    if (!expected) continue;
     const value = actual[key];
     if (!value) return "unknown";
-    if (!matchesScopePattern(pattern, value)) return "no-match";
+    // A group pools exact values; a single value keeps its glob semantics.
+    const matched = Array.isArray(expected) ? expected.includes(value) : matchesScopePattern(expected, value);
+    if (!matched) return "no-match";
   }
   return "match";
 }
@@ -872,27 +919,47 @@ function globLike(pattern: string): string {
     .replace(/\?/g, "_");
 }
 
-function observedCanonicalScope(policy: SpendingPolicy, projectId: string): { clauses: string[]; params: unknown[] } {
-  const clauses = ["c.project_id = $1"];
-  const params: unknown[] = [projectId];
-  let index = 1;
-  const add = (expression: string, value: string): void => {
-    index += 1;
-    clauses.push(`${expression} LIKE $${index} ESCAPE '\\'`);
-    params.push(globLike(value));
+/**
+ * SQL filters for a policy scope over an events-shaped row (`alias` may be
+ * empty for an unaliased table). Appends to `params` and numbers after it.
+ */
+export function policyScopeClauses(scope: PolicyScope, params: unknown[], alias = ""): string[] {
+  const column = (name: string): string => alias ? `${alias}.${name}` : name;
+  const clauses: string[] = [];
+  const bind = (value: PolicyScopeValue): { sql: (expression: string) => string } => {
+    params.push(Array.isArray(value) ? value : globLike(value));
+    const ref = `$${params.length}`;
+    return {
+      sql: (expression) => Array.isArray(value)
+        ? `${expression} = ANY(${ref}::text[])`
+        : `${expression} LIKE ${ref} ESCAPE '\\'`,
+    };
   };
-  if (policy.scope.feature) add("COALESCE(c.context->>'feature', '')", policy.scope.feature);
-  if (policy.scope.customer) add("COALESCE(c.context->>'customer', c.context->>'customerId', '')", policy.scope.customer);
-  if (policy.scope.function) {
-    index += 1;
-    params.push(globLike(policy.scope.function));
-    clauses.push(`(COALESCE(c.bl_file, '') || ':' || COALESCE(c.bl_function, '') LIKE $${index} ESCAPE '\\' OR COALESCE(c.bl_function, '') LIKE $${index} ESCAPE '\\')`);
+  const add = (expression: string, value: PolicyScopeValue | undefined): void => {
+    if (!value) return;
+    clauses.push(bind(value).sql(expression));
+  };
+  const context = column("context");
+  add(`COALESCE(${context}->>'feature', '')`, scope.feature);
+  add(`COALESCE(${context}->>'customer', ${context}->>'customerId', '')`, scope.customer);
+  if (scope.function) {
+    const bound = bind(scope.function);
+    clauses.push(`(${bound.sql(`COALESCE(${column("bl_file")}, '') || ':' || COALESCE(${column("bl_function")}, '')`)} OR ${bound.sql(`COALESCE(${column("bl_function")}, '')`)})`);
   }
-  if (policy.scope.provider) add("COALESCE(c.provider, '')", policy.scope.provider);
-  if (policy.scope.model) add("COALESCE(c.model, '')", policy.scope.model);
-  if (policy.scope.group) add("COALESCE(c.group_name, c.context->>'group', '')", policy.scope.group);
-  if (policy.scope.agent) add("COALESCE(c.context->>'agent', '')", policy.scope.agent);
-  if (policy.scope.tool) add("COALESCE(c.context->>'tool', '')", policy.scope.tool);
+  add(`COALESCE(${column("provider")}, '')`, scope.provider);
+  add(`COALESCE(${column("model")}, '')`, scope.model);
+  add(`COALESCE(${column("group_name")}, ${context}->>'group', '')`, scope.group);
+  add(`COALESCE(${context}->>'agent', '')`, scope.agent);
+  add(`COALESCE(${context}->>'tool', '')`, scope.tool);
+  add(`COALESCE(${context}->>'userId', ${context}->>'user_id', '')`, scope.user);
+  // A workflow is the run's trace name.
+  add(`COALESCE(${column("trace_name")}, ${context}->>'traceName', ${context}->>'trace_name', '')`, scope.workflow);
+  return clauses;
+}
+
+function observedCanonicalScope(policy: SpendingPolicy, projectId: string): { clauses: string[]; params: unknown[] } {
+  const params: unknown[] = [projectId];
+  const clauses = ["c.project_id = $1", ...policyScopeClauses(policy.scope, params, "c")];
   return { clauses, params };
 }
 
@@ -903,6 +970,8 @@ function observedCanonicalScope(policy: SpendingPolicy, projectId: string): { cl
  */
 export function createPostgresObservedUsageSource(pool: pg.Pool): ObservedUsageSource {
   return async (policy, windowKey, request) => {
+    // Per-call caps never accumulate; nothing is carried into a window.
+    if (policy.window === "per_call") return [];
     let bounds: PolicyWindowBounds;
     try {
       bounds = policyWindowBounds(policy, request.now ?? new Date(), { traceId: request.traceId, executionId: request.executionId });
@@ -1027,6 +1096,77 @@ export function createPostgresObservedUsageSource(pool: pg.Pool): ObservedUsageS
         occurredAt: row.timestamp instanceof Date ? row.timestamp : new Date(String(row.timestamp)),
       } satisfies ObservedPolicyUsage;
     });
+  };
+}
+
+export interface PerCallUsageSummary {
+  /** Largest known single-call quantity in the range, in the policy unit/currency. */
+  largest: number | null;
+  /** Calls whose known quantity exceeded the cap. */
+  overLimit: number;
+  lastOverAt: Date | null;
+}
+
+/**
+ * Observed single-call quantities for a per-call policy over [from, to). The
+ * quantity mirrors the observed usage source: explicit native-currency
+ * amounts first, then USD cost through the policy's FX snapshot.
+ */
+export async function perCallUsageSummary(pool: pg.Pool, policy: SpendingPolicy, from: Date, to: Date): Promise<PerCallUsageSummary> {
+  const params: unknown[] = [policy.projectId];
+  const clauses = ["c.project_id = $1", ...policyScopeClauses(policy.scope, params, "c")];
+  params.push(from.toISOString());
+  clauses.push(`c.timestamp >= $${params.length}`);
+  params.push(to.toISOString());
+  clauses.push(`c.timestamp < $${params.length}`);
+  const activatedAt = policy.periodStart === "activation" && policy.activatedAt ? new Date(policy.activatedAt) : null;
+  if (activatedAt && Number.isFinite(activatedAt.getTime())) {
+    params.push(activatedAt.toISOString());
+    clauses.push(`c.timestamp >= $${params.length}`);
+  }
+  let quantity: string;
+  if (policy.unit === "tokens") {
+    quantity = `CASE
+      WHEN c.record_type = 'usage' AND LOWER(COALESCE(c.unit_kind, c.unit, '')) IN ('token', 'tokens', 'input_tokens', 'output_tokens') THEN c.unit_value::double precision
+      WHEN c.total_tokens IS NOT NULL THEN c.total_tokens::double precision
+      WHEN c.input_tokens IS NOT NULL AND c.output_tokens IS NOT NULL THEN (c.input_tokens + c.output_tokens)::double precision
+    END`;
+  } else {
+    const currency = policy.currency ?? "USD";
+    params.push(currency);
+    const currencyRef = `$${params.length}`;
+    params.push(currency === "USD" ? 1 : policy.usdToPolicyCurrency ?? null);
+    const rateRef = `$${params.length}::double precision`;
+    quantity = `CASE
+      WHEN UPPER(u.currency) = ${currencyRef} AND u.amount >= 0 THEN u.amount::double precision
+      WHEN c.cost_usd >= 0 THEN c.cost_usd::double precision * ${rateRef}
+      WHEN UPPER(u.currency) = 'USD' AND u.amount >= 0 THEN u.amount::double precision * ${rateRef}
+    END`;
+  }
+  params.push(policy.allowance);
+  const capRef = `$${params.length}::double precision`;
+  const result = await pool.query(
+    `${chargesCte()}
+     SELECT MAX(quantity) AS largest,
+            COUNT(*) FILTER (WHERE quantity > ${capRef})::int AS over_limit,
+            MAX(occurred_at) FILTER (WHERE quantity > ${capRef}) AS last_over_at
+     FROM (
+       SELECT ${quantity} AS quantity, c.timestamp AS occurred_at
+       FROM charges c
+       LEFT JOIN usage_components u
+         ON c.record_type = 'usage'
+        AND u.project_id = c.project_id AND u.id = c.record_id
+       WHERE ${clauses.join(" AND ")}
+     ) per_call`,
+    params,
+  );
+  const row = result.rows[0] ?? {};
+  const largest = row.largest == null ? null : Number(row.largest);
+  const lastOverAt = row.last_over_at == null ? null : new Date(row.last_over_at);
+  return {
+    largest: largest != null && Number.isFinite(largest) ? largest : null,
+    overLimit: Number(row.over_limit) || 0,
+    lastOverAt: lastOverAt && Number.isFinite(lastOverAt.getTime()) ? lastOverAt : null,
   };
 }
 
@@ -1188,7 +1328,7 @@ function allowanceSnapshot(policy: SpendingPolicy): AdmissionRefusal["allowance"
 }
 
 function nextWindowStart(policy: SpendingPolicy, now: Date): string | null {
-  if (policy.window === "per_trace" || policy.window === "per_execution") return null;
+  if (isIdentityWindow(policy.window)) return null;
   try {
     const current = policyWindowKey(policy, now);
     const maxMinutes = policy.window === "calendar_month" ? 45 * 24 * 60 : policy.window === "calendar_day" ? 3 * 24 * 60 : 3;
@@ -1229,7 +1369,7 @@ function refusalFor(
     try {
       // Identity windows cannot be rendered without their identity; the
       // policy/allowance snapshot still explains the refusal.
-      if (policy.window !== "per_trace" && policy.window !== "per_execution") {
+      if (!isIdentityWindow(policy.window)) {
         window = policyWindowKey(policy, now);
       } else {
         window = policy.window;
@@ -1456,6 +1596,7 @@ export class PolicyAdmissionService {
     }
     const applications: PolicyApplication[] = [];
     const enforced: Array<{ policy: SpendingPolicy; quantity: number; currency?: PolicyCurrency; currencyRate?: number; currencySource?: string | null; currencyAsOf?: string | null; windowKey: string }> = [];
+    let perCallEnforced = false;
     let monetaryUpperBound: number | null = null;
     let monetaryVerification: BoundVerification | null = null;
 
@@ -1509,6 +1650,18 @@ export class PolicyAdmissionService {
         const refusal = refusalFor(policy, quantity.reason, quantity.message, request.now!, [...applications, application(policy, "refuse")]);
         await this.saveDecision(decisionRecordFor(request, fingerprint, refusal, request.now!));
         return refusal;
+      }
+      if (policy.window === "per_call") {
+        // A per-call cap judges this call's worst case alone. Nothing
+        // accumulates, so there is no window to backfill or reserve.
+        if (quantity.quantity > policy.allowance + 1e-12) {
+          const refusal = refusalFor(policy, "call_too_expensive", "The call's verified upper bound exceeds this policy's per-call cap", request.now!, [...applications, application(policy, "refuse", quantity.quantity)]);
+          await this.saveDecision(decisionRecordFor(request, fingerprint, refusal, request.now!));
+          return refusal;
+        }
+        applications.push(application(policy, "allow", quantity.quantity));
+        perCallEnforced = true;
+        continue;
       }
       let windowKey: string;
       try {
@@ -1582,7 +1735,7 @@ export class PolicyAdmissionService {
       reservationId: reservation?.reservationId ?? null,
       reservation,
       policies: applications,
-      enforcementApplied: enforced.length > 0,
+      enforcementApplied: enforced.length > 0 || perCallEnforced,
       providerCallAllowed: !replay,
     };
     try {
@@ -1740,7 +1893,7 @@ async function projectForAuth(pool: pg.Pool, req: Request): Promise<string | nul
 }
 
 function refusalStatus(reason: AdmissionRefusalReason): number {
-  if (reason === "budget_exhausted") return 429;
+  if (reason === "budget_exhausted" || reason === "call_too_expensive") return 429;
   if (reason === "idempotency_conflict") return 409;
   if (reason === "unsupported_integration" || reason === "price_unavailable" || reason === "unbounded_request" || reason === "decision_unavailable" || reason === "missing_context") return 503;
   return 409;

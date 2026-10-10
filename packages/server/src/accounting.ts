@@ -9,7 +9,8 @@ import { chargesCte } from "./charge-cohort.js";
  */
 export type AccountingEvent = Record<string, unknown>;
 
-export type EventType = "call" | "lifecycle" | "usage" | "span";
+export type EventType = "call" | "lifecycle" | "usage" | "span" | "score";
+export type ScoreSource = "judge" | "human" | "code";
 export type SpanStatus = "running" | "ok" | "error" | "cancelled";
 export type LifecycleState = "started" | "completed" | "failed" | "cancelled";
 export type AccountingState = "complete" | "partial" | "pending";
@@ -92,7 +93,21 @@ export interface NormalizedAccountingEvent {
   spanName: string | null;
   spanStatus: SpanStatus | null;
   spanAttributes: Record<string, unknown> | null;
+  /** Judge, human or code evaluation of a run; only set for score events. */
+  score: NormalizedScore | null;
 }
+
+export interface NormalizedScore {
+  name: string;
+  value: number;
+  label: string | null;
+  comment: string | null;
+  source: ScoreSource | null;
+}
+
+export const MAX_SCORE_NAME_CHARS = 120;
+export const MAX_SCORE_LABEL_CHARS = 60;
+export const MAX_SCORE_COMMENT_CHARS = 1_000;
 
 function objectValue(value: unknown): Record<string, unknown> {
   if (typeof value === "string") {
@@ -163,10 +178,12 @@ export function normalizeAccountingEvent(event: AccountingEvent): NormalizedAcco
   const nestedUsage = objectValue(event["usageEvent"] ?? event["usage_event"]);
   const eventTypeValue = event["eventType"] ?? event["event_type"];
   const rawEventType = optionalString(eventTypeValue);
-  if (eventTypeValue !== undefined && rawEventType !== "call" && rawEventType !== "lifecycle" && rawEventType !== "usage" && rawEventType !== "span") {
+  if (eventTypeValue !== undefined && rawEventType !== "call" && rawEventType !== "lifecycle" && rawEventType !== "usage"
+    && rawEventType !== "span" && rawEventType !== "score") {
     throw new UnsupportedEventTypeError(`eventType ${String(rawEventType ?? eventTypeValue)} is not supported`);
   }
   const eventType: EventType = rawEventType === "lifecycle" || rawEventType === "usage" || rawEventType === "span"
+    || rawEventType === "score"
     ? rawEventType
     : "call";
   const sourceValue = optionalString(event["source"]);
@@ -303,6 +320,7 @@ export function normalizeAccountingEvent(event: AccountingEvent): NormalizedAcco
     spanName: eventType === "span" ? optionalString(event["name"] ?? event["spanName"] ?? event["span_name"]) : null,
     spanStatus: eventType === "span" ? normalizeSpanStatus(event["status"]) : null,
     spanAttributes: eventType === "span" ? spanAttributes(event["attributes"]) : null,
+    score: eventType === "score" ? normalizeScore(event) : null,
   };
   if (!optionalString(event["id"])) {
     throw new InvalidAccountingEventError(`${eventType} requires id`);
@@ -328,6 +346,9 @@ export function normalizeAccountingEvent(event: AccountingEvent): NormalizedAcco
     // A span without explicit bounds starts at its timestamp.
     if (!normalized.startedAt) normalized.startedAt = timestamp;
   }
+  if (normalized.eventType === "score" && !normalized.traceId && !normalized.spanId) {
+    throw new InvalidAccountingEventError("score requires traceId or spanId");
+  }
   if (normalized.eventType === "usage") {
     if (!event["timestamp"] || Number.isNaN(new Date(String(event["timestamp"])).getTime())) {
       throw new InvalidAccountingEventError("usage requires a valid timestamp");
@@ -349,6 +370,32 @@ export function normalizeAccountingEvent(event: AccountingEvent): NormalizedAcco
     }
   }
   return normalized;
+}
+
+/** Validate a score body; the envelope `source` doubles as the score's origin. */
+function normalizeScore(event: AccountingEvent): NormalizedScore {
+  const name = optionalString(event["name"] ?? event["scoreName"] ?? event["score_name"]);
+  if (!name) throw new InvalidAccountingEventError("score requires name");
+  if (name.length > MAX_SCORE_NAME_CHARS) {
+    throw new InvalidAccountingEventError(`score name must be at most ${MAX_SCORE_NAME_CHARS} characters`);
+  }
+  const value = event["value"];
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new InvalidAccountingEventError("score value must be a finite number");
+  }
+  const label = optionalString(event["label"]);
+  if (label && label.length > MAX_SCORE_LABEL_CHARS) {
+    throw new InvalidAccountingEventError(`score label must be at most ${MAX_SCORE_LABEL_CHARS} characters`);
+  }
+  const comment = optionalString(event["comment"]);
+  const rawSource = optionalString(event["scoreSource"] ?? event["score_source"] ?? event["source"])?.toLowerCase();
+  return {
+    name,
+    value,
+    label,
+    comment: comment ? comment.slice(0, MAX_SCORE_COMMENT_CHARS) : null,
+    source: rawSource === "judge" || rawSource === "human" || rawSource === "code" ? rawSource : null,
+  };
 }
 
 const SPAN_KINDS = new Set(["agent", "step", "tool", "workflow", "task", "judge", "retrieval", "handoff", "guardrail", "chain", "custom"]);
@@ -515,6 +562,51 @@ async function upsertSpan(
       normalized.endedAt,
       normalized.spanAttributes ? JSON.stringify(normalized.spanAttributes) : null,
       normalized.context ? JSON.stringify(normalized.context) : null,
+    ],
+  );
+}
+
+/**
+ * Scores are upserted by id so a re-graded run replaces its earlier score. A
+ * score sent with only a span id takes that span's trace when it is known.
+ */
+async function upsertScore(
+  client: pg.Pool | pg.PoolClient,
+  projectId: string,
+  normalized: NormalizedAccountingEvent,
+  eventId: string,
+  timestamp: string,
+): Promise<void> {
+  const score = normalized.score;
+  if (!score) return;
+  await asClient(client).query(
+    `INSERT INTO scores (
+       project_id, id, trace_id, span_id, name, value, label, comment, source, timestamp
+     ) VALUES (
+       $1, $2,
+       COALESCE($3::text, (SELECT trace_id FROM spans WHERE project_id = $1 AND id = $4::text)),
+       $4, $5, $6, $7, $8, $9, $10
+     )
+     ON CONFLICT (project_id, id) DO UPDATE SET
+       trace_id = COALESCE(EXCLUDED.trace_id, scores.trace_id),
+       span_id = COALESCE(EXCLUDED.span_id, scores.span_id),
+       name = EXCLUDED.name,
+       value = EXCLUDED.value,
+       label = EXCLUDED.label,
+       comment = EXCLUDED.comment,
+       source = EXCLUDED.source,
+       timestamp = EXCLUDED.timestamp`,
+    [
+      projectId,
+      eventId,
+      normalized.traceId,
+      normalized.spanId,
+      score.name,
+      score.value,
+      score.label,
+      score.comment,
+      score.source,
+      timestamp,
     ],
   );
 }
@@ -707,8 +799,13 @@ export async function recordAccountingEvent(
   const normalized = normalizeAccountingEvent(event);
   const timestamp = isoOrNow(event["timestamp"], new Date().toISOString());
   const durationMs = optionalNumber(event["durationMs"] ?? event["duration_ms"]);
-  const groupId = await upsertGroup(client, projectId, normalized);
   const eventId = optionalString(event["id"]);
+  if (normalized.eventType === "score") {
+    // Scores annotate a run; they never create traces, groups or events.
+    if (eventId) await upsertScore(client, projectId, normalized, eventId, timestamp);
+    return;
+  }
+  const groupId = await upsertGroup(client, projectId, normalized);
   if (groupId && normalized.groupId && groupId !== normalized.groupId && eventId && normalized.eventType !== "span") {
     // Keep the stored event on the canonical group so rollups stay joined.
     await asClient(client).query(

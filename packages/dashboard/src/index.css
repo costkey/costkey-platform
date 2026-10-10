@@ -4253,3 +4253,18 @@ button.ck-span-toggle:hover { color: var(--ck-ink); background: var(--ck-soft); 
 .ck-span-kind.kind-agent { color: var(--ck-ink); font-weight: 600; }
 .ck-span-row.is-error .ck-step-name { color: #a33d32; }
 .ck-tone-critical-text { color: #a33d32; }
+
+.ck-nav-section {
+  margin: 14px 0 4px;
+  padding: 0 12px;
+  color: var(--ck-muted);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.ck-table-sub { display: block; color: var(--ck-muted); font-size: 12px; font-weight: 400; }
+.ck-table-clickable tbody tr { cursor: pointer; }
+.ck-table-clickable tbody tr:hover td { background: var(--ck-soft); }
+.ck-table-clickable tbody tr:focus-visible { outline: 2px solid var(--ck-focus, #476d9c); outline-offset: -2px; }
+.ck-page-tabs { margin: -4px 0 16px; }

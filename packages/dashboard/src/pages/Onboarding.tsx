@@ -35,11 +35,16 @@ function SetupShell({ children, projectName, orgName, user, onLogout }: { childr
   const initials = setupInitials(user);
   const navItems = [
     { to: "/", label: "Overview", icon: "overview" },
-    { to: "/traces", label: "Runs", icon: "trace" },
-    { to: "/costs", label: "Costs", icon: "cost" },
-    { to: "/executions", label: "Experiments", icon: "flask" },
-    { to: "/forecast", label: "Forecasts", icon: "telescope" },
+    { to: "/workflows", label: "Workflows", icon: "workflow" },
+    { to: "/agents", label: "Agents", icon: "agent" },
+    { to: "/traces", label: "Traces", icon: "trace" },
+    { to: "/evals", label: "Evals", icon: "flask" },
+    { to: "/errors", label: "Errors", icon: "alert" },
+    { to: "/quality", label: "Quality", icon: "quality" },
+    { to: "/models", label: "Models", icon: "model" },
+    { to: "/forecast", label: "Forecast", icon: "telescope" },
     { to: "/budgets", label: "Budgets", icon: "shield" },
+    { to: "/alerting", label: "Alerting", icon: "bell" },
     { to: "/settings", label: "Settings", icon: "settings" },
   ] satisfies Array<{ to: string; label: string; icon: PrototypeIconName }>;
 

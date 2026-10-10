@@ -9,6 +9,7 @@ import type pg from "pg";
 import { Resend } from "resend";
 import { chargesCte } from "./charge-cohort.js";
 import { requireAuth } from "./auth.js";
+import { withMigrationLock } from "./db.js";
 import {
   canAccessProject,
   normalizeRole,
@@ -17,6 +18,7 @@ import {
 
 export type NotificationEventType =
   | "weekly_summary"
+  | "daily_summary"
   | "finding"
   | "policy_warning"
   | "enforcement"
@@ -66,7 +68,7 @@ type DestinationRow = Row & {
   org_id: string;
   project_id: string | null;
   owner_user_id: string | null;
-  kind: "email" | "webhook";
+  kind: "email" | "webhook" | "slack";
   address: string;
   secret_ciphertext?: string | null;
   event_types?: unknown;
@@ -79,10 +81,14 @@ type PreferenceRow = Row & {
   weekly_summary_enabled?: boolean;
   weekly_summary_hour?: number;
   weekly_summary_weekday?: number;
+  daily_summary_enabled?: boolean;
+  daily_summary_hour?: number;
   timezone?: string;
   findings_enabled?: boolean;
   policy_warning_thresholds?: number[];
   enforcement_enabled?: boolean;
+  /** NULL inherits enforcement_enabled, which used to gate budget warnings too. */
+  budget_alerts_enabled?: boolean | null;
   execution_receipts_enabled?: boolean;
 };
 
@@ -162,6 +168,7 @@ const SAFE_EVIDENCE_KEYS = new Set([
   "sampleSufficient", "pricedOnly", "reason", "relativeDifference", "absoluteDifference",
   "currentUnitCost", "previousUnitCost", "currentCost", "previousCost",
   "currentCount", "previousCount", "highestRatio", "unpricedCount", "link",
+  "models", "budgets",
 ]);
 
 const SAFE_NESTED_KEYS = new Set([
@@ -175,6 +182,7 @@ const SAFE_NESTED_KEYS = new Set([
   "currentValue", "alertType", "project", "triggeredAt",
   "family", "traceCost", "currentPricingCoverage", "currentAttributionCoverage",
   "pricingDrop", "attributionDrop",
+  "ratio", "unit",
 ]);
 
 function sanitizeNested(value: unknown, depth = 0, key?: string): unknown {
@@ -525,27 +533,63 @@ export async function dispatchWebhook(
     "X-CostKey-Timestamp": timestamp,
     "X-CostKey-Signature": "sha256=" + signatureFor(secret, timestamp, body),
   };
+  return postJsonSafely(url, headers, body, deliveryId, "Webhook", url);
+}
+
+/**
+ * The one outbound HTTP path for channels: memory sink, test-mode
+ * suppression, DNS resolution that refuses private targets, then a pinned
+ * address request with TLS verification.
+ */
+async function postJsonSafely(
+  url: string,
+  headers: Record<string, string>,
+  body: string,
+  deliveryId: string,
+  label: "Webhook" | "Slack",
+  sinkUrl: string,
+): Promise<WebhookDeliveryResult> {
   if (process.env["COSTKEY_NOTIFICATION_SINK"] === "memory") {
-    localDelivery(url, headers, body);
+    localDelivery(sinkUrl, headers, body);
     return { status: "sent", statusCode: 202, deliveryId };
   }
   if (!externalDeliveryAllowed()) {
-    return { status: "suppressed", error: "Webhook delivery is disabled in test mode", deliveryId };
+    return { status: "suppressed", error: label + " delivery is disabled in test mode", deliveryId };
   }
   const addresses = await safeWebhookAddresses(url);
   if (addresses.length === 0) {
-    return { status: "failed", error: "Webhook URL DNS target is invalid or private", deliveryId };
+    return { status: "failed", error: label + " URL DNS target is invalid or private", deliveryId };
   }
 
   try {
     const response = await postWebhookToAddress(url, addresses[0], headers, body);
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      return { status: "failed", statusCode: response.statusCode, error: "Webhook returned HTTP " + response.statusCode, deliveryId };
+      return { status: "failed", statusCode: response.statusCode, error: label + " returned HTTP " + response.statusCode, deliveryId };
     }
     return { status: "sent", statusCode: response.statusCode, deliveryId };
   } catch (error) {
-    return { status: "failed", error: error instanceof Error ? error.message.slice(0, 300) : "Webhook request failed", deliveryId };
+    return { status: "failed", error: error instanceof Error ? error.message.slice(0, 300) : label + " request failed", deliveryId };
   }
+}
+
+/** Post one Block Kit message to a Slack incoming webhook. */
+export async function dispatchSlack(
+  webhookUrl: string | null,
+  payload: Record<string, unknown>,
+  deliveryId = randomId("delivery"),
+): Promise<WebhookDeliveryResult> {
+  if (!webhookUrl) return { status: "suppressed", error: "Slack webhook is not configured", deliveryId };
+  if (!isSlackWebhookUrl(webhookUrl) || !isSafeWebhookSyntax(webhookUrl)) {
+    return { status: "failed", error: "Slack webhook URL is invalid", deliveryId };
+  }
+  const body = JSON.stringify(slackMessage(payload));
+  const headers = {
+    "Content-Type": "application/json; charset=utf-8",
+    "User-Agent": "CostKey-Notifications/1",
+    "X-CostKey-Event": cleanText(payload.eventType ?? "notification", 80),
+    "X-CostKey-Delivery": deliveryId,
+  };
+  return postJsonSafely(webhookUrl, headers, body, deliveryId, "Slack", "slack://" + maskSlackWebhookUrl(webhookUrl));
 }
 
 export function getLocalNotificationSink(): ReadonlyArray<{ url: string; headers: Record<string, string>; body: string }> {
@@ -564,8 +608,147 @@ function validEmailAddress(value: string): boolean {
   return value.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
 
+const schemaReady = new WeakMap<object, Promise<void>>();
+
+/**
+ * Additive notification columns for Slack destinations, the daily summary and
+ * a budget-alert switch that is independent of refusals. Every statement is
+ * idempotent; the platform migration remains the owner of the base tables.
+ */
+export function ensureNotificationSchema(pool: pg.Pool): Promise<void> {
+  const existing = schemaReady.get(pool);
+  if (existing) return existing;
+  const ready = withMigrationLock(pool, async (client) => {
+    await client.query(`
+      ALTER TABLE notification_preferences ADD COLUMN IF NOT EXISTS daily_summary_enabled BOOLEAN NOT NULL DEFAULT FALSE;
+      ALTER TABLE notification_preferences ADD COLUMN IF NOT EXISTS daily_summary_hour INTEGER NOT NULL DEFAULT 9;
+      ALTER TABLE notification_preferences ADD COLUMN IF NOT EXISTS budget_alerts_enabled BOOLEAN;
+      DO $notification_daily_checks$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = to_regclass(format('%I.%I', current_schema(), 'notification_preferences')) AND conname = 'notification_preferences_daily_hour_check') THEN
+          ALTER TABLE notification_preferences ADD CONSTRAINT notification_preferences_daily_hour_check CHECK (daily_summary_hour BETWEEN 0 AND 23);
+        END IF;
+        IF EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conrelid = to_regclass(format('%I.%I', current_schema(), 'notification_destinations'))
+            AND conname = 'notification_destinations_kind_check'
+            AND pg_get_constraintdef(oid) NOT LIKE '%slack%'
+        ) THEN
+          ALTER TABLE notification_destinations DROP CONSTRAINT notification_destinations_kind_check;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = to_regclass(format('%I.%I', current_schema(), 'notification_destinations')) AND conname = 'notification_destinations_kind_check') THEN
+          ALTER TABLE notification_destinations ADD CONSTRAINT notification_destinations_kind_check CHECK (kind IN ('email', 'webhook', 'slack'));
+        END IF;
+      END $notification_daily_checks$;
+      CREATE INDEX IF NOT EXISTS idx_notification_preferences_daily_due
+        ON notification_preferences(daily_summary_enabled) WHERE daily_summary_enabled = TRUE;
+    `);
+  });
+  schemaReady.set(pool, ready);
+  ready.catch(() => schemaReady.delete(pool));
+  return ready;
+}
+
+const SLACK_WEBHOOK_PATTERN = /^https:\/\/hooks\.slack\.com\/services\/(T[A-Z0-9]{2,32})\/(B[A-Z0-9]{2,32})\/([A-Za-z0-9]{16,64})$/;
+
+/** Only Slack incoming-webhook URLs on hooks.slack.com are accepted. */
+export function isSlackWebhookUrl(value: unknown): value is string {
+  if (typeof value !== "string" || value.length > 300 || !SLACK_WEBHOOK_PATTERN.test(value)) return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.hostname === "hooks.slack.com" && !url.port
+      && !url.username && !url.password && !url.search && !url.hash;
+  } catch {
+    return false;
+  }
+}
+
+/** Display form of a Slack webhook. The token is a credential and is never shown. */
+export function maskSlackWebhookUrl(value: string): string {
+  const match = SLACK_WEBHOOK_PATTERN.exec(value);
+  if (!match) return "hooks.slack.com/services/••••";
+  return "hooks.slack.com/services/" + match[1] + "/" + match[2] + "/••••" + match[3].slice(-4);
+}
+
+function slackEscape(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function formatUsd(value: unknown): string | null {
+  const amount = finiteNumber(value);
+  if (amount == null || value === null || value === undefined) return null;
+  const absolute = Math.abs(amount);
+  return (amount < 0 ? "-$" : "$") + (absolute > 0 && absolute < 0.01 ? absolute.toFixed(4) : absolute.toFixed(2));
+}
+
+function formatPct(value: unknown, signed = true): string | null {
+  const ratio = finiteNumber(value);
+  if (ratio == null || value === null || value === undefined) return null;
+  return (signed && ratio > 0 ? "+" : "") + (ratio * 100).toFixed(Math.abs(ratio) < 0.1 ? 1 : 0) + "%";
+}
+
+function slackFields(payload: Record<string, unknown>): Array<[string, string]> {
+  const evidence = jsonObject(payload.evidence);
+  const scope = jsonObject(payload.scope);
+  const fields: Array<[string, string | null]> = [];
+  switch (payload.eventType) {
+    case "daily_summary":
+      fields.push(["Yesterday", formatUsd(evidence.cost) ?? "Unpriced"]);
+      fields.push(["Change", formatPct(evidence.changePct) ?? formatUsd(evidence.change)]);
+      fields.push(Number(evidence.unpricedCalls) > 0
+        ? ["Unpriced calls", String(Number(evidence.unpricedCalls))]
+        : ["Calls", evidence.calls == null ? null : String(Number(evidence.calls))]);
+      break;
+    case "weekly_summary":
+      fields.push(["Spend", formatUsd(evidence.cost)]);
+      fields.push(["Change", formatPct(evidence.changePct) ?? formatUsd(evidence.change)]);
+      fields.push(["Calls", evidence.calls == null ? null : String(Number(evidence.calls))]);
+      break;
+    case "policy_warning":
+      fields.push(["Budget", typeof evidence.policyId === "string" ? evidence.policyId : null]);
+      fields.push(["Threshold", formatPct(evidence.threshold ?? scope.threshold, false)]);
+      fields.push(["Used", evidence.observedUsage == null ? null : String(evidence.observedUsage) + (evidence.allowance == null ? "" : " of " + String(evidence.allowance))]);
+      break;
+    case "enforcement":
+      fields.push(["Budget", typeof evidence.policyId === "string" ? evidence.policyId : null]);
+      fields.push(["Reason", typeof evidence.reason === "string" ? evidence.reason.replace(/_/g, " ") : null]);
+      break;
+    case "finding":
+      fields.push(["Cost", formatUsd(evidence.cost)]);
+      fields.push(["Change", formatPct(evidence.changePct) ?? formatUsd(evidence.change)]);
+      fields.push(["Type", typeof evidence.family === "string" ? evidence.family.replace(/_/g, " ") : null]);
+      break;
+    case "execution_receipt":
+      fields.push(["Batches", evidence.executionCount == null ? null : String(Number(evidence.executionCount))]);
+      fields.push(["Spend", formatUsd(evidence.cost)]);
+      break;
+  }
+  const present = fields.filter((field): field is [string, string] => typeof field[1] === "string" && field[1].length > 0).slice(0, 3);
+  return present.length > 0 ? present : [["Channel", "Slack"]];
+}
+
+/** Slack Block Kit message: header, a short line, up to three fields and a deep link. */
+export function slackMessage(payload: Record<string, unknown>): Record<string, unknown> {
+  const title = cleanText(payload.title ?? "CostKey notification", 150) || "CostKey notification";
+  const message = cleanText(payload.message, 600);
+  const link = safeDeepLink(payload.link) ?? appLink("/alerting");
+  const fields = slackFields(payload);
+  const blocks: Array<Record<string, unknown>> = [
+    { type: "header", text: { type: "plain_text", text: title, emoji: false } },
+  ];
+  const section: Record<string, unknown> = { type: "section" };
+  if (message) section.text = { type: "mrkdwn", text: slackEscape(message) };
+  if (fields.length > 0) section.fields = fields.map(([label, value]) => ({ type: "mrkdwn", text: "*" + slackEscape(label) + "*\n" + slackEscape(value) }));
+  if (section.text || section.fields) blocks.push(section);
+  blocks.push({
+    type: "actions",
+    elements: [{ type: "button", text: { type: "plain_text", text: "View in CostKey" }, url: link, action_id: "costkey_open" }],
+  });
+  return { text: slackEscape((title + (message ? " — " + message : "")).slice(0, 300)), blocks, unfurl_links: false, unfurl_media: false };
+}
+
 function validateEventTypes(value: unknown): string[] {
-  const allowed = new Set<NotificationEventType>(["weekly_summary", "finding", "policy_warning", "enforcement", "execution_receipt"]);
+  const allowed = new Set<NotificationEventType>(["weekly_summary", "daily_summary", "finding", "policy_warning", "enforcement", "execution_receipt"]);
   if (value === undefined) return ["weekly_summary"];
   if (!Array.isArray(value)) return [];
   return [...new Set(value.filter((item): item is string => typeof item === "string" && allowed.has(item as NotificationEventType)))];
@@ -583,8 +766,9 @@ function emailBody(payload: Record<string, unknown>): string {
     .join("");
   const link = safeDeepLink(payload.link);
   const artwork = safeDeepLink(process.env["COSTKEY_NOTIFICATION_ARTWORK_URL"] ?? appLink("/assets/digest.png"));
-  const scopeMarkup = scopeText ? "<p style='font-size:13px;color:#52677A;margin:0 0 18px'><strong>Scope:</strong> " + escapeHtml(scopeText) + "</p>" : "";
-  const evidenceMarkup = evidenceItems ? "<ul style='padding-left:20px;margin:0 0 20px;color:#52677A'>" + evidenceItems + "</ul>" : "";
+  const compact = payload.eventType === "daily_summary";
+  const scopeMarkup = scopeText && !compact ? "<p style='font-size:13px;color:#52677A;margin:0 0 18px'><strong>Scope:</strong> " + escapeHtml(scopeText) + "</p>" : "";
+  const evidenceMarkup = evidenceItems && !compact ? "<ul style='padding-left:20px;margin:0 0 20px;color:#52677A'>" + evidenceItems + "</ul>" : "";
   const linkMarkup = link ? "<p style='margin:24px 0 8px'><a style='display:inline-block;padding:11px 18px;border-radius:8px;background:#F5CC68;color:#182B45;text-decoration:none;font-weight:700' href='" + escapeHtml(link) + "'>Open in CostKey</a></p>" : "";
   return "<div style='margin:0;background:#F7F5EF;color:#182B45;font-family:Inter,system-ui,sans-serif;padding:24px 12px'>"
     + "<div style='max-width:600px;margin:0 auto;border:1px solid #DCE8EE;border-radius:16px;overflow:hidden;background:#FFFFFF'>"
@@ -614,6 +798,10 @@ async function deliverDestinationSafe(
     const secret = decryptSecret(destination.secret_ciphertext as string | null);
     return dispatchWebhook(destination.address, secret, payload, deliveryId);
   }
+  if (destination.kind === "slack") {
+    return dispatchSlack(decryptSecret(destination.secret_ciphertext as string | null), payload, deliveryId);
+  }
+  if (destination.kind !== "email") return { status: "failed", error: "Destination kind is unsupported", deliveryId };
   if (!validEmailAddress(destination.address)) return { status: "failed", error: "Email destination is invalid", deliveryId };
   const body = emailBody(payload);
   if (process.env["COSTKEY_NOTIFICATION_SINK"] === "memory") {
@@ -661,12 +849,17 @@ function eventPreferenceEnabled(row: PreferenceRow | null, eventType: string): b
   if (!row) return eventType === "policy_warning" || eventType === "enforcement";
   switch (eventType) {
     case "weekly_summary": return row.weekly_summary_enabled === true;
+    case "daily_summary": return row.daily_summary_enabled === true;
     case "finding": return row.findings_enabled === true;
-    case "policy_warning":
+    case "policy_warning": return budgetAlertsEnabled(row);
     case "enforcement": return row.enforcement_enabled !== false;
     case "execution_receipt": return row.execution_receipts_enabled === true;
     default: return false;
   }
+}
+
+function budgetAlertsEnabled(row: PreferenceRow): boolean {
+  return typeof row.budget_alerts_enabled === "boolean" ? row.budget_alerts_enabled : row.enforcement_enabled !== false;
 }
 
 function policyThresholdEnabled(row: PreferenceRow | null, payload: NotificationPayload): boolean {
@@ -792,6 +985,9 @@ function dedupeKeyFor(payload: NotificationPayload, now = new Date()): string {
   const project = payload.projectId ?? "workspace";
   if (payload.eventType === "weekly_summary") {
     return "weekly_summary:" + project + ":" + String(scope.periodStart ?? payload.occurredAt ?? now.toISOString());
+  }
+  if (payload.eventType === "daily_summary") {
+    return "daily_summary:" + project + ":" + String(scope.periodStart ?? payload.occurredAt ?? now.toISOString());
   }
   if (payload.eventType === "policy_warning") {
     return "policy_warning:" + project + ":" + String(scope.policyId ?? "policy") + ":" + String(scope.threshold ?? "threshold") + ":" + String(scope.windowKey ?? now.toISOString().slice(0, 10));
@@ -1129,7 +1325,7 @@ export async function retryNotificationDeliveries(pool: pg.Pool, now = new Date(
       link: typeof body.link === "string" ? body.link : undefined,
       occurredAt: typeof body.occurredAt === "string" ? body.occurredAt : undefined,
       recipientUserId: typeof row.user_id === "string" ? row.user_id : null,
-      preferenceProjectId: body.eventType === "weekly_summary" || body.eventType === "execution_receipt"
+      preferenceProjectId: body.eventType === "weekly_summary" || body.eventType === "daily_summary" || body.eventType === "execution_receipt"
         ? (typeof body.projectId === "string" ? body.projectId : null)
         : undefined,
     };
@@ -1167,9 +1363,10 @@ async function ensurePreferences(
     `INSERT INTO notification_preferences(
        id, org_id, user_id, project_id,
        weekly_summary_enabled, weekly_summary_hour, weekly_summary_weekday, timezone,
-       findings_enabled, policy_warning_thresholds, enforcement_enabled, execution_receipts_enabled
+       findings_enabled, policy_warning_thresholds, enforcement_enabled, execution_receipts_enabled,
+       daily_summary_enabled, daily_summary_hour, budget_alerts_enabled
      )
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
      ON CONFLICT DO NOTHING
      RETURNING *`,
     [
@@ -1182,6 +1379,9 @@ async function ensurePreferences(
       Array.isArray(overrides.policyWarningThresholds) ? overrides.policyWarningThresholds : DEFAULT_THRESHOLDS,
       overrides.enforcementEnabled !== false,
       overrides.executionReceiptsEnabled === true,
+      overrides.dailySummaryEnabled === true,
+      Number.isInteger(overrides.dailySummaryHour) ? overrides.dailySummaryHour : DEFAULT_HOUR,
+      overrides.budgetAlertsEnabled !== false,
     ],
   );
   if (inserted.rows[0]) return inserted.rows[0] as PreferenceRow;
@@ -1208,7 +1408,10 @@ function defaultPreferenceRow(user: SavedViewPreferenceUser, projectId: string |
     findings_enabled: false,
     policy_warning_thresholds: [...DEFAULT_THRESHOLDS],
     enforcement_enabled: true,
+    budget_alerts_enabled: null,
     execution_receipts_enabled: false,
+    daily_summary_enabled: false,
+    daily_summary_hour: DEFAULT_HOUR,
   };
 }
 
@@ -1219,10 +1422,13 @@ function preferenceResponse(row: PreferenceRow, explicit = true): Record<string,
     weeklySummaryEnabled: row.weekly_summary_enabled === true,
     weeklySummaryHour: Number(row.weekly_summary_hour ?? DEFAULT_HOUR),
     weeklySummaryWeekday: Number(row.weekly_summary_weekday ?? DEFAULT_WEEKDAY),
+    dailySummaryEnabled: row.daily_summary_enabled === true,
+    dailySummaryHour: Number(row.daily_summary_hour ?? DEFAULT_HOUR),
     timezone: typeof row.timezone === "string" ? row.timezone : DEFAULT_TIMEZONE,
     findingsEnabled: row.findings_enabled === true,
     policyWarningThresholds: Array.isArray(row.policy_warning_thresholds) ? row.policy_warning_thresholds : [...DEFAULT_THRESHOLDS],
     enforcementEnabled: row.enforcement_enabled !== false,
+    budgetAlertsEnabled: budgetAlertsEnabled(row),
     executionReceiptsEnabled: row.execution_receipts_enabled === true,
     explicit,
     updatedAt: row.updated_at ?? null,
@@ -1873,7 +2079,240 @@ export async function runFindingNotifications(pool: pg.Pool, limit = 100): Promi
   return attempted;
 }
 
+export interface DailySummarySchedule {
+  scheduledAt: Date;
+  timezone: string;
+  /** Local date the summary is sent on; it reports the day before. */
+  dateLabel: string;
+}
+
+/**
+ * Return today's scheduled instant once it has passed, else yesterday's.
+ * Anchoring the reported day to that instant keeps the dedupe key stable
+ * across hourly runs, restarts and a missed hour.
+ */
+export function dailySummarySchedule(
+  now: Date,
+  timezoneValue: unknown = DEFAULT_TIMEZONE,
+  hourValue: unknown = DEFAULT_HOUR,
+): DailySummarySchedule | null {
+  const timezone = validTimeZone(timezoneValue) ? timezoneValue : DEFAULT_TIMEZONE;
+  const hour = Number.isInteger(hourValue) && Number(hourValue) >= 0 && Number(hourValue) <= 23
+    ? Number(hourValue)
+    : DEFAULT_HOUR;
+  let dateLabel = dateKey(zonedParts(now, timezone));
+  let scheduledAt = localDateTimeUtc(dateLabel, hour, timezone);
+  if (scheduledAt.getTime() > now.getTime()) {
+    dateLabel = addCalendarDays(dateLabel, -1);
+    scheduledAt = localDateTimeUtc(dateLabel, hour, timezone);
+  }
+  const elapsed = now.getTime() - scheduledAt.getTime();
+  if (elapsed < 0 || elapsed >= 24 * 60 * 60 * 1_000) return null;
+  return { scheduledAt, timezone, dateLabel };
+}
+
+interface RankedCost {
+  label: string;
+  cost: number | null;
+  calls: number;
+}
+
+async function topModelsForProjects(pool: pg.Pool, projectIds: string[], from: Date, to: Date): Promise<RankedCost[]> {
+  if (projectIds.length === 0) return [];
+  const result = await pool.query(
+    `${chargesCte()}
+     SELECT COALESCE(NULLIF(c.model, ''), '(unknown)') AS label,
+            COUNT(*)::int AS calls,
+            COUNT(*) FILTER (WHERE c.cost_usd IS NOT NULL)::int AS priced_calls,
+            SUM(c.cost_usd) FILTER (WHERE c.cost_usd IS NOT NULL) AS known_cost
+     FROM charges c
+     WHERE c.project_id = ANY($1::text[])
+       AND c.timestamp >= $2 AND c.timestamp < $3
+     GROUP BY 1
+     ORDER BY known_cost DESC NULLS LAST, calls DESC, label
+     LIMIT 3`,
+    [projectIds, from.toISOString(), to.toISOString()],
+  );
+  return (result.rows as Row[]).map((row) => ({
+    label: cleanText(row.label, 120),
+    calls: Number(row.calls) || 0,
+    cost: Number(row.priced_calls) > 0 ? finiteNumber(row.known_cost) : null,
+  }));
+}
+
+interface BudgetUsage {
+  policyId: string;
+  projectId: string;
+  name: string;
+  unit: string;
+  currency: string | null;
+  allowance: number;
+  observedUsage: number;
+  ratio: number;
+  windowKey: string;
+}
+
+/**
+ * Calendar budgets at or above the threshold for the reported day (daily
+ * budgets) or the month containing it (monthly budgets). Exposure matches the
+ * policy warning worker: settled + reserved + observed.
+ */
+async function budgetsAtOrAbove(pool: pg.Pool, projectIds: string[], reportedAt: Date, threshold = 0.8): Promise<BudgetUsage[]> {
+  if (projectIds.length === 0) return [];
+  const policies = await optionalRows(
+    pool,
+    `SELECT id, project_id, name, unit, currency, allowance, window_kind, timezone
+     FROM spending_policies
+     WHERE project_id = ANY($1::text[])
+       AND COALESCE(status, 'active') = 'active'
+       AND window_kind IN ('calendar_day', 'calendar_month')`,
+    [projectIds],
+  );
+  if (policies.length === 0) return [];
+  const keys = policies.map((policy) => {
+    const parts = zonedParts(reportedAt, validTimeZone(policy.timezone) ? String(policy.timezone) : DEFAULT_TIMEZONE);
+    return policy.window_kind === "calendar_month" ? dateKey(parts).slice(0, 7) : dateKey(parts);
+  });
+  const usage = await optionalRows(
+    pool,
+    `SELECT u.policy_id, u.window_key, u.settled_quantity, u.reserved_quantity, u.observed_quantity
+     FROM policy_window_usage u
+     JOIN unnest($1::text[], $2::text[]) AS wanted(policy_id, window_key)
+       ON wanted.policy_id = u.policy_id AND wanted.window_key = u.window_key`,
+    [policies.map((policy) => String(policy.id)), keys],
+  );
+  const byPolicy = new Map(usage.map((row) => [String(row.policy_id), row]));
+  const results: BudgetUsage[] = [];
+  policies.forEach((policy, index) => {
+    const row = byPolicy.get(String(policy.id));
+    if (!row) return;
+    const exposure = (Number(row.settled_quantity) || 0) + (Number(row.reserved_quantity) || 0) + (Number(row.observed_quantity) || 0);
+    const allowance = Number(policy.allowance);
+    if (!Number.isFinite(allowance) || allowance < 0) return;
+    const ratio = allowance === 0 ? (exposure > 0 ? 1 : 0) : exposure / allowance;
+    if (ratio < threshold) return;
+    results.push({
+      policyId: String(policy.id),
+      projectId: String(policy.project_id),
+      name: cleanText(policy.name || policy.id, 120),
+      unit: cleanText(policy.unit, 20),
+      currency: typeof policy.currency === "string" ? policy.currency : null,
+      allowance,
+      observedUsage: exposure,
+      ratio,
+      windowKey: keys[index],
+    });
+  });
+  return results.sort((a, b) => b.ratio - a.ratio).slice(0, 5);
+}
+
+function rankedText(items: Array<{ label: string; cost: number | null }>): string {
+  return items.map((item) => item.label + " " + (formatUsd(item.cost) ?? "unpriced")).join(", ");
+}
+
+async function dailyPayload(pool: pg.Pool, row: PreferenceRow, now: Date, schedule: DailySummarySchedule): Promise<NotificationPayload | null> {
+  const timezone = schedule.timezone;
+  const reportedLabel = addCalendarDays(schedule.dateLabel, -1);
+  const dayStart = localMidnightUtc(reportedLabel, timezone);
+  const dayEnd = localMidnightUtc(schedule.dateLabel, timezone);
+  const previousStart = localMidnightUtc(addCalendarDays(reportedLabel, -1), timezone);
+  const projectIds = await projectsForPreference(pool, row);
+  if (projectIds.length === 0) return null;
+  const [aggregates, models, budgets] = await Promise.all([
+    aggregateChargesForProjects(pool, projectIds, dayStart, dayEnd, previousStart),
+    topModelsForProjects(pool, projectIds, dayStart, dayEnd),
+    budgetsAtOrAbove(pool, projectIds, new Date(dayEnd.getTime() - 1)),
+  ]);
+  const current = aggregates.current;
+  const previous = aggregates.previous;
+  if (current.observations === 0 && previous.observations === 0 && budgets.length === 0) return null;
+  const change = current.knownCost != null && previous.knownCost != null ? current.knownCost - previous.knownCost : null;
+  const changePct = change != null && previous.knownCost != null && previous.knownCost !== 0 ? change / previous.knownCost : null;
+  const features = aggregates.contributors.slice(0, 3).map((item) => ({ label: item.label, cost: item.cost, calls: item.observations }));
+  const projectId = row.project_id ? String(row.project_id) : null;
+  const parts = [
+    (formatUsd(current.knownCost) ?? "Unpriced spend") + " yesterday"
+      + (previous.knownCost == null ? "" : ", " + (formatPct(changePct) ?? ((change ?? 0) > 0 ? "+" : "") + (formatUsd(change) ?? "")) + " vs " + formatUsd(previous.knownCost)) + ".",
+  ];
+  if (features.length > 0) parts.push("Top features: " + rankedText(features) + ".");
+  if (models.length > 0) parts.push("Top models: " + rankedText(models) + ".");
+  if (budgets.length > 0) parts.push(budgets.length + " budget" + (budgets.length === 1 ? "" : "s") + " over 80%: " + budgets.slice(0, 3).map((budget) => budget.name + " " + Math.round(budget.ratio * 100) + "%").join(", ") + ".");
+  if (current.unpricedObservations > 0) parts.push(current.unpricedObservations + " unpriced call" + (current.unpricedObservations === 1 ? "" : "s") + ".");
+  return {
+    eventType: "daily_summary",
+    orgId: String(row.org_id),
+    projectId,
+    recipientUserId: String(row.user_id),
+    preferenceProjectId: projectId,
+    title: "Daily spend · " + reportedLabel,
+    message: parts.join(" "),
+    evidence: {
+      cost: current.knownCost,
+      previousCost: previous.knownCost,
+      change,
+      changePct,
+      calls: current.observations,
+      previousCalls: previous.observations,
+      pricedCalls: current.pricedObservations,
+      unpricedCalls: current.unpricedObservations,
+      contributors: features,
+      models,
+      budgets: budgets.map((budget) => ({
+        policyId: budget.policyId,
+        projectId: budget.projectId,
+        name: budget.name,
+        unit: budget.unit,
+        currency: budget.currency,
+        allowance: budget.allowance,
+        observedUsage: budget.observedUsage,
+        ratio: budget.ratio,
+        windowKey: budget.windowKey,
+        link: appLink("/budgets/" + encodeURIComponent(budget.policyId), { project: budget.projectId }),
+      })),
+      projectCount: projectIds.length,
+      basis: "canonical_observed",
+      currency: "USD",
+    },
+    link: appLink("/overview", {
+      from: dayStart.toISOString(),
+      to: dayEnd.toISOString(),
+      project: projectId ?? undefined,
+    }),
+    occurredAt: now.toISOString(),
+    scope: {
+      scopeType: projectId ? "project" : "workspace",
+      scopeId: projectId ?? "workspace",
+      periodStart: dayStart.toISOString(),
+      periodEnd: dayEnd.toISOString(),
+      projectCount: projectIds.length,
+      timezone,
+    },
+    dedupeKey: "daily_summary:" + (projectId ?? "workspace") + ":" + dayStart.toISOString() + ":" + row.user_id,
+  };
+}
+
+/** Send due daily summaries; idempotent per recipient, scope and reported day. */
+export async function runDailySummaries(pool: pg.Pool, now = new Date()): Promise<number> {
+  const due = await pool.query(
+    `SELECT np.*, u.email, u.name, u.role
+     FROM notification_preferences np
+     JOIN users u ON u.id = np.user_id AND u.org_id = np.org_id
+     WHERE np.daily_summary_enabled = TRUE`,
+  );
+  let attempted = 0;
+  for (const row of due.rows as PreferenceRow[]) {
+    const schedule = dailySummarySchedule(now, row.timezone, row.daily_summary_hour);
+    if (!schedule) continue;
+    const payload = await dailyPayload(pool, row, now, schedule);
+    if (!payload) continue;
+    const results = await dispatchNotification(pool, payload);
+    attempted += results.length;
+  }
+  return attempted;
+}
+
 export async function runWeeklyDigests(pool: pg.Pool, now = new Date()): Promise<number> {
+  await ensureNotificationSchema(pool).catch((error) => console.error("[costkey] Notification schema error:", error));
   let attempted = await retryNotificationDeliveries(pool, now).catch(() => 0);
   attempted += await runFindingNotifications(pool).catch(() => 0);
   const due = await pool.query(
@@ -1905,6 +2344,11 @@ export async function runWeeklyDigests(pool: pg.Pool, now = new Date()): Promise
     const results = await dispatchNotification(pool, payload);
     attempted += results.length;
   }
+  // Daily summaries share the hourly worker so index.ts keeps one scheduler.
+  attempted += await runDailySummaries(pool, now).catch((error) => {
+    console.error("[costkey] Daily summary error:", error);
+    return 0;
+  });
   return attempted;
 }
 
@@ -1996,9 +2440,22 @@ export async function dispatchFindingNotification(pool: pg.Pool, input: FindingN
   });
 }
 
+function publicDestination(row: DestinationRow): Record<string, unknown> {
+  const { secret_ciphertext: _secret, ...rest } = row;
+  void _secret;
+  if (row.kind === "slack" && isSlackWebhookUrl(row.address)) return { ...rest, address: maskSlackWebhookUrl(row.address) };
+  return rest;
+}
+
 export function createNotificationsRouter(pool: pg.Pool): Router {
   const router = createRouter();
   router.use("/api", requireAuth);
+  router.use("/api/v1/notifications", (_req, _res, next) => {
+    ensureNotificationSchema(pool).then(() => next(), (error) => {
+      console.error("[costkey] Notification schema error:", error);
+      next();
+    });
+  });
 
   router.get("/api/v1/notifications/preferences", async (req: Request, res: Response) => {
     try {
@@ -2040,8 +2497,11 @@ export function createNotificationsRouter(pool: pg.Pool): Router {
         ["findingsEnabled", (value) => typeof value === "boolean"],
         ["enforcementEnabled", (value) => typeof value === "boolean"],
         ["executionReceiptsEnabled", (value) => typeof value === "boolean"],
+        ["dailySummaryEnabled", (value) => typeof value === "boolean"],
+        ["budgetAlertsEnabled", (value) => typeof value === "boolean"],
         ["timezone", validTimeZone],
         ["weeklySummaryHour", (value) => Number.isInteger(value) && Number(value) >= 0 && Number(value) <= 23],
+        ["dailySummaryHour", (value) => Number.isInteger(value) && Number(value) >= 0 && Number(value) <= 23],
         ["weeklySummaryWeekday", (value) => Number.isInteger(value) && Number(value) >= 0 && Number(value) <= 6],
         ["policyWarningThresholds", (value) => Array.isArray(value) && value.length > 0 && value.length <= 8 && value.every((item) => typeof item === "number" && Number.isFinite(item) && item > 0 && item <= 1)],
       ];
@@ -2056,8 +2516,11 @@ export function createNotificationsRouter(pool: pg.Pool): Router {
         ["findingsEnabled", "findings_enabled"],
         ["enforcementEnabled", "enforcement_enabled"],
         ["executionReceiptsEnabled", "execution_receipts_enabled"],
+        ["dailySummaryEnabled", "daily_summary_enabled"],
+        ["budgetAlertsEnabled", "budget_alerts_enabled"],
         ["timezone", "timezone"],
         ["weeklySummaryHour", "weekly_summary_hour"],
+        ["dailySummaryHour", "daily_summary_hour"],
         ["weeklySummaryWeekday", "weekly_summary_weekday"],
         ["policyWarningThresholds", "policy_warning_thresholds"],
       ];
@@ -2073,6 +2536,16 @@ export function createNotificationsRouter(pool: pg.Pool): Router {
       }
       if (updates.length === 0) { res.status(400).json({ error: "Nothing to update" }); return; }
       await ensurePreferences(pool, user, projectId, overrides);
+      if (req.body?.enforcementEnabled !== undefined && req.body?.budgetAlertsEnabled === undefined) {
+        // Refusals used to gate budget warnings too. Pin the inherited value
+        // before changing refusals so the two switches stay independent.
+        await pool.query(
+          `UPDATE notification_preferences
+           SET budget_alerts_enabled = COALESCE(budget_alerts_enabled, enforcement_enabled)
+           WHERE org_id = $1 AND user_id = $2 AND project_id IS NOT DISTINCT FROM $3`,
+          [user.orgId, user.id, projectId],
+        );
+      }
       params.push(user.orgId, user.id, projectId);
       await pool.query(
         "UPDATE notification_preferences SET " + updates.join(", ") + ", updated_at = NOW() WHERE org_id = $" + index++ + " AND user_id = $" + index++ + " AND project_id IS NOT DISTINCT FROM $" + index,
@@ -2103,7 +2576,7 @@ export function createNotificationsRouter(pool: pg.Pool): Router {
          ORDER BY created_at DESC`,
         [user.orgId, user.id, normalizeRole(user.role)],
       );
-      res.json({ destinations: result.rows });
+      res.json({ destinations: (result.rows as DestinationRow[]).map(publicDestination) });
     } catch (error) {
       console.error("[costkey] Notification destination list error:", error);
       res.status(500).json({ error: "Internal server error" });
@@ -2115,10 +2588,14 @@ export function createNotificationsRouter(pool: pg.Pool): Router {
       const user = (req as Request & { user?: SavedViewPreferenceUser }).user;
       if (!user) { res.status(401).json({ error: "Authentication required" }); return; }
       const body = (req.body ?? {}) as Record<string, unknown>;
-      const kind = body.kind === "webhook" ? "webhook" : body.kind === "email" ? "email" : null;
+      const kind = body.kind === "webhook" ? "webhook" : body.kind === "email" ? "email" : body.kind === "slack" ? "slack" : null;
       const address = typeof body.address === "string" ? body.address.trim() : "";
       if (!kind || !address) { res.status(400).json({ error: "kind and address are required" }); return; }
       if (kind === "webhook" && !roleCanManageWorkspace(user.role)) { res.status(403).json({ error: "Only owners and admins can manage workspace webhooks" }); return; }
+      if (kind === "slack" && !roleCanManageWorkspace(user.role)) { res.status(403).json({ error: "Only owners and admins can manage Slack destinations" }); return; }
+      if (kind === "slack" && !isSlackWebhookUrl(address)) {
+        res.status(400).json({ error: "Use a Slack incoming webhook URL (https://hooks.slack.com/services/...)" }); return;
+      }
       if (kind === "webhook" && !(process.env["COSTKEY_NOTIFICATION_SINK"] === "memory" || !externalDeliveryAllowed() ? isSafeWebhookSyntax(address) : await resolvesSafeWebhookTarget(address))) {
         res.status(400).json({ error: "Webhook URL is invalid or targets a private host" }); return;
       }
@@ -2132,8 +2609,12 @@ export function createNotificationsRouter(pool: pg.Pool): Router {
       if (projectId && !await canAccessProject(pool, user, projectId)) { res.status(404).json({ error: "Project not found" }); return; }
       const secret = kind === "webhook" && typeof body.secret === "string" ? body.secret : undefined;
       if (kind === "webhook" && (!secret || secret.length < 16 || secret.length > 4_096)) { res.status(400).json({ error: "Webhook secret must be between 16 and 4096 characters" }); return; }
-      const encryptedSecret = secret ? encryptSecret(secret) : null;
-      if (kind === "webhook" && !encryptedSecret) { res.status(503).json({ error: "Webhook secret storage is not configured" }); return; }
+      // A Slack incoming-webhook URL is itself the credential: it is stored
+      // encrypted like a webhook signing secret and only a mask is kept in
+      // the address column that the API returns.
+      const encryptedSecret = kind === "slack" ? encryptSecret(address) : secret ? encryptSecret(secret) : null;
+      if ((kind === "webhook" || kind === "slack") && !encryptedSecret) { res.status(503).json({ error: "Secret storage is not configured" }); return; }
+      const storedAddress = kind === "slack" ? maskSlackWebhookUrl(address) : address;
       const id = randomId("dest");
       const eventTypes = validateEventTypes(body.eventTypes);
       if (eventTypes.length === 0) { res.status(400).json({ error: "eventTypes must contain supported notification types" }); return; }
@@ -2141,9 +2622,9 @@ export function createNotificationsRouter(pool: pg.Pool): Router {
         `INSERT INTO notification_destinations(id, org_id, project_id, owner_user_id, kind, address, secret_ciphertext, event_types)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8::text[])
          RETURNING id, org_id, project_id, owner_user_id, kind, address, event_types, enabled, last_delivery_at, last_error, created_at, updated_at`,
-        [id, user.orgId, projectId, user.id, kind, address, encryptedSecret, eventTypes],
+        [id, user.orgId, projectId, user.id, kind, storedAddress, encryptedSecret, eventTypes],
       );
-      res.status(201).json({ destination: result.rows[0] });
+      res.status(201).json({ destination: publicDestination(result.rows[0] as DestinationRow) });
     } catch (error) {
       console.error("[costkey] Notification destination create error:", error);
       res.status(500).json({ error: "Internal server error" });

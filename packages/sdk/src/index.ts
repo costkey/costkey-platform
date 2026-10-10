@@ -6,8 +6,11 @@ import type {
   CostKeyLifecycleEvent,
   CostKeyUsageEvent,
   CostKeySpanEvent,
+  CostKeyAdditiveEvent,
+  CostKeyScoreEvent,
   EventContext,
   ExecutionOptions,
+  ScoreOptions,
   NormalizedUsage,
   ProviderExtractor,
   RecordUsageEvent,
@@ -63,6 +66,10 @@ export type {
   CostKeyLifecycleEvent,
   CostKeyUsageEvent,
   CostKeySpanEvent,
+  CostKeyScoreEvent,
+  CostKeyAdditiveEvent,
+  ScoreOptions,
+  ScoreSource,
   SpanKind,
   SpanStatus,
   SpanOptions,
@@ -431,6 +438,70 @@ function recordUsage(input: RecordUsageEvent): Promise<void> {
   const shouldSend = acceptUsage(event);
   if (!shouldSend) return Promise.resolve();
   return trackAdditiveEvent(event, transport, additiveBeforeSend, false);
+}
+
+const MAX_SCORE_NAME_CHARS = 120;
+const MAX_SCORE_LABEL_CHARS = 60;
+const MAX_SCORE_COMMENT_CHARS = 1_000;
+const SCORE_SOURCES = new Set(["judge", "human", "code"]);
+
+/** Validate a score and attach it to the given or current run. */
+function buildScoreEvent(options: ScoreOptions, currentProjectId: string, capture: boolean): CostKeyScoreEvent {
+  if (!options || typeof options !== "object") throw new TypeError("CostKey.score() requires options");
+  const name = nonEmpty(options.name);
+  if (!name) throw new TypeError("CostKey.score() requires a non-empty name");
+  if (name.length > MAX_SCORE_NAME_CHARS) {
+    throw new TypeError(`CostKey.score() name must be at most ${MAX_SCORE_NAME_CHARS} characters`);
+  }
+  if (typeof options.value !== "number" || !Number.isFinite(options.value)) {
+    throw new TypeError("CostKey.score() value must be a finite number");
+  }
+  const label = nonEmpty(options.label);
+  if (label && label.length > MAX_SCORE_LABEL_CHARS) {
+    throw new TypeError(`CostKey.score() label must be at most ${MAX_SCORE_LABEL_CHARS} characters`);
+  }
+  if (options.source !== undefined && !SCORE_SOURCES.has(options.source)) {
+    throw new TypeError("CostKey.score() source must be judge, human or code");
+  }
+  const current = getCurrentContext();
+  const explicitTrace = nonEmpty(options.traceId);
+  const traceId = explicitTrace ?? nonEmpty(current.traceId);
+  // A score for another run never inherits the current span.
+  const spanId = nonEmpty(options.spanId) ?? (explicitTrace ? undefined : nonEmpty(current.spanId));
+  if (!traceId && !spanId) {
+    throw new TypeError("CostKey.score() needs a run: call it inside a trace or span, or pass traceId");
+  }
+  const comment = capture ? nonEmpty(options.comment) : undefined;
+  return {
+    id: nonEmpty(options.id) ?? generateId("sc"),
+    timestamp: options.timestamp === undefined ? new Date().toISOString() : normalizeScoreTimestamp(options.timestamp),
+    projectId: currentProjectId,
+    eventType: "score",
+    name,
+    value: options.value,
+    ...(label ? { label } : {}),
+    ...(comment ? { comment: comment.slice(0, MAX_SCORE_COMMENT_CHARS) } : {}),
+    ...(options.source ? { source: options.source } : {}),
+    ...(traceId ? { traceId } : {}),
+    ...(spanId ? { spanId } : {}),
+  };
+}
+
+function normalizeScoreTimestamp(timestamp: string | Date): string {
+  const date = timestamp instanceof Date ? timestamp : new Date(timestamp);
+  if (Number.isNaN(date.getTime())) throw new TypeError("CostKey.score() timestamp is invalid");
+  return date.toISOString();
+}
+
+/**
+ * Record a judge, human or code score on a run. Inside a trace or span the
+ * score attaches to it; otherwise pass `traceId`. Invalid input throws; when
+ * CostKey is not initialized the call is a no-op.
+ */
+function score(options: ScoreOptions): Promise<void> {
+  const event = buildScoreEvent(options, projectId ?? "", captureBodyRef?.current === true);
+  if (!transport || !projectId) return Promise.resolve();
+  return trackAdditiveEvent(event, transport, additiveBeforeSend, debugEnabled);
 }
 
 /** Flush all pending events and shut down the SDK. */
@@ -818,13 +889,13 @@ function trimUsageLedger(currentChargeId: string): void {
 }
 
 async function sendAdditiveEvent(
-  event: CostKeyLifecycleEvent | CostKeyUsageEvent | CostKeySpanEvent,
+  event: CostKeyAdditiveEvent,
   currentTransport: Transport,
   hook: BeforeSendEventHook | null,
   debug: boolean,
 ): Promise<void> {
   try {
-    let finalEvent: CostKeyLifecycleEvent | CostKeyUsageEvent | CostKeySpanEvent | null = event;
+    let finalEvent: CostKeyAdditiveEvent | null = event;
     if (hook) {
       try {
         finalEvent = await hook(event);
@@ -840,7 +911,7 @@ async function sendAdditiveEvent(
 }
 
 function trackAdditiveEvent(
-  event: CostKeyLifecycleEvent | CostKeyUsageEvent | CostKeySpanEvent,
+  event: CostKeyAdditiveEvent,
   currentTransport: Transport,
   hook: BeforeSendEventHook | null,
   debug: boolean,
@@ -1023,6 +1094,7 @@ export const CostKey = {
   tool,
   instrumentTools,
   recordUsage,
+  score,
   exportContext,
   exportContextHeaders,
   getCurrentContext,

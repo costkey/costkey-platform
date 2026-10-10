@@ -526,20 +526,63 @@ export interface CostKeyUsageEvent {
   responseBody?: unknown | null;
 }
 
+/** Who produced a score: an LLM judge, a person, or deterministic code. */
+export type ScoreSource = "judge" | "human" | "code";
+
+/** A judge/eval score on a run, sent with `CostKey.score()`. */
+export interface ScoreOptions {
+  /** What was scored, e.g. `faithfulness` (at most 120 characters). */
+  name: string;
+  /** The score itself; any finite number (0..1 scores get a 0.5 pass line). */
+  value: number;
+  /** Short verdict such as `pass` or `fail` (at most 60 characters). */
+  label?: string;
+  /** Grader's reasoning. Content: only sent when body capture is enabled. */
+  comment?: string;
+  source?: ScoreSource;
+  /** Run to score. Defaults to the current trace. */
+  traceId?: string;
+  /** Span to score. Defaults to the current span when no traceId is given. */
+  spanId?: string;
+  /** Stable id: sending the same id again replaces the earlier score. */
+  id?: string;
+  timestamp?: string | Date;
+}
+
+export interface CostKeyScoreEvent {
+  id: string;
+  timestamp: string;
+  projectId: string;
+  eventType: "score";
+  name: string;
+  value: number;
+  label?: string;
+  comment?: string;
+  source?: ScoreSource;
+  traceId?: string;
+  spanId?: string;
+}
+
 export type CostKeyTelemetryEvent =
   | CostKeyEvent
   | CostKeyLifecycleEvent
   | CostKeyUsageEvent
-  | CostKeySpanEvent;
+  | CostKeySpanEvent
+  | CostKeyScoreEvent;
 
-export type BeforeSendEventHook = (
-  event: CostKeyLifecycleEvent | CostKeyUsageEvent | CostKeySpanEvent,
-) =>
+/** Explicit (non-call) events that pass through `beforeSendEvent`. */
+export type CostKeyAdditiveEvent =
   | CostKeyLifecycleEvent
   | CostKeyUsageEvent
   | CostKeySpanEvent
+  | CostKeyScoreEvent;
+
+export type BeforeSendEventHook = (
+  event: CostKeyAdditiveEvent,
+) =>
+  | CostKeyAdditiveEvent
   | null
-  | Promise<CostKeyLifecycleEvent | CostKeyUsageEvent | CostKeySpanEvent | null>;
+  | Promise<CostKeyAdditiveEvent | null>;
 
 /** Provider-normalized prompt/tool/agent details captured from request/response payloads */
 export interface EventMetadata {

@@ -3,7 +3,8 @@ import type { SVGProps } from "react";
 export type PrototypeIconName =
   | "overview" | "trace" | "flask" | "telescope" | "shield" | "folder" | "search" | "settings"
   | "activity" | "clock" | "doc" | "download" | "check" | "alert" | "pause"
-  | "cost" | "help" | "calendar" | "plus" | "info" | "arrow" | "right" | "down";
+  | "cost" | "help" | "calendar" | "plus" | "info" | "arrow" | "right" | "down"
+  | "workflow" | "agent" | "quality" | "model" | "bell";
 
 // Geometry from the CostKey design language icon set (24 px grid, 1.75 px
 // stroke, rounded ends). "trace" is the Runs play glyph; "pause" is the
@@ -32,6 +33,11 @@ const paths: Record<PrototypeIconName, string> = {
   arrow: '<path d="M4 12h16m-6-6 6 6-6 6"/>',
   right: '<path d="m9 6 6 6-6 6"/>',
   down: '<path d="m7 10 5 5 5-5"/>',
+  workflow: '<rect x="3" y="4" width="6" height="5" rx="1.5"/><rect x="15" y="15" width="6" height="5" rx="1.5"/><path d="M6 9v4a2 2 0 0 0 2 2h7"/>',
+  agent: '<rect x="4" y="7" width="16" height="12" rx="3"/><path d="M12 3v4M9 12v1m6-1v1M9 16h6"/>',
+  quality: '<path d="m12 3 2.6 5.5 6 .8-4.4 4.2 1.1 6L12 16.6 6.7 19.5l1.1-6L3.4 9.3l6-.8L12 3Z"/>',
+  model: '<path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z"/><path d="m4 7.5 8 4.5 8-4.5M12 12v9"/>',
+  bell: '<path d="M6 16V11a6 6 0 1 1 12 0v5l2 2H4l2-2Zm4 4h4"/>',
 };
 
 export function PrototypeIcon({ name, size = 18, ...props }: { name: PrototypeIconName; size?: number } & Omit<SVGProps<SVGSVGElement>, "name">) {

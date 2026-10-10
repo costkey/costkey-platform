@@ -4,6 +4,7 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Area, AreaChart, CartesianGrid, Tooltip, XAxis, YAxis } from "recharts";
 import {
   acknowledgeFinding,
+  getCostBreakdown,
   getCostContributor,
   getTrace,
   getTraces,
@@ -284,7 +285,7 @@ function ComparePage() {
 interface PolicyRecord {
   id: string;
   name?: string | null;
-  scope?: Record<string, string>;
+  scope?: Record<string, string | string[]>;
   mode: "monitor" | "enforce";
   status: "active" | "paused" | "archived";
   unit: "money" | "calls" | "tokens";
@@ -292,7 +293,7 @@ interface PolicyRecord {
   currency?: string | null;
   window: string;
   timezone?: string | null;
-  usage?: { observed?: number | null; committed?: number | null };
+  usage?: { observed?: number | null; committed?: number | null; overLimit?: number | null };
 }
 
 const REFUSAL_REASON: Record<string, string> = {
@@ -303,7 +304,23 @@ const REFUSAL_REASON: Record<string, string> = {
   unbounded_request: "No size limit on the call",
   missing_context: "Missing budget labels",
   idempotency_conflict: "Duplicate request",
+  call_too_expensive: "Call over the limit",
 };
+
+const WINDOW_WORDS: Record<string, string> = { calendar_month: "per month", calendar_day: "per day", calendar_minute: "per minute", per_trace: "per run", per_execution: "per batch", per_call: "per call" };
+const SCOPE_SUGGESTION_DIMENSIONS = new Set<string>(["feature", "customer", "model", "provider"]);
+const MAX_SCOPE_VALUES = 50;
+const MAX_SCOPE_VALUE_LENGTH = 200;
+
+/** "search, answer +1": a group shows its first two values. */
+function scopeValueText(value: string | string[]): string {
+  const values = Array.isArray(value) ? value : [value];
+  return values.length > 2 ? `${values.slice(0, 2).join(", ")} +${values.length - 2}` : values.join(", ");
+}
+
+function parseScopeValues(text: string): string[] {
+  return [...new Set(text.split(",").map((value) => value.trim()).filter(Boolean))];
+}
 
 function refusalReason(decision: Record<string, unknown>): string {
   const refusal = decision.refusal as { reason?: string } | null | undefined;
@@ -415,19 +432,21 @@ function PolicyDetailPage() {
   const allowanceValue = Number(policy.allowance) || 0;
   const ratio = observed != null && allowanceValue > 0 ? observed / allowanceValue : null;
   const status = policy.status === "paused" ? { tone: "neutral" as const, label: "Paused" } : policy.status === "archived" ? { tone: "neutral" as const, label: "Archived" } : ratio == null ? { tone: "neutral" as const, label: "Waiting for usage" } : ratio >= 1 ? { tone: "critical" as const, label: "Limit reached" } : ratio >= 0.8 ? { tone: "warn" as const, label: "Needs a look" } : { tone: "good" as const, label: "Within budget" };
-  const windowWords = ({ calendar_month: "per month", calendar_day: "per day", calendar_minute: "per minute", per_trace: "per run", per_execution: "per batch" } as Record<string, string>)[policy.window] ?? policy.window;
-  const scopeWords = Object.entries(policy.scope ?? {}).filter(([key]) => key !== "project").map(([key, value]) => `${key === "group" ? "Experiment" : key.charAt(0).toUpperCase() + key.slice(1)}: ${value}`).join(" · ") || "Whole project";
+  const windowWords = WINDOW_WORDS[policy.window] ?? policy.window;
+  const perCall = policy.window === "per_call";
+  const overLimit = Number(policy.usage?.overLimit) || 0;
+  const scopeWords = Object.entries(policy.scope ?? {}).filter(([key]) => key !== "project").map(([key, value]) => `${key === "group" ? "Experiment" : key.charAt(0).toUpperCase() + key.slice(1)}: ${scopeValueText(value)}`).join(" · ") || "Whole project";
   return <div className="ck-main-inner ck-policy-detail-page">
     <Link className="ck-back-link" to="/budgets"><ArrowLeft size={13} /> Budgets</Link>
     <PageHeader title={policy.name || "Budget"} description={`${scopeWords} · ${policy.mode === "enforce" ? "Stops new calls when reached" : "Alerts only"}`} actions={canManage ? <>{policy.status !== "archived" && <button className="ck-button ck-button-quiet" type="button" disabled={statusSaving} onClick={() => void setPolicyStatus(policy.status === "paused" ? "active" : "paused")}>{policy.status === "paused" ? statusSaving ? "Resuming" : "Resume" : statusSaving ? "Pausing" : "Pause"}</button>}<Link className="ck-button ck-button-secondary" to={`/policy-edit?id=${encodeURIComponent(policy.id)}&project=${encodeURIComponent(projectId)}`}><Save size={14} /> Edit budget</Link></> : undefined} />
     {statusError && <div className="ck-alert ck-alert-error" role="alert"><CircleAlert size={15} /><div><strong>{statusError}</strong></div></div>}
     <PrototypeStateNotice state={explicitState} family="policy" role="viewer" />
     {["refused", "stop-requested", "stop-confirmed", "decision-unavailable", "unknown-exposure", "paused"].includes(explicitState) && <div className="ck-alert" role="status"><ShieldCheck size={15} /><div><strong>{explicitState === "refused" ? "A call was refused." : explicitState === "decision-unavailable" ? "We couldn’t check a call, so it was refused." : explicitState === "unknown-exposure" ? "Some spend isn’t known yet." : explicitState === "paused" ? "This budget is paused." : explicitState === "stop-requested" ? "Pause requested. Stop not yet confirmed." : "Stop confirmed."}</strong> Late costs still show below.</div></div>}
-    <StatusLine tone={status.tone} right={<span>{policy.status === "active" ? "Checking new calls" : "Not checking"}</span>}>{status.label === "Within budget" ? `${policy.name || "This budget"} is within its limit.` : status.label === "Needs a look" ? `${Math.floor((ratio ?? 0) * 100)}% of this budget is used.` : status.label === "Limit reached" ? (policy.mode === "enforce" ? "Limit reached. New matching calls are being refused." : "Limit reached. Nothing is blocked; alerts were sent.") : status.label === "Waiting for usage" ? "No usage counted yet." : `This budget is ${status.label.toLowerCase()}.`}</StatusLine>
+    <StatusLine tone={status.tone} right={<span>{policy.status === "active" ? "Checking new calls" : "Not checking"}</span>}>{status.label === "Within budget" ? `${policy.name || "This budget"} is within its limit.` : status.label === "Needs a look" ? perCall ? `The largest call used ${Math.floor((ratio ?? 0) * 100)}% of the limit.` : `${Math.floor((ratio ?? 0) * 100)}% of this budget is used.` : status.label === "Limit reached" ? (perCall ? (policy.mode === "enforce" ? "Calls over the limit are refused." : "A call went over the limit. Nothing is blocked; alerts were sent.") : policy.mode === "enforce" ? "Limit reached. New matching calls are being refused." : "Limit reached. Nothing is blocked; alerts were sent.") : status.label === "Waiting for usage" ? "No usage counted yet." : `This budget is ${status.label.toLowerCase()}.`}</StatusLine>
     <div className="ck-metric-grid">
       <MetricCard icon="shield" label="Limit" value={policyDisplayValue(policy, policy.allowance, policy.currency ?? currency)} detail={windowWords.charAt(0).toUpperCase() + windowWords.slice(1)} />
-      <MetricCard icon="activity" label="Used" value={policyDisplayValue(policy, observed, policy.currency ?? currency)} detail={ratio == null ? "Nothing counted yet" : `${Math.floor(ratio * 100)}% of the limit`} />
-      {policy.mode === "enforce" && <MetricCard icon="clock" label="Reserved for calls in progress" value={policyDisplayValue(policy, committed, policy.currency ?? currency)} />}
+      {perCall ? <MetricCard icon="activity" label="Largest call" value={policyDisplayValue(policy, observed, policy.currency ?? currency)} detail={overLimit > 0 ? `${overLimit.toLocaleString()} over the limit · last 24 hours` : "Last 24 hours"} /> : <MetricCard icon="activity" label="Used" value={policyDisplayValue(policy, observed, policy.currency ?? currency)} detail={ratio == null ? "Nothing counted yet" : `${Math.floor(ratio * 100)}% of the limit`} />}
+      {policy.mode === "enforce" && !perCall && <MetricCard icon="clock" label="Reserved for calls in progress" value={policyDisplayValue(policy, committed, policy.currency ?? currency)} />}
     </div>
     {policy.mode === "enforce" && <Panel title="Recent decisions">{decisions.length === 0 ? <EmptyPanel title="No calls refused yet" /> : <div className="ck-table-wrap"><table className="ck-table"><thead><tr><th>Decision</th><th>Reason</th><th>When</th></tr></thead><tbody>{decisions.map((decision, index) => <tr key={String(decision.id ?? index)}><td><StatusPill tone={decision.decision === "refuse" ? "critical" : "good"}>{decision.decision === "refuse" ? "Refused" : "Allowed"}</StatusPill></td><td>{refusalReason(decision)}</td><td>{decision.created_at ? formatDateTime(String(decision.created_at)) : "—"}</td></tr>)}</tbody></table></div>}</Panel>}
   </div>;
@@ -465,7 +484,7 @@ function PolicyEditPage() {
   // contributor/finding or when an existing policy is being edited.
   const prototypeDefaults = isPrototypePreview();
   const initialScopeValue = params.get("scopeValue") ?? params.get("feature") ?? (prototypeDefaults ? "Search" : "");
-  const [name, setName] = useState(params.get("name") ?? (prototypeDefaults ? "Search monthly budget" : initialScopeValue ? `${initialScopeValue} monthly budget` : "Monthly budget"));
+  const [name, setName] = useState(params.get("name") ?? (prototypeDefaults ? "Search monthly budget" : initialScopeValue ? `${initialScopeValue.split(",").map((value) => value.trim()).filter(Boolean).join(", ")} monthly budget` : "Monthly budget"));
   const [scopeDimension, setScopeDimension] = useState(params.get("scopeDimension") ?? (params.get("feature") || prototypeDefaults ? "feature" : "project"));
   const [scopeValue, setScopeValue] = useState(initialScopeValue);
   const [allowance, setAllowance] = useState(prototypeDefaults ? "200" : params.get("amount") ?? "");
@@ -476,6 +495,7 @@ function PolicyEditPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [reviewed, setReviewed] = useState(false);
+  const [suggestions, setSuggestions] = useState<{ dimension: string; values: string[] }>({ dimension: "", values: [] });
   const prototype = isPrototypePreview();
   const role = prototype ? prototypeRole(params, user?.role ?? "owner") : user?.role ?? "viewer";
   const proposal = explicitState === "proposal" || (role !== "owner" && role !== "admin");
@@ -483,6 +503,7 @@ function PolicyEditPage() {
   const prototypeLoading = prototype && explicitState === "loading";
   const prototypeError = prototype && explicitState === "error";
   const unavailable = explicitState === "unavailable";
+  const scopeValues = parseScopeValues(scopeValue);
   useEffect(() => {
     // The prototype exposes these editor variants as deterministic URLs. Seed
     // the form from the requested state so the preview communicates the same
@@ -511,24 +532,36 @@ function PolicyEditPage() {
       const response = await fetch(`/api/v1/projects/${projectId}/budget/policies/${encodeURIComponent(policyId)}`, { credentials: "include" });
       if (!response.ok) return;
       const data = await response.json() as { policy?: PolicyRecord };
-      if (!cancelled && data.policy) { setName(data.policy.name ?? "Monthly budget"); setAllowance(String(data.policy.allowance)); setUnit(data.policy.unit); setPolicyCurrency(data.policy.currency === "INR" ? "INR" : "USD"); setWindowKind(data.policy.window); setMode(data.policy.mode); const [dimension, value] = Object.entries(data.policy.scope ?? {})[0] ?? []; if (dimension) setScopeDimension(dimension); setScopeValue(value ?? ""); }
+      if (!cancelled && data.policy) { setName(data.policy.name ?? "Monthly budget"); setAllowance(String(data.policy.allowance)); setUnit(data.policy.unit); setPolicyCurrency(data.policy.currency === "INR" ? "INR" : "USD"); setWindowKind(data.policy.window); setMode(data.policy.mode); const [dimension, value] = Object.entries(data.policy.scope ?? {})[0] ?? []; if (dimension) setScopeDimension(dimension); setScopeValue(Array.isArray(value) ? value.join(", ") : value ?? ""); }
     };
     void load();
     return () => { cancelled = true; };
   }, [projectId, policyId, currency]);
+  useEffect(() => {
+    // Known values from the last 30 days of costs; the field still takes any name.
+    if (!projectId || prototype || !SCOPE_SUGGESTION_DIMENSIONS.has(scopeDimension)) return;
+    let cancelled = false;
+    const { from, to } = periodDates("30d", timezone);
+    getCostBreakdown(projectId, { groupBy: scopeDimension as CostDimension, from, to, limit: 50 })
+      .then((result) => { if (!cancelled) setSuggestions({ dimension: scopeDimension, values: (result.contributors ?? []).map((row) => row.key ?? "").filter((key) => key && !key.startsWith("(")) }); })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [projectId, scopeDimension, prototype, timezone]);
   async function copySummary(): Promise<void> {
-    const windowWords = ({ calendar_month: "per month", calendar_day: "per day", calendar_minute: "per minute", per_trace: "per run", per_execution: "per batch" } as Record<string, string>)[windowKind] ?? windowKind;
+    const windowWords = WINDOW_WORDS[windowKind] ?? windowKind;
     const limit = unit === "money" ? `${policyCurrency} ${allowance || "?"}` : `${allowance || "?"} ${unit}`;
-    const covers = scopeDimension === "project" || !scopeValue ? "Whole project" : `${scopeDimension}: ${scopeValue}`;
+    const covers = scopeDimension === "project" || scopeValues.length === 0 ? "Whole project" : `${scopeDimension}: ${scopeValues.join(", ")}`;
     const text = `${name}\n${limit} ${windowWords} · ${covers} · ${mode === "enforce" ? "Stops new calls" : "Alerts only"}`;
     try { await navigator.clipboard.writeText(text); setCopied(true); window.setTimeout(() => setCopied(false), 1600); } catch { setError("Couldn’t copy. Select the form and copy it manually."); }
   }
   async function review(): Promise<void> {
     if (!projectId || !allowance || Number(allowance) <= 0) { setError("Enter a limit greater than zero."); return; }
-    if (scopeDimension !== "project" && !scopeValue.trim()) { setError(`Enter which ${scopeDimension} this budget covers, or choose Whole project.`); return; }
+    if (scopeDimension !== "project" && scopeValues.length === 0) { setError(`Enter which ${scopeDimension} this budget covers, or choose Whole project.`); return; }
+    if (scopeValues.length > MAX_SCOPE_VALUES) { setError(`Up to ${MAX_SCOPE_VALUES} values.`); return; }
+    if (scopeValues.some((value) => value.length > MAX_SCOPE_VALUE_LENGTH)) { setError(`Keep each value under ${MAX_SCOPE_VALUE_LENGTH} characters.`); return; }
     setSaving(true); setError(null);
     try {
-      const payload = { name, scope: scopeDimension !== "project" && scopeValue ? { [scopeDimension]: scopeValue } : { project: projectId }, unit, allowance: Number(allowance), currency: unit === "money" ? policyCurrency : undefined, window: windowKind, timezone, mode, ...(policyId ? {} : { status: "active" }) };
+      const payload = { name, scope: scopeDimension !== "project" && scopeValues.length > 0 ? { [scopeDimension]: scopeValues.length === 1 ? scopeValues[0] : scopeValues } : { project: projectId }, unit, allowance: Number(allowance), currency: unit === "money" ? policyCurrency : undefined, window: windowKind, timezone, mode, ...(policyId ? {} : { status: "active" }) };
       const response = await fetch(`/api/v1/projects/${projectId}/budget/policies${policyId ? `/${encodeURIComponent(policyId)}` : ""}`, { method: policyId ? "PATCH" : "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
       if (!response.ok) throw new Error(response.status === 403 ? "Only Owners and Admins can save budgets." : "Couldn’t save this budget. Try again.");
       setReviewed(true);
@@ -551,14 +584,18 @@ function PolicyEditPage() {
   if (prototypeLoading) return <div className="ck-main-inner ck-policy-editor-page prototype-policy-route"><PageHeader title={proposal ? "Suggest a budget" : "Create a budget"} description={proposal ? "An Owner or Admin needs to turn this on." : undefined} actions={<button className="ck-button ck-button-quiet prototype-policy-back" type="button" onClick={() => navigate("/budgets")}><ArrowLeft size={13} /> Back to budgets</button>} /><Panel><p className="ck-panel-subtitle">Loading…</p><LoadingRows count={4} columns={3} /></Panel></div>;
   const namedState = PrototypeStatePanel({ state: prototypeError ? "default" : explicitState, family: "Budget editor", title: explicitState === "error" ? "Couldn’t save this budget" : undefined, backHref: "/budgets", retryHref: `/policy-edit${window.location.search}`, loadingRows: 4 });
   if (namedState) return namedState;
-  const scopeLabel = scopeDimension !== "project" && scopeValue ? `${scopeDimension[0].toUpperCase()}${scopeDimension.slice(1)}: ${scopeValue}` : "Whole project";
+  const scopeLabel = scopeDimension !== "project" && scopeValues.length > 0 ? `${scopeDimension[0].toUpperCase()}${scopeDimension.slice(1)}: ${scopeValueText(scopeValues)}` : "Whole project";
   const projectName = projects.find((project) => project.id === projectId)?.name ?? (prototype ? "Atlas" : "this project");
   const environment = params.get("env") ?? "all environments";
   const environmentLabel = environment === "all" || environment === "all environments" ? "All environments" : environment;
-  const windowLabel = ({ calendar_month: "Monthly", calendar_day: "Daily", per_trace: "Per run", per_execution: "Per batch" } as Record<string, string>)[windowKind] ?? windowKind;
+  const windowLabel = ({ calendar_month: "Monthly", calendar_day: "Daily", per_trace: "Per run", per_execution: "Per batch", per_call: "Per call" } as Record<string, string>)[windowKind] ?? windowKind;
+  const perCall = windowKind === "per_call";
+  // Offer known values after the last comma, keeping what is already typed.
+  const suggestionPrefix = scopeValue.includes(",") ? `${scopeValue.slice(0, scopeValue.lastIndexOf(",") + 1).trimEnd()} ` : "";
+  const scopeSuggestions = suggestions.dimension === scopeDimension ? suggestions.values.filter((value) => !scopeValues.includes(value)) : [];
   const preview = scopeValue === "Search" ? "1,200 runs · $142.80" : scopeValue === "nightly-document-import" ? "40 runs · $6.18" : "Matching history preview available";
   const summaryAmount = unit === "money" ? formatReportedAmount(Number(allowance) || 0, policyCurrency, undefined) : `${Number(allowance || 0).toLocaleString()} ${unit}`;
-  const summaryAction = mode === "enforce" ? "Stop new calls" : "Alert at 80% and 100%";
+  const summaryAction = perCall ? (mode === "enforce" ? "Refuse calls over the limit" : "Alert on calls over the limit") : mode === "enforce" ? "Stop new calls" : "Alert at 80% and 100%";
   if (prototype && explicitState === "review") return <PrototypePolicyReview projectName={projectName} scopeValue={scopeValue || "Search"} amount={allowance || "200"} windowLabel={windowLabel} timezone={timezone} enforce={mode === "enforce" || explicitState === "review"} onBack={() => navigate("/policy-edit?design=prototype&project=proj_preview")} />;
   return <div className="ck-main-inner ck-policy-editor-page prototype-policy-route">
     <Link className="ck-back-link" to="/budgets"><ArrowLeft size={13} /> Budgets</Link>
@@ -575,19 +612,19 @@ function PolicyEditPage() {
         </div>
         <div className="ck-form-section prototype-policy-section prototype-policy-scope-section">
           <div className="ck-form-section-title"><span className="ck-section-number">2</span> Applies to</div>
-          <div className="ck-form-grid prototype-policy-two-col"><label className="ck-form-field"><span>Project</span><span className="ck-form-select-wrap"><select className="ck-select" name="project" value={projectId ?? ""} onChange={(event) => setSelectedProjectId(event.target.value)}>{projects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}</select><PrototypeIcon name="down" size={14} /></span></label><label className="ck-form-field"><span>Covers</span><span className="ck-form-select-wrap"><select className="ck-select" name="dimension" value={scopeDimension} onChange={(event) => setScopeDimension(event.target.value)}><option value="project">Whole project</option><option value="feature">A feature</option><option value="customer">A customer</option><option value="function">A function</option><option value="model">A model</option><option value="group">An experiment</option><option value="agent">An agent</option><option value="tool">A tool</option></select><PrototypeIcon name="down" size={14} /></span></label></div>
-          {scopeDimension !== "project" && <label className="ck-form-field prototype-policy-match-field"><span>Which {scopeDimension === "group" ? "experiment" : scopeDimension}?</span><input className="ck-input" name="scope" value={scopeValue} onChange={(event) => setScopeValue(event.target.value)} placeholder={scopeDimension === "feature" ? "e.g. search" : scopeDimension === "model" ? "e.g. gpt-4o" : scopeDimension === "agent" ? "e.g. browser-agent" : scopeDimension === "tool" ? "e.g. search_funds" : ""} /><small>Exact name, as your app sends it.</small></label>}
+          <div className="ck-form-grid prototype-policy-two-col"><label className="ck-form-field"><span>Project</span><span className="ck-form-select-wrap"><select className="ck-select" name="project" value={projectId ?? ""} onChange={(event) => setSelectedProjectId(event.target.value)}>{projects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}</select><PrototypeIcon name="down" size={14} /></span></label><label className="ck-form-field"><span>Covers</span><span className="ck-form-select-wrap"><select className="ck-select" name="dimension" value={scopeDimension} onChange={(event) => setScopeDimension(event.target.value)}><option value="project">Whole project</option><option value="feature">A feature</option><option value="customer">A customer</option><option value="function">A function</option><option value="model">A model</option><option value="group">An experiment</option><option value="agent">An agent</option><option value="tool">A tool</option><option value="user">A user</option><option value="workflow">A workflow</option></select><PrototypeIcon name="down" size={14} /></span></label></div>
+          {scopeDimension !== "project" && <label className="ck-form-field prototype-policy-match-field"><span>Which {scopeDimension === "group" ? "experiments" : `${scopeDimension}s`}?</span><input className="ck-input" name="scope" value={scopeValue} onChange={(event) => setScopeValue(event.target.value)} list={scopeSuggestions.length > 0 ? "policy-scope-suggestions" : undefined} autoComplete="off" placeholder={scopeDimension === "feature" ? "e.g. search, answer" : scopeDimension === "model" ? "e.g. gpt-4o" : scopeDimension === "agent" ? "e.g. browser-agent" : scopeDimension === "tool" ? "e.g. search_funds" : scopeDimension === "user" ? "e.g. user_123" : scopeDimension === "workflow" ? "e.g. nightly-import" : ""} /><small>Exact names, comma-separated.</small>{scopeSuggestions.length > 0 && <datalist id="policy-scope-suggestions">{scopeSuggestions.map((value) => <option key={value} value={`${suggestionPrefix}${value}`} />)}</datalist>}</label>}
           {prototype && <details className="prototype-policy-advanced"><summary>Advanced matching</summary><div className="prototype-policy-advanced-body"><label className="prototype-policy-check"><input type="checkbox" /> <span>Use a wildcard pattern. Preview matches before activation.</span></label><div className="ck-definition-list"><div><span>Project</span><strong>{projectName}</strong></div><div><span>Scope</span><strong>{scopeLabel}</strong></div><div><span>Future work</span><strong>Matching calls only</strong></div></div></div></details>}
           {prototype && <div className="prototype-policy-preview"><PrototypeIcon name="trace" size={15} /><span>Recent match preview: {preview} · 1–20 Sep · {environmentLabel}</span></div>}
         </div>
         <div className="ck-form-section prototype-policy-section">
           <div className="ck-form-section-title"><span className="ck-section-number">3</span> Limit</div>
-          <div className="ck-form-grid prototype-policy-two-col"><label className="ck-form-field"><span>Measure</span><span className="ck-form-select-wrap"><select className="ck-select" name="unit" value={unit} onChange={(event) => setUnit(event.target.value as typeof unit)}><option value="money">Spend</option><option value="calls">Number of calls</option><option value="tokens">Number of tokens</option></select><PrototypeIcon name="down" size={14} /></span></label>{unit === "money" && <label className="ck-form-field"><span>Currency</span><span className="ck-form-select-wrap"><select className="ck-select" name="currency" value={policyCurrency} onChange={(event) => setPolicyCurrency(event.target.value === "INR" ? "INR" : "USD")}><option value="USD">USD</option><option value="INR">INR</option></select><PrototypeIcon name="down" size={14} /></span></label>}</div>
-          <div className="ck-form-grid prototype-policy-two-col prototype-policy-allowance-row"><label className="ck-form-field"><span>Amount</span><div className="prototype-policy-input-group"><span>{unit === "money" ? "$" : "#"}</span><input className="ck-input" type="number" name="amount" min="0.01" step={unit === "money" ? "0.01" : "1"} value={allowance} onChange={(event) => setAllowance(event.target.value)} placeholder={unit === "money" ? "e.g. 400" : "e.g. 1000"} required /></div></label><label className="ck-form-field"><span>Resets</span><span className="ck-form-select-wrap"><select className="ck-select" name="window" value={windowKind} onChange={(event) => setWindowKind(event.target.value)}><option value="calendar_month">Every month</option><option value="calendar_day">Every day</option><option value="per_trace">For each run</option><option value="per_execution">For each batch</option></select><PrototypeIcon name="down" size={14} /></span></label></div>
+          <div className="ck-form-grid prototype-policy-two-col"><label className="ck-form-field"><span>Measure</span><span className="ck-form-select-wrap"><select className="ck-select" name="unit" value={unit} onChange={(event) => setUnit(event.target.value as typeof unit)}><option value="money">Spend</option>{!perCall && <option value="calls">Number of calls</option>}<option value="tokens">Number of tokens</option></select><PrototypeIcon name="down" size={14} /></span></label>{unit === "money" && <label className="ck-form-field"><span>Currency</span><span className="ck-form-select-wrap"><select className="ck-select" name="currency" value={policyCurrency} onChange={(event) => setPolicyCurrency(event.target.value === "INR" ? "INR" : "USD")}><option value="USD">USD</option><option value="INR">INR</option></select><PrototypeIcon name="down" size={14} /></span></label>}</div>
+          <div className="ck-form-grid prototype-policy-two-col prototype-policy-allowance-row"><label className="ck-form-field"><span>Amount</span><div className="prototype-policy-input-group"><span>{unit === "money" ? "$" : "#"}</span><input className="ck-input" type="number" name="amount" min="0.01" step={unit === "money" ? "0.01" : "1"} value={allowance} onChange={(event) => setAllowance(event.target.value)} placeholder={unit === "money" ? "e.g. 400" : "e.g. 1000"} required /></div></label><label className="ck-form-field"><span>Resets</span><span className="ck-form-select-wrap"><select className="ck-select" name="window" value={windowKind} onChange={(event) => { setWindowKind(event.target.value); if (event.target.value === "per_call" && unit === "calls") setUnit("money"); }}><option value="calendar_month">Every month</option><option value="calendar_day">Every day</option><option value="per_trace">For each run</option><option value="per_execution">For each batch</option><option value="per_call">Each call</option></select><PrototypeIcon name="down" size={14} /></span></label></div>
         </div>
         <div className="ck-form-section prototype-policy-section">
           <div className="ck-form-section-title"><span className="ck-section-number">4</span> When it’s reached</div>
-          <div className="prototype-policy-radio-stack"><label className={`prototype-policy-radio ${mode === "monitor" ? "selected" : ""}`}><input type="radio" name="mode" value="monitor" checked={mode === "monitor"} onChange={() => setMode("monitor")} /><span><strong>Alert me</strong><small>Send alerts. Calls keep going.</small></span></label><label className={`prototype-policy-radio ${mode === "enforce" && !unavailable ? "selected" : ""}`} style={unavailable ? { opacity: 0.6 } : undefined}><input type="radio" name="mode" value="enforce" checked={mode === "enforce"} onChange={() => setMode("enforce")} disabled={unavailable} /><span><strong>Stop new calls</strong><small>Refuses new calls at the limit</small></span></label></div>
+          <div className="prototype-policy-radio-stack"><label className={`prototype-policy-radio ${mode === "monitor" ? "selected" : ""}`}><input type="radio" name="mode" value="monitor" checked={mode === "monitor"} onChange={() => setMode("monitor")} /><span><strong>Alert me</strong><small>Send alerts. Calls keep going.</small></span></label><label className={`prototype-policy-radio ${mode === "enforce" && !unavailable ? "selected" : ""}`} style={unavailable ? { opacity: 0.6 } : undefined}><input type="radio" name="mode" value="enforce" checked={mode === "enforce"} onChange={() => setMode("enforce")} disabled={unavailable} /><span><strong>Stop new calls</strong><small>{perCall ? "Refuses calls over the limit" : "Refuses new calls at the limit"}</small></span></label></div>
           
         </div>
         {error && <div className="ck-form-error" role="alert">{error}</div>}

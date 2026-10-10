@@ -33,21 +33,16 @@ import {
   createProject,
   createTeamInvite,
   createCredit,
-  createNotificationDestination,
   createEffectivePrice,
   deleteProject,
   deleteCapturedContent,
   deleteCredit,
-  deleteNotificationDestination,
   deleteEffectivePrice,
   getConnectionHealth,
   getCredits,
   getFindingThresholds,
   getInvoices,
   getMemberProjects,
-  getNotificationDeliveries,
-  getNotificationDestinations,
-  getNotificationPreferences,
   getEffectivePrices,
   getPriceCatalogStatus,
   getUnpricedModels,
@@ -65,13 +60,11 @@ import {
   rotateProjectKey,
   SettingsApiError,
   startSubscriptionCheckout,
-  testNotificationDestination,
   transferWorkspaceOwnership,
   getWorkspaceClosureImpact,
   requestWorkspaceClosure,
   updateCredit,
   updateFindingThresholds,
-  updateNotificationPreferences,
   updateEffectivePrice,
   updatePrivacySettings,
   updateTeamMember,
@@ -84,9 +77,6 @@ import {
   type ConnectionHealth,
   type Credit,
   type Invoice,
-  type NotificationDelivery,
-  type NotificationDestination,
-  type NotificationPreferences,
   type EffectivePrice,
   type CatalogModel,
   type PriceCatalogStatus,
@@ -610,76 +600,11 @@ function TeamAccess({ projects, members, userId, role, orgName, refresh }: { pro
   </>;
 }
 
-function NotificationsSettings({ projects, role, userEmail }: { projects: SettingsProject[]; role: Role; userEmail: string }) {
-  const [scopeProjectId, setScopeProjectId] = useState<string>("");
-  const [preferences, setPreferences] = useState<NotificationPreferences | null>(null);
-  const [workspaceDefaults, setWorkspaceDefaults] = useState<Partial<NotificationPreferences> | null>(null);
-  const [destinations, setDestinations] = useState<NotificationDestination[]>([]);
-  const [deliveries, setDeliveries] = useState<NotificationDelivery[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
-  const [destinationFormOpen, setDestinationFormOpen] = useState(false);
-  const [destinationForm, setDestinationForm] = useState({ kind: "email" as "email" | "webhook", address: userEmail, secret: "", projectId: "" });
-  const [addingDestination, setAddingDestination] = useState(false);
-  const confirmation = useConfirmation();
-
-  const browserTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-  const selectedScope = scopeProjectId || undefined;
-  const load = useCallback(async (): Promise<void> => {
-    setLoading(true); setError(null);
-    try {
-      const [preferenceResult, destinationResult, deliveryResult] = await Promise.all([getNotificationPreferences(selectedScope), getNotificationDestinations(), getNotificationDeliveries()]);
-      setPreferences(preferenceResult.preferences); setWorkspaceDefaults(preferenceResult.workspaceDefaults ?? null); setDestinations(Array.isArray(destinationResult.destinations) ? destinationResult.destinations : []); setDeliveries(Array.isArray(deliveryResult.deliveries) ? deliveryResult.deliveries : []);
-    } catch (loadError) { setError(errorText(loadError)); }
-    finally { setLoading(false); }
-  }, [selectedScope]);
-  useEffect(() => { void load(); }, [load]);
-
-  function updatePreference<K extends keyof NotificationPreferences>(key: K, value: NotificationPreferences[K]): void {
-    setPreferences((current) => current ? { ...current, [key]: value } : current);
-  }
-  async function savePreferences(): Promise<void> {
-    if (!preferences) return;
-    setSaving(true); setError(null); setMessage(null);
-    try { const result = await updateNotificationPreferences({ projectId: preferences.projectId, weeklySummaryEnabled: preferences.weeklySummaryEnabled, weeklySummaryHour: preferences.weeklySummaryHour, weeklySummaryWeekday: preferences.weeklySummaryWeekday, timezone: preferences.timezone, findingsEnabled: preferences.findingsEnabled, policyWarningThresholds: preferences.policyWarningThresholds, enforcementEnabled: preferences.enforcementEnabled, executionReceiptsEnabled: preferences.executionReceiptsEnabled }); setPreferences(result.preferences); setWorkspaceDefaults(result.workspaceDefaults ?? workspaceDefaults); setMessage("Alert settings saved."); }
-    catch (saveError) { setError(errorText(saveError)); }
-    finally { setSaving(false); }
-  }
-  async function addDestination(): Promise<void> {
-    if (!destinationForm.address.trim() || (destinationForm.kind === "webhook" && destinationForm.secret.length < 16)) return;
-    setAddingDestination(true); setError(null); setMessage(null);
-    try { const result = await createNotificationDestination({ kind: destinationForm.kind, address: destinationForm.address.trim(), secret: destinationForm.kind === "webhook" ? destinationForm.secret : undefined, eventTypes: ["weekly_summary", "finding", "policy_warning", "enforcement"], projectId: destinationForm.projectId || null }); setDestinations((current) => [result.destination, ...current]); setDestinationForm((form) => ({ ...form, address: form.kind === "email" ? userEmail : "", secret: "" })); setDestinationFormOpen(false); setMessage("Destination added."); }
-    catch (addError) { setError(errorText(addError)); }
-    finally { setAddingDestination(false); }
-  }
-  function removeDestination(destination: NotificationDestination, trigger: HTMLElement): void {
-    confirmation.ask({ title: "Remove this destination?", body: `This removes the ${destination.kind} destination from this workspace. No future notification will be sent there.`, actionLabel: "Remove destination", onConfirm: async () => {
-      try { await deleteNotificationDestination(destination.id); setDestinations((current) => current.filter((item) => item.id !== destination.id)); }
-      catch (removeError) { setError(errorText(removeError)); }
-    } }, trigger);
-  }
-  async function testDestination(destination: NotificationDestination): Promise<void> {
-    setError(null); setMessage(null);
-    try { const result = await testNotificationDestination(destination.id); setMessage(result.delivery.status === "sent" ? "Test delivered." : `Test ${result.delivery.status}: ${result.delivery.error ?? "No delivery was recorded."}`); await load(); }
-    catch (testError) {
-      const delivery = testError instanceof SettingsApiError ? (testError.body as { delivery?: { status?: string; error?: string | null } } | null)?.delivery : undefined;
-      setError(delivery ? `Test ${delivery.status === "suppressed" ? "not sent" : "failed"}: ${delivery.error ?? "no reason given"}` : errorText(testError));
-      if (delivery) await load();
-    }
-  }
-  const latestFailure = deliveries.find((delivery) => delivery.status === "failed");
-  const thresholds = preferences?.policyWarningThresholds ?? [0.8, 1];
-  const updateThreshold = (index: number, value: string): void => { const next = [...thresholds]; const parsed = Number(value) / 100; if (Number.isFinite(parsed)) next[index] = Math.max(0.01, Math.min(1, parsed)); updatePreference("policyWarningThresholds", next); };
-
+function NotificationsSettings({ projects, role }: { projects: SettingsProject[]; role: Role; userEmail?: string }) {
+  // Destinations, subscriptions and delivery history live on /alerting.
   return <>
-    {confirmation.dialog}
     <div className="settings-section-title"><div><h2>Notifications</h2></div></div>
-    {(message || error) && <div className={`settings-status-line ${error ? "error" : "success"}`} role={error ? "alert" : "status"}>{error ?? message}</div>}
-    <Panel title="What you hear about"><div className="settings-card-body"><div className="settings-project-picker"><label htmlFor="notification-scope">Scope</label><select id="notification-scope" value={scopeProjectId} onChange={(event) => setScopeProjectId(event.target.value)}><option value="">Workspace</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></div>{loading ? <LoadingRows count={3} columns={3} /> : preferences && <div className="settings-form" style={{ marginTop: 16 }}><div className="settings-row"><div className="settings-row-copy"><h3>Weekly summary email</h3><p>Previous calendar week · Monday at {String(preferences.weeklySummaryHour).padStart(2, "0")}:00 · {preferences.timezone}</p></div><button className={`settings-switch ${preferences.weeklySummaryEnabled ? "on" : ""}`} type="button" role="switch" aria-label="Weekly summary email" aria-checked={preferences.weeklySummaryEnabled} onClick={() => updatePreference("weeklySummaryEnabled", !preferences.weeklySummaryEnabled)} /></div>{preferences.weeklySummaryEnabled && <div className="settings-form-grid"><div className="settings-form-field"><label htmlFor="summary-time">Send at (workspace time)</label><input id="summary-time" type="number" min="0" max="23" value={preferences.weeklySummaryHour} onChange={(event) => updatePreference("weeklySummaryHour", Math.max(0, Math.min(23, Number(event.target.value))))} /></div><div className="settings-form-field"><label htmlFor="summary-timezone">Recipient timezone</label><select id="summary-timezone" value={preferences.timezone || browserTimezone} onChange={(event) => updatePreference("timezone", event.target.value)}><option value={browserTimezone}>{browserTimezone} (browser)</option><option value="UTC">UTC</option><option value="Asia/Kolkata">Asia/Kolkata</option><option value="America/Los_Angeles">America/Los_Angeles</option><option value="America/New_York">America/New_York</option></select></div></div>}<div className="settings-row"><div className="settings-row-copy"><h3>Flagged change emails</h3></div><button className={`settings-switch ${preferences.findingsEnabled ? "on" : ""}`} type="button" role="switch" aria-label="Flagged change emails" aria-checked={preferences.findingsEnabled} onClick={() => updatePreference("findingsEnabled", !preferences.findingsEnabled)} /></div><div className="settings-row"><div className="settings-row-copy"><h3>Budget alerts</h3><p>At 80% and 100%</p></div><button className="settings-switch on" type="button" role="switch" aria-label="Budget alerts" aria-checked="true" disabled /></div><div className="settings-row"><div className="settings-row-copy"><h3>Refused calls</h3><p>Right away, then hourly</p></div><button className={`settings-switch ${preferences.enforcementEnabled ? "on" : ""}`} type="button" role="switch" aria-label="Refused calls" aria-checked={preferences.enforcementEnabled} onClick={() => updatePreference("enforcementEnabled", !preferences.enforcementEnabled)} /></div><div className="settings-row"><div className="settings-row-copy"><h3>Experiment batch summaries</h3></div><button className={`settings-switch ${preferences.executionReceiptsEnabled ? "on" : ""}`} type="button" role="switch" aria-label="Experiment batch summaries" aria-checked={preferences.executionReceiptsEnabled} onClick={() => updatePreference("executionReceiptsEnabled", !preferences.executionReceiptsEnabled)} /></div><div className="settings-form-grid"><div className="settings-form-field"><label htmlFor="warning-80">First budget alert at (%)</label><input id="warning-80" type="number" min="1" max="100" value={Math.round((thresholds[0] ?? .8) * 100)} onChange={(event) => updateThreshold(0, event.target.value)} /></div><div className="settings-form-field"><label htmlFor="warning-100">Budget alert at (%)</label><input id="warning-100" type="number" min="1" max="100" value={Math.round((thresholds[1] ?? 1) * 100)} onChange={(event) => updateThreshold(1, event.target.value)} /></div></div>{workspaceDefaults && <p className="settings-footnote">Workspace default summary: {workspaceDefaults.weeklySummaryEnabled ? "enabled" : "disabled"}; findings: {workspaceDefaults.findingsEnabled ? "enabled" : "disabled"}. Your personal values above can differ.</p>}<div className="settings-form-footer"><button className="ck-button ck-button-primary" type="button" onClick={() => void savePreferences()} disabled={saving}>{saving ? "Saving" : "Save preferences"}</button></div></div>}</div></Panel>
-    {!loading && !preferences && <Panel title="Couldn’t load alert settings" subtitle="Nothing was changed. Try again."><div className="settings-card-body"><div className="ck-alert"><AlertTriangle size={15} /><span>{error ?? "No alert settings yet."}</span></div><div className="settings-form-footer"><button className="ck-button ck-button-secondary" type="button" onClick={() => void load()} aria-label="Try again">Try again</button></div></div></Panel>}
-    <Panel title="Where alerts go" actions={destinationFormOpen ? undefined : <button className="ck-button ck-button-secondary" type="button" onClick={() => setDestinationFormOpen(true)}><Plus size={13} /> Add destination</button>}><div className="settings-card-body">{destinationFormOpen && <div className="settings-form"><div className="settings-form-grid"><div className="settings-form-field"><label htmlFor="destination-kind">Channel</label><select id="destination-kind" value={destinationForm.kind} onChange={(event) => setDestinationForm({ ...destinationForm, kind: event.target.value as "email" | "webhook", address: event.target.value === "email" ? userEmail : "" })}><option value="email">Email</option><option value="webhook" disabled={!canManage(role)}>Generic signed webhook</option></select></div><div className="settings-form-field"><label htmlFor="destination-address">{destinationForm.kind === "email" ? "Email address" : "Webhook URL"}</label><input id="destination-address" type={destinationForm.kind === "email" ? "email" : "url"} value={destinationForm.address} onChange={(event) => setDestinationForm({ ...destinationForm, address: event.target.value })} placeholder={destinationForm.kind === "email" ? "you@company.com" : "https://hooks.example.com/costkey"} /></div>{destinationForm.kind === "webhook" && <div className="settings-form-field full"><label htmlFor="destination-secret">Signing secret</label><input id="destination-secret" type="password" value={destinationForm.secret} onChange={(event) => setDestinationForm({ ...destinationForm, secret: event.target.value })} placeholder="At least 16 characters" autoComplete="new-password" /><small>Used to sign each webhook (sha256). Stored encrypted and never shown again.</small></div>}<div className="settings-form-field"><label htmlFor="destination-project">Scope</label><select id="destination-project" value={destinationForm.projectId} onChange={(event) => setDestinationForm({ ...destinationForm, projectId: event.target.value })}><option value="">Workspace</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></div></div><div className="settings-form-footer"><button className="ck-button ck-button-secondary" type="button" aria-label="Add notification destination" onClick={() => void addDestination()} disabled={addingDestination || !destinationForm.address.trim() || (destinationForm.kind === "webhook" && destinationForm.secret.length < 16)}>{addingDestination ? "Adding" : "Add destination"}</button><button className="ck-button ck-button-quiet" type="button" onClick={() => setDestinationFormOpen(false)}>Cancel</button></div></div>}{destinations.length === 0 ? <div className="settings-empty" style={{ marginTop: 16 }}>No destinations yet.</div> : <div className="settings-table-wrap" style={{ marginTop: 16 }}><table className="settings-table"><thead><tr><th>Channel</th><th>Scope</th><th>Status</th><th>Last delivery</th><th /></tr></thead><tbody>{destinations.map((destination) => <tr key={destination.id}><td className="primary">{destination.kind}<div className="muted">{destination.kind === "webhook" ? "Signed endpoint" : destination.address}</div></td><td className="muted">{destination.project_id ? projects.find((project) => project.id === destination.project_id)?.name ?? destination.project_id : "Workspace"}</td><td><StatusPill tone={destination.last_error ? "critical" : destination.enabled ? "good" : "neutral"}>{destination.last_error ? "Delivery failed" : destination.enabled ? "Active" : "Paused"}</StatusPill></td><td>{destination.last_delivery_at ? formatDateTime(destination.last_delivery_at) : "Not tested"}</td><td className="actions"><button className="ck-button ck-button-quiet" type="button" aria-label={`Send test to ${destination.kind} ${destination.address}`} onClick={() => void testDestination(destination)}>Send test</button><button className="settings-icon-button" type="button" onClick={(event) => removeDestination(destination, event.currentTarget)} aria-label={`Remove ${destination.kind} destination`}><Trash2 size={13} /></button></td></tr>)}</tbody></table></div>}{latestFailure && <div className="ck-alert" style={{ marginTop: 14 }}><AlertTriangle size={15} /><div><strong>Last delivery failed.</strong> The recipient was not notified: {latestFailure.last_error ?? "delivery failed"}. The underlying policy remains active.</div></div>}</div></Panel>
+    <Panel title="Alerting" actions={<Link className="ck-button ck-button-secondary" to="/alerting">Open Alerting</Link>}>{null}</Panel>
     <FindingThresholdSettings projects={projects} role={role} />
   </>;
 }

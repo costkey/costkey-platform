@@ -3,6 +3,7 @@ import { GitBranch, ArrowRight, LoaderCircle } from "lucide-react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../contexts/useAuth";
 import { BrandLockup } from "../components/BrandMark";
+import { AuthScene } from "../components/AuthScene";
 
 /** Brand panel for the signed-out pages: a glimpse of what the console shows. */
 export function AuthBrandPanel() {
@@ -12,26 +13,7 @@ export function AuthBrandPanel() {
       <div className="auth-brand-copy">
         <h1>A little<br /><em>light on.</em></h1>
       </div>
-      <div className="auth-preview" aria-hidden="true">
-        <div className="auth-preview-card auth-preview-run">
-          <div className="auth-preview-row"><span className="auth-preview-kind">Agent</span><strong>support-agent</strong><span className="auth-preview-cost">$0.042</span></div>
-          {[["Plan", 4, 18, "step"], ["search_orders", 22, 16, "tool"], ["Answer", 38, 46, "step"], ["Judge", 84, 12, "judge"]].map(([label, offset, width, kind]) => (
-            <div className="auth-preview-span" key={label as string}>
-              <span>{label}</span>
-              <i><b className={`kind-${kind}`} style={{ marginLeft: `${offset}%`, width: `${width}%` }} /></i>
-            </div>
-          ))}
-        </div>
-        <div className="auth-preview-card auth-preview-budget">
-          <div className="auth-preview-row"><span>Monthly budget</span><strong>$612 of $800</strong></div>
-          <i className="auth-preview-meter"><b style={{ width: "76%" }} /></i>
-          <div className="auth-preview-row auth-preview-muted"><span>Alerts at 80%</span><span>Stops at 100%</span></div>
-        </div>
-        <div className="auth-preview-card auth-preview-spend">
-          <div className="auth-preview-row"><span>Spend this month</span><strong>$612.40</strong></div>
-          <svg viewBox="0 0 240 56" preserveAspectRatio="none"><path d="M0 52 L20 49 L40 47 L60 42 L80 40 L100 33 L120 30 L140 26 L160 20 L180 17 L200 12 L220 9 L240 5" /><path className="auth-preview-pace" d="M0 52 L240 14" /></svg>
-        </div>
-      </div>
+      <AuthScene />
     </section>
   );
 }

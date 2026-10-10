@@ -391,6 +391,7 @@ function CostBreakdown({ contributors, rowsGroup, updating, totalCost, loading, 
       {loading ? <LoadingRows count={5} columns={5} /> : contributors.length === 0 ? <EmptyPanel title={`Nothing labelled by ${group} yet`} body={`Spend still counts in every total. Add a ${group} label in the SDK, or map calls to ${group}s on the Costs page.`} action={<Link className="ck-button ck-button-secondary" to={`/costs${scopeSearch}`}>Open Costs</Link>} /> : (
         <div className={`ck-table-wrap${updating ? " is-updating" : ""}`} aria-busy={updating}>
           <table className="ck-table ck-breakdown-table">
+            <colgroup><col /><col className="ck-col-money" /><col className="ck-col-share" /></colgroup>
             <thead><tr><th>{rowsGroup[0].toUpperCase() + rowsGroup.slice(1)}</th><th className="numeric">Cost ({currency})</th><th className="numeric">Share</th></tr></thead>
             <tbody>
               {contributors.slice(0, 5).map((contributor) => {

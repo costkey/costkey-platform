@@ -15,7 +15,7 @@ capability matrix](/recipes#capability-matrix).
 pipx run costkey setup
 ```
 
-**Current version:** 0.5.1
+**Current version:** 0.6.0
 
 `pipx run costkey setup` logs you in, creates a CostKey project, writes `COSTKEY_DSN`, detects FastAPI, Django, Flask, and plain Python apps, and writes `.costkey/setup.md`.
 
@@ -190,6 +190,32 @@ Parameters:
 |-----------|------|---------|-------------|
 | `name` | `str \| None` | `None` | Human-readable name for the trace (shown in dashboard). |
 | `trace_id` | `str \| None` | `None` | Custom trace ID. Auto-generated if not provided. |
+
+### Agent spans
+
+`costkey.agent()`, `costkey.step()`, `costkey.tool()` and `costkey.span()`
+record an agent run as a tree. Each works as a context manager, an async
+context manager or a decorator. Calls inside a span are attributed to it. See
+[Agents and tools](/agents) for the OpenAI Agents SDK and browser-use
+integrations and for resuming a paused run.
+
+```python
+with costkey.agent("dash", user_id=user.id) as span:
+    span.set_attribute("model", "gpt-5.1")
+    with costkey.tool("get_holdings"):
+        holdings = get_holdings(user.id)
+```
+
+| Function | Description |
+|----------|-------------|
+| `agent(name, **options)` | An agent run. |
+| `step(name, **options)` | One turn of an agent loop. |
+| `tool(name, **options)` | A tool call. |
+| `span(name, kind="custom", **options)` | Any span kind. |
+
+Options are `attributes`, `input`, `span_id`, `parent_span_id` and `context`.
+Other keyword arguments become context labels. The handle has `id`,
+`trace_id`, `set_attribute(key, value)` and `set_output(value)`.
 
 ### Grouped executions and explicit usage
 

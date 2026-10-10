@@ -15,7 +15,7 @@ matrix](/recipes#capability-matrix). No provider-routing gateway is required.
 npx costkey setup
 ```
 
-**Current version:** 0.5.2
+**Current version:** 0.6.0
 
 `npx costkey setup` logs you in, creates a CostKey project, writes `COSTKEY_DSN`, detects frameworks like Next.js, Vite, Express, Fastify, Hono, Koa, NestJS, Remix, Astro, and SvelteKit, and writes `.costkey/setup.md`.
 
@@ -121,6 +121,10 @@ await CostKey.withContext({ task: 'summarize', team: 'search' }, async () => {
 })
 ```
 
+Keys the console groups by include `feature`, `task`, `service`, `customer`,
+`userId` and `conversationId`. Agent spans set `agent`, `tool` and `spanId` for
+you.
+
 Contexts nest. Inner contexts merge with (and override) outer contexts:
 
 ```typescript
@@ -157,6 +161,31 @@ Parameters:
 |-----------|------|---------|-------------|
 | `name` | `string` | `undefined` | Human-readable trace name shown in dashboard. |
 | `traceId` | `string` | `undefined` | Custom trace ID. Auto-generated if not provided. |
+
+### Agent spans
+
+`CostKey.agent()`, `CostKey.step()`, `CostKey.tool()` and `CostKey.startSpan()`
+record an agent run as a tree. Calls inside a span are attributed to it. See
+[Agents and tools](/agents) for kinds, framework integrations and resuming a
+paused run.
+
+```typescript
+await CostKey.agent('dash', async (span) => {
+  span.setAttribute('model', 'gpt-5.1')
+  await CostKey.tool('get_holdings', () => holdings(userId))
+})
+```
+
+| Method | Description |
+|--------|-------------|
+| `agent(name, fn, options?)` | An agent run. |
+| `step(name, fn, options?)` | One turn of an agent loop. |
+| `tool(name, fn, options?)` | A tool call. |
+| `startSpan({ name, kind, attributes, input }, fn)` | Any span kind. |
+| `instrumentTools(tools)` | Wrap each tool's `execute` in a tool span (AI SDK, Mastra). |
+
+The callback receives a handle with `id`, `traceId`, `setAttribute(key, value)`
+and `setOutput(value)`.
 
 ### Grouped executions and explicit usage
 

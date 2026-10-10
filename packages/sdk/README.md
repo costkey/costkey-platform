@@ -78,6 +78,24 @@ await CostKey.withContext({ task: 'summarize', team: 'search' }, async () => {
 })
 ```
 
+## Agents
+
+Record an agent run as a tree of spans. Model calls are attributed to the
+innermost span, and the run page shows cost and latency at each level.
+
+```typescript
+await CostKey.agent('dash', async (span) => {
+  span.setAttribute('model', 'gpt-5.1')
+  await CostKey.tool('get_holdings', () => holdings(userId))
+  await CostKey.step('answer', () => writeAnswer())
+})
+
+// Vercel AI SDK / Mastra: each tool's execute becomes a tool span
+const tools = CostKey.instrumentTools({ getHoldings, searchFunds })
+```
+
+See [Agents and tools](https://costkey.dev/docs/agents).
+
 ## Grouped work and explicit usage
 
 Use a stable group name with a fresh execution identity for batches,
@@ -248,6 +266,9 @@ Custom providers: `CostKey.registerExtractor(extractor)`
 | `CostKey.recordUsage(event)` | Report deduplicated external/native usage. |
 | `CostKey.recordLiveKitUsage(event, opts)` | Map selected LiveKit cumulative STT/LLM/TTS usage; use `components` or `excludeComponents` when another source owns a component. |
 | `CostKey.withContext(ctx, fn)` | Run fn with custom tags. |
+| `CostKey.agent / step / tool(name, fn)` | Run fn inside an agent, step or tool span. |
+| `CostKey.startSpan(opts, fn)` | Run fn inside a span of any kind. |
+| `CostKey.instrumentTools(tools)` | Wrap each tool's `execute` in a tool span. |
 | `CostKey.exportContext()` / `exportContextHeaders()` | Explicit allowlisted cross-process carrier. |
 | `CostKey.shutdown()` | Flush and restore original fetch. |
 | `CostKey.registerExtractor(ext)` | Add custom AI provider. |

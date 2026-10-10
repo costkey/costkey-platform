@@ -72,7 +72,9 @@ export async function seedIfEmpty(pool: pg.Pool): Promise<void> {
       for (let i = 0; i < tracesPerDay; i++) {
         const tmpl = traceTemplates[Math.floor(Math.random() * traceTemplates.length)];
         const traceId = `tr_${Math.random().toString(36).slice(2, 12)}`;
-        const baseTs = dayBase + Math.floor(Math.random() * DAY);
+        // Spread each day's runs over the 24 hours ending at dayBase so the
+        // newest demo runs are never timestamped in the future.
+        const baseTs = dayBase - Math.floor(Math.random() * DAY);
 
         for (let j = 0; j < tmpl.idxs.length; j++) {
           const chain = chains[tmpl.idxs[j]];

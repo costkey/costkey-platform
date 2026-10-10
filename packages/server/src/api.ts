@@ -6,14 +6,36 @@ import { groupIntoFeatures } from "./grouping.js";
 import { getAnomalies, dismissAnomaly } from "./anomaly.js";
 import { orgScope } from "./middleware.js";
 import { requireAuth } from "./auth.js";
+import { createAccountingRouter } from "./accounting-api.js";
+import { createFeatureMappingsRouter } from "./feature-mappings.js";
+import { listAccessibleProjects, roleCanManageWorkspace } from "./permissions.js";
 
-const resend = new Resend(process.env["RESEND_API_KEY"]!);
+let resend: Resend | null = null;
+
+function getResend(): Resend {
+  return resend ??= new Resend(process.env["RESEND_API_KEY"] ?? "");
+}
+
+export function escapeHtml(value: unknown): string {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
 
 export function createApiRouter(pool: pg.Pool): Router {
   const router = createRouter();
 
   // Apply org-scoping to ALL /api/v1/projects/:projectId/* routes
   router.use("/api/v1/projects/:projectId", requireAuth, orgScope(pool));
+
+  // PRD accounting/inspection routes must be mounted before legacy explorer
+  // routes so lifecycle-aware responses (partial cost, real elapsed time and
+  // grouped receipts) are authoritative while old response aliases remain.
+  router.use(createAccountingRouter(pool));
+  router.use(createFeatureMappingsRouter(pool));
 
   // GET /api/v1/projects/:projectId/summary
   router.get("/api/v1/projects/:projectId/summary", async (req, res) => {
@@ -177,7 +199,7 @@ export function createApiRouter(pool: pg.Pool): Router {
       if (unpriced.rows[0].cnt > 0) {
         hints.push({
           type: "unpriced_calls",
-          message: `${unpriced.rows[0].cnt} calls have no reliable price yet. Spend totals exclude these calls and may be incomplete.`,
+          message: `${unpriced.rows[0].cnt} calls have no price yet.`,
           link: "/docs/providers",
         });
       }
@@ -746,14 +768,28 @@ export function createApiRouter(pool: pg.Pool): Router {
   router.get("/api/v1/projects", requireAuth, async (req, res) => {
     try {
       const user = (req as any).user;
+      const visibleProjects = await listAccessibleProjects(pool, user, {
+        includeAuthKey: roleCanManageWorkspace(user.role),
+      });
+      const visibleIds = visibleProjects.map((project) => project.id as string);
       const result = await pool.query(
-        `SELECT p.id, p.name, p.auth_key, p.created_at,
-          (SELECT COUNT(*)::int FROM events e WHERE e.project_id = p.id) as event_count,
-          (SELECT COALESCE(SUM(cost_usd), 0) FROM events e WHERE e.project_id = p.id) as total_cost
-        FROM projects p WHERE p.org_id = $1 ORDER BY p.created_at DESC`,
-        [user.orgId],
+        `SELECT p.id,
+          COUNT(e.id) FILTER (WHERE COALESCE(e.event_type, 'call') = 'call')::int AS event_count,
+          SUM(e.cost_usd) FILTER (WHERE COALESCE(e.event_type, 'call') = 'call' AND e.cost_usd IS NOT NULL) AS total_cost,
+          COUNT(e.id) FILTER (WHERE COALESCE(e.event_type, 'call') = 'call' AND e.cost_usd IS NULL)::int AS unpriced_count
+        FROM projects p LEFT JOIN events e ON e.project_id = p.id
+        WHERE p.id = ANY($1::text[])
+        GROUP BY p.id`,
+        [visibleIds],
       );
-      res.json({ projects: result.rows });
+      const stats = new Map(result.rows.map((row) => [row.id as string, row]));
+      res.json({ projects: visibleProjects.map((project) => ({
+        ...project,
+        auth_key: project.auth_key ?? null,
+        event_count: stats.get(project.id as string)?.event_count ?? 0,
+        total_cost: stats.get(project.id as string)?.total_cost ?? null,
+        unpriced_count: stats.get(project.id as string)?.unpriced_count ?? 0,
+      })) });
     } catch (err) {
       console.error("[costkey] API error:", err);
       res.status(500).json({ error: "Internal server error" });
@@ -764,6 +800,10 @@ export function createApiRouter(pool: pg.Pool): Router {
   router.post("/api/v1/projects", requireAuth, async (req, res) => {
     try {
       const user = (req as any).user;
+      if (user.role !== "owner" && user.role !== "admin") {
+        res.status(403).json({ error: "Only owners and admins can create projects" });
+        return;
+      }
       const { name } = req.body as { name: string };
       if (!name) {
         res.status(400).json({ error: "Missing project name" });
@@ -789,6 +829,11 @@ export function createApiRouter(pool: pg.Pool): Router {
   router.patch("/api/v1/projects/:projectId", async (req, res) => {
     try {
       const { projectId } = req.params;
+      const user = (req as any).user;
+      if (user.role !== "owner" && user.role !== "admin") {
+        res.status(403).json({ error: "Only owners and admins can rename projects" });
+        return;
+      }
       const { name } = req.body as { name?: string };
       if (!name) {
         res.status(400).json({ error: "Missing name" });
@@ -878,6 +923,11 @@ export function createApiRouter(pool: pg.Pool): Router {
   // POST /api/v1/projects/:projectId/providers — create custom provider
   router.post("/api/v1/projects/:projectId/providers", async (req, res) => {
     try {
+      const user = (req as any).user;
+      if (user.role !== "owner" && user.role !== "admin") {
+        res.status(403).json({ error: "Only owners and admins can manage custom providers" });
+        return;
+      }
       const { projectId } = req.params;
       const { name, hostname, usageInputPath, usageOutputPath, modelPath } = req.body as {
         name?: string;
@@ -912,6 +962,11 @@ export function createApiRouter(pool: pg.Pool): Router {
   // PATCH /api/v1/projects/:projectId/providers/:providerId — update custom provider
   router.patch("/api/v1/projects/:projectId/providers/:providerId", async (req, res) => {
     try {
+      const user = (req as any).user;
+      if (user.role !== "owner" && user.role !== "admin") {
+        res.status(403).json({ error: "Only owners and admins can manage custom providers" });
+        return;
+      }
       const { projectId, providerId } = req.params;
       const { name, hostname, usageInputPath, usageOutputPath, modelPath, enabled } = req.body as {
         name?: string;
@@ -953,6 +1008,11 @@ export function createApiRouter(pool: pg.Pool): Router {
   // DELETE /api/v1/projects/:projectId/providers/:providerId — delete custom provider
   router.delete("/api/v1/projects/:projectId/providers/:providerId", async (req, res) => {
     try {
+      const user = (req as any).user;
+      if (user.role !== "owner" && user.role !== "admin") {
+        res.status(403).json({ error: "Only owners and admins can manage custom providers" });
+        return;
+      }
       const { projectId, providerId } = req.params;
       await pool.query(
         "DELETE FROM custom_providers WHERE id = $1 AND project_id = $2",
@@ -966,34 +1026,51 @@ export function createApiRouter(pool: pg.Pool): Router {
   });
 
   // POST /api/v1/feedback — send feedback email
-  router.post("/api/v1/feedback", async (req, res) => {
+  router.post("/api/v1/feedback", requireAuth, async (req, res) => {
     try {
       const user = (req as any).user;
-      const { message, type } = req.body as { message?: string; type?: string };
-      if (!message?.trim()) {
+      const body = (req.body ?? {}) as { message?: unknown; type?: unknown };
+      if (typeof body.message !== "string" || !body.message.trim()) {
         res.status(400).json({ error: "Message is required" });
+        return;
+      }
+      if (body.message.length > 4_000) {
+        res.status(413).json({ error: "Message is too large" });
+        return;
+      }
+      const type = typeof body.type === "string" && /^[a-z0-9 _-]{1,40}$/i.test(body.type.trim())
+        ? body.type.trim()
+        : "feedback";
+      if (body.type !== undefined && type === "feedback" && body.type !== "feedback") {
+        res.status(400).json({ error: "Invalid feedback type" });
         return;
       }
 
       const fromName = user?.name ?? "Anonymous";
       const fromEmail = user?.email ?? "unknown";
-      const feedbackType = type ?? "feedback";
+      const feedbackType = type;
+      const safeName = escapeHtml(fromName);
+      const safeEmail = escapeHtml(fromEmail);
+      const safeType = escapeHtml(feedbackType);
+      const safeMessage = escapeHtml(body.message);
 
-      await resend.emails.send({
+      await getResend().emails.send({
         from: "CostKey <noreply@costkey.dev>",
         to: "naman@costkey.dev",
-        subject: `[CostKey ${feedbackType}] from ${fromName}`,
+        subject: `[CostKey ${feedbackType}] from ${String(fromName).replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, 120)}`,
         html: `
           <div style="font-family:system-ui,sans-serif;max-width:500px;padding:20px">
-            <p><strong>From:</strong> ${fromName} (${fromEmail})</p>
-            <p><strong>Type:</strong> ${feedbackType}</p>
+            <p><strong>From:</strong> ${safeName} (${safeEmail})</p>
+            <p><strong>Type:</strong> ${safeType}</p>
             <hr style="border:none;border-top:1px solid #eee;margin:16px 0">
-            <p style="white-space:pre-wrap">${message}</p>
+            <p style="white-space:pre-wrap">${safeMessage}</p>
           </div>
         `,
       });
 
-      console.log(`[costkey] Feedback from ${fromEmail}: ${feedbackType}`);
+      // Do not put user email/message content into application logs. The
+      // authenticated subject is sufficient for operational correlation.
+      console.log(`[costkey] Feedback from user ${String(user?.id ?? "unknown")}: ${feedbackType}`);
       res.json({ ok: true });
     } catch (err) {
       console.error("[costkey] Feedback error:", err);

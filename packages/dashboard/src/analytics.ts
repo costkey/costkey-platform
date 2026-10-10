@@ -2,6 +2,23 @@ import type { PostHog } from "posthog-js";
 
 let client: PostHog | null = null;
 
+const ALLOWED_CAPTURE_PROPERTIES = new Set(["joined_via_invite", "provider", "model", "has_function_attribution"]);
+const ALLOWED_IDENTITY_PROPERTIES = new Set(["role"]);
+
+function allowlisted(properties: Record<string, unknown> | undefined, allowed: Set<string>): Record<string, unknown> | undefined {
+  if (!properties) return undefined;
+  const safe = Object.fromEntries(Object.entries(properties).filter(([key]) => allowed.has(key)));
+  return Object.keys(safe).length > 0 ? safe : undefined;
+}
+
+export function sanitizeCaptureProperties(properties?: Record<string, unknown>): Record<string, unknown> | undefined {
+  return allowlisted(properties, ALLOWED_CAPTURE_PROPERTIES);
+}
+
+export function sanitizeIdentityProperties(properties?: Record<string, unknown>): Record<string, unknown> | undefined {
+  return allowlisted(properties, ALLOWED_IDENTITY_PROPERTIES);
+}
+
 export async function initAnalytics(): Promise<void> {
   const token = import.meta.env.VITE_POSTHOG_PROJECT_TOKEN as string | undefined;
   if (!token) return;
@@ -22,13 +39,16 @@ export async function initAnalytics(): Promise<void> {
 
 export const analytics = {
   capture(event: string, properties?: Record<string, unknown>): void {
-    client?.capture(event, properties);
+    client?.capture(event, sanitizeCaptureProperties(properties));
   },
   identify(id: string, properties?: Record<string, unknown>): void {
-    client?.identify(id, properties);
+    client?.identify(id, sanitizeIdentityProperties(properties));
   },
   group(type: string, key: string, properties?: Record<string, unknown>): void {
-    client?.group(type, key, properties);
+    // Group labels are workspace data. Keep the group key pseudonymous and
+    // omit mutable organization names/slugs from the analytics payload.
+    void properties;
+    client?.group(type, key);
   },
   reset(): void {
     client?.reset();

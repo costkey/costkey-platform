@@ -4,6 +4,7 @@ const sidebars = {
     'index',
     'python-sdk',
     'typescript-sdk',
+    'recipes',
     'providers',
     'dashboard',
 

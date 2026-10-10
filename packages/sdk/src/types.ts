@@ -69,8 +69,357 @@ export interface EventContext {
   traceId?: string;
   /** Human-readable trace name (e.g., route path, job name) */
   traceName?: string;
+  /** Stable grouped-work identity (batch, experiment, or evaluation suite). */
+  groupId?: string;
+  groupName?: string;
+  /** Group kind supplied by the application (for example `batch`). */
+  groupKind?: string;
+  /** Fresh invocation identity for grouped work. */
+  executionId?: string;
+  /** Explicit provider/framework attempt identity for one call or component. */
+  attemptId?: string;
+  /** Explicit relationship to a known parent attempt/event. */
+  parentEventId?: string;
+  /** Conversation identity supplied by the application or integration. */
+  conversationId?: string;
+  /** Voice session identity supplied by the application or integration. */
+  voiceSessionId?: string;
   [key: string]: string | number | boolean | undefined;
 }
+
+/** Values that are safe to carry over an explicit service/queue handoff. */
+export type ContextCarrier = Pick<
+  EventContext,
+  | "traceId"
+  | "traceName"
+  | "groupId"
+  | "groupName"
+  | "groupKind"
+  | "executionId"
+  | "feature"
+  | "customer"
+  | "customerId"
+  | "environment"
+  | "service"
+  | "release"
+  | "function"
+  | "operation"
+  | "phase"
+  | "caseId"
+  | "datasetRevision"
+  | "conversationId"
+  | "voiceSessionId"
+>;
+
+export type TraceLifecycle = "started" | "completed" | "failed" | "cancelled";
+export type ExecutionLifecycle = TraceLifecycle;
+
+export interface TraceOptions {
+  /** Human-readable operation name. */
+  name?: string;
+  /** Reuse a compatible upstream trace identity when one already exists. */
+  traceId?: string;
+  /** Additional boundary labels merged into inherited context. */
+  context?: EventContext;
+}
+
+export interface ExecutionOptions {
+  /** Stable group name reused by later invocations. */
+  name: string;
+  /** Optional explicit stable group name when `name` is a display label. */
+  groupName?: string;
+  /** Group kind, such as `batch`, `experiment`, or `evaluation`. */
+  kind?: string;
+  /** Explicit invocation identity supplied by an external runner. */
+  executionId?: string;
+  /** Optional stable group identifier when a name is not globally unique. */
+  groupId?: string;
+  /** Expected item count supplied by the runner. */
+  expectedItems?: number;
+  /** Items the runner completed when this invocation ended or was updated. */
+  completedItems?: number;
+  /** Items the runner failed when this invocation ended or was updated. */
+  failedItems?: number;
+  /** Configuration/variant metadata supplied by the runner. */
+  configuration?: Record<string, unknown>;
+  datasetRevision?: string;
+  caseId?: string;
+  phase?: string;
+  /** Additional boundary labels merged into inherited context. */
+  context?: EventContext;
+}
+
+interface LifecycleEventBase {
+  id: string;
+  timestamp: string;
+  projectId: string;
+  eventType: "lifecycle";
+  source: "explicit";
+  entityType: "trace" | "execution";
+  entityId: string;
+  lifecycle: TraceLifecycle;
+  /** Per-entity ordering fence; repeated/resumed scopes advance it. */
+  sequence: number;
+  traceId?: string;
+  traceName?: string;
+  groupId?: string;
+  groupName?: string;
+  groupKind?: string;
+  executionId?: string;
+  phase?: string;
+  datasetRevision?: string;
+  caseId?: string;
+  startedAt?: string;
+  endedAt?: string;
+  durationMs?: number;
+  errorType?: string;
+  expectedItems?: number;
+  completedItems?: number;
+  failedItems?: number;
+  configuration?: Record<string, unknown>;
+  context: EventContext;
+  provider?: Provider | string;
+  model?: string | null;
+  url?: string;
+  method?: string;
+  statusCode?: number | null;
+  usage?: NormalizedUsage | UsageUnits | null;
+  costUsd?: number | null;
+  streaming?: boolean;
+  streamTiming?: StreamTiming | null;
+  callSite?: CallSite | null;
+  metadata?: EventMetadata | null;
+  systemPrompt?: string | null;
+  requestBody?: unknown | null;
+  responseBody?: unknown | null;
+}
+
+export type CostKeyLifecycleEvent = LifecycleEventBase;
+
+export type UsageAggregation = "delta" | "cumulative";
+
+export interface UsageAmount {
+  value: number;
+  currency: string;
+}
+
+export type UsageUnits = Record<string, number | null>;
+
+export type PolicyMode = "monitor" | "enforce";
+
+export type PolicyRefusalReason =
+  | "budget_exhausted"
+  | "price_unavailable"
+  | "decision_unavailable"
+  | "unsupported_integration"
+  | "unbounded_request"
+  | "missing_context"
+  | "idempotency_conflict"
+  | (string & {});
+
+export interface PolicyIntegrationProof {
+  supported: boolean;
+  admissionSupported: boolean;
+  capabilityVersion?: string;
+  verified: boolean;
+}
+
+export interface PolicyUsageBounds {
+  maxInputTokens?: number | null;
+  maxOutputTokens?: number | null;
+  maxCacheReadTokens?: number | null;
+  maxCacheCreationTokens?: number | null;
+  maxImageOutputTokens?: number | null;
+  maxAudioSeconds?: number | null;
+  maxCharacters?: number | null;
+  maxImages?: number | null;
+}
+
+export interface PolicyAdmissionRequest {
+  projectId: string;
+  admissionId: string;
+  requestId?: string | null;
+  provider: string;
+  model?: string | null;
+  traceId?: string | null;
+  executionId?: string | null;
+  scope?: Record<string, string>;
+  context?: EventContext;
+  integration?: PolicyIntegrationProof;
+  usageBounds?: PolicyUsageBounds;
+  claimedCostUsd?: number | null;
+  providerRequest?: unknown;
+}
+
+export interface PolicyAdmissionResult {
+  decision: "allow" | "refuse";
+  replay?: boolean;
+  providerCallAllowed?: boolean;
+  reservationId?: string | null;
+  reservation?: Record<string, unknown> | null;
+  policyId?: string;
+  policyVersion?: number | null;
+  reason?: PolicyRefusalReason;
+  message?: string;
+  scope?: Record<string, string>;
+  allowance?: Record<string, unknown>;
+  window?: string;
+  retryAt?: string | null;
+  policies?: Array<Record<string, unknown>>;
+}
+
+export interface PolicySettlementRequest {
+  projectId: string;
+  reservationId: string;
+  settlementId: string;
+  outcome: "success" | "failed" | "cancelled" | "unknown";
+  actualCostUsd?: number | null;
+  actualUsage?: Record<string, number | null>;
+  providerAttempted?: boolean;
+}
+
+export type PolicyAdmissionHandler = (
+  request: PolicyAdmissionRequest,
+) => PolicyAdmissionResult | boolean | Promise<PolicyAdmissionResult | boolean>;
+
+export interface PolicyOptions {
+  /** Monitor makes no blocking decision; enforce fails closed. */
+  mode?: PolicyMode;
+  /** Optional custom handler. Without it, the DSN-authenticated endpoint is used. */
+  admission?: PolicyAdmissionHandler;
+  /** Override the DSN-derived endpoint for a trusted compatible server. */
+  endpoint?: string;
+  /** Request timeout for admission/settlement calls. */
+  timeout?: number;
+  integration?: PolicyIntegrationProof;
+  scope?: Record<string, string>;
+  usageBounds?: PolicyUsageBounds;
+  claimedCostUsd?: number | null;
+}
+
+export interface RuntimeCaptureConfig {
+  projectId: string;
+  capture: {
+    mode: "metadata" | "text";
+    bodyCaptureEnabled: boolean;
+    redactionEnabled: boolean;
+    bodyRetentionDays?: number;
+    metadataRetentionDays?: number;
+  };
+  providers?: Array<Record<string, unknown>>;
+}
+
+export interface RecordUsageEvent {
+  /** Caller-supplied stable event/envelope identity. */
+  id: string;
+  /** Stable component identity, for example `tts:session-42`. */
+  componentId?: string;
+  /** Migration alias for componentId. */
+  component?: string;
+  /** Stable billable charge identity used to reconcile auto/manual reports. */
+  chargeId?: string;
+  /** Provider request identity when an explicit adapter can observe it. */
+  providerRequestId?: string;
+  /** Logical attempt identity when the provider/framework exposes one. */
+  attemptId?: string;
+  /** Parent event identity for a manual component attached to an auto call. */
+  parentEventId?: string;
+  /** Monotonic component revision. */
+  revision: number;
+  /** Whether usage is an increment or a total snapshot. */
+  aggregation: UsageAggregation;
+  /** Provider or custom component that produced the usage. */
+  provider?: Provider | string;
+  model?: string | null;
+  /** Native usage units; omission is unknown, not zero. */
+  usage?: UsageUnits | NormalizedUsage | null;
+  /** Migration alias for usage. */
+  nativeUsage?: UsageUnits | NormalizedUsage | null;
+  nativeUnits?: UsageUnits | NormalizedUsage | null;
+  /** Optional exact billable-unit map for adapters with multiple unit families. */
+  billingUnits?: UsageUnits | null;
+  /** Reported monetary amount and currency. */
+  amount?: UsageAmount | number | null;
+  /** Alias accepted for adapters that call the amount a cost. */
+  cost?: UsageAmount | number | null;
+  /** Convenience alias for a USD-reported amount. */
+  costUsd?: number | null;
+  /** Currency for scalar amount/costUsd aliases. */
+  currency?: string;
+  /** Stable pricing/rate identity when amount is not directly reported. */
+  pricingId?: string;
+  amountKind?: "reported" | "estimated";
+  unitKind?: string;
+  unitValue?: number;
+  unit?: string;
+  timestamp?: string | Date;
+  context?: EventContext | ContextCarrier;
+  traceId?: string;
+  executionId?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface CostKeyUsageEvent {
+  id: string;
+  timestamp: string;
+  projectId: string;
+  eventType: "usage";
+  source: "explicit";
+  component?: string;
+  componentId: string;
+  chargeId: string;
+  revision: number;
+  aggregation: UsageAggregation;
+  provider: Provider | string;
+  model: string | null;
+  providerRequestId?: string | null;
+  attemptId?: string | null;
+  parentEventId?: string | null;
+  usage: UsageUnits | null;
+  nativeUsage: UsageUnits | null;
+  billingUnits?: UsageUnits | null;
+  amount?: UsageAmount | null;
+  costUsd: number | null;
+  currency: string;
+  pricingId?: string;
+  amountKind?: "reported" | "estimated";
+  unitKind?: string;
+  unitValue?: number;
+  unit?: string;
+  context: EventContext;
+  traceId?: string;
+  executionId?: string;
+  metadata?: Record<string, unknown>;
+  usageEvent: Record<string, unknown>;
+  groupId?: string;
+  groupName?: string;
+  groupKind?: string;
+  phase?: string;
+  datasetRevision?: string;
+  caseId?: string;
+  url?: string;
+  method?: string;
+  statusCode?: number | null;
+  durationMs?: number;
+  streaming?: boolean;
+  streamTiming?: StreamTiming | null;
+  callSite?: CallSite | null;
+  requestBody?: unknown | null;
+  responseBody?: unknown | null;
+}
+
+export type CostKeyTelemetryEvent =
+  | CostKeyEvent
+  | CostKeyLifecycleEvent
+  | CostKeyUsageEvent;
+
+export type BeforeSendEventHook = (
+  event: CostKeyLifecycleEvent | CostKeyUsageEvent,
+) =>
+  | CostKeyLifecycleEvent
+  | CostKeyUsageEvent
+  | null
+  | Promise<CostKeyLifecycleEvent | CostKeyUsageEvent | null>;
 
 /** Provider-normalized prompt/tool/agent details captured from request/response payloads */
 export interface EventMetadata {
@@ -89,6 +438,46 @@ export interface EventMetadata {
 export interface CostKeyEvent {
   /** Unique event ID */
   id: string;
+  /** Event discriminator; omitted by older SDK-created call records. */
+  eventType?: "call";
+  source?: "auto" | "explicit";
+  /** Provider request identity when the response exposes one. */
+  providerRequestId?: string | null;
+  /** Stable charge identity for explicit adapter reconciliation when known. */
+  chargeId?: string | null;
+  /** Stable attempt identity; generated per observed request unless supplied explicitly. */
+  attemptId?: string | null;
+  /** Known parent attempt/event for a retry or fallback; never inferred by the SDK. */
+  parentEventId?: string | null;
+  entityType?: "trace" | "execution" | null;
+  entityId?: string | null;
+  lifecycle?: TraceLifecycle | null;
+  startedAt?: string | null;
+  endedAt?: string | null;
+  errorType?: string | null;
+  expectedItems?: number | null;
+  completedItems?: number | null;
+  failedItems?: number | null;
+  componentId?: string | null;
+  /** Legacy inbound alias; SDK usage records use id as caller identity. */
+  callerId?: string | null;
+  revision?: number | null;
+  aggregation?: UsageAggregation | null;
+  nativeUsage?: UsageUnits | null;
+  amount?: UsageAmount | null;
+  pricingId?: string | null;
+  unit?: string | null;
+  usageEvent?: Record<string, unknown> | null;
+  requestModel?: string | null;
+  groupId?: string | null;
+  groupName?: string | null;
+  groupKind?: string | null;
+  executionId?: string | null;
+  phase?: string | null;
+  configuration?: Record<string, unknown> | null;
+  datasetRevision?: string | null;
+  caseId?: string | null;
+  contextSnapshot?: Record<string, unknown> | null;
   /** ISO timestamp */
   timestamp: string;
   /** Project identifier from DSN */
@@ -159,6 +548,12 @@ export interface CostKeyOptions {
   captureBody?: boolean;
   /** Hook to modify/filter events before sending */
   beforeSend?: BeforeSendHook;
+  /** Hook for additive lifecycle and explicit usage records. */
+  beforeSendEvent?: BeforeSendEventHook;
+  /** Explicit pre-call policy admission; omitted means observation only. */
+  policy?: PolicyOptions;
+  /** Runtime privacy/provider configuration is fetched asynchronously. */
+  configRefreshInterval?: number;
   /** Max events to buffer before flushing (default: 50) */
   maxBatchSize?: number;
   /** Flush interval in ms (default: 5000) */
@@ -178,6 +573,5 @@ export interface TransportPayload {
   /** Release version (for sourcemap translation) */
   release?: string;
   /** Events in this batch */
-  events: CostKeyEvent[];
+  events: CostKeyTelemetryEvent[];
 }
-

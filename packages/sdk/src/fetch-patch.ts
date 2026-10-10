@@ -8,11 +8,20 @@ import type {
 import { Provider } from "./types.js";
 import { findExtractor } from "./providers/registry.js";
 import { captureCallSite } from "./stack.js";
-import { getCurrentContext } from "./context.js";
+import { getCurrentContext, importContext } from "./context.js";
 import { Transport } from "./transport.js";
 import { randomBytes } from "node:crypto";
+import type {
+  PolicyAdmissionClient,
+} from "./policy.js";
+import type {
+  PolicyAdmissionRequest,
+  PolicyAdmissionResult,
+  PolicySettlementRequest,
+} from "./types.js";
 const TRACE_HEADER = "x-costkey-trace-id";
 const TRACE_NAME_HEADER = "x-costkey-trace-name";
+const CONTEXT_HEADER = "x-costkey-context";
 
 export interface FetchPatchOptions {
   transport: Transport;
@@ -21,14 +30,18 @@ export interface FetchPatchOptions {
   beforeSend: BeforeSendHook | null;
   defaultContext: EventContext;
   debug: boolean;
+  policy?: PolicyAdmissionClient | null;
+  captureBodyRef?: { current: boolean };
 }
 
 let originalFetch: typeof globalThis.fetch | null = null;
 let isPatched = false;
+const pendingCaptures = new Set<Promise<void>>();
+const pendingPolicySettlements = new Set<Promise<void>>();
 
 /**
  * Monkey-patch globalThis.fetch to intercept AI provider calls.
- * Non-AI calls pass through with zero overhead beyond a URL hostname check.
+ * Non-AI calls pass through after a URL hostname check.
  */
 export function patchFetch(options: FetchPatchOptions): void {
   if (isPatched) return;
@@ -64,15 +77,8 @@ export function patchFetch(options: FetchPatchOptions): void {
     // Fast path: not an AI provider URL
     const extractor = findExtractor(url);
     if (!extractor) {
-      // Not an AI call — but if we have a traceId, propagate it via headers
-      // so downstream microservices can join the same trace
-      const ctx = getCurrentContext();
-      if (ctx.traceId) {
-        const headers = new Headers(init?.headers);
-        headers.set(TRACE_HEADER, ctx.traceId);
-        if (ctx.traceName) headers.set(TRACE_NAME_HEADER, ctx.traceName);
-        return originalFetch!(input, { ...init, headers });
-      }
+      // Non-AI requests pass through untouched. Context propagation is an
+      // explicit caller decision via CostKey.exportContext()/headers.
       return originalFetch!(input, init);
     }
 
@@ -82,29 +88,48 @@ export function patchFetch(options: FetchPatchOptions): void {
     const callSite = captureCallSite();
     const context = { ...options.defaultContext, ...getCurrentContext() };
 
-    // Auto-generate traceId if none exists in context
-    // Hash the parent frames of the stack trace — calls from the same
-    // request handler get the same hash = same trace
-    if (!context.traceId && callSite) {
-      context.traceId = generateTraceIdFromStack(callSite.frames);
+    // An explicit trusted handoff may arrive as a carrier or the legacy trace
+    // headers. Never manufacture a trace from stack frames: concurrent
+    // requests through one function must keep independent identities.
+    const requestHeaders =
+      typeof Request !== "undefined" && input instanceof Request
+        ? input.headers
+        : undefined;
+    const incomingContext = getHeader(init?.headers, CONTEXT_HEADER)
+      ?? getHeader(requestHeaders, CONTEXT_HEADER);
+    if (incomingContext) {
+      const imported = importContext(incomingContext);
+      for (const [key, value] of Object.entries(imported)) {
+        if (context[key] === undefined) context[key] = value;
+      }
     }
-
-    // Check if an incoming trace header was set by an upstream service
-    // (this happens when Service A calls Service B and both have CostKey)
-    if (!context.traceId && init?.headers) {
-      const incomingTraceId = getHeader(init.headers, TRACE_HEADER);
+    if (!context.traceId) {
+      const incomingTraceId = getHeader(init?.headers, TRACE_HEADER)
+        ?? getHeader(requestHeaders, TRACE_HEADER);
       if (incomingTraceId) {
         context.traceId = incomingTraceId;
-        const incomingName = getHeader(init.headers, TRACE_NAME_HEADER);
+        const incomingName = getHeader(init?.headers, TRACE_NAME_HEADER)
+          ?? getHeader(requestHeaders, TRACE_NAME_HEADER);
         if (incomingName) context.traceName = incomingName;
       }
+    }
+
+    // Explicit component adapters can mark an overlapping provider request as
+    // the manual source of charge. Keep the request behavior intact while
+    // avoiding an automatic duplicate event.
+    if (["manual", "explicit", "disabled"].includes(String(context.costkeyCapture))) {
+      return originalFetch!(
+        removeContextHeadersFromRequest(input),
+        removeContextHeaders(init),
+      );
     }
 
     const startTime = performance.now();
 
     // Parse and potentially modify the request body
     let requestBody: unknown = null;
-    let modifiedInit = init;
+    let modifiedInit = removeContextHeaders(init);
+    const forwardedInput = removeContextHeadersFromRequest(input);
 
     if (init?.body) {
       try {
@@ -115,7 +140,7 @@ export function patchFetch(options: FetchPatchOptions): void {
           const modified = extractor.injectStreamOptions(requestBody);
           if (modified !== requestBody) {
             modifiedInit = {
-              ...init,
+              ...modifiedInit,
               body: JSON.stringify(modified),
             };
           }
@@ -130,10 +155,33 @@ export function patchFetch(options: FetchPatchOptions): void {
       typeof requestBody === "object" &&
       (requestBody as Record<string, unknown>)["stream"] === true;
 
+    // A caller may provide a per-attempt identity in the narrow context of a
+    // provider call. Otherwise each observed request gets a fresh attempt ID;
+    // the SDK never guesses retry/fallback parentage from timing or models.
+    const explicitAttemptId =
+      typeof context.attemptId === "string" && context.attemptId.trim()
+        ? context.attemptId.trim()
+        : undefined;
+    const attemptId = explicitAttemptId ?? generateId();
+    const captureBody = shouldCaptureBody(options);
+    let admission: PolicyAdmissionResult | null = null;
+    if (options.policy) {
+      admission = await options.policy.admit({
+        projectId: options.projectId,
+        admissionId: attemptId,
+        requestId: attemptId,
+        provider: String(extractor.provider),
+        model: extractor.extractModel(requestBody, null),
+        traceId: context.traceId,
+        executionId: context.executionId,
+        context: policyContext(context),
+      });
+    }
+
     // Make the actual fetch call
     let response: Response;
     try {
-      response = await originalFetch!(input, modifiedInit ?? init);
+      response = await originalFetch!(forwardedInput, modifiedInit);
     } catch (err) {
       // Fetch itself failed (network error, DNS, etc.)
       // Still try to record the failed call
@@ -144,23 +192,39 @@ export function patchFetch(options: FetchPatchOptions): void {
         url,
         method: init?.method ?? "POST",
         statusCode: null,
-        requestBody: options.captureBody ? requestBody : null,
+        requestBody,
         responseBody: null,
+        captureBody,
         usage: null,
         model: extractor.extractModel(requestBody, null),
+        providerRequestId: null,
+        attemptId,
         durationMs,
         streaming: isStreaming,
         streamTiming: null,
         callSite,
         context,
       });
-      await sendEvent(event, options);
+      if (options.policy && admission?.reservationId) {
+        trackPolicySettlement(
+          settlePolicy(
+            options.policy,
+            admission,
+            options.projectId,
+            attemptId,
+            "unknown",
+            null,
+            true,
+          ),
+        );
+      }
+      await sendEvent(event, options, captureBody);
       throw err; // Re-throw — we never swallow user-facing errors
     }
 
     // For non-streaming responses: clone, read body, extract usage
     if (!isStreaming) {
-      void processNonStreamingResponse(
+      const pending = processNonStreamingResponse(
         response.clone(),
         {
           startTime,
@@ -171,9 +235,13 @@ export function patchFetch(options: FetchPatchOptions): void {
           callSite,
           context,
           extractor,
+          attemptId,
+          admission,
+          captureBody,
         },
         options,
       );
+      trackPendingCapture(pending);
       return response;
     }
 
@@ -186,6 +254,9 @@ export function patchFetch(options: FetchPatchOptions): void {
       callSite,
       context,
       extractor,
+      attemptId,
+      admission,
+      captureBody,
       options,
     });
   };
@@ -200,6 +271,61 @@ export function unpatchFetch(): void {
   }
 }
 
+/** Wait for response-clone processing already started by fetch(). */
+export async function flushPendingCaptures(): Promise<void> {
+  const pending = [...pendingCaptures];
+  if (pending.length === 0) return;
+  const all = Promise.allSettled(pending);
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
+  try {
+    await Promise.race([
+      all,
+      new Promise<void>((resolve) => {
+        timeout = setTimeout(() => {
+          timedOut = true;
+          resolve();
+        }, 5_000);
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+  if (timedOut) {
+    for (const promise of pending) pendingCaptures.delete(promise);
+  }
+}
+
+/** Wait for policy reservations settled by completed provider calls. */
+export async function flushPendingPolicy(): Promise<void> {
+  const pending = [...pendingPolicySettlements];
+  if (pending.length === 0) return;
+  const all = Promise.allSettled(pending);
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
+  try {
+    await Promise.race([
+      all,
+      new Promise<void>((resolve) => {
+        timeout = setTimeout(() => {
+          timedOut = true;
+          resolve();
+        }, 5_000);
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+  if (timedOut) {
+    for (const promise of pending) pendingPolicySettlements.delete(promise);
+  }
+}
+
+function trackPendingCapture(pending: Promise<void>): void {
+  pendingCaptures.add(pending);
+  void pending.finally(() => pendingCaptures.delete(pending));
+}
+
 // ── Non-streaming response processing ──
 
 interface ResponseMeta {
@@ -211,6 +337,9 @@ interface ResponseMeta {
   callSite: ReturnType<typeof captureCallSite>;
   context: EventContext;
   extractor: ReturnType<typeof findExtractor> & {};
+  attemptId: string;
+  admission: PolicyAdmissionResult | null;
+  captureBody: boolean;
 }
 
 async function processNonStreamingResponse(
@@ -239,8 +368,11 @@ async function processNonStreamingResponse(
       url: meta.url,
       method: meta.method,
       statusCode: meta.statusCode,
-      requestBody: options.captureBody ? meta.requestBody : null,
-      responseBody: options.captureBody ? responseBody : null,
+      requestBody: meta.requestBody,
+      responseBody,
+      captureBody: meta.captureBody,
+      providerRequestId: extractProviderRequestId(responseBody),
+      attemptId: meta.attemptId,
       usage,
       model,
       durationMs,
@@ -250,11 +382,123 @@ async function processNonStreamingResponse(
       context: meta.context,
     });
 
-    await sendEvent(event, options);
+    if (options.policy && meta.admission?.reservationId) {
+      await settlePolicy(
+        options.policy,
+        meta.admission,
+        options.projectId,
+        meta.attemptId,
+        meta.statusCode >= 200 && meta.statusCode < 300
+          ? "success"
+          : "unknown",
+        usage,
+        true,
+      );
+    }
+    await sendEvent(event, options, meta.captureBody);
   } catch {
+    if (options.policy && meta.admission?.reservationId) {
+      trackPolicySettlement(
+        settlePolicy(
+          options.policy,
+          meta.admission,
+          options.projectId,
+          meta.attemptId,
+          "unknown",
+          null,
+          true,
+        ),
+      );
+    }
     // Never crash user's app. Silently fail.
   }
 }
+
+function trackPolicySettlement(pending: Promise<void>): void {
+  pendingPolicySettlements.add(pending);
+  void pending.finally(() => pendingPolicySettlements.delete(pending));
+}
+
+async function settlePolicy(
+  policy: PolicyAdmissionClient,
+  admission: PolicyAdmissionResult,
+  projectId: string,
+  admissionId: string,
+  outcome: PolicySettlementRequest["outcome"],
+  usage: NormalizedUsage | null,
+  providerAttempted: boolean,
+): Promise<void> {
+  if (!admission.reservationId) return;
+  const actualUsage = usage ? compactUsage(usage) : undefined;
+  const request: PolicySettlementRequest = {
+    projectId,
+    reservationId: admission.reservationId,
+    settlementId: `${admissionId}:settlement`,
+    outcome,
+    actualCostUsd: usage?.costUsd ?? null,
+    actualUsage,
+    providerAttempted,
+  };
+  try {
+    await policy.settle(request);
+  } catch {
+    // Settlement is best effort after the provider result. A missing or
+    // ambiguous amount must not turn a successful application call into an
+    // SDK exception; ask the server to retain the reservation for reconciliation.
+    if (outcome !== "unknown") {
+      try {
+        await policy.settle({ ...request, outcome: "unknown" });
+      } catch {
+        // Policy settlement remains durably unknown until a later retry.
+      }
+    }
+  }
+}
+
+function compactUsage(usage: NormalizedUsage): Record<string, number | null> {
+  return {
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    totalTokens: usage.totalTokens,
+  };
+}
+
+function policyContext(context: EventContext): EventContext {
+  const safe: EventContext = {};
+  for (const key of POLICY_CONTEXT_KEYS) {
+    const value = context[key];
+    if (
+      typeof value === "string" ||
+      typeof value === "number" ||
+      typeof value === "boolean"
+    ) {
+      safe[key] = value;
+    }
+  }
+  return safe;
+}
+
+const POLICY_CONTEXT_KEYS: Array<keyof EventContext> = [
+  "traceId",
+  "traceName",
+  "groupId",
+  "groupName",
+  "groupKind",
+  "executionId",
+  "feature",
+  "customer",
+  "customerId",
+  "environment",
+  "service",
+  "release",
+  "function",
+  "operation",
+  "phase",
+  "caseId",
+  "datasetRevision",
+  "conversationId",
+  "voiceSessionId",
+];
 
 // ── Streaming response processing ──
 
@@ -266,6 +510,9 @@ interface StreamMeta {
   callSite: ReturnType<typeof captureCallSite>;
   context: EventContext;
   extractor: ReturnType<typeof findExtractor> & {};
+  attemptId: string;
+  admission: PolicyAdmissionResult | null;
+  captureBody: boolean;
   options: FetchPatchOptions;
 }
 
@@ -277,6 +524,17 @@ function processStreamingResponse(
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
+  let streamFinished = false;
+  let resolveStream!: () => void;
+  const streamCompletion = new Promise<void>((resolve) => {
+    resolveStream = resolve;
+  });
+  trackPendingCapture(streamCompletion);
+  const finishStream = (): void => {
+    if (streamFinished) return;
+    streamFinished = true;
+    resolveStream();
+  };
 
   let firstChunkTime: number | null = null;
   let chunkCount = 0;
@@ -325,10 +583,11 @@ function processStreamingResponse(
             url: meta.url,
             method: meta.method,
             statusCode: response.status,
-            requestBody: meta.options.captureBody
-              ? meta.requestBody
-              : null,
+            requestBody: meta.requestBody,
             responseBody: null, // Don't capture full stream body
+            captureBody: meta.captureBody,
+            providerRequestId: extractProviderRequestIdFromSSE(accumulatedText),
+            attemptId: meta.attemptId,
             usage: lastUsage,
             model,
             durationMs,
@@ -338,7 +597,23 @@ function processStreamingResponse(
             context: meta.context,
           });
 
-          void sendEvent(event, meta.options);
+          if (meta.options.policy && meta.admission?.reservationId) {
+            trackPolicySettlement(
+              settlePolicy(
+                meta.options.policy,
+                meta.admission,
+                meta.options.projectId,
+                meta.attemptId,
+                response.status >= 200 && response.status < 300
+                  ? "success"
+                  : "unknown",
+                lastUsage,
+                true,
+              ),
+            );
+          }
+          await sendEvent(event, meta.options, meta.captureBody);
+          finishStream();
           return;
         }
 
@@ -353,12 +628,26 @@ function processStreamingResponse(
         // Accumulate text for SSE parsing (usage extraction)
         accumulatedText += decoder.decode(value, { stream: true });
       } catch (err) {
+        if (meta.options.policy && meta.admission?.reservationId) {
+          trackPolicySettlement(
+            settlePolicy(
+              meta.options.policy,
+              meta.admission,
+              meta.options.projectId,
+              meta.attemptId,
+              "unknown",
+              null,
+              true,
+            ),
+          );
+        }
+        finishStream();
         controller.error(err);
       }
     },
 
     cancel() {
-      void reader.cancel();
+      void reader.cancel().finally(finishStream);
     },
   });
 
@@ -417,6 +706,22 @@ function extractModelFromSSE(
   return null;
 }
 
+function extractProviderRequestIdFromSSE(sseText: string): string | null {
+  const lines = sseText.split("\n");
+  for (const line of lines) {
+    if (!line.startsWith("data: ")) continue;
+    const data = line.slice(6).trim();
+    if (data === "[DONE]") continue;
+    try {
+      const id = extractProviderRequestId(JSON.parse(data));
+      if (id) return id;
+    } catch {
+      // Ignore incomplete/non-JSON SSE chunks.
+    }
+  }
+  return null;
+}
+
 // ── Event building ──
 
 interface BuildEventParams {
@@ -427,6 +732,10 @@ interface BuildEventParams {
   statusCode: number | null;
   requestBody: unknown;
   responseBody: unknown;
+  /** Whether body-bearing metadata/content is allowed onto telemetry. */
+  captureBody: boolean;
+  providerRequestId?: string | null;
+  attemptId?: string;
   usage: NormalizedUsage | null;
   model: string | null;
   durationMs: number;
@@ -436,15 +745,25 @@ interface BuildEventParams {
   context: EventContext;
 }
 
+function shouldCaptureBody(options: FetchPatchOptions): boolean {
+  return options.captureBodyRef?.current ?? options.captureBody;
+}
+
 function buildEvent(params: BuildEventParams): CostKeyEvent {
-  const systemPrompt = extractSystemPrompt(params.requestBody);
+  const systemPrompt = params.captureBody ? extractSystemPrompt(params.requestBody) : null;
+  const eventId = params.attemptId ?? generateId();
+  const providerRequestId =
+    params.providerRequestId ?? extractProviderRequestId(params.responseBody);
+  const requestModel = params.extractor.extractModel(params.requestBody, null);
   return {
-    id: generateId(),
+    id: eventId,
+    eventType: "call",
+    source: "auto",
     timestamp: new Date().toISOString(),
     projectId: params.projectId,
     provider: params.extractor.provider,
     model: params.model,
-    url: params.url.toString(),
+    url: sanitizeTelemetryUrl(params.url),
     method: params.method,
     statusCode: params.statusCode,
     usage: params.usage,
@@ -456,10 +775,31 @@ function buildEvent(params: BuildEventParams): CostKeyEvent {
     streamTiming: params.streamTiming,
     callSite: params.callSite,
     context: params.context,
-    metadata: captureBody(extractMetadata(params.requestBody, params.responseBody)) as CostKeyEvent["metadata"],
+    requestModel: requestModel !== params.model ? requestModel : null,
+    attemptId: eventId,
+    parentEventId:
+      typeof params.context.parentEventId === "string" && params.context.parentEventId.trim()
+        ? params.context.parentEventId.trim()
+        : null,
+    providerRequestId,
+    chargeId: providerRequestId,
+    groupId: typeof params.context.groupId === "string" ? params.context.groupId : null,
+    groupName: typeof params.context.groupName === "string" ? params.context.groupName : null,
+    groupKind: typeof params.context.groupKind === "string" ? params.context.groupKind : null,
+    executionId: typeof params.context.executionId === "string" ? params.context.executionId : null,
+    phase: typeof params.context.phase === "string" ? params.context.phase : null,
+    datasetRevision: typeof params.context.datasetRevision === "string" ? params.context.datasetRevision : null,
+    caseId: typeof params.context.caseId === "string" ? params.context.caseId : null,
+    metadata: params.captureBody
+      ? captureBody(extractMetadata(params.requestBody, params.responseBody)) as CostKeyEvent["metadata"]
+      : extractSafeMetadata(params.requestBody, params.responseBody),
     systemPrompt: systemPrompt ? (sanitizeCapturedValue(scrubCredentials(systemPrompt)) as string) : null,
-    requestBody: params.requestBody ? captureBody(params.requestBody) : null,
-    responseBody: params.responseBody ? captureBody(params.responseBody) : null,
+    requestBody: params.captureBody && params.requestBody
+      ? captureBody(params.requestBody)
+      : null,
+    responseBody: params.captureBody && params.responseBody
+      ? captureBody(params.responseBody)
+      : null,
   };
 }
 
@@ -671,6 +1011,56 @@ function extractMetadata(requestBody: unknown, responseBody: unknown): CostKeyEv
   return Object.keys(metadata).length ? metadata : null;
 }
 
+/**
+ * Metadata-only capture must not smuggle prompt/tool content through the
+ * metadata side channel. Keep only bounded structural facts that are useful
+ * for coverage/debugging; provider/model/usage remain first-class event
+ * fields. In particular, do not copy arbitrary role/type values because a
+ * malformed provider payload can put user content in those fields too.
+ */
+function extractSafeMetadata(
+  requestBody: unknown,
+  responseBody: unknown,
+): CostKeyEvent["metadata"] {
+  const request = requestBody && typeof requestBody === "object"
+    ? requestBody as Record<string, unknown>
+    : {};
+  const response = responseBody && typeof responseBody === "object"
+    ? responseBody as Record<string, unknown>
+    : {};
+  const summary: Record<string, unknown> = {};
+
+  const messages = Array.isArray(request["messages"]) ? request["messages"] : null;
+  if (messages) {
+    summary.promptCount = messages.length;
+    summary.promptRoles = messages.map((message) => {
+      if (!message || typeof message !== "object") return "unknown";
+      const role = (message as Record<string, unknown>)["role"];
+      return role === "system" || role === "developer" || role === "user"
+        || role === "assistant" || role === "tool" || role === "function"
+        ? role
+        : "unknown";
+    });
+  } else if (Array.isArray(request["contents"])) {
+    summary.promptCount = request["contents"].length;
+  } else if (request["input"] !== undefined && request["input"] !== null) {
+    summary.promptCount = 1;
+  }
+
+  if (Array.isArray(request["tools"])) summary.toolDefinitionCount = request["tools"].length;
+  if (Object.prototype.hasOwnProperty.call(request, "tool_choice")
+    || Object.prototype.hasOwnProperty.call(request, "toolChoice")) {
+    summary.hasToolChoice = true;
+  }
+
+  if (Array.isArray(response["choices"])) summary.choiceCount = response["choices"].length;
+  if (Array.isArray(response["output"])) summary.outputItemCount = response["output"].length;
+  if (Array.isArray(response["content"])) summary.responseContentCount = response["content"].length;
+  if (Array.isArray(response["candidates"])) summary.candidateCount = response["candidates"].length;
+
+  return Object.keys(summary).length ? { raw: summary } : null;
+}
+
 function textFromContent(content: unknown): string | null {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return null;
@@ -714,6 +1104,7 @@ function extractSystemPrompt(body: unknown): string | null {
 async function sendEvent(
   event: CostKeyEvent,
   options: FetchPatchOptions,
+  captureBody = shouldCaptureBody(options),
 ): Promise<void> {
   try {
     let finalEvent: CostKeyEvent | null = event;
@@ -723,13 +1114,27 @@ async function sendEvent(
         finalEvent = await options.beforeSend(event);
       } catch (err) {
         if (options.debug) {
-          console.warn("[costkey] beforeSend hook threw:", err);
+          console.warn("[costkey] beforeSend hook failed; dropping event");
         }
         return; // Drop the event if beforeSend throws
       }
     }
 
-    if (finalEvent) {
+    if (finalEvent && !captureBody) {
+      // A user hook may mutate an event after it was built. Re-assert the
+      // request-time privacy decision at the final wire boundary so a
+      // metadata-only project cannot accidentally send body fields through a
+      // legacy hook.
+      finalEvent = {
+        ...finalEvent,
+        requestBody: null,
+        responseBody: null,
+        systemPrompt: null,
+        metadata: options.beforeSend ? null : finalEvent.metadata ?? null,
+      };
+    }
+
+    if (finalEvent && isPatched) {
       options.transport.enqueue(finalEvent);
     }
   } catch {
@@ -802,47 +1207,64 @@ function generateId(): string {
   return randomBytes(16).toString("hex");
 }
 
-/**
- * Auto-generate a traceId from stack trace frames.
- *
- * Hashes the "parent frames" (everything except the leaf AI call)
- * so that multiple AI calls made from the same request handler
- * get the same traceId automatically.
- *
- * Example:
- *   Call 1: classifyIntent → handleSearch → expressRouter
- *   Call 2: summarizeDoc → processResults → handleSearch → expressRouter
- *   Shared parents: handleSearch, expressRouter
- *   → Same hash → Same traceId → Grouped as one trace
- */
-function generateTraceIdFromStack(frames: Array<{ functionName: string | null; fileName: string | null; lineNumber: number | null }>): string {
-  // Use parent frames (skip leaf at index 0 — that's the AI call itself)
-  // Take up to 5 parent frames for the hash
-  const parents = frames.slice(1, 6);
-
-  if (parents.length === 0) {
-    // No parent frames — use a random ID
-    return `tr_${generateId().slice(0, 16)}`;
+/** Read a stable provider request ID from a response body when available. */
+function extractProviderRequestId(body: unknown): string | null {
+  if (!body || typeof body !== "object") return null;
+  const object = body as Record<string, unknown>;
+  for (const key of ["id", "request_id", "requestId", "response_id", "responseId"]) {
+    const value = object[key];
+    if (typeof value === "string" && value.trim()) return value;
   }
+  return null;
+}
 
-  // Create a stable string from the parent frames
-  const key = parents
-    .map((f) => `${f.functionName ?? "?"}@${f.fileName ?? "?"}`)
-    .join("|");
+/** Strip userinfo, query parameters, and fragments before telemetry leaves the process. */
+function sanitizeTelemetryUrl(url: URL): string {
+  const safe = new URL(url.toString());
+  safe.username = "";
+  safe.password = "";
+  safe.search = "";
+  safe.hash = "";
+  return safe.toString();
+}
 
-  // Simple hash → hex string
-  let hash = 0;
-  for (let i = 0; i < key.length; i++) {
-    const char = key.charCodeAt(i);
-    hash = ((hash << 5) - hash + char) | 0;
+/** Remove CostKey's explicit carrier headers before calling a provider. */
+function removeContextHeaders(init: RequestInit | undefined): RequestInit | undefined {
+  if (!init?.headers) return init;
+  const headers = new Headers(init.headers);
+  let changed = false;
+  for (const name of [CONTEXT_HEADER, TRACE_HEADER, TRACE_NAME_HEADER]) {
+    if (headers.has(name)) {
+      headers.delete(name);
+      changed = true;
+    }
   }
+  return changed ? { ...init, headers } : init;
+}
 
-  // Include a time bucket (5-second window) so traces from different
-  // requests don't collide even if they have the same stack
-  const timeBucket = Math.floor(Date.now() / 5000);
-  const combined = `${Math.abs(hash).toString(36)}_${timeBucket.toString(36)}`;
-
-  return `tr_auto_${combined}`;
+function removeContextHeadersFromRequest(
+  input: string | URL | Request,
+): string | URL | Request {
+  if (
+    typeof Request === "undefined" ||
+    !(input instanceof Request)
+  ) {
+    return input;
+  }
+  const headers = new Headers(input.headers);
+  let changed = false;
+  for (const name of [CONTEXT_HEADER, TRACE_HEADER, TRACE_NAME_HEADER]) {
+    if (headers.has(name)) {
+      headers.delete(name);
+      changed = true;
+    }
+  }
+  if (!changed) return input;
+  try {
+    return new Request(input, { headers });
+  } catch {
+    return input;
+  }
 }
 
 /** Read a header value from various header formats */

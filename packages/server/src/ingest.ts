@@ -2,9 +2,19 @@ import type { Router } from "express";
 import { Router as createRouter } from "express";
 import type pg from "pg";
 import type { CostKeyEvent, TransportPayload, StackFrame } from "@costkey/shared";
-import { resolveEventCost } from "./billing.js";
+import { resolveEventCostWithOverrides, resolveExplicitUsageCost } from "./billing.js";
 import { translateFrames } from "./sourcemap-resolver.js";
 import { updateFrameStatsBatch, getImplicitGraph, invalidateImplicitGraph } from "./implicit-graph.js";
+import {
+  AccountingConflictError,
+  accountingLockKey,
+  InvalidAccountingEventError,
+  normalizeAccountingEvent,
+  recordAccountingEvent,
+} from "./accounting.js";
+import { enrichFeatureContext } from "./feature-mappings.js";
+import { scheduleFindingsRefresh } from "./findings.js";
+import { stripIngestEventPrivacy } from "./privacy.js";
 
 function textFromContent(content: unknown): string | null {
   if (typeof content === "string") return content;
@@ -630,6 +640,90 @@ export function truncateBody(body: unknown): string | null {
   return result;
 }
 
+/** Store only the provider route; query strings commonly carry API keys. */
+export function sanitizeEventUrl(value: unknown): string | null {
+  if (typeof value !== "string" || value.length === 0) return null;
+  try {
+    const url = new URL(value);
+    url.username = "";
+    url.password = "";
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+export type ContentStatus = "captured" | "metadata_only" | "redacted" | "not_available" | "expired" | "unknown";
+
+const MAX_CLIENT_EVENT_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const MAX_CLIENT_EVENT_FUTURE_MS = 5 * 60 * 1000;
+
+/** Keep provider pricing/accounting from being selected by an arbitrary DSN clock. */
+export function trustedEventTimestamp(raw: unknown, now = new Date()): string {
+  const receivedAt = Number.isFinite(now.getTime()) ? now : new Date();
+  if (typeof raw !== "string") return receivedAt.toISOString();
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return receivedAt.toISOString();
+  const delta = parsed.getTime() - receivedAt.getTime();
+  if (delta > MAX_CLIENT_EVENT_FUTURE_MS || delta < -MAX_CLIENT_EVENT_AGE_MS) return receivedAt.toISOString();
+  return parsed.toISOString();
+}
+
+/**
+ * Body fields are deliberately tracked independently from their values. A
+ * null body may mean policy redaction, provider unavailability, or a
+ * metadata-only project; keeping this status prevents the inspector from
+ * presenting those materially different cases as one empty capture.
+ */
+export function contentStatusForEvent(
+  event: Record<string, unknown>,
+  settings?: { captureMode?: string | null; bodyCaptureEnabled?: boolean | null },
+): ContentStatus {
+  const explicitRaw = event["contentStatus"] ?? event["content_status"];
+  const explicit = typeof explicitRaw === "string" ? explicitRaw.trim().toLowerCase() : "";
+  if (["captured", "metadata_only", "redacted", "not_available", "expired", "unknown"].includes(explicit)) {
+    return explicit as ContentStatus;
+  }
+  const hasBody = [event["requestBody"], event["responseBody"], event["systemPrompt"], event["request_body"], event["response_body"], event["system_prompt"]]
+    .some((body) => body !== undefined && body !== null);
+  if (hasBody) return "captured";
+  const metadata = event["metadata"];
+  if (metadata && typeof metadata === "object" && !Array.isArray(metadata)
+    && ["prompt", "prompts", "completion", "response"].some((key) => Object.prototype.hasOwnProperty.call(metadata, key))) {
+    return "captured";
+  }
+  if (settings?.captureMode === "metadata" || settings?.bodyCaptureEnabled === false) return "metadata_only";
+  const bodyWasSpecified = ["requestBody", "responseBody", "systemPrompt", "request_body", "response_body", "system_prompt"]
+    .some((key) => Object.prototype.hasOwnProperty.call(event, key));
+  return bodyWasSpecified ? "not_available" : "unknown";
+}
+
+function eventCostBasis(
+  event: CostKeyEvent,
+  eventType: ReturnType<typeof normalizeAccountingEvent>["eventType"],
+  cost: number | null,
+  resolved?: { basis: "reported" | "estimated" | "unknown"; source: string | null; pricingId?: string | null },
+): { basis: "reported" | "estimated" | "unknown"; source: string | null; currency: string } {
+  if (cost === null) return { basis: "unknown", source: null, currency: "USD" };
+  if (resolved) return { basis: resolved.basis, source: resolved.source, currency: "USD" };
+  if (eventType === "usage") {
+    return {
+      basis: "estimated",
+      source: "client_reported",
+      currency: (typeof (event as unknown as Record<string, unknown>)["amount"] === "object"
+        ? String(((event as unknown as Record<string, unknown>)["amount"] as Record<string, unknown>)?.["currency"] ?? "USD")
+        : "USD").toUpperCase(),
+    };
+  }
+  return {
+    basis: "estimated",
+    source: "client_reported",
+    currency: "USD",
+  };
+}
+
 export function createIngestRouter(pool: pg.Pool): Router {
   const router = createRouter();
 
@@ -653,7 +747,27 @@ export function createIngestRouter(pool: pg.Pool): Router {
         return;
       }
 
-      const projectId = projResult.rows[0].id;
+      const projectId = String((projResult.rows[0] as { id: string }).id);
+      let projectSettings: {
+        capture_mode?: string | null;
+        body_capture_enabled?: boolean | null;
+        redaction_enabled?: boolean | null;
+        source_access_enabled?: boolean | null;
+      } = {};
+      try {
+        const settings = await pool.query(
+          "SELECT capture_mode, body_capture_enabled, redaction_enabled, source_access_enabled FROM project_settings WHERE project_id = $1",
+          [projectId],
+        );
+        projectSettings = (settings.rows[0] as typeof projectSettings | undefined) ?? {};
+      } catch {
+        // Unknown settings must fail closed for privacy. The normal startup
+        // path creates project_settings; this fallback only handles a staged
+        // migration or transient query failure.
+        projectSettings = { capture_mode: "metadata", body_capture_enabled: false, source_access_enabled: false };
+      }
+      const allowBody = projectSettings.capture_mode === "text" && projectSettings.body_capture_enabled !== false;
+      const allowSource = projectSettings.source_access_enabled === true;
       const payload = req.body as TransportPayload;
       const release = payload.release ?? null;
 
@@ -675,8 +789,36 @@ export function createIngestRouter(pool: pg.Pool): Router {
       }> = [];
       try {
         await client.query("BEGIN");
+        await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [accountingLockKey(projectId)]);
 
         for (const event of payload.events) {
+          const rawEvent = event as unknown as Record<string, unknown>;
+          // The DSN clock is useful for near-real-time ordering, but must not
+          // select an arbitrary historical/future effective price interval.
+          rawEvent.timestamp = trustedEventTimestamp(rawEvent.timestamp);
+          // Enforce the setting again at the persistence boundary. This keeps
+          // direct router mounts and a failed/missing privacy middleware from
+          // ever writing captured body/source fields.
+          if (rawEvent && typeof rawEvent === "object") {
+            stripIngestEventPrivacy(rawEvent, {
+              allowBody,
+              allowSource,
+              redactionEnabled: projectSettings.redaction_enabled !== false,
+            });
+          }
+          const contentStatus = contentStatusForEvent(rawEvent, {
+            captureMode: projectSettings.capture_mode,
+            bodyCaptureEnabled: projectSettings.body_capture_enabled,
+          });
+          let featureSource: "explicit" | "mapping" | "mapping_override" | "unknown" = "unknown";
+          const initialContext = rawEvent["context"] && typeof rawEvent["context"] === "object"
+            ? rawEvent["context"] as Record<string, unknown>
+            : {};
+          if (typeof initialContext["feature"] === "string" && initialContext["feature"].trim()) featureSource = "explicit";
+          let featureMappingId: string | null = null;
+          let featureMappingActionId: string | null = null;
+          let featureOriginal: string | null = null;
+          let accounting = normalizeAccountingEvent(rawEvent);
           // Fallback: extract model from URL path if SDK didn't resolve it
           // e.g. Google Gemini: /v1beta/models/gemini-2.5-flash:generateContent
           if (!event.model && event.url) {
@@ -687,7 +829,32 @@ export function createIngestRouter(pool: pg.Pool): Router {
             } catch { /* invalid URL, ignore */ }
           }
 
-          const costUsd = resolveEventCost(event);
+          const explicitAmount = accounting.eventType === "usage" && accounting.amountPresent
+            && accounting.currency === "USD" ? accounting.amount : null;
+          const explicitUnitValue = accounting.eventType === "usage"
+            ? accounting.unitValue ?? (accounting.unitKind && accounting.usage
+              ? accounting.usage[accounting.unitKind] ?? accounting.usage[accounting.unit ?? ""] ?? null
+              : null)
+            : null;
+          if (accounting.eventType === "usage" && accounting.unitValue == null) accounting.unitValue = explicitUnitValue;
+          const resolved = accounting.eventType === "call"
+            ? await resolveEventCostWithOverrides(pool, projectId, event)
+            : accounting.eventType === "usage"
+              ? await resolveExplicitUsageCost(pool, projectId, event, {
+                provider: accounting.provider,
+                model: accounting.model,
+                unitKind: accounting.unitKind,
+                unitValue: explicitUnitValue,
+                currency: accounting.currency,
+                amount: accounting.amount,
+                amountPresent: accounting.amountPresent,
+                amountKind: accounting.amountKind,
+              })
+              : { cost: explicitAmount, basis: explicitAmount === null ? "unknown" as const : "reported" as const, source: explicitAmount === null ? null : "explicit", pricingId: null, pricingDate: null };
+          const costUsd = resolved.cost;
+          const cost = eventCostBasis(event, accounting.eventType, costUsd, resolved);
+          if (accounting.eventType === "usage") cost.currency = accounting.currency;
+          if (resolved.pricingId && !accounting.pricingId) accounting.pricingId = resolved.pricingId;
 
           // Filter stack frames server-side (strips SDK/library internals for all languages)
           const rawFrames = event.callSite?.frames ?? null;
@@ -731,6 +898,25 @@ export function createIngestRouter(pool: pg.Pool): Router {
 
           }
 
+          // Reusable mappings supply only missing business meaning. Explicit
+          // SDK feature context remains authoritative unless a user performs
+          // a separate historical override action.
+          if (accounting.eventType === "call") {
+            const enriched = await enrichFeatureContext(client, projectId, rawEvent, {
+              file: blFile,
+              function: blFunction,
+              sourceAccessEnabled: allowSource,
+            });
+            if (enriched !== rawEvent) {
+              rawEvent["context"] = enriched["context"];
+              event.context = enriched["context"] as CostKeyEvent["context"];
+              featureSource = enriched["featureSource"] === "mapping_override" ? "mapping_override" : "mapping";
+              featureMappingId = typeof enriched["featureMappingId"] === "string" ? enriched["featureMappingId"] : null;
+              // Re-read context-derived trace/group identity after mapping.
+              accounting = normalizeAccountingEvent(rawEvent);
+            }
+          }
+
           const inserted = await client.query(
             `INSERT INTO events (
               id, timestamp, project_id, provider, model, url, method, status_code,
@@ -740,12 +926,20 @@ export function createIngestRouter(pool: pg.Pool): Router {
               ttft, tps, stream_duration, chunk_count,
               call_site_raw, call_site_frames,
               trace_id, trace_name, context, metadata, system_prompt, request_body, response_body, release,
-              bl_function, bl_file, bl_line, image_output_tokens
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35)
-            ON CONFLICT (id) DO NOTHING`,
+              bl_function, bl_file, bl_line, image_output_tokens,
+              event_type, source, request_model, attempt_id, parent_event_id,
+              charge_id, component_id, execution_id, group_id, group_name,
+              group_kind, phase, configuration, dataset_revision, case_id,
+              lifecycle_state, lifecycle_at, lifecycle_error_type, usage_event,
+              cost_basis, cost_source, cost_currency, unit_kind, unit_value,
+              unit, aggregation, revision, entity_type, entity_id, pricing_id, pricing_date, sequence,
+              content_status, feature_source, feature_mapping_id, feature_mapping_action_id, feature_original
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,$51,$52,$53,$54,$55,$56,$57,$58,$59,$60,$61,$62,$63,$64,$65,$66,$67,$68,$69,$70,$71,$72)
+            ON CONFLICT (project_id, id) DO NOTHING`,
             [
               event.id, event.timestamp, projectId,
-              event.provider, event.model, event.url, event.method, event.statusCode,
+              event.provider ?? accounting.provider, event.model ?? accounting.model,
+              sanitizeEventUrl(event.url) ?? "", event.method ?? "POST", event.statusCode,
               event.usage?.inputTokens, event.usage?.outputTokens,
               event.usage?.totalTokens, event.usage?.reasoningTokens,
               event.usage?.cacheReadTokens, event.usage?.cacheCreationTokens,
@@ -754,8 +948,8 @@ export function createIngestRouter(pool: pg.Pool): Router {
               event.streamTiming?.streamDuration, event.streamTiming?.chunkCount,
               event.callSite?.raw ?? null,
               cleanFrames ? JSON.stringify(cleanFrames) : null,
-              event.context?.traceId ?? null,
-              event.context?.traceName ?? null,
+              accounting.traceId,
+              accounting.traceName,
               event.context ? JSON.stringify(event.context) : null,
               truncateBody(event.metadata ?? extractMetadata(event.requestBody, event.responseBody)),
               event.systemPrompt ?? extractSystemPrompt(event.requestBody),
@@ -764,11 +958,60 @@ export function createIngestRouter(pool: pg.Pool): Router {
               release,
               blFunction, blFile, blLine,
               event.usage?.imageOutputTokens ?? null,
+              accounting.eventType,
+              accounting.source,
+              accounting.requestModel,
+              rawEvent["attemptId"] ?? rawEvent["attempt_id"] ?? null,
+              rawEvent["parentEventId"] ?? rawEvent["parent_event_id"] ?? null,
+              accounting.chargeId,
+              accounting.componentId,
+              accounting.executionId,
+              accounting.groupId ?? null,
+              accounting.groupName,
+              accounting.groupKind,
+              accounting.phase,
+              accounting.configuration ? JSON.stringify(accounting.configuration) : null,
+              accounting.datasetRevision,
+              accounting.caseId,
+              accounting.lifecycle,
+              accounting.lifecycleAt,
+              accounting.errorType,
+              accounting.eventType === "usage" ? JSON.stringify({
+                usage: accounting.usage,
+                billingUnits: rawEvent["billingUnits"] ?? rawEvent["billing_units"] ?? undefined,
+                amount: accounting.amountPresent ? { value: accounting.amount, currency: accounting.currency } : undefined,
+                pricingId: accounting.pricingId,
+              }) : null,
+              cost.basis,
+              cost.source,
+              cost.currency,
+              accounting.unitKind,
+              accounting.unitValue,
+              accounting.unit,
+              accounting.aggregation,
+              accounting.revision,
+              accounting.entityType,
+              accounting.entityId,
+              accounting.pricingId,
+              resolved.pricingDate ?? rawEvent["pricingDate"] ?? rawEvent["pricing_date"] ?? null,
+              accounting.sequence,
+              contentStatus,
+              featureSource,
+              featureMappingId,
+              featureMappingActionId,
+              featureOriginal,
             ],
           );
 
-          // Upsert call site stats and frame stats — use bl_ values (single source of truth)
           if (inserted.rowCount === 0) continue;
+
+          await recordAccountingEvent(client, projectId, rawEvent);
+
+          // Lifecycle and explicit usage envelopes are not provider calls and
+          // must never inflate call-site rollups or call counts.
+          if (accounting.eventType !== "call") continue;
+
+          // Upsert call site stats and frame stats — use bl_ values (single source of truth)
           const callSiteKey = blFunction ? `${blFile ?? "unknown"}:${blFunction}:${blLine ?? 0}` : null;
 
           // Collect frame stats for batch insert after the loop
@@ -785,11 +1028,14 @@ export function createIngestRouter(pool: pg.Pool): Router {
                 project_id, call_site_key, file_name, function_name, line_number,
                 provider, model,
                 total_calls, total_cost_usd, total_input_tokens, total_output_tokens,
-                avg_duration_ms, avg_ttft, avg_tps, first_seen, last_seen
-              ) VALUES ($1,$2,$3,$4,$5,$6,$7,1,$8,$9,$10,$11,$12,$13,$14,$14)
+                avg_duration_ms, avg_ttft, avg_tps, first_seen, last_seen,
+                priced_calls, unpriced_calls
+              ) VALUES ($1,$2,$3,$4,$5,$6,$7,1,$8,$9,$10,$11,$12,$13,$14,$14,$15,$16)
               ON CONFLICT (project_id, call_site_key, model) DO UPDATE SET
                 total_calls = call_site_stats.total_calls + 1,
                 total_cost_usd = call_site_stats.total_cost_usd + EXCLUDED.total_cost_usd,
+                priced_calls = call_site_stats.priced_calls + EXCLUDED.priced_calls,
+                unpriced_calls = call_site_stats.unpriced_calls + EXCLUDED.unpriced_calls,
                 total_input_tokens = call_site_stats.total_input_tokens + EXCLUDED.total_input_tokens,
                 total_output_tokens = call_site_stats.total_output_tokens + EXCLUDED.total_output_tokens,
                 avg_duration_ms = (call_site_stats.avg_duration_ms * call_site_stats.total_calls + EXCLUDED.avg_duration_ms) / (call_site_stats.total_calls + 1),
@@ -809,6 +1055,8 @@ export function createIngestRouter(pool: pg.Pool): Router {
                 event.streamTiming?.ttft ?? null,
                 event.streamTiming?.tps ?? null,
                 event.timestamp,
+                costUsd == null ? 0 : 1,
+                costUsd == null ? 1 : 0,
               ],
             );
           }
@@ -822,8 +1070,19 @@ export function createIngestRouter(pool: pg.Pool): Router {
         await client.query("COMMIT");
         // Invalidate implicit graph cache after new data
         invalidateImplicitGraph(projectId);
+        // Findings are generated after durable accounting commit, coalesced so
+        // a burst of events cannot trigger one full scan per request.
+        scheduleFindingsRefresh(pool, projectId);
       } catch (err) {
         await client.query("ROLLBACK");
+        if (err instanceof InvalidAccountingEventError) {
+          res.status(400).json({ error: err.message, code: err.code });
+          return;
+        }
+        if (err instanceof AccountingConflictError) {
+          res.status(409).json({ error: err.message, code: err.code });
+          return;
+        }
         throw err;
       } finally {
         client.release();

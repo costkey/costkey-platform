@@ -1,12 +1,90 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
+import { GitBranch, ArrowRight, LoaderCircle } from "lucide-react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { useAuth } from "../contexts/AuthContext";
+import { useAuth } from "../contexts/useAuth";
+import { BrandLockup } from "../components/BrandMark";
 
-function GitHubIcon({ size = 16 }: { size?: number }) {
+/** Shared observatory brand panel for the unauthenticated entry points. */
+export function AuthBrandPanel() {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor">
-      <path d="M12 0C5.374 0 0 5.373 0 12c0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23A11.509 11.509 0 0112 5.803c1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576C20.566 21.797 24 17.3 24 12c0-6.627-5.373-12-12-12z"/>
-    </svg>
+    <section className="auth-brand" aria-label="CostKey">
+      <BrandLockup className="logo auth-brand-lockup" markClassName="logo-mark auth-brand-mark" aria-label="CostKey" />
+      <div className="auth-brand-copy">
+        <h1>A little<br /><em>light on.</em></h1>
+        <p>A thoughtful tool that keeps your AI spending in sight.</p>
+      </div>
+      <img
+        src="/assets/console/hero.png"
+        className="hero-art auth-hero-art"
+        alt="CostKey observatory beneath a night sky"
+      />
+    </section>
+  );
+}
+
+export function AuthFooter() {
+  return (
+    <footer className="auth-panel-footer">
+      <span className="auth-footer-links">
+        <a href="https://costkey.dev/docs" target="_blank" rel="noopener noreferrer">Docs</a>
+        <span aria-hidden="true">·</span>
+        <a href="https://github.com/costkey-ai/costkey" target="_blank" rel="noopener noreferrer">GitHub</a>
+      </span>
+    </footer>
+  );
+}
+
+/**
+ * The designer prototype deliberately treats authentication as a configured
+ * handoff. Keep that surface as a real React route so the shipped console can
+ * be compared against the reference without pulling the prototype HTML into
+ * the app or exposing a made-up provider flow.
+ */
+export function PrototypeAuthFrame({ children }: { children: ReactNode }) {
+  return (
+    <div className="ck-proto-auth-shell">
+      <section className="ck-proto-auth-brand" aria-label="CostKey">
+        <BrandLockup className="ck-proto-auth-lockup" markClassName="ck-proto-auth-mark" aria-label="CostKey" />
+        <h1>A little<br /><em>light on.</em></h1>
+        <p>A thoughtful tool that keeps your AI spending in sight.</p>
+        <img
+          src="/assets/console/hero.png"
+          className="ck-proto-auth-hero"
+          alt="The observatory illustration from the supplied CostKey design language"
+        />
+      </section>
+      <main className="ck-proto-auth-panel">
+        <div className="ck-proto-auth-mobile-lockup"><BrandLockup className="ck-proto-auth-lockup" markClassName="ck-proto-auth-mark" aria-label="CostKey" /></div>
+        {children}
+        <div className="ck-proto-auth-caption">Synthetic design preview · No live authentication</div>
+        <div className="ck-proto-auth-index"><Link to="/catalog">View every screen</Link></div>
+      </main>
+    </div>
+  );
+}
+
+function PrototypeSignIn({ state }: { state: string | null }) {
+  return (
+    <PrototypeAuthFrame>
+      <div className="ck-proto-auth-eyebrow">Your AI work, in sight</div>
+      <h1>Welcome to CostKey</h1>
+      <p>Keep building. Know what it costs.</p>
+      <section className="ck-proto-auth-card">
+        <div className="ck-proto-account-row">
+          <span className="ck-proto-avatar">AM</span>
+          <div><b>Alex Morgan</b><span>alex@example.com · Synthetic account</span></div>
+        </div>
+        <div className="ck-proto-divider" />
+        <p className="ck-proto-card-copy">Continue through your workspace’s configured sign-in. You’ll return to the resource you opened.</p>
+        <button className="ck-button ck-button-primary ck-proto-wide-button" type="button">
+          <ArrowRight size={14} aria-hidden="true" /> Continue to workspace
+        </button>
+      </section>
+      <div className="ck-proto-create-link"><Link to="/onboarding?design=prototype&step=workspace">Create a workspace</Link></div>
+      <p className="ck-proto-auth-copy">Authentication is a design handoff. No password, SSO or sign-in provider is invented by this prototype.</p>
+      {state === "error" && <div className="ck-proto-auth-notice" role="alert"><strong>Could not complete sign-in</strong><span>No credentials were submitted. Your intended destination has been retained.</span></div>}
+      {state === "loading" && <p className="ck-proto-auth-loading">Signing you in…</p>}
+    </PrototypeAuthFrame>
   );
 }
 
@@ -14,111 +92,134 @@ export default function Login() {
   const { login, error } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
+  const state = searchParams.get("state");
+  const design = searchParams.get("design");
   const ghError = searchParams.get("error");
   const inviteToken = searchParams.get("invite");
+  const safeDestination = safeReturnTo(searchParams.get("returnTo"));
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const [hideError, setHideError] = useState(false);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  if (design === "prototype") return <PrototypeSignIn state={state} />;
+
+  const githubQuery = new URLSearchParams();
+  if (inviteToken) githubQuery.set("invite", inviteToken);
+  if (safeDestination) githubQuery.set("returnTo", safeDestination);
+
+  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
     setSubmitting(true);
-    setHideError(false);
     const ok = await login(email, password);
     setSubmitting(false);
-    if (ok) {
-      // If this is a CLI auth flow, redirect to the CLI auth handler
-      const isCli = searchParams.get("cli") === "1";
-      // If arrived from an invite link, send the user back to finish acceptance
-      const invite = searchParams.get("invite");
-      if (isCli) navigate("/cli-auth");
-      else if (invite) navigate(`/invite/${invite}`);
-      else navigate("/");
-    }
+    if (!ok) return;
+
+    if (searchParams.get("cli") === "1") navigate("/cli-auth");
+    else if (inviteToken) navigate(`/invite/${encodeURIComponent(inviteToken)}`);
+    else navigate(safeDestination ?? "/");
   };
 
+  const authError = error ?? (ghError === "github_no_email"
+    ? "GitHub didn’t share an email. Use an account with a verified email, or sign in with email."
+    : ghError
+      ? "Couldn’t sign in with GitHub. Try again, or use email."
+      : state === "error"
+        ? "Couldn’t sign you in. Try again."
+        : null);
+  const isLoadingPreview = state === "loading";
+
   return (
-    <div className="min-h-screen bg-surface flex flex-col items-center justify-center px-4 py-12">
-      <div className="w-full max-w-sm">
-        <div className="flex items-center justify-center gap-2.5 mb-8 mt-4">
-          <img src="/favicon.svg" alt="CostKey" className="w-8 h-8" />
-          <span className="font-mono text-lg font-semibold text-text-primary">CostKey</span>
+    <div className="auth-shell">
+      <AuthBrandPanel />
+      <main className="auth-panel">
+        <div className="auth-mobile-logo">
+          <BrandLockup className="logo" markClassName="logo-mark" aria-label="CostKey" />
         </div>
 
-        <div className="bg-surface-raised border border-border rounded-sm p-7">
-          <h1 className="text-lg font-semibold text-text-primary mb-1.5">Sign in</h1>
-          <p className="text-sm text-text-secondary mb-6">Enter your credentials to access your dashboard.</p>
+        <div className="auth-panel-inner">
+          <h1>Welcome to CostKey</h1>
 
-          {/* GitHub button */}
-          <a
-            href={inviteToken ? `/auth/github?invite=${encodeURIComponent(inviteToken)}` : "/auth/github"}
-            className="w-full flex items-center justify-center gap-2 bg-surface-overlay hover:bg-surface-hover border border-border rounded-sm px-3 py-3 text-sm text-text-primary font-medium mb-4 transition-colors"
-          >
-            <GitHubIcon size={16} />
-            Sign in with GitHub
-          </a>
+          {isLoadingPreview && (
+            <div className="auth-state auth-state-loading" role="status" aria-live="polite">
+              <LoaderCircle size={16} className="auth-state-icon auth-spin" aria-hidden="true" />
+              <span>Signing you in…</span>
+            </div>
+          )}
 
-          <div className="flex items-center gap-3 mb-4">
-            <div className="flex-1 h-px bg-border" />
-            <span className="text-[10px] font-mono text-text-muted uppercase tracking-wider">or</span>
-            <div className="flex-1 h-px bg-border" />
+          <div className="auth-form-card">
+            <a
+              href={githubQuery.toString() ? `/auth/github?${githubQuery.toString()}` : "/auth/github"}
+              className="ck-button ck-button-secondary auth-provider"
+              aria-disabled={isLoadingPreview || submitting ? "true" : undefined}
+            >
+              <GitBranch size={16} aria-hidden="true" />
+              Continue with GitHub
+            </a>
+
+            <div className="auth-divider" aria-hidden="true"><span>or continue with email</span></div>
+
+            <form className="auth-form" onSubmit={handleSubmit} aria-busy={submitting || isLoadingPreview}>
+              <div className="auth-field">
+                <label className="auth-label" htmlFor="login-email">Email</label>
+                <input
+                  id="login-email"
+                  className="ck-input auth-input"
+                  type="email"
+                  value={email}
+                  onChange={(event) => setEmail(event.target.value)}
+                  placeholder="you@company.com"
+                  autoComplete="email"
+                  required
+                  disabled={isLoadingPreview || submitting}
+                />
+              </div>
+              <div className="auth-field">
+                <div className="auth-label-row">
+                  <label className="auth-label" htmlFor="login-password">Password</label>
+                  <span className="auth-field-hint">8+ characters</span>
+                </div>
+                <input
+                  id="login-password"
+                  className="ck-input auth-input"
+                  type="password"
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  placeholder="Enter your password"
+                  autoComplete="current-password"
+                  required
+                  disabled={isLoadingPreview || submitting}
+                />
+              </div>
+
+              {authError && (
+                <div className="auth-error" role="alert" aria-live="polite">{authError}</div>
+              )}
+
+              <button className="ck-button ck-button-primary auth-submit" type="submit" disabled={submitting || isLoadingPreview}>
+                {submitting ? <><LoaderCircle size={15} className="auth-spin" aria-hidden="true" /> Signing in…</> : <>Continue to workspace <ArrowRight size={15} aria-hidden="true" /></>}
+              </button>
+            </form>
           </div>
 
-          <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-            <div>
-              <label htmlFor="login-email" className="block text-xs font-mono text-text-muted uppercase tracking-wider mb-1.5">Email</label>
-              <input
-                id="login-email"
-                type="email"
-                value={email}
-                onChange={(e) => { setEmail(e.target.value); setHideError(true); }}
-                required
-                className="w-full bg-surface border border-border rounded-sm px-3 py-3 text-sm text-text-primary font-mono outline-none auth-input transition-all"
-                placeholder="you@company.com"
-              />
-            </div>
-            <div>
-              <label htmlFor="login-password" className="block text-xs font-mono text-text-muted uppercase tracking-wider mb-1.5">Password</label>
-              <input
-                id="login-password"
-                type="password"
-                value={password}
-                onChange={(e) => { setPassword(e.target.value); setHideError(true); }}
-                required
-                className="w-full bg-surface border border-border rounded-sm px-3 py-3 text-sm text-text-primary font-mono outline-none auth-input transition-all"
-                placeholder="••••••••"
-              />
-            </div>
-
-            {(error || ghError) && !hideError && (
-              <div className="text-xs text-red font-mono bg-red-muted px-3 py-2 rounded-sm">
-                {error ?? (ghError === "github_no_email" ? "No email found on your GitHub account" : "GitHub login failed. Please try again.")}
-              </div>
-            )}
-
-            <button
-              type="submit"
-              disabled={submitting}
-              className="w-full bg-accent hover:bg-accent-hover text-black font-mono text-sm font-medium py-3 rounded-sm transition-colors disabled:opacity-50 cursor-pointer"
-            >
-              {submitting ? "Signing in..." : "Sign in"}
-            </button>
-          </form>
+          <p className="auth-switch-copy">
+            New to CostKey? <Link to={`/signup${inviteToken ? `?invite=${encodeURIComponent(inviteToken)}` : ""}`}>Create a workspace</Link>
+          </p>
         </div>
 
-        <p className="text-center text-sm text-text-muted mt-4">
-          Don't have an account?{" "}
-          <Link to="/signup" className="text-accent hover:text-accent-hover">Sign up</Link>
-        </p>
-      </div>
-
-      {/* Footer */}
-      <div className="mt-12 flex items-center gap-3">
-        <a href="https://costkey.dev/docs" target="_blank" rel="noopener noreferrer" className="text-[10px] font-mono text-text-muted/50 hover:text-text-muted transition-colors">Docs</a>
-        <span className="text-text-muted/20">|</span>
-        <a href="https://github.com/costkey-ai/costkey" target="_blank" rel="noopener noreferrer" className="text-[10px] font-mono text-text-muted/50 hover:text-text-muted transition-colors">GitHub</a>
-      </div>
+        <AuthFooter />
+      </main>
     </div>
   );
+}
+
+function safeReturnTo(raw: string | null): string | null {
+  if (!raw) return null;
+  try {
+    const resolved = new URL(raw, window.location.origin);
+    if (resolved.origin !== window.location.origin || !resolved.pathname.startsWith("/") || resolved.pathname.startsWith("//")) return null;
+    if (resolved.pathname.startsWith("/login") || resolved.pathname.startsWith("/signup") || resolved.pathname.startsWith("/auth")) return null;
+    return `${resolved.pathname}${resolved.search}${resolved.hash}`;
+  } catch {
+    return null;
+  }
 }

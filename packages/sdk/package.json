@@ -1,7 +1,7 @@
 {
   "name": "costkey",
   "version": "0.5.2",
-  "description": "Sentry for AI costs. Track every LLM call's cost, tokens, latency, prompts, and tool metadata with one CLI command.",
+  "description": "Sentry for AI costs. Observe supported AI calls with async cost, token, latency, and usage telemetry; no gateway required.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -19,14 +19,19 @@
     }
   },
   "files": [
-    "dist",
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "dist/**/*.js.map",
+    "dist/**/*.d.ts.map",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "npm run clean && tsc",
     "test": "vitest run",
     "test:watch": "vitest",
+    "benchmark:overhead": "npm run build && node benchmarks/sdk-overhead.mjs",
+    "test:pack": "npm run build && node benchmarks/check-pack.mjs",
     "prepublishOnly": "npm run build",
     "clean": "rm -rf dist .turbo *.tsbuildinfo"
   },

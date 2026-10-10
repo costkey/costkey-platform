@@ -1,4 +1,4 @@
-import type { CostKeyEvent, TransportPayload } from "./types.js";
+import type { CostKeyTelemetryEvent, TransportPayload } from "./types.js";
 import { SDK_VERSION } from "./version.js";
 
 export interface TransportOptions {
@@ -22,7 +22,7 @@ export interface TransportOptions {
  * Never throws into user code. Never blocks the event loop.
  */
 export class Transport {
-  private queue: CostKeyEvent[] = [];
+  private queue: CostKeyTelemetryEvent[] = [];
   private timer: ReturnType<typeof setInterval> | null = null;
   private readonly maxQueueSize = 500;
   private hasConfirmedConnection = false;
@@ -50,7 +50,7 @@ export class Transport {
   }
 
   /** Enqueue an event for sending. Never throws. */
-  enqueue(event: CostKeyEvent): void {
+  enqueue(event: CostKeyTelemetryEvent): void {
     if (this.queue.length >= this.maxQueueSize) {
       // Drop oldest to prevent OOM
       this.queue.shift();

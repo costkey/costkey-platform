@@ -1,0 +1,14 @@
+{
+  "theme.NotFound.title": {
+    "message": "Page not found",
+    "description": "The title of the 404 page"
+  },
+  "theme.NotFound.p1": {
+    "message": "We couldn’t find that page.",
+    "description": "The first paragraph of the 404 page"
+  },
+  "theme.NotFound.p2": {
+    "message": "It may have moved. Try the sidebar, or start from Getting started.",
+    "description": "The 2nd paragraph of the 404 page"
+  }
+}

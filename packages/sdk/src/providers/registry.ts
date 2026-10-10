@@ -56,5 +56,11 @@ export function findExtractor(url: URL): ProviderExtractor | null {
 
 /** Register a custom provider extractor */
 export function registerExtractor(extractor: ProviderExtractor): void {
-  extractors.push(extractor);
+  if (!extractors.includes(extractor)) extractors.push(extractor);
+}
+
+/** Remove a runtime provider extractor without touching built-ins. */
+export function unregisterExtractor(extractor: ProviderExtractor): void {
+  const index = extractors.indexOf(extractor);
+  if (index >= 0) extractors.splice(index, 1);
 }

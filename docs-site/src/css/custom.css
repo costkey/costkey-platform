@@ -1,29 +1,106 @@
+/*
+ * CostKey design language 1.0 for the docs: paper and ink, Mist for room,
+ * Lamplight for the one thing worth noticing. Light by design.
+ */
 :root {
-  --ifm-color-primary: #6366f1;
-  --ifm-color-primary-dark: #4f46e5;
-  --ifm-color-primary-darker: #4338ca;
-  --ifm-color-primary-darkest: #3730a3;
-  --ifm-color-primary-light: #818cf8;
-  --ifm-color-primary-lighter: #a5b4fc;
-  --ifm-color-primary-lightest: #c7d2fe;
-  --ifm-code-font-size: 95%;
+  --ck-ink: #182B45;
+  --ck-dusk: #344F70;
+  --ck-slate: #52677A;
+  --ck-mist: #DCE8EE;
+  --ck-lamp: #F5CC68;
+  --ck-paper: #F7F5EF;
+  --ck-white: #FFFDF8;
+  --ck-line: #CBD5DA;
+
+  --ifm-color-primary: #344F70;
+  --ifm-color-primary-dark: #2C4363;
+  --ifm-color-primary-darker: #263B57;
+  --ifm-color-primary-darkest: #182B45;
+  --ifm-color-primary-light: #3E5E85;
+  --ifm-color-primary-lighter: #476D9C;
+  --ifm-color-primary-lightest: #6E93AE;
+
+  --ifm-background-color: var(--ck-paper);
+  --ifm-background-surface-color: var(--ck-white);
+  --ifm-font-color-base: var(--ck-ink);
+  --ifm-font-color-secondary: var(--ck-slate);
+  --ifm-heading-color: var(--ck-ink);
+  --ifm-color-content: var(--ck-ink);
+  --ifm-color-content-secondary: var(--ck-slate);
+  --ifm-font-family-base: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --ifm-heading-font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --ifm-font-family-monospace: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --ifm-font-size-base: 16px;
+  --ifm-line-height-base: 1.65;
+  --ifm-heading-font-weight: 600;
+  --ifm-link-color: var(--ck-dusk);
+  --ifm-link-hover-color: var(--ck-ink);
+  --ifm-toc-border-color: var(--ck-line);
+  --ifm-hr-border-color: var(--ck-line);
+  --ifm-table-border-color: var(--ck-line);
+  --ifm-table-stripe-background: transparent;
+  --ifm-global-radius: 10px;
+  --ifm-code-border-radius: 6px;
+  --ifm-code-font-size: 90%;
+  --ifm-code-background: #EEF2F3;
+  --ifm-navbar-background-color: rgba(247, 245, 239, 0.94);
+  --ifm-navbar-shadow: none;
+  --ifm-navbar-link-color: var(--ck-slate);
+  --ifm-navbar-link-hover-color: var(--ck-ink);
+  --ifm-menu-color: var(--ck-slate);
+  --ifm-menu-color-active: var(--ck-ink);
+  --ifm-menu-color-background-active: var(--ck-mist);
+  --ifm-menu-color-background-hover: #EEF2F3;
+  --ifm-footer-background-color: var(--ck-ink);
+  --ifm-footer-color: var(--ck-mist);
+  --ifm-footer-link-color: var(--ck-mist);
+  --ifm-footer-link-hover-color: #FFFFFF;
+  --ifm-footer-title-color: #ABC6D6;
+  --ifm-pagination-nav-border-radius: 16px;
+  --docusaurus-highlighted-code-line-bg: rgba(245, 204, 104, 0.14);
 }
 
-[data-theme='dark'] {
-  --ifm-color-primary: #818cf8;
-  --ifm-color-primary-dark: #6366f1;
-  --ifm-color-primary-darker: #4f46e5;
-  --ifm-color-primary-darkest: #4338ca;
-  --ifm-color-primary-light: #a5b4fc;
-  --ifm-color-primary-lighter: #c7d2fe;
-  --ifm-color-primary-lightest: #e0e7ff;
-  --ifm-background-color: #0f0f0f;
-  --ifm-background-surface-color: #171717;
-}
+body { -webkit-font-smoothing: antialiased; }
+.navbar { border-bottom: 1px solid var(--ck-line); backdrop-filter: blur(8px); }
+.navbar__title { font-size: 20px; font-weight: 600; letter-spacing: -0.4px; color: var(--ck-ink); }
+.navbar__logo img { height: 28px; }
+
+.markdown h1:first-child, article header h1 { font-family: Georgia, "Times New Roman", serif; font-weight: 400; font-size: 3rem; letter-spacing: -1.2px; line-height: 1.1; }
+.markdown h2 { font-size: 1.6rem; letter-spacing: -0.4px; margin-top: 2.5rem; }
+.markdown h3 { font-size: 1.2rem; }
+.markdown > p:first-of-type { font-size: 1.1rem; color: var(--ck-slate); }
+.markdown a { text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--ck-line); }
+.markdown a:hover { text-decoration-color: currentColor; }
+
+.menu__link { border-radius: 10px; font-size: 15px; }
+.menu__link--active:not(.menu__link--sublist) { font-weight: 600; }
+.table-of-contents__link--active { color: var(--ck-ink); font-weight: 600; }
+
+div[class^="codeBlockContainer"], .theme-code-block { border-radius: 16px; box-shadow: none; }
+pre { border-radius: 16px; }
+:not(pre) > code { border: 1px solid var(--ck-line); padding: 1px 6px; }
+
+/* Docusaurus renders tables as scrolling blocks; keep that so wide tables never widen the page. */
+table { border-collapse: collapse; display: block; max-width: 100%; overflow-x: auto; font-variant-numeric: tabular-nums; }
+table thead tr { border-bottom: 1px solid var(--ck-line); }
+table th { font-size: 13px; font-weight: 500; color: var(--ck-slate); background: transparent; text-align: left; }
+table td, table th { border: 0; border-bottom: 1px solid #E3E7E7; padding: 10px 12px; }
+
+.alert { border-radius: 10px; border-left-width: 0; box-shadow: none; }
+.alert--info, .alert--secondary { background: #EEF3F5; color: var(--ck-ink); --ifm-alert-border-color: var(--ck-mist); }
+.alert--warning { background: #FFF1CF; color: #885719; --ifm-alert-border-color: #F5CC68; }
+.alert--danger { background: #FAEAE6; color: #A33D32; }
+.alert--success, .alert--tip { background: #E8F1EB; color: #356859; }
+
+.pagination-nav__link { border-color: var(--ck-line); background: var(--ck-white); }
+.pagination-nav__link:hover { border-color: #B7C3CA; }
+.footer { padding: 3rem 1rem; }
 
 .docusaurus-highlight-code-line {
-  background-color: rgba(99, 102, 241, 0.1);
+  background-color: rgba(245, 204, 104, 0.14);
   display: block;
   margin: 0 calc(-1 * var(--ifm-pre-padding));
   padding: 0 var(--ifm-pre-padding);
 }
+
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }

@@ -51,14 +51,16 @@ try {
     newKnownSubtotal: changes.reduce((sum, row) => sum + (row.next ?? 0), 0),
   }, null, 2));
   if (apply) {
-    await client.query(`CREATE TABLE IF NOT EXISTS pricing_repair_20260906 (
-      event_id TEXT PRIMARY KEY, old_cost DOUBLE PRECISION, new_cost DOUBLE PRECISION,
+    await client.query(`CREATE TABLE IF NOT EXISTS pricing_repair_20260906_v2 (
+      project_id TEXT NOT NULL, event_id TEXT NOT NULL,
+      old_cost DOUBLE PRECISION, new_cost DOUBLE PRECISION,
+      PRIMARY KEY (project_id, event_id),
       reason TEXT NOT NULL, repaired_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )`);
     for (const row of changes) {
-      await client.query("INSERT INTO pricing_repair_20260906(event_id,old_cost,new_cost,reason) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING",
-        [row.id, row.cost_usd, row.next, row.reason]);
-      await client.query("UPDATE events SET cost_usd=$1 WHERE id=$2", [row.next, row.id]);
+      await client.query("INSERT INTO pricing_repair_20260906_v2(project_id,event_id,old_cost,new_cost,reason) VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING",
+        [row.project_id, row.id, row.cost_usd, row.next, row.reason]);
+      await client.query("UPDATE events SET cost_usd=$1 WHERE project_id=$2 AND id=$3", [row.next, row.project_id, row.id]);
       if (row.bl_function) {
         const key = `${row.bl_file ?? "unknown"}:${row.bl_function}:${row.bl_line ?? 0}`;
         await client.query(`UPDATE call_site_stats SET total_cost_usd=total_cost_usd+$1

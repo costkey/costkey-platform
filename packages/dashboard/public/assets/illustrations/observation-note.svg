@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="library-art-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 320" width="480" height="320" role="img" aria-label="Observation note"><title>Observation note</title><desc>A pale blue envelope with a warm yellow seal holds a simple observation report. For a daily or monthly cost summary.</desc><g stroke-linecap="round" stroke-linejoin="round">
+<path d="M62 226C58 125 123 83 227 87C343 63 414 128 418 226Z" fill="#DCE8EE"/>
+<ellipse cx="244" cy="277" rx="139" ry="13" fill="#DFE6E5"/>
+<path d="M117 159L239 82L362 152L365 263L116 269Z" fill="#6E93AE" stroke="#182B45" stroke-width="2.5"/>
+<path d="M151 87L316 76L328 227L147 238Z" fill="#FFFDF8" stroke="#182B45" stroke-width="2.5"/>
+<path d="M167 101L205 99L207 135L166 137Z" fill="#DCE8EE"/>
+<path d="M186 107 Q187 116 196 117 Q187 118 186 127 Q185 118 176 117 Q185 116 186 107Z" fill="#F5CC68"/>
+<path d="M222 107L294 102M224 120L281 116" fill="none" stroke="#6E93AE" stroke-width="3" />
+<path d="M168 158L295 150M168 174L276 167M170 190L295 182" fill="none" stroke="#CBD5DA" stroke-width="3" />
+<path d="M117 158L242 221L362 152L365 263L116 269Z" fill="#ABC6D6" stroke="#182B45" stroke-width="2.5"/>
+<path d="M117 269L214 194Q238 180 261 195L365 263Z" fill="#C5D9E1" stroke="#182B45" stroke-width="2.5"/>
+<circle cx="240" cy="223" r="20" fill="#F5CC68" stroke="#182B45" stroke-width="2"/>
+<path d="M232 223L238 229L249 216" fill="none" stroke="#182B45" stroke-width="2.5" />
+<path d="M98 108 Q99 114 105 115 Q99 116 98 122 Q97 116 91 115 Q97 114 98 108Z" fill="#6E93AE"/><path d="M361 84 Q362 92 370 93 Q362 94 361 102 Q360 94 352 93 Q360 92 361 84Z" fill="#F5CC68"/><circle cx="323" cy="45" r="2" fill="#6E93AE"/>
+</g></svg>

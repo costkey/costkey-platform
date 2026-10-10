@@ -1,0 +1,31 @@
+{
+  "session_id": "local-session-001",
+  "execution_id": "local-execution-001",
+  "group_name": "voice-support",
+  "revision": 1,
+  "timestamp": "2026-09-13T09:00:00Z",
+  "model_usage": [
+    {
+      "type": "llm_usage",
+      "provider": "openai",
+      "model": "gpt-4o",
+      "input_tokens": 10,
+      "output_tokens": 5
+    },
+    {
+      "type": "stt_usage",
+      "provider": "deepgram",
+      "model": "nova-3",
+      "input_tokens": 20,
+      "output_tokens": 4,
+      "audio_duration": 1.25
+    },
+    {
+      "type": "tts_usage",
+      "provider": "elevenlabs",
+      "model": "turbo",
+      "audio_duration": 2.0,
+      "characters_count": 30
+    }
+  ]
+}

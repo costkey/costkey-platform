@@ -6,13 +6,16 @@ description: Full API reference for the CostKey TypeScript/Node.js SDK.
 
 # TypeScript SDK
 
-The CostKey TypeScript SDK patches `globalThis.fetch` to capture every AI API call. Works with any AI SDK that uses `fetch` under the hood (OpenAI, Anthropic, Google, Vercel AI SDK, etc.).
+The CostKey TypeScript SDK patches `globalThis.fetch` in Node.js to observe
+supported provider endpoints. SDKs that use this fetch path can work when their
+endpoint and response shape are covered; see the [developer capability
+matrix](/recipes#capability-matrix). No provider-routing gateway is required.
 
 ```bash
 npx costkey setup
 ```
 
-**Current version:** 0.5.1
+**Current version:** 0.5.2
 
 `npx costkey setup` logs you in, creates a CostKey project, writes `COSTKEY_DSN`, detects frameworks like Next.js, Vite, Express, Fastify, Hono, Koa, NestJS, Remix, Astro, and SvelteKit, and writes `.costkey/setup.md`.
 
@@ -26,9 +29,24 @@ Bundled apps such as Next.js, Vite, Remix, Astro, and SvelteKit should also conf
 
 ## How it works
 
-When you call `CostKey.init()`, the SDK replaces `globalThis.fetch` with a wrapper. On every fetch call, it checks the URL hostname against known AI providers. Non-AI calls pass through with zero overhead beyond a hostname check. AI calls are intercepted to capture timing, usage, and stack traces.
+When you call `CostKey.init()`, the SDK replaces `globalThis.fetch` with a
+wrapper. It checks the URL hostname against known provider endpoints. Other
+requests pass through; matched AI requests are observed for timing, usage, and
+stack traces. The wrapper and response inspection add work, so benchmark your
+runtime instead of assuming the work is free.
 
-The SDK never modifies your request or response. Events are batched and sent asynchronously in the background.
+The SDK leaves provider response data available to your application. For
+supported OpenAI-compatible streaming requests it may add the usage-inclusion
+option needed to observe a final usage chunk, and it removes explicit CostKey
+carrier headers before the provider request. Events are batched and sent in the
+background.
+
+Capture mode is negotiated from the DSN-authenticated project configuration.
+The SDK starts metadata-only until that response is known; a remote
+metadata-only setting, revoked configuration, or failed config request keeps
+prompt/response content off without blocking the provider call. A local
+`captureBody: false` is always an opt-out. Existing projects retain text
+capture only when the server explicitly reports text capture enabled.
 
 ## Using with Sentry, New Relic, or other APM tools
 
@@ -45,10 +63,14 @@ CostKey.init({ dsn: '...' })  // CostKey wraps Sentry's patch
 ```
 
 **What to know:**
-- CostKey never modifies requests or responses — it only reads
-- CostKey never throws — it can't break your APM's error handling
+- CostKey does not replace provider credentials or route the call through a
+  gateway; supported stream/carrier bookkeeping can adjust the outgoing
+  request as described above
+- CostKey catches its own capture/delivery failures; provider errors still
+  remain visible to your application
 - Stack traces may be slightly deeper (CostKey filters its own frames automatically)
-- Streaming responses flow through both tools with minimal overhead
+- Streaming responses flow through both tools while CostKey observes the
+  stream; measure the overhead in your runtime
 
 ## API Reference
 
@@ -61,7 +83,7 @@ import { CostKey } from 'costkey'
 
 CostKey.init({
   dsn: 'https://ck_your_key@app.costkey.dev/your_project_id',
-  captureBody: true,
+  captureBody: true, // local permission; project capture mode still controls text
   debug: false,
   release: 'v1.2.3',
   maxBatchSize: 50,
@@ -75,18 +97,23 @@ CostKey.init({
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `dsn` | `string` | **required** | DSN from the dashboard. Format: `https://<key>@app.costkey.dev/<project-id>` |
-| `captureBody` | `boolean` | `true` | Capture request/response bodies. Disable to reduce payload size. |
+| `dsn` | `string \| undefined` | `COSTKEY_DSN` | DSN from the dashboard. Format: `https://<key>@app.costkey.dev/<project-id>`; omitting both values leaves the SDK in no-op/test mode. |
+| `captureBody` | `boolean` | `true` | Local permission for request/response body capture; the project config must explicitly enable text capture. `false` is always strongest. |
 | `beforeSend` | `BeforeSendHook` | `null` | Hook called before each event is sent. Return `null` to drop the event. |
 | `maxBatchSize` | `number` | `50` | Maximum events to buffer before flushing. |
 | `flushInterval` | `number` | `5000` | Milliseconds between automatic flushes. |
 | `debug` | `boolean` | `false` | Enable debug logging to console. |
 | `defaultContext` | `EventContext` | `{}` | Default context applied to every event. |
 | `release` | `string` | `undefined` | Release version. Used for [sourcemap translation](/sourcemaps). |
+| `beforeSendEvent` | `BeforeSendEventHook` | `null` | Hook for lifecycle and explicit-usage events; return `null` to drop one. |
+| `configRefreshInterval` | `number` | `60000` | Milliseconds between DSN project capture/provider config refreshes; runtime config is fetched asynchronously. |
+| `policy` | `PolicyOptions` | `undefined` | Optional explicit monitor/enforce admission integration; omitted means observation only. |
 
 ### `CostKey.withContext()`
 
-Run a function with CostKey context. All AI calls inside are tagged with the provided metadata. Uses Node.js `AsyncLocalStorage` so it works across async boundaries.
+Run a function with CostKey context. Supported provider calls inside are tagged
+with the provided metadata. Uses Node.js `AsyncLocalStorage` so it works across
+async boundaries.
 
 ```typescript
 await CostKey.withContext({ task: 'summarize', team: 'search' }, async () => {
@@ -112,14 +139,15 @@ await CostKey.withContext({ team: 'search' }, async () => {
 
 ### `CostKey.startTrace()`
 
-Group all AI calls within a function under one trace ID. Traces appear in the dashboard's Traces tab.
+Group observed provider calls within a function under one trace ID. Traces
+appear in the dashboard's Traces tab.
 
 ```typescript
 await CostKey.startTrace({ name: 'POST /api/search' }, async () => {
   const intent = await classifyIntent(query)
   const results = await search(query, intent)
   const summary = await summarize(results)
-  // All 3 calls grouped as one trace
+  // Supported calls grouped as one trace
 })
 ```
 
@@ -129,6 +157,72 @@ Parameters:
 |-----------|------|---------|-------------|
 | `name` | `string` | `undefined` | Human-readable trace name shown in dashboard. |
 | `traceId` | `string` | `undefined` | Custom trace ID. Auto-generated if not provided. |
+
+### Grouped executions and explicit usage
+
+The workspace source also exposes grouped execution, explicit usage, and
+allowlisted context-carrier helpers. Check the installed package version and
+the [recipes release note](/recipes#status-at-a-glance) before using these
+helpers in an application.
+
+```typescript
+await CostKey.startExecution(
+  {
+    name: 'nightly-document-import',
+    kind: 'batch',
+    expectedItems: itemIds.length,
+    configuration: { parser: 'v2' },
+  },
+  () => runItems(),
+)
+
+await CostKey.recordUsage({
+  id: 'voice:tts:session-42:r1',
+  componentId: 'voice:tts:session-42',
+  chargeId: 'voice:tts:session-42',
+  revision: 1,
+  aggregation: 'cumulative',
+  provider: 'speech-provider',
+  model: 'speech-model',
+  usage: { audioSeconds: 2.1, characters: 320 },
+  context: CostKey.getCurrentContext(),
+})
+
+// Attach only to a trusted service/queue request. It is not automatic.
+const carrierHeaders = CostKey.exportContextHeaders()
+```
+
+`recordUsage` requires a caller-supplied event ID (preserved as the explicit
+event/caller identity) and monotonic revision. A
+`cumulative` snapshot is the full component value: the latest accepted revision
+supersedes an earlier one, while a duplicate revision is idempotent rather than
+added again. A missing amount or pricing identity remains unknown.
+`startExecution` emits lifecycle records and keeps a stable group name separate
+from its fresh execution ID.
+
+### `recordLiveKitUsage()`
+
+The source SDK includes an explicit adapter for LiveKit's cumulative
+`ev.usage.modelUsage` callback. It records one component per provider/model and
+preserves native units; it does not intercept LiveKit WebRTC/audio traffic.
+Verify the installed package exports this adapter before using it:
+
+```typescript
+import { recordLiveKitUsage } from 'costkey'
+
+session.on(voice.AgentSessionEventTypes.SessionUsageUpdated, async (ev) => {
+  await recordLiveKitUsage(ev, {
+    sessionId,
+    revision: nextSnapshotRevision(),
+    executionId,
+    expectedComponents: ['stt', 'llm', 'tts'],
+  })
+})
+```
+
+LiveKit's Node durations are milliseconds; map amounts only when the
+application has an explicit provider-reported amount or pricing identity.
+Missing components and missing prices remain visible as partial/unknown.
 
 ### `CostKey.flush()`
 
@@ -206,7 +300,10 @@ CostKey.registerExtractor(myExtractor)
 
 ## Streaming support
 
-CostKey automatically detects streaming responses (`stream: true` in the request body) and wraps the response's `ReadableStream` to capture metrics without any buffering delay. Chunks pass through to your code immediately.
+For supported provider endpoints, CostKey detects streaming responses
+(`stream: true` in the request body) and wraps the response's `ReadableStream`
+to capture metrics while yielding chunks as they are read. This does not extend
+coverage to arbitrary voice, WebSocket, or other non-HTTP transports.
 
 Captured streaming metrics:
 
@@ -264,7 +361,8 @@ for await (const event of stream) {
 
 ## Express middleware
 
-Auto-trace every HTTP request so all AI calls within a request handler are grouped.
+Auto-trace every HTTP request so supported provider calls within a request
+handler are grouped.
 
 ```typescript
 import express from 'express'
@@ -276,7 +374,7 @@ const openai = new OpenAI()
 
 CostKey.init({ dsn: 'https://ck_key@app.costkey.dev/proj_id' })
 
-// Trace middleware — groups all AI calls per request
+// Trace middleware — groups supported provider calls per request
 app.use((req, res, next) => {
   CostKey.startTrace({ name: `${req.method} ${req.path}` }, () => {
     next()
@@ -286,7 +384,7 @@ app.use((req, res, next) => {
 app.post('/api/search', async (req, res) => {
   const { query } = req.body
 
-  // All AI calls here are grouped under one trace
+  // Supported provider calls here are grouped under one trace
   const intent = await classifyIntent(query)
   const results = await search(query, intent)
   const summary = await summarize(results)
@@ -303,11 +401,20 @@ process.on('SIGTERM', async () => {
 app.listen(3000)
 ```
 
-## Trace propagation
+## Explicit trace propagation
 
-CostKey automatically propagates trace IDs across microservices via HTTP headers (`x-costkey-trace-id`). If Service A calls Service B and both have CostKey initialized, AI calls in both services are grouped under the same trace.
+CostKey does not add context headers to arbitrary outbound requests. For a
+trusted service or queue, explicitly attach the allowlisted carrier:
 
-Non-AI fetch calls from within a trace scope automatically include the trace header, so downstream services can join the trace.
+```typescript
+const headers = CostKey.exportContextHeaders()
+await fetch("https://internal-worker.example/run", { headers })
+```
+
+At the destination, pass the serialized `x-costkey-context` value to
+`CostKey.withContext(...)` (or the equivalent Python mapping). CostKey removes
+its carrier headers before making a provider request. This explicit handoff is
+not a guarantee of complete distributed propagation.
 
 ## `beforeSend` hook
 

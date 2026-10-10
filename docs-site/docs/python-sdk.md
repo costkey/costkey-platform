@@ -6,7 +6,10 @@ description: Full API reference for the CostKey Python SDK.
 
 # Python SDK
 
-The CostKey Python SDK auto-instruments `httpx` and `requests` to capture every AI API call. No wrappers, no decorators.
+The CostKey Python SDK instruments `httpx` and `requests` in-process for
+supported provider hostnames. No provider-routing gateway is required. The
+exact transport and response-shape coverage is listed in the [developer
+capability matrix](/recipes#capability-matrix).
 
 ```bash
 pipx run costkey setup
@@ -24,17 +27,28 @@ PYTHONPATH="$PWD/.costkey:$PYTHONPATH" uvicorn app:app
 
 ## How it works
 
-When you call `costkey.init()`, the SDK monkey-patches `httpx.Client.send`, `httpx.AsyncClient.send`, and `requests.Session.send`. On every HTTP call, it checks the URL hostname against a list of known AI providers. Non-AI calls pass through untouched. AI calls are intercepted to capture:
+When you call `costkey.init()`, the SDK monkey-patches `httpx.Client.send`, `httpx.AsyncClient.send`, and `requests.Session.send`. For each HTTP call, it checks the URL hostname against a list of known AI providers. Non-AI calls pass through untouched. Matched supported calls are observed for:
 
-- Request/response bodies (for token extraction)
+- Provider/model and response usage (when the endpoint exposes a recognized shape)
 - Stack trace (for call site attribution)
 - Timing (latency, TTFT for streams, tokens/sec)
 
-The SDK never modifies your request or response. It reads from cloned data and sends events to CostKey asynchronously in the background.
+The SDK passes requests and responses through while reading bounded copies for
+usage extraction. Delivery is queued/best-effort, but capture and flush work
+still have application cost; profile your own runtime rather than assuming
+the work is free.
+
+Request/response bodies are conditional. The SDK starts metadata-only until the
+DSN-authenticated project configuration is known. The server project setting
+remains authoritative: text is delivered only when text capture is explicitly
+enabled, the SDK leaves body capture enabled, and the endpoint/response shape
+supports it. Use `capture_body=False` to opt out locally; remote
+metadata-only or a revoked/unavailable config keeps bodies off. Configuration
+is fetched asynchronously so ordinary provider calls do not wait for it.
 
 ## Call graph analysis
 
-When `costkey.init()` is called, the Python SDK scans your project's `.py` files in a background thread to build a call graph. This typically completes in under 200ms and does not block your application startup.
+When `costkey.init()` is called, the Python SDK scans your project's `.py` files in a background thread to build a call graph. It does not block application startup, but the scan and serialization still consume application resources, so profile your own runtime.
 
 The call graph identifies which functions in your code are business logic vs. thin wrappers or utility functions. This graph is sent to the CostKey server, which uses it for intelligent frame attribution — so when a stack trace is captured, the dashboard highlights the meaningful function that triggered the AI call, not an intermediate helper.
 
@@ -77,10 +91,13 @@ costkey.init(dsn="...")      # CostKey wraps Sentry's patch
 This way CostKey sees the raw call and Sentry captures error context. The order matters because the last patcher wraps the others.
 
 **What to know:**
-- CostKey never modifies requests or responses — it only reads
-- CostKey never throws — it can't break your APM's error handling
+- The Python capture path does not rewrite provider requests or responses; it
+  reads bounded data for observation
+- CostKey's capture path catches its own processing failures; provider errors
+  still belong to the provider client and remain application-visible
 - Stack traces may be slightly deeper (extra frames from each wrapper — CostKey filters these automatically)
-- Streaming responses flow through both tools with minimal overhead
+- Streaming responses flow through both tools while CostKey observes the
+  stream; measure the overhead in your runtime
 
 ## API Reference
 
@@ -93,7 +110,7 @@ import costkey
 
 costkey.init(
     dsn="https://ck_your_key@app.costkey.dev/your_project_id",
-    capture_body=True,
+    capture_body=None,  # project capture mode controls text; False is always off
     debug=False,
     release="v1.2.3",
     max_batch_size=50,
@@ -107,8 +124,8 @@ costkey.init(
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `dsn` | `str` | **required** | DSN from the dashboard. Format: `https://<key>@app.costkey.dev/<project-id>` |
-| `capture_body` | `bool` | `True` | Capture request/response bodies. Disable to reduce payload size. |
+| `dsn` | `str \| None` | `COSTKEY_DSN` | DSN from the dashboard. Format: `https://<key>@app.costkey.dev/<project-id>`; omitting both values leaves the SDK in no-op/test mode. |
+| `capture_body` | `bool \| None` | `None` | Local body-capture preference. Metadata-only remains active until remote project text capture is known; `False` is always strongest. |
 | `before_send` | `Callable` | `None` | Hook called before each event is sent. Return `None` to drop the event. |
 | `max_batch_size` | `int` | `50` | Maximum events to buffer before flushing. |
 | `flush_interval` | `float` | `5.0` | Seconds between automatic flushes. |
@@ -117,14 +134,16 @@ costkey.init(
 | `release` | `str` | `None` | Release version string. Used for cost-per-deploy tracking and sourcemap translation. |
 | `scan_callgraph` | `bool` | `True` | Scan your project's `.py` files at init to build a call graph for intelligent attribution. |
 | `project_root` | `str` | `None` | Root directory to scan for call graph analysis. Auto-detected from your main module if not set. |
+| `before_send_event` | `Callable` | `None` | Hook for lifecycle and explicit-usage events; return `None` to drop one. |
+| `config_refresh_interval` | `float \| None` | `60.0` | Seconds between DSN project capture/provider config refreshes; `None` disables refresh after the initial asynchronous fetch. |
 
 ### `costkey.with_context()`
 
-Context manager that tags all AI calls within its scope with custom metadata.
+Context manager that tags supported provider calls within its scope with custom metadata.
 
 ```python
 with costkey.with_context(task="summarize", team="search"):
-    # All AI calls in here get task="summarize", team="search"
+    # Supported provider calls in here get task="summarize", team="search"
     response = client.messages.create(...)
 ```
 
@@ -156,7 +175,7 @@ with costkey.with_context(
 
 ### `costkey.start_trace()`
 
-Context manager that groups all AI calls within its scope into a single trace.
+Context manager that groups observed provider calls within its scope into a single trace.
 
 ```python
 with costkey.start_trace(name="POST /api/search"):
@@ -171,6 +190,73 @@ Parameters:
 |-----------|------|---------|-------------|
 | `name` | `str \| None` | `None` | Human-readable name for the trace (shown in dashboard). |
 | `trace_id` | `str \| None` | `None` | Custom trace ID. Auto-generated if not provided. |
+
+### Grouped executions and explicit usage
+
+The workspace source also exposes grouped execution, explicit usage, and an
+allowlisted context carrier. Check the installed package version and the
+[recipes release note](/recipes#status-at-a-glance) before using these helpers
+in an application.
+
+```python
+with costkey.start_execution(
+    name="nightly-document-import",
+    kind="batch",
+    expected_items=len(item_ids),
+    configuration={"parser": "v2"},
+):
+    run_items()
+
+costkey.record_usage(
+    event_id="voice:tts:session-42:r1",
+    component_id="voice:tts:session-42",
+    charge_id="voice:tts:session-42",
+    revision=1,
+    aggregation="cumulative",
+    provider="speech-provider",
+    model="speech-model",
+    usage={"audioSeconds": 2.1, "characters": 320},
+    context=costkey.export_context(),
+)
+```
+
+Attach `costkey.export_context()` only to a trusted service/queue request and
+pass the decoded mapping to `costkey.with_context(...)` at the destination.
+`record_usage` requires a caller-supplied event ID (the canonical explicit
+envelope identity) and monotonic revision. A
+`cumulative` snapshot is the full component value: the latest accepted revision
+supersedes an earlier one, while a duplicate revision is idempotent rather than
+added again. A missing amount or pricing identity remains unknown.
+`start_execution` emits lifecycle records and keeps a stable group name
+separate from its fresh execution ID. Supply `expected_items`,
+`completed_items`, and `failed_items` from the runner when those counts are
+known; the SDK carries the same values on the started and terminal lifecycle
+records.
+
+### `costkey.livekit.record_livekit_usage()`
+
+The source SDK includes an explicit adapter for LiveKit's cumulative
+`ev.usage.model_usage` callback. It records one component per provider/model,
+preserves native units, and does not intercept LiveKit WebRTC/audio traffic.
+Verify the installed package exports the adapter before using it:
+
+```python
+from costkey.livekit import record_livekit_usage
+
+@session.on("session_usage_updated")
+def on_usage(ev):
+    record_livekit_usage(
+        ev,
+        session_id=session_id,
+        revision=next_snapshot_revision(),
+        execution_id=execution_id,
+        expected_components=("stt", "llm", "tts"),
+    )
+```
+
+LiveKit's Python durations are seconds. Supply an amount only when the
+application has an explicit provider-reported amount or pricing identity;
+otherwise the component remains unknown-priced.
 
 ### `costkey.flush()`
 
@@ -243,7 +329,10 @@ CostKey automatically detects streaming responses (`stream=True`) and captures s
 - **Stream duration** — total time from request to last chunk
 - **Chunk count** — number of SSE chunks received
 
-The SDK wraps `iter_bytes()`, `iter_lines()`, `iter_text()`, `iter_raw()`, `read()`, and their async variants (`aiter_bytes()`, `aiter_lines()`, `aread()`). Chunks pass through with zero buffering delay.
+The SDK wraps `iter_bytes()`, `iter_lines()`, `iter_text()`, `iter_raw()`,
+`read()`, and their async variants (`aiter_bytes()`, `aiter_lines()`,
+`aread()`) for HTTPX streams. Chunks are yielded as they are read while the
+adapter observes timing; profile this work in the runtime where you deploy.
 
 ### Streaming with Anthropic
 
@@ -263,8 +352,8 @@ with client.messages.stream(
     for text in stream.text_stream:
         print(text, end="", flush=True)
 
-# CostKey captures TTFT, tokens/sec, total duration, and token usage
-# from the final SSE message automatically
+# CostKey captures timing and usage when the provider emits a supported final
+# SSE usage message; body/content capture still follows project settings.
 ```
 
 ### Streaming with OpenAI

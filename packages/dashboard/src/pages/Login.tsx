@@ -10,9 +10,6 @@ export function AuthBrandPanel() {
   return (
     <section className="auth-brand" aria-label="CostKey">
       <BrandLockup className="logo auth-brand-lockup" markClassName="logo-mark auth-brand-mark" aria-label="CostKey" />
-      <div className="auth-brand-copy">
-        <h1>A little<br /><em>light on.</em></h1>
-      </div>
       <AuthScene />
     </section>
   );

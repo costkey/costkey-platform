@@ -1,56 +1,73 @@
 /**
- * The signed-out brand art: an agent drawn as a constellation, its tools,
- * models and a sub-agent around it, with a light travelling between them.
- * Pure SVG and CSS; still when the system asks for reduced motion.
+ * The signed-out brand art: the small CostKey telescope shining into the
+ * night sky. The stars in its beam are your agents, and the light shows
+ * what each one cost or where it failed. SVG and CSS; still with reduced
+ * motion.
  */
 
-const AGENT = { x: 300, y: 250 };
-const NODES = [
-  { x: 150, y: 150, r: 7 },
-  { x: 455, y: 128, r: 8 },
-  { x: 500, y: 300, r: 6 },
-  { x: 380, y: 410, r: 7 },
-  { x: 170, y: 365, r: 6 },
-  { x: 92, y: 258, r: 5 },
+// The telescope from the design language's "a little ahead" art, tilted up.
+const SCOPE = "translate(-30 272) scale(1.1)";
+const LENS = { x: 293, y: 374 };
+const BEAM = `M${LENS.x - 6} ${LENS.y - 18} L574 -10 L700 128 L${LENS.x + 14} ${LENS.y + 10} Z`;
+
+const AGENTS = [
+  { x: 436, y: 214, r: 4.5, label: "support-agent", value: "$0.042", tone: "cost" },
+  { x: 548, y: 168, r: 5.5, label: "browser-agent", value: "failed", tone: "fail" },
+  { x: 500, y: 116, r: 3.8, label: "search", value: "$0.31", tone: "cost" },
+  { x: 586, y: 66, r: 4.2, label: "judge", value: "0.91", tone: "pass" },
 ];
-// A sub-agent hangs off one of the tools, with its own two calls.
-const SUB = { x: 545, y: 205, r: 9 };
-const SUB_LEAVES = [{ x: 590, y: 150, r: 4 }, { x: 600, y: 255, r: 4 }];
-const STARS = Array.from({ length: 46 }, (_, index) => ({
-  x: (index * 131 + 37) % 640,
-  y: (index * 89 + 23) % 500,
-  r: index % 6 === 0 ? 1.6 : 1,
-  delay: `${(index % 9) * 0.7}s`,
+const STARS = Array.from({ length: 40 }, (_, index) => ({
+  x: (index * 137 + 29) % 640,
+  y: (index * 71 + 17) % 470,
+  r: index % 7 === 0 ? 1.6 : 1,
+  delay: `${(index % 8) * 0.8}s`,
 }));
-// The light's route: agent, a tool, back, the sub-agent's branch, back, a model.
-const ROUTE = [AGENT, NODES[1], SUB, NODES[1], AGENT, NODES[3], AGENT, NODES[0], AGENT];
-const ROUTE_PATH = ROUTE.map((point, index) => `${index === 0 ? "M" : "L"}${point.x} ${point.y}`).join(" ");
+
+function Tag({ x, y, label, value, tone, delay }: { x: number; y: number; label: string; value: string; tone: string; delay: string }) {
+  const width = 26 + (label.length + value.length) * 7.1;
+  const left = x + width + 20 > 640 ? x - width - 14 : x + 12;
+  return (
+    <g className={`auth-tag auth-tag-${tone}`} style={{ animationDelay: delay }}>
+      <rect x={left} y={y - 12} width={width} height={24} rx={7} />
+      <text x={left + 10} y={y + 4}><tspan className="auth-tag-name">{label}</tspan><tspan dx={8} className="auth-tag-value">{value}</tspan></text>
+    </g>
+  );
+}
 
 export function AuthScene() {
   return (
     <div className="auth-scene" aria-hidden="true">
-      <svg className="auth-constellation" viewBox="0 0 640 500" preserveAspectRatio="xMidYMid meet">
+      <svg className="auth-sky" viewBox="0 0 640 600" preserveAspectRatio="xMidYMax meet">
         <defs>
-          <radialGradient id="auth-lamp" cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stopColor="#f5cc68" stopOpacity="0.55" />
+          <linearGradient id="auth-beam" x1={LENS.x} y1={LENS.y} x2="620" y2="70" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stopColor="#f5cc68" stopOpacity="0.42" />
             <stop offset="100%" stopColor="#f5cc68" stopOpacity="0" />
-          </radialGradient>
+          </linearGradient>
         </defs>
         {STARS.map((star, index) => <circle key={index} className="auth-star" cx={star.x} cy={star.y} r={star.r} style={{ animationDelay: star.delay }} />)}
-        <g className="auth-links">
-          {NODES.map((node, index) => <line key={index} x1={AGENT.x} y1={AGENT.y} x2={node.x} y2={node.y} />)}
-          <line x1={NODES[1].x} y1={NODES[1].y} x2={SUB.x} y2={SUB.y} />
-          {SUB_LEAVES.map((leaf, index) => <line key={index} x1={SUB.x} y1={SUB.y} x2={leaf.x} y2={leaf.y} />)}
+        <path className="auth-beam" d={BEAM} fill="url(#auth-beam)" />
+        <path className="auth-hill" d="M0 560C130 520 250 540 380 522C480 508 560 520 640 506V600H0Z" />
+        <g transform={SCOPE} strokeLinecap="round" strokeLinejoin="round">
+          <path d="M231 163L208 176L141 278L151 281L238 183L288 282L300 278L250 174Z" fill="#6E93AE" stroke="#0f1d31" strokeWidth="2.5" />
+          <path d="M228 181L224 285H235L240 180Z" fill="#344F70" stroke="#0f1d31" strokeWidth="2.5" />
+          <path d="M183 235L272 235" fill="none" stroke="#0f1d31" strokeWidth="2.5" />
+          <g transform="translate(211 157) rotate(-38)">
+            <rect x="-62" y="-16" width="30" height="32" rx="4" fill="#344F70" stroke="#0f1d31" strokeWidth="2.5" />
+            <path d="M-34 -26L102 -30L102 30L-34 25Z" fill="#FFFDF8" stroke="#0f1d31" strokeWidth="2.5" />
+            <path d="M-33 7L99 6L99 29L-33 24Z" fill="#ABC6D6" />
+            <path d="M60 -28L78 -29L78 29L60 29Z" fill="#F5CC68" stroke="#0f1d31" strokeWidth="2" />
+            <ellipse cx="102" cy="0" rx="13" ry="30" fill="#344F70" stroke="#0f1d31" strokeWidth="2.5" />
+            <ellipse cx="105" cy="0" rx="7" ry="19" fill="#f5cc68" className="auth-lens" />
+            <path d="M-11 28L24 29L21 51L-8 51Z" fill="#6E93AE" stroke="#0f1d31" strokeWidth="2.5" />
+            <circle cx="7" cy="40" r="7" fill="#F5CC68" stroke="#0f1d31" strokeWidth="2" />
+          </g>
         </g>
-        <circle className="auth-agent-glow" cx={AGENT.x} cy={AGENT.y} r={70} fill="url(#auth-lamp)" />
-        {NODES.map((node, index) => <circle key={index} className="auth-node" cx={node.x} cy={node.y} r={node.r} />)}
-        {SUB_LEAVES.map((leaf, index) => <circle key={index} className="auth-node auth-node-faint" cx={leaf.x} cy={leaf.y} r={leaf.r} />)}
-        <circle className="auth-node auth-node-sub" cx={SUB.x} cy={SUB.y} r={SUB.r} />
-        <circle className="auth-agent-ring" cx={AGENT.x} cy={AGENT.y} r={24} />
-        <circle className="auth-agent" cx={AGENT.x} cy={AGENT.y} r={13} />
-        <circle className="auth-signal" r={3.2}>
-          <animateMotion dur="11s" repeatCount="indefinite" path={ROUTE_PATH} keyPoints="0;1" keyTimes="0;1" calcMode="linear" />
-        </circle>
+        {AGENTS.map((agent, index) => (
+          <g key={agent.label}>
+            <circle className={`auth-agent-star auth-agent-${agent.tone}`} cx={agent.x} cy={agent.y} r={agent.r} style={{ animationDelay: `${index * 0.9}s` }} />
+            <Tag x={agent.x} y={agent.y} label={agent.label} value={agent.value} tone={agent.tone} delay={`${0.5 + index * 0.35}s`} />
+          </g>
+        ))}
       </svg>
     </div>
   );

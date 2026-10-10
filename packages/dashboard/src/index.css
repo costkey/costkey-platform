@@ -4317,6 +4317,3 @@ input:disabled,
 .ck-breakdown-table .ck-col-share { width: 110px; }
 .ck-breakdown-table td:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .auth-brand-lockup { position: relative; z-index: 1; }
-/* A light brand panel so the telescope art sits in its own palette. */
-.auth-brand { background: #eef3f5; color: var(--ck-ink); }
-.auth-brand-lockup, .auth-brand-mark { color: var(--ck-ink); }

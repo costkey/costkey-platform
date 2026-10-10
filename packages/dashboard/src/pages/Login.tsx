@@ -9,7 +9,6 @@ import { AuthScene } from "../components/AuthScene";
 export function AuthBrandPanel() {
   return (
     <section className="auth-brand" aria-label="CostKey">
-      <BrandLockup className="logo auth-brand-lockup" markClassName="logo-mark auth-brand-mark" aria-label="CostKey" />
       <AuthScene />
     </section>
   );

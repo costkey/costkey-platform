@@ -40,7 +40,7 @@ function windowFrom(req: Request): Window {
 /** One row per run in the window, with its root span. Params: $1 project, $2 from, $3 to, $4 environment. */
 export const RUNS_CTE = `
   calls AS (
-    SELECT e.trace_id, e.trace_name, e.cost_usd, e.duration_ms, e.status_code, e.timestamp, e.parent_event_id,
+    SELECT e.id, e.trace_id, e.trace_name, e.cost_usd, e.duration_ms, e.status_code, e.timestamp, e.parent_event_id,
            e.model, e.provider, e.span_id, e.context, e.group_kind, e.group_name
     FROM events e
     WHERE e.project_id = $1 AND COALESCE(e.event_type, 'call') = 'call' AND e.trace_id IS NOT NULL
@@ -136,9 +136,8 @@ export function createInsightsRouter(pool: pg.Pool): Router {
          SELECT COALESCE(CASE WHEN root_kind = 'workflow' THEN root_name END, NULLIF(group_name, ''), NULLIF(trace_name, ''), root_name, 'Unnamed') AS name,
                 ${GROUP_COLUMNS}
          FROM run_rows
-         -- Evaluations and experiments live on Evals; a batch groups as one workflow.
+         -- A batch, evaluation or experiment groups as one workflow.
          WHERE root_kind IS DISTINCT FROM 'agent'
-           AND COALESCE(group_kind, '') NOT IN ('evaluation', 'experiment', 'eval')
          GROUP BY 1
          ORDER BY SUM(cost) DESC NULLS LAST, COUNT(*) DESC
          LIMIT 200`,
@@ -234,7 +233,7 @@ export function createInsightsRouter(pool: pg.Pool): Router {
                     ? "root_name"
                     : "COALESCE(CASE WHEN root_kind = 'workflow' THEN root_name END, NULLIF(group_name, ''), NULLIF(trace_name, ''), root_name, 'Unnamed')"} AS owner
            FROM run_rows
-           WHERE ${agents ? "root_kind = 'agent'" : "root_kind IS DISTINCT FROM 'agent' AND COALESCE(group_kind, '') NOT IN ('evaluation', 'experiment', 'eval')"}
+           WHERE ${agents ? "root_kind = 'agent'" : "root_kind IS DISTINCT FROM 'agent'"}
          ),
          by_owner AS (
            SELECT COALESCE(c.model, 'unknown') AS model, c.provider, s.owner,
@@ -250,6 +249,136 @@ export function createInsightsRouter(pool: pg.Pool): Router {
       );
       res.json({ models: result.rows.map((row) => ({ model: row.model, provider: row.provider, calls: number(row.calls) ?? 0, runs: number(row.runs) ?? 0, cost: number(row.cost), topOwners: row.top_owners ?? [] })) });
     } catch (error) { fail(res, "Models", error); }
+  });
+
+  /**
+   * Quality: did a run go wrong, where, and what did it cost. A run (one
+   * agent execution or workflow run) fails when it errors, a model call fails
+   * with no successful retry, a tool or step fails, or a judge fails it.
+   */
+  router.get("/api/v1/projects/:projectId/quality/summary", async (req: Request, res: Response) => {
+    const window = windowFrom(req);
+    const owner = text(req.query["owner"]);
+    const params = [req.params["projectId"], window.from, window.to, window.environment];
+    const qualityCte = `WITH ${RUNS_CTE},
+      owned AS (
+        SELECT r.*,
+               CASE WHEN root_kind = 'agent' THEN 'agent' ELSE 'workflow' END AS owner_kind,
+               CASE WHEN root_kind = 'agent' THEN root_name
+                    ELSE COALESCE(CASE WHEN root_kind = 'workflow' THEN root_name END, NULLIF(group_name, ''), NULLIF(trace_name, ''), root_name, 'Unnamed') END AS owner
+        FROM run_rows r
+      ),
+      call_quality AS (
+        SELECT c.trace_id,
+               COUNT(*) FILTER (WHERE COALESCE(c.status_code, 200) >= 400 AND NOT EXISTS (
+                 SELECT 1 FROM calls retry WHERE retry.parent_event_id = c.id AND COALESCE(retry.status_code, 200) < 400))::int AS failed_calls,
+               COUNT(*) FILTER (WHERE c.parent_event_id IS NOT NULL)::int AS retries,
+               COALESCE(SUM(c.cost_usd) FILTER (WHERE COALESCE(c.status_code, 200) >= 400
+                 OR EXISTS (SELECT 1 FROM calls retry WHERE retry.parent_event_id = c.id)), 0) AS wasted_cost,
+               (ARRAY_AGG(COALESCE(c.model, 'model') || ' returned ' || c.status_code ORDER BY c.timestamp)
+                 FILTER (WHERE COALESCE(c.status_code, 200) >= 400))[1] AS first_call_error
+        FROM calls c GROUP BY c.trace_id
+      ),
+      span_quality AS (
+        SELECT s.trace_id,
+               BOOL_OR(s.status = 'error' AND s.kind = 'tool') AS tool_failed,
+               BOOL_OR(s.status = 'error' AND s.kind <> 'tool' AND s.parent_span_id IS NOT NULL) AS step_failed,
+               (ARRAY_AGG(s.name || COALESCE(': ' || s.error_type, '') ORDER BY COALESCE(s.ended_at, s.started_at))
+                 FILTER (WHERE s.status = 'error'))[1] AS first_span_error
+        FROM spans s
+        WHERE s.project_id = $1 AND s.trace_id IN (SELECT trace_id FROM runs)
+        GROUP BY s.trace_id
+      ),
+      judged AS (
+        SELECT sc.trace_id,
+               BOOL_OR(LOWER(COALESCE(sc.label, '')) IN ('fail', 'failed')
+                 OR (sc.label IS NULL AND sc.value >= 0 AND sc.value < 0.5)) AS judged_fail,
+               (ARRAY_AGG(sc.name ORDER BY sc.timestamp DESC) FILTER (WHERE LOWER(COALESCE(sc.label, '')) IN ('fail', 'failed')
+                 OR (sc.label IS NULL AND sc.value >= 0 AND sc.value < 0.5)))[1] AS failed_score
+        FROM scores sc
+        WHERE sc.project_id = $1 AND sc.trace_id IN (SELECT trace_id FROM runs)
+        GROUP BY sc.trace_id
+      ),
+      quality AS (
+        SELECT o.trace_id, o.owner, o.owner_kind, o.started_at, o.cost, o.calls,
+               COALESCE(cq.failed_calls, 0) AS failed_calls, COALESCE(cq.retries, 0) AS retries, COALESCE(cq.wasted_cost, 0) AS wasted_cost,
+               o.root_status = 'error' AS run_failed,
+               COALESCE(sq.tool_failed, FALSE) AS tool_failed, COALESCE(sq.step_failed, FALSE) AS step_failed,
+               COALESCE(j.judged_fail, FALSE) AS judged_fail, j.trace_id IS NOT NULL AS judged,
+               COALESCE(sq.first_span_error, cq.first_call_error, CASE WHEN j.judged_fail THEN j.failed_score || ' scored failing' END) AS first_error
+        FROM owned o
+        LEFT JOIN call_quality cq ON cq.trace_id = o.trace_id
+        LEFT JOIN span_quality sq ON sq.trace_id = o.trace_id
+        LEFT JOIN judged j ON j.trace_id = o.trace_id
+      ),
+      verdict AS (
+        SELECT q.*, (run_failed OR tool_failed OR step_failed OR failed_calls > 0 OR judged_fail) AS failed FROM quality q
+      )`;
+    try {
+      const [totals, owners, models, failures] = await Promise.all([
+        pool.query(
+          `${qualityCte}
+           SELECT COUNT(*)::int AS runs, COUNT(*) FILTER (WHERE failed)::int AS failed_runs,
+                  COALESCE(SUM(calls), 0)::int AS calls, COALESCE(SUM(failed_calls), 0)::int AS failed_calls,
+                  COALESCE(SUM(retries), 0)::int AS retries,
+                  COALESCE(SUM(wasted_cost), 0) + COALESCE(SUM(cost) FILTER (WHERE failed AND failed_calls = 0), 0) AS wasted_cost
+           FROM verdict`,
+          params,
+        ),
+        pool.query(
+          `${qualityCte}
+           SELECT owner, owner_kind, COUNT(*)::int AS runs, COUNT(*) FILTER (WHERE failed)::int AS failed_runs,
+                  COUNT(*) FILTER (WHERE judged)::int AS judged_runs, COUNT(*) FILTER (WHERE judged_fail)::int AS judged_failed,
+                  SUM(failed_calls)::int AS failed_calls, SUM(retries)::int AS retries,
+                  SUM(wasted_cost) + COALESCE(SUM(cost) FILTER (WHERE failed AND failed_calls = 0), 0) AS wasted_cost,
+                  COUNT(*) FILTER (WHERE tool_failed)::int AS tool_failures
+           FROM verdict GROUP BY owner, owner_kind
+           ORDER BY COUNT(*) FILTER (WHERE failed) DESC, COUNT(*) DESC LIMIT 100`,
+          params,
+        ),
+        pool.query(
+          `WITH ${RUNS_CTE}
+           SELECT COALESCE(c.model, 'unknown') AS model, c.provider, COUNT(*)::int AS calls,
+                  COUNT(*) FILTER (WHERE COALESCE(c.status_code, 200) >= 400)::int AS failed_calls,
+                  COUNT(*) FILTER (WHERE c.parent_event_id IS NOT NULL)::int AS retries,
+                  percentile_cont(0.95) WITHIN GROUP (ORDER BY c.duration_ms) AS p95_ms,
+                  COALESCE(SUM(c.cost_usd) FILTER (WHERE COALESCE(c.status_code, 200) >= 400
+                    OR EXISTS (SELECT 1 FROM calls retry WHERE retry.parent_event_id = c.id)), 0) AS wasted_cost,
+                  ARRAY_REMOVE(ARRAY_AGG(DISTINCT c.status_code) FILTER (WHERE COALESCE(c.status_code, 200) >= 400), NULL) AS status_codes
+           FROM calls c GROUP BY 1, 2
+           ORDER BY COUNT(*) FILTER (WHERE COALESCE(c.status_code, 200) >= 400) DESC, COUNT(*) DESC LIMIT 100`,
+          params,
+        ),
+        pool.query(
+          `${qualityCte}
+           SELECT trace_id, owner, owner_kind, started_at, cost, run_failed, tool_failed, step_failed, failed_calls, judged_fail, first_error
+           FROM verdict WHERE failed AND ($5::text IS NULL OR owner = $5)
+           ORDER BY started_at DESC LIMIT 100`,
+          [...params, owner],
+        ),
+      ]);
+      const total = totals.rows[0] ?? {};
+      res.json({
+        totals: { runs: number(total.runs) ?? 0, failedRuns: number(total.failed_runs) ?? 0, calls: number(total.calls) ?? 0, failedCalls: number(total.failed_calls) ?? 0, retries: number(total.retries) ?? 0, wastedCost: number(total.wasted_cost) ?? 0 },
+        owners: owners.rows.map((row) => ({
+          name: row.owner, kind: row.owner_kind, runs: row.runs, failedRuns: row.failed_runs, judgedRuns: row.judged_runs,
+          judgedFailed: row.judged_failed, failedCalls: number(row.failed_calls) ?? 0, retries: number(row.retries) ?? 0,
+          toolFailures: row.tool_failures, wastedCost: number(row.wasted_cost) ?? 0,
+        })),
+        models: models.rows.map((row) => ({
+          model: row.model, provider: row.provider, calls: row.calls, failedCalls: row.failed_calls, retries: row.retries,
+          p95Ms: number(row.p95_ms), wastedCost: number(row.wasted_cost) ?? 0, statusCodes: (row.status_codes ?? []).map(Number),
+        })),
+        failures: failures.rows.map((row) => ({
+          traceId: row.trace_id, name: row.owner, kind: row.owner_kind, startedAt: row.started_at, cost: number(row.cost),
+          reasons: [
+            row.run_failed && "Run failed", Number(row.failed_calls) > 0 && "Model call failed", row.tool_failed && "Tool failed",
+            row.step_failed && "Step failed", row.judged_fail && "Judged failing",
+          ].filter(Boolean),
+          detail: row.first_error ?? null,
+        })),
+      });
+    } catch (error) { fail(res, "Quality", error); }
   });
 
   router.get("/api/v1/projects/:projectId/errors", async (req: Request, res: Response) => {

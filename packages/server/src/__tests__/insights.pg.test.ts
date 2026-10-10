@@ -7,7 +7,7 @@ import { GROUP_COLUMNS, RUNS_CTE } from "../insights-api.js";
 
 const connectionString = process.env["ACCOUNTING_TEST_DATABASE_URL"];
 
-test("runs group into agents, workflows and batches; evals stay out of workflows", { skip: !connectionString }, async () => {
+test("runs group into agents and workflows; a batch or eval is one workflow", { skip: !connectionString }, async () => {
   const pool = new pg.Pool({ connectionString });
   const suffix = randomBytes(6).toString("hex");
   const orgId = `org_insights_${suffix}`;
@@ -55,11 +55,11 @@ test("runs group into agents, workflows and batches; evals stay out of workflows
     const workflows = await pool.query(
       `WITH ${RUNS_CTE}
        SELECT COALESCE(CASE WHEN root_kind = 'workflow' THEN root_name END, NULLIF(group_name, ''), NULLIF(trace_name, ''), root_name, 'Unnamed') AS name, ${GROUP_COLUMNS}
-       FROM run_rows WHERE root_kind IS DISTINCT FROM 'agent' AND COALESCE(group_kind, '') NOT IN ('evaluation', 'experiment', 'eval')
+       FROM run_rows WHERE root_kind IS DISTINCT FROM 'agent'
        GROUP BY 1 ORDER BY 1`,
       params,
     );
-    assert.deepEqual(workflows.rows.map((row) => [row.name, row.runs, row.failed_runs]), [["POST /api/search", 2, 1], ["nightly-import", 3, 0]]);
+    assert.deepEqual(workflows.rows.map((row) => [row.name, row.runs, row.failed_runs]), [["POST /api/search", 2, 1], ["nightly-import", 3, 0], ["search-quality", 1, 0]]);
   } finally {
     await pool.query("DELETE FROM projects WHERE id = $1", [projectId]).catch(() => undefined);
     await pool.query("DELETE FROM orgs WHERE id = $1", [orgId]).catch(() => undefined);

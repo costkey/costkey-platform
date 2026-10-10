@@ -38,8 +38,6 @@ function SetupShell({ children, projectName, orgName, user, onLogout }: { childr
     { to: "/workflows", label: "Workflows", icon: "workflow" },
     { to: "/agents", label: "Agents", icon: "agent" },
     { to: "/traces", label: "Traces", icon: "trace" },
-    { to: "/evals", label: "Evals", icon: "flask" },
-    { to: "/errors", label: "Errors", icon: "alert" },
     { to: "/quality", label: "Quality", icon: "quality" },
     { to: "/models", label: "Models", icon: "model" },
     { to: "/forecast", label: "Forecast", icon: "telescope" },

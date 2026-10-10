@@ -1051,3 +1051,14 @@ export interface BudgetPolicy {
 export function getBudgetPolicies(projectId: string): Promise<{ policies: BudgetPolicy[] }> {
   return get(`/projects/${encodeURIComponent(projectId)}/budget/policies`);
 }
+
+export interface QualitySummary {
+  totals: { runs: number; failedRuns: number; calls: number; failedCalls: number; retries: number; wastedCost: number };
+  owners: Array<{ name: string; kind: "agent" | "workflow"; runs: number; failedRuns: number; judgedRuns: number; judgedFailed: number; failedCalls: number; retries: number; toolFailures: number; wastedCost: number }>;
+  models: Array<{ model: string; provider: string; calls: number; failedCalls: number; retries: number; p95Ms: number | null; wastedCost: number; statusCodes: number[] }>;
+  failures: Array<{ traceId: string; name: string; kind: "agent" | "workflow"; startedAt: string; cost: number | null; reasons: string[]; detail: string | null }>;
+}
+
+export function getQualitySummary(projectId: string, scope: InsightScope, owner?: string | null): Promise<QualitySummary> {
+  return get(`/projects/${encodeURIComponent(projectId)}/quality/summary?${scopeQuery(scope)}${owner ? `&owner=${encodeURIComponent(owner)}` : ""}`);
+}

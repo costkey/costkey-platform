@@ -28,7 +28,6 @@ const Traces = lazy(() => import("./pages/Traces"));
 const Workflows = lazy(() => import("./pages/RunGroups").then((module) => ({ default: module.Workflows })));
 const Agents = lazy(() => import("./pages/RunGroups").then((module) => ({ default: module.Agents })));
 const AgentDetailPage = lazy(() => import("./pages/RunGroups").then((module) => ({ default: module.AgentDetailPage })));
-const Errors = lazy(() => import("./pages/Errors"));
 const Quality = lazy(() => import("./pages/Quality"));
 const Alerting = lazy(() => import("./pages/Alerting"));
 const ContributorPage = lazy(() => import("./pages/ProductParityRoutes").then((module) => ({ default: module.ContributorPage })));
@@ -278,14 +277,12 @@ function AppShell() {
     };
   }, [sidebarPanel]);
 
-  // Six tabs. Spend by model, budgets, forecasts and alerts are features
-  // inside them; the logo opens the overview.
+  // Spend by model, budgets, forecasts and alerts are features inside the tabs.
   const navItems = useMemo(() => [
+    { to: "/", label: "Overview", icon: "overview" as PrototypeIconName },
     { to: "/workflows", label: "Workflows", icon: "workflow" as PrototypeIconName },
     { to: "/agents", label: "Agents", icon: "agent" as PrototypeIconName },
     { to: "/traces", label: "Traces", icon: "trace" as PrototypeIconName },
-    { to: "/evals", label: "Evals", icon: "flask" as PrototypeIconName },
-    { to: "/errors", label: "Errors", icon: "alert" as PrototypeIconName },
     { to: "/quality", label: "Quality", icon: "quality" as PrototypeIconName },
   ], []);
 
@@ -294,8 +291,7 @@ function AppShell() {
     if (pathname.startsWith("/workflows")) return "/workflows";
     if (pathname.startsWith("/agents")) return "/agents";
     if (pathname.startsWith("/traces") || pathname === "/trace" || pathname.startsWith("/compare")) return "/traces";
-    if (pathname.startsWith("/evals") || pathname.startsWith("/executions") || pathname.startsWith("/group")) return "/evals";
-    if (pathname.startsWith("/errors")) return "/errors";
+    if (pathname.startsWith("/executions") || pathname.startsWith("/group")) return "/workflows";
     if (pathname.startsWith("/quality")) return "/quality";
     if (pathname.startsWith("/models") || pathname.startsWith("/costs") || pathname.startsWith("/contributor")) return "/models";
     if (pathname.startsWith("/forecast")) return "/forecast";
@@ -314,7 +310,7 @@ function AppShell() {
   const pageTitle = (() => {
     const pathname = location.pathname;
     if (pathname === "/trace" || pathname.startsWith("/trace/") || pathname.startsWith("/traces/")) return "Run detail";
-    const section = navItems.find((item) => item.to !== "/" && navSection(pathname) === item.to);
+    const section = navItems.find((item) => navSection(pathname) === item.to);
     if (section) return section.label;
     if (pathname.startsWith("/findings") || pathname.startsWith("/finding")) return "Needs a look";
     if (pathname.startsWith("/compare")) return "Compare";
@@ -417,10 +413,9 @@ export default function App() {
             <RouterRoute path="/workflows" element={<Workflows />} />
             <RouterRoute path="/agents" element={<Agents />} />
             <RouterRoute path="/agents/:name" element={<AgentDetailPage />} />
-            <RouterRoute path="/errors" element={<Errors />} />
+            <RouterRoute path="/errors" element={<Navigate to="/quality" replace />} />
             <RouterRoute path="/quality" element={<Quality />} />
             <RouterRoute path="/alerting" element={<Alerting />} />
-            <RouterRoute path="/evals" element={<Executions />} />
             <RouterRoute path="/forecast" element={<Forecast />} />
             <RouterRoute path="/executions" element={<Executions />} />
             <RouterRoute path="/executions/:executionId" element={<Executions />} />

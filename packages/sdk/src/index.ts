@@ -5,6 +5,7 @@ import type {
   CostKeyEvent,
   CostKeyLifecycleEvent,
   CostKeyUsageEvent,
+  CostKeySpanEvent,
   EventContext,
   ExecutionOptions,
   NormalizedUsage,
@@ -26,10 +27,17 @@ import {
   importContext,
   resetLifecycleState,
   setLifecycleEmitter,
+  setSpanEmitter,
   startExecution,
+  startSpan,
   startTrace,
+  agent,
+  step,
+  tool,
+  instrumentTools,
   withContext,
   type LifecycleRecord,
+  type SpanRecord,
 } from "./context.js";
 import { registerExtractor, unregisterExtractor } from "./providers/registry.js";
 import { Provider as ProviderValue } from "./types.js";
@@ -52,6 +60,12 @@ export type {
   CostKeyTelemetryEvent,
   CostKeyLifecycleEvent,
   CostKeyUsageEvent,
+  CostKeySpanEvent,
+  SpanKind,
+  SpanStatus,
+  SpanOptions,
+  SpanHandle,
+  SpanAttributeValue,
   PolicyMode,
   PolicyRefusalReason,
   PolicyIntegrationProof,
@@ -161,6 +175,13 @@ function init(options: import("./types.js").CostKeyOptions): void {
     const currentProjectId = projectId;
     if (!currentTransport || !currentProjectId) return;
     const event = buildLifecycleEvent(record, currentProjectId, defaultContext);
+    trackAdditiveEvent(event, currentTransport, additiveBeforeSend, options.debug ?? false);
+  });
+  setSpanEmitter((record) => {
+    const currentTransport = transport;
+    const currentProjectId = projectId;
+    if (!currentTransport || !currentProjectId) return;
+    const event = buildSpanEvent(record, currentProjectId, defaultContext, captureBodyRef?.current === true);
     trackAdditiveEvent(event, currentTransport, additiveBeforeSend, options.debug ?? false);
   });
 
@@ -416,6 +437,7 @@ async function shutdown(): Promise<void> {
   configGeneration++;
   stopRuntimeConfigSync();
   setLifecycleEmitter(null);
+  setSpanEmitter(null);
   await flushPendingCaptures();
   await flushPendingPolicy();
   const droppedAdditive = await drainAdditiveEvents();
@@ -452,6 +474,55 @@ async function flush(): Promise<void> {
     console.warn(`[costkey] Dropped ${droppedAdditive} additive event(s) after bounded hook wait`);
   }
   if (transport) await transport.flush();
+}
+
+const MAX_SPAN_PAYLOAD_CHARS = 2_000;
+
+/** Span input/output are content: bounded, and only sent when capture is on. */
+function spanPayload(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  let text: string;
+  try {
+    text = typeof value === "string" ? value : JSON.stringify(value) ?? "";
+  } catch {
+    return undefined;
+  }
+  return text.length > MAX_SPAN_PAYLOAD_CHARS ? `${text.slice(0, MAX_SPAN_PAYLOAD_CHARS)}…` : text;
+}
+
+function buildSpanEvent(
+  record: SpanRecord,
+  currentProjectId: string,
+  currentDefaultContext: EventContext,
+  capture: boolean,
+): CostKeySpanEvent {
+  const attributes: Record<string, unknown> = { ...record.attributes };
+  if (capture) {
+    const input = spanPayload(record.input);
+    const output = spanPayload(record.output);
+    if (input !== undefined) attributes["input"] = input;
+    if (output !== undefined) attributes["output"] = output;
+  }
+  return {
+    id: record.id,
+    timestamp: record.endedAt ?? record.startedAt,
+    projectId: currentProjectId,
+    eventType: "span",
+    source: "explicit",
+    kind: record.kind,
+    name: record.name,
+    status: record.status,
+    traceId: record.traceId,
+    ...(record.traceName ? { traceName: record.traceName } : {}),
+    ...(record.parentSpanId ? { parentSpanId: record.parentSpanId } : {}),
+    ...(record.executionId ? { executionId: record.executionId } : {}),
+    startedAt: record.startedAt,
+    ...(record.endedAt ? { endedAt: record.endedAt } : {}),
+    ...(record.durationMs !== undefined ? { durationMs: record.durationMs } : {}),
+    ...(record.errorType ? { errorType: record.errorType } : {}),
+    ...(Object.keys(attributes).length > 0 ? { attributes } : {}),
+    context: { ...currentDefaultContext, ...record.context },
+  };
 }
 
 function buildLifecycleEvent(
@@ -745,13 +816,13 @@ function trimUsageLedger(currentChargeId: string): void {
 }
 
 async function sendAdditiveEvent(
-  event: CostKeyLifecycleEvent | CostKeyUsageEvent,
+  event: CostKeyLifecycleEvent | CostKeyUsageEvent | CostKeySpanEvent,
   currentTransport: Transport,
   hook: BeforeSendEventHook | null,
   debug: boolean,
 ): Promise<void> {
   try {
-    let finalEvent: CostKeyLifecycleEvent | CostKeyUsageEvent | null = event;
+    let finalEvent: CostKeyLifecycleEvent | CostKeyUsageEvent | CostKeySpanEvent | null = event;
     if (hook) {
       try {
         finalEvent = await hook(event);
@@ -767,7 +838,7 @@ async function sendAdditiveEvent(
 }
 
 function trackAdditiveEvent(
-  event: CostKeyLifecycleEvent | CostKeyUsageEvent,
+  event: CostKeyLifecycleEvent | CostKeyUsageEvent | CostKeySpanEvent,
   currentTransport: Transport,
   hook: BeforeSendEventHook | null,
   debug: boolean,
@@ -944,6 +1015,11 @@ export const CostKey = {
   withContext,
   startTrace,
   startExecution,
+  startSpan,
+  agent,
+  step,
+  tool,
+  instrumentTools,
   recordUsage,
   exportContext,
   exportContextHeaders,

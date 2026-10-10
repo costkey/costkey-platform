@@ -9,7 +9,8 @@ import { chargesCte } from "./charge-cohort.js";
  */
 export type AccountingEvent = Record<string, unknown>;
 
-export type EventType = "call" | "lifecycle" | "usage";
+export type EventType = "call" | "lifecycle" | "usage" | "span";
+export type SpanStatus = "running" | "ok" | "error" | "cancelled";
 export type LifecycleState = "started" | "completed" | "failed" | "cancelled";
 export type AccountingState = "complete" | "partial" | "pending";
 
@@ -27,12 +28,17 @@ export class AccountingConflictError extends Error {
 }
 
 export class InvalidAccountingEventError extends Error {
-  readonly code = "invalid_accounting_event";
+  readonly code: string = "invalid_accounting_event";
 
   constructor(message: string) {
     super(message);
     this.name = "InvalidAccountingEventError";
   }
+}
+
+/** A newer SDK sent an event kind this server does not know; only that event is skipped. */
+export class UnsupportedEventTypeError extends InvalidAccountingEventError {
+  override readonly code = "unsupported_event_type";
 }
 
 export interface NormalizedAccountingEvent {
@@ -79,6 +85,13 @@ export interface NormalizedAccountingEvent {
   pricingId: string | null;
   usage: Record<string, number | null> | null;
   metadata: unknown;
+  /** The span a call ran inside, or the span itself for span events. */
+  spanId: string | null;
+  parentSpanId: string | null;
+  spanKind: string | null;
+  spanName: string | null;
+  spanStatus: SpanStatus | null;
+  spanAttributes: Record<string, unknown> | null;
 }
 
 function objectValue(value: unknown): Record<string, unknown> {
@@ -150,10 +163,10 @@ export function normalizeAccountingEvent(event: AccountingEvent): NormalizedAcco
   const nestedUsage = objectValue(event["usageEvent"] ?? event["usage_event"]);
   const eventTypeValue = event["eventType"] ?? event["event_type"];
   const rawEventType = optionalString(eventTypeValue);
-  if (eventTypeValue !== undefined && rawEventType !== "call" && rawEventType !== "lifecycle" && rawEventType !== "usage") {
-    throw new InvalidAccountingEventError("eventType must be call, lifecycle, or usage");
+  if (eventTypeValue !== undefined && rawEventType !== "call" && rawEventType !== "lifecycle" && rawEventType !== "usage" && rawEventType !== "span") {
+    throw new UnsupportedEventTypeError(`eventType ${String(rawEventType ?? eventTypeValue)} is not supported`);
   }
-  const eventType: EventType = rawEventType === "lifecycle" || rawEventType === "usage"
+  const eventType: EventType = rawEventType === "lifecycle" || rawEventType === "usage" || rawEventType === "span"
     ? rawEventType
     : "call";
   const sourceValue = optionalString(event["source"]);
@@ -280,6 +293,16 @@ export function normalizeAccountingEvent(event: AccountingEvent): NormalizedAcco
     pricingId: optionalString(event["pricingId"] ?? event["pricing_id"] ?? nestedUsage["pricingId"]),
     usage: usageObject,
     metadata: event["metadata"] ?? null,
+    spanId: eventType === "span"
+      ? optionalString(event["id"])
+      : optionalString(event["spanId"] ?? event["span_id"] ?? context["spanId"] ?? context["span_id"]),
+    parentSpanId: eventType === "span"
+      ? optionalString(event["parentSpanId"] ?? event["parent_span_id"])
+      : null,
+    spanKind: eventType === "span" ? normalizeSpanKind(event["kind"] ?? event["spanKind"] ?? event["span_kind"]) : null,
+    spanName: eventType === "span" ? optionalString(event["name"] ?? event["spanName"] ?? event["span_name"]) : null,
+    spanStatus: eventType === "span" ? normalizeSpanStatus(event["status"]) : null,
+    spanAttributes: eventType === "span" ? spanAttributes(event["attributes"]) : null,
   };
   if (!optionalString(event["id"])) {
     throw new InvalidAccountingEventError(`${eventType} requires id`);
@@ -298,6 +321,12 @@ export function normalizeAccountingEvent(event: AccountingEvent): NormalizedAcco
       || normalized.sequence === null || !Number.isSafeInteger(normalized.sequence) || normalized.sequence < 0)) {
       throw new InvalidAccountingEventError("lifecycle sequence must be a safe non-negative integer");
     }
+  }
+  if (normalized.eventType === "span") {
+    if (!normalized.spanName) throw new InvalidAccountingEventError("span requires name");
+    if (normalized.parentSpanId === normalized.spanId) throw new InvalidAccountingEventError("span cannot be its own parent");
+    // A span without explicit bounds starts at its timestamp.
+    if (!normalized.startedAt) normalized.startedAt = timestamp;
   }
   if (normalized.eventType === "usage") {
     if (!event["timestamp"] || Number.isNaN(new Date(String(event["timestamp"])).getTime())) {
@@ -320,6 +349,43 @@ export function normalizeAccountingEvent(event: AccountingEvent): NormalizedAcco
     }
   }
   return normalized;
+}
+
+const SPAN_KINDS = new Set(["agent", "step", "tool", "workflow", "task", "judge", "retrieval", "handoff", "guardrail", "chain", "custom"]);
+
+function normalizeSpanKind(value: unknown): string {
+  const kind = optionalString(value)?.toLowerCase();
+  return kind && SPAN_KINDS.has(kind) ? kind : "custom";
+}
+
+function normalizeSpanStatus(value: unknown): SpanStatus {
+  const status = optionalString(value)?.toLowerCase();
+  if (status === "ok" || status === "completed" || status === "success") return "ok";
+  if (status === "error" || status === "failed") return "error";
+  if (status === "cancelled" || status === "canceled") return "cancelled";
+  return "running";
+}
+
+const MAX_SPAN_ATTRIBUTES_BYTES = 8_192;
+
+/** Keep span attributes small and flat enough to store on every span. */
+function spanAttributes(value: unknown): Record<string, unknown> | null {
+  const raw = objectValue(value);
+  const entries = Object.entries(raw).filter(([key]) => /^[A-Za-z0-9_.:-]{1,64}$/.test(key));
+  if (entries.length === 0) return null;
+  const result: Record<string, unknown> = {};
+  let size = 2;
+  for (const [key, item] of entries) {
+    const encoded = JSON.stringify(item ?? null);
+    if (encoded === undefined) continue;
+    const clipped = encoded.length > 2_048 && typeof item === "string" ? item.slice(0, 2_000) : item;
+    const length = key.length + Math.min(encoded.length, 2_048) + 4;
+    if (size + length > MAX_SPAN_ATTRIBUTES_BYTES) break;
+    if (encoded.length > 2_048 && typeof item !== "string") continue;
+    result[key] = clipped;
+    size += length;
+  }
+  return Object.keys(result).length > 0 ? result : null;
 }
 
 export function stableGroupId(projectId: string, name: string, kind: string): string {
@@ -366,19 +432,91 @@ async function upsertGroup(
   normalized: NormalizedAccountingEvent,
 ): Promise<string | null> {
   if (!normalized.groupName && !normalized.groupId) return null;
-  const groupId = normalized.groupId ?? stableGroupId(projectId, normalized.groupName ?? "unnamed", normalized.groupKind);
-  const groupName = normalized.groupName ?? groupId;
+  const requestedId = normalized.groupId ?? stableGroupId(projectId, normalized.groupName ?? "unnamed", normalized.groupKind);
+  const groupName = normalized.groupName ?? requestedId;
+  // Groups are unique by id and by (name, kind). An SDK may mint a new id for
+  // a name that already exists, so reuse whichever row already owns either.
+  const existing = await asClient(client).query(
+    `SELECT id FROM groups
+      WHERE project_id = $1 AND (id = $2 OR (name = $3 AND kind = $4))
+      ORDER BY (id = $2) DESC
+      LIMIT 1`,
+    [projectId, requestedId, groupName, normalized.groupKind],
+  );
+  const existingId = (existing.rows[0] as { id: string } | undefined)?.id;
+  if (existingId) {
+    await asClient(client).query(
+      `UPDATE groups SET
+         metadata = COALESCE($3, metadata),
+         updated_at = NOW()
+       WHERE project_id = $1 AND id = $2`,
+      [projectId, existingId, normalized.configuration ? JSON.stringify(normalized.configuration) : null],
+    );
+    return existingId;
+  }
   await asClient(client).query(
     `INSERT INTO groups (id, project_id, name, kind, metadata)
      VALUES ($1,$2,$3,$4,$5)
-     ON CONFLICT (project_id, id) DO UPDATE SET
-       name = COALESCE(EXCLUDED.name, groups.name),
-       kind = COALESCE(EXCLUDED.kind, groups.kind),
-       metadata = COALESCE(EXCLUDED.metadata, groups.metadata),
-       updated_at = NOW()`,
-    [groupId, projectId, groupName, normalized.groupKind, normalized.configuration ? JSON.stringify(normalized.configuration) : null],
+     ON CONFLICT DO NOTHING`,
+    [requestedId, projectId, groupName, normalized.groupKind, normalized.configuration ? JSON.stringify(normalized.configuration) : null],
   );
-  return groupId;
+  const winner = await asClient(client).query(
+    `SELECT id FROM groups WHERE project_id = $1 AND (id = $2 OR (name = $3 AND kind = $4)) ORDER BY (id = $2) DESC LIMIT 1`,
+    [projectId, requestedId, groupName, normalized.groupKind],
+  );
+  return (winner.rows[0] as { id: string } | undefined)?.id ?? requestedId;
+}
+
+async function upsertSpan(
+  client: pg.Pool | pg.PoolClient,
+  projectId: string,
+  normalized: NormalizedAccountingEvent,
+): Promise<void> {
+  if (!normalized.spanId || !normalized.spanName) return;
+  await asClient(client).query(
+    `INSERT INTO spans (
+       id, project_id, trace_id, parent_span_id, execution_id, kind, name, status,
+       error_type, started_at, ended_at, attributes, context, updated_at
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,NOW())
+     ON CONFLICT (project_id, id) DO UPDATE SET
+       trace_id = COALESCE(EXCLUDED.trace_id, spans.trace_id),
+       parent_span_id = COALESCE(EXCLUDED.parent_span_id, spans.parent_span_id),
+       execution_id = COALESCE(EXCLUDED.execution_id, spans.execution_id),
+       kind = CASE WHEN EXCLUDED.kind = 'custom' THEN spans.kind ELSE EXCLUDED.kind END,
+       name = EXCLUDED.name,
+       status = CASE
+         WHEN EXCLUDED.status = 'running' AND spans.status <> 'running' THEN spans.status
+         ELSE EXCLUDED.status END,
+       error_type = COALESCE(EXCLUDED.error_type, spans.error_type),
+       started_at = CASE
+         WHEN EXCLUDED.started_at IS NULL THEN spans.started_at
+         WHEN spans.started_at IS NULL THEN EXCLUDED.started_at
+         ELSE LEAST(spans.started_at, EXCLUDED.started_at) END,
+       ended_at = CASE
+         WHEN EXCLUDED.ended_at IS NULL THEN spans.ended_at
+         WHEN spans.ended_at IS NULL THEN EXCLUDED.ended_at
+         ELSE GREATEST(spans.ended_at, EXCLUDED.ended_at) END,
+       attributes = CASE
+         WHEN EXCLUDED.attributes IS NULL THEN spans.attributes
+         ELSE COALESCE(spans.attributes, '{}'::jsonb) || EXCLUDED.attributes END,
+       context = COALESCE(EXCLUDED.context, spans.context),
+       updated_at = NOW()`,
+    [
+      normalized.spanId,
+      projectId,
+      normalized.traceId,
+      normalized.parentSpanId,
+      normalized.executionId,
+      normalized.spanKind ?? "custom",
+      normalized.spanName,
+      normalized.spanStatus ?? "running",
+      normalized.errorType,
+      normalized.startedAt,
+      normalized.endedAt,
+      normalized.spanAttributes ? JSON.stringify(normalized.spanAttributes) : null,
+      normalized.context ? JSON.stringify(normalized.context) : null,
+    ],
+  );
 }
 
 async function upsertTrace(
@@ -570,12 +708,26 @@ export async function recordAccountingEvent(
   const timestamp = isoOrNow(event["timestamp"], new Date().toISOString());
   const durationMs = optionalNumber(event["durationMs"] ?? event["duration_ms"]);
   const groupId = await upsertGroup(client, projectId, normalized);
+  const eventId = optionalString(event["id"]);
+  if (groupId && normalized.groupId && groupId !== normalized.groupId && eventId && normalized.eventType !== "span") {
+    // Keep the stored event on the canonical group so rollups stay joined.
+    await asClient(client).query(
+      "UPDATE events SET group_id = $3 WHERE project_id = $1 AND id = $2",
+      [projectId, eventId, groupId],
+    );
+  }
+
+  if (normalized.eventType === "span") {
+    await upsertSpan(client, projectId, normalized);
+    await upsertTrace(client, projectId, normalized, normalized.startedAt ?? timestamp, null, groupId);
+    if (normalized.executionId) await upsertExecution(client, projectId, normalized, normalized.startedAt ?? timestamp, null, groupId);
+    return;
+  }
 
   await upsertTrace(client, projectId, normalized, timestamp, durationMs, groupId);
   await upsertExecution(client, projectId, normalized, timestamp, durationMs, groupId);
 
   if (normalized.eventType !== "usage") return;
-  const eventId = optionalString(event["id"]);
   if (!eventId) throw new AccountingConflictError("usage event requires id");
   const chargeId = normalized.chargeId ?? normalized.componentId ?? eventId;
   if (normalized.revision !== null && normalized.revision < 0) {

@@ -414,16 +414,22 @@ describe("CostKey developer experience", () => {
       voiceSessionId: "voice-1",
     }, async () => {
       await fetch(providerUrl, { method: "POST", body: "{}" });
+      // A second call in the same attempt scope is its own event.
+      await fetch(providerUrl, { method: "POST", body: "{}" });
     });
     await fetch(providerUrl, { method: "POST", body: "{}" });
     await CostKey.flush();
 
-    const calls = payloads
+    const all = payloads
       .flatMap((payload) => payload.events)
       .filter((event) => event["eventType"] === "call");
-    const call = calls[0];
-    expect(call?.["id"]).toBe("attempt-fallback-2");
+    expect(all).toHaveLength(3);
+    const [call, sibling] = all;
     expect(call?.["attemptId"]).toBe("attempt-fallback-2");
+    expect(sibling?.["attemptId"]).toBe("attempt-fallback-2");
+    expect(call?.["id"]).not.toBe(sibling?.["id"]);
+    expect(call?.["id"]).not.toBe("attempt-fallback-2");
+    const calls = [call, all[2]];
     expect(call?.["parentEventId"]).toBe("attempt-primary-1");
     expect((call?.["context"] as Record<string, unknown>)["conversationId"]).toBe("conversation-1");
     expect((call?.["context"] as Record<string, unknown>)["voiceSessionId"]).toBe("voice-1");

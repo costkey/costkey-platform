@@ -581,6 +581,36 @@ export async function initDatabase(): Promise<void> {
       ON usage_components(project_id, charge_id, revision)
       WHERE charge_id IS NOT NULL AND revision IS NOT NULL;
 
+    -- Agent, step, tool and workflow spans. A span is upserted by id so its
+    -- start and end deliveries both apply; provider calls link to the span
+    -- they ran inside through events.span_id.
+    CREATE TABLE IF NOT EXISTS spans (
+      id TEXT NOT NULL,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      trace_id TEXT,
+      parent_span_id TEXT,
+      execution_id TEXT,
+      kind TEXT NOT NULL DEFAULT 'custom',
+      name TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'running',
+      error_type TEXT,
+      started_at TIMESTAMPTZ,
+      ended_at TIMESTAMPTZ,
+      attributes JSONB,
+      context JSONB,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      PRIMARY KEY (project_id, id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_spans_trace ON spans(project_id, trace_id);
+    CREATE INDEX IF NOT EXISTS idx_spans_project_started ON spans(project_id, started_at DESC);
+    ALTER TABLE events ADD COLUMN IF NOT EXISTS span_id TEXT;
+    ALTER TABLE events ADD COLUMN IF NOT EXISTS sdk_version TEXT;
+    -- Provider-native billing units reported with a call (for example Gemini
+    -- grounding requests) that aren't tokens.
+    ALTER TABLE events ADD COLUMN IF NOT EXISTS native_units JSONB;
+    CREATE INDEX IF NOT EXISTS idx_events_span ON events(project_id, span_id) WHERE span_id IS NOT NULL;
+
     CREATE TABLE IF NOT EXISTS credits (
       id TEXT PRIMARY KEY,
       project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,

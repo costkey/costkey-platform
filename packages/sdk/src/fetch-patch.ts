@@ -17,6 +17,7 @@ import type {
 import type {
   PolicyAdmissionRequest,
   PolicyAdmissionResult,
+  PolicyUsageBounds,
   PolicySettlementRequest,
 } from "./types.js";
 const TRACE_HEADER = "x-costkey-trace-id";
@@ -125,6 +126,7 @@ export function patchFetch(options: FetchPatchOptions): void {
     }
 
     const startTime = performance.now();
+    const startedAt = new Date().toISOString();
 
     // Parse and potentially modify the request body
     let requestBody: unknown = null;
@@ -150,10 +152,7 @@ export function patchFetch(options: FetchPatchOptions): void {
       }
     }
 
-    const isStreaming =
-      requestBody != null &&
-      typeof requestBody === "object" &&
-      (requestBody as Record<string, unknown>)["stream"] === true;
+    const isStreaming = isStreamingRequest(url, requestBody);
 
     // A caller may provide a per-attempt identity in the narrow context of a
     // provider call. Otherwise each observed request gets a fresh attempt ID;
@@ -162,7 +161,11 @@ export function patchFetch(options: FetchPatchOptions): void {
       typeof context.attemptId === "string" && context.attemptId.trim()
         ? context.attemptId.trim()
         : undefined;
-    const attemptId = explicitAttemptId ?? generateId();
+    // Every observed request gets its own event and admission identity. An
+    // explicit attempt label groups retries but never becomes the event id,
+    // so several calls in one attempt scope are all recorded.
+    const attemptId = generateId();
+    const retryAttemptId = explicitAttemptId;
     const captureBody = shouldCaptureBody(options);
     let admission: PolicyAdmissionResult | null = null;
     if (options.policy) {
@@ -175,6 +178,7 @@ export function patchFetch(options: FetchPatchOptions): void {
         traceId: context.traceId,
         executionId: context.executionId,
         context: policyContext(context),
+        usageBounds: estimateUsageBounds(requestBody, typeof init?.body === "string" ? init.body : null),
       });
     }
 
@@ -199,6 +203,8 @@ export function patchFetch(options: FetchPatchOptions): void {
         model: extractor.extractModel(requestBody, null),
         providerRequestId: null,
         attemptId,
+        retryAttemptId,
+        startedAt,
         durationMs,
         streaming: isStreaming,
         streamTiming: null,
@@ -236,6 +242,8 @@ export function patchFetch(options: FetchPatchOptions): void {
           context,
           extractor,
           attemptId,
+          retryAttemptId,
+          startedAt,
           admission,
           captureBody,
         },
@@ -255,6 +263,8 @@ export function patchFetch(options: FetchPatchOptions): void {
       context,
       extractor,
       attemptId,
+      retryAttemptId,
+      startedAt,
       admission,
       captureBody,
       options,
@@ -338,6 +348,8 @@ interface ResponseMeta {
   context: EventContext;
   extractor: ReturnType<typeof findExtractor> & {};
   attemptId: string;
+  retryAttemptId?: string;
+  startedAt: string;
   admission: PolicyAdmissionResult | null;
   captureBody: boolean;
 }
@@ -373,6 +385,8 @@ async function processNonStreamingResponse(
       captureBody: meta.captureBody,
       providerRequestId: extractProviderRequestId(responseBody),
       attemptId: meta.attemptId,
+      retryAttemptId: meta.retryAttemptId,
+      startedAt: meta.startedAt,
       usage,
       model,
       durationMs,
@@ -511,6 +525,8 @@ interface StreamMeta {
   context: EventContext;
   extractor: ReturnType<typeof findExtractor> & {};
   attemptId: string;
+  retryAttemptId?: string;
+  startedAt: string;
   admission: PolicyAdmissionResult | null;
   captureBody: boolean;
   options: FetchPatchOptions;
@@ -588,6 +604,8 @@ function processStreamingResponse(
             captureBody: meta.captureBody,
             providerRequestId: extractProviderRequestIdFromSSE(accumulatedText),
             attemptId: meta.attemptId,
+            retryAttemptId: meta.retryAttemptId,
+            startedAt: meta.startedAt,
             usage: lastUsage,
             model,
             durationMs,
@@ -659,28 +677,108 @@ function processStreamingResponse(
   });
 }
 
-/** Try to extract usage from accumulated SSE text (looks for the last data: line with usage) */
-function extractUsageFromSSE(
+/**
+ * Extract usage from a whole SSE stream. Providers put usage in different
+ * events: OpenAI chat in the final chunk, the Responses API under
+ * response.completed's `response`, Anthropic input in message_start and output
+ * in message_delta, Gemini cumulatively on every chunk. Each field keeps its
+ * largest reported value, which is correct for all of these shapes.
+ */
+export function extractUsageFromSSE(
   sseText: string,
   extractor: ReturnType<typeof findExtractor> & {},
 ): NormalizedUsage | null {
-  const lines = sseText.split("\n");
-  // Scan from the end — usage is in the final chunks
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i];
-    if (!line.startsWith("data: ")) continue;
-    const data = line.slice(6).trim();
-    if (data === "[DONE]") continue;
-
+  let merged: NormalizedUsage | null = null;
+  for (const rawLine of sseText.split("\n")) {
+    const line = rawLine.trimStart();
+    if (!line.startsWith("data:")) continue;
+    const data = line.slice(5).trim();
+    if (!data || data === "[DONE]") continue;
+    let parsed: unknown;
     try {
-      const parsed = JSON.parse(data);
-      const usage = extractor.extractUsage(parsed);
-      if (usage) return usage;
+      parsed = JSON.parse(data);
     } catch {
-      // Not valid JSON, skip
+      continue;
+    }
+    if (!parsed || typeof parsed !== "object") continue;
+    const record = parsed as Record<string, unknown>;
+    for (const candidate of [record, record["response"], record["message"]]) {
+      if (!candidate || typeof candidate !== "object") continue;
+      const usage = extractor.extractUsage(candidate);
+      if (usage) merged = mergeUsage(merged, usage);
     }
   }
-  return null;
+  if (merged && merged.totalTokens == null && merged.inputTokens != null && merged.outputTokens != null) {
+    merged.totalTokens = merged.inputTokens + merged.outputTokens;
+  }
+  return merged;
+}
+
+function mergeUsage(current: NormalizedUsage | null, next: NormalizedUsage): NormalizedUsage {
+  if (!current) return { ...next };
+  const pick = (a: number | null | undefined, b: number | null | undefined): number | null =>
+    a == null ? (b ?? null) : b == null ? a : Math.max(a, b);
+  const merged: NormalizedUsage = {
+    inputTokens: pick(current.inputTokens, next.inputTokens),
+    outputTokens: pick(current.outputTokens, next.outputTokens),
+    totalTokens: null,
+    reasoningTokens: pick(current.reasoningTokens, next.reasoningTokens),
+    cacheReadTokens: pick(current.cacheReadTokens, next.cacheReadTokens),
+    cacheCreationTokens: pick(current.cacheCreationTokens, next.cacheCreationTokens),
+  };
+  const total = pick(current.totalTokens, next.totalTokens);
+  merged.totalTokens = merged.inputTokens != null && merged.outputTokens != null
+    ? Math.max(total ?? 0, merged.inputTokens + merged.outputTokens)
+    : total;
+  const cost = pick(current.costUsd, next.costUsd);
+  if (cost != null) merged.costUsd = cost;
+  const image = pick(current.imageOutputTokens, next.imageOutputTokens);
+  if (image != null) merged.imageOutputTokens = image;
+  return merged;
+}
+
+/**
+ * Streaming is declared in the body for OpenAI-style APIs and in the URL for
+ * Gemini (:streamGenerateContent, alt=sse) and Bedrock (*-stream).
+ */
+export function isStreamingRequest(url: URL, requestBody: unknown): boolean {
+  if (requestBody && typeof requestBody === "object" && (requestBody as Record<string, unknown>)["stream"] === true) {
+    return true;
+  }
+  const path = url.pathname;
+  if (/:streamGenerateContent$/.test(path) || url.searchParams.get("alt") === "sse") return true;
+  if (/\/(invoke-with-response-stream|converse-stream)$/.test(path)) return true;
+  return false;
+}
+
+/**
+ * Per-call bounds for enforced budgets. Input is bounded by the request's byte
+ * size (a token is never smaller than one byte of request text); output by the
+ * request's own max-token setting when it has one.
+ */
+export function estimateUsageBounds(requestBody: unknown, rawBody: string | null): PolicyUsageBounds | undefined {
+  const bounds: PolicyUsageBounds = {};
+  const text = rawBody ?? (requestBody != null ? safeStringify(requestBody) : null);
+  if (text) bounds.maxInputTokens = Buffer.byteLength(text, "utf8");
+  if (requestBody && typeof requestBody === "object") {
+    const body = requestBody as Record<string, unknown>;
+    const generation = body["generationConfig"] as Record<string, unknown> | undefined;
+    const inference = body["inferenceConfig"] as Record<string, unknown> | undefined;
+    const output = [
+      body["max_tokens"], body["max_completion_tokens"], body["max_output_tokens"],
+      generation?.["maxOutputTokens"], inference?.["maxTokens"],
+    ].find((value) => typeof value === "number" && Number.isFinite(value) && value >= 0);
+    if (typeof output === "number") bounds.maxOutputTokens = output;
+  }
+  return Object.keys(bounds).length > 0 ? bounds : undefined;
+}
+
+function safeStringify(value: unknown): string | null {
+  try {
+    return JSON.stringify(value) ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /** Try to extract model name from accumulated SSE text */
@@ -735,7 +833,12 @@ interface BuildEventParams {
   /** Whether body-bearing metadata/content is allowed onto telemetry. */
   captureBody: boolean;
   providerRequestId?: string | null;
+  /** Unique id of this observed request (event id and admission id). */
   attemptId?: string;
+  /** Caller-supplied attempt label that groups retries of one logical call. */
+  retryAttemptId?: string;
+  /** When the request started; events are stamped at the start of the call. */
+  startedAt?: string;
   usage: NormalizedUsage | null;
   model: string | null;
   durationMs: number;
@@ -759,7 +862,7 @@ function buildEvent(params: BuildEventParams): CostKeyEvent {
     id: eventId,
     eventType: "call",
     source: "auto",
-    timestamp: new Date().toISOString(),
+    timestamp: params.startedAt ?? new Date().toISOString(),
     projectId: params.projectId,
     provider: params.extractor.provider,
     model: params.model,
@@ -776,7 +879,8 @@ function buildEvent(params: BuildEventParams): CostKeyEvent {
     callSite: params.callSite,
     context: params.context,
     requestModel: requestModel !== params.model ? requestModel : null,
-    attemptId: eventId,
+    attemptId: params.retryAttemptId ?? eventId,
+    spanId: typeof params.context.spanId === "string" ? params.context.spanId : null,
     parentEventId:
       typeof params.context.parentEventId === "string" && params.context.parentEventId.trim()
         ? params.context.parentEventId.trim()

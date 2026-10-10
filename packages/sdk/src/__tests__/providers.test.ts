@@ -123,6 +123,7 @@ describe("OpenAI Extractor", () => {
   it("merges with existing stream_options", () => {
     const body = {
       model: "gpt-4o",
+      messages: [],
       stream: true,
       stream_options: { some_field: "value" },
     };
@@ -130,9 +131,21 @@ describe("OpenAI Extractor", () => {
 
     expect(modified).toEqual({
       model: "gpt-4o",
+      messages: [],
       stream: true,
       stream_options: { some_field: "value", include_usage: true },
     });
+  });
+
+  it("never adds chat stream options to Responses API requests", () => {
+    const body = { model: "gpt-6-sol", input: "hi", stream: true };
+    expect(openaiExtractor.injectStreamOptions!(body)).toBe(body);
+  });
+
+  it("matches Azure OpenAI and Azure AI Foundry hosts", () => {
+    expect(openaiExtractor.match(new URL("https://acme.openai.azure.com/openai/v1/responses"))).toBe(true);
+    expect(openaiExtractor.match(new URL("https://acme.services.ai.azure.com/openai/v1/responses"))).toBe(true);
+    expect(openaiExtractor.match(new URL("https://acme.cognitiveservices.azure.com/openai/v1/chat/completions"))).toBe(true);
   });
 
   it("does not modify non-streaming requests", () => {

@@ -110,7 +110,9 @@ export class CostKeyPolicyClient implements PolicyAdmissionClient {
       ...request,
       ...(this.integration ? { integration: this.integration } : {}),
       ...(this.scope ? { scope: this.scope } : {}),
-      ...(this.usageBounds ? { usageBounds: this.usageBounds } : {}),
+      ...(this.usageBounds || request.usageBounds
+        ? { usageBounds: { ...(request.usageBounds ?? {}), ...definedBounds(this.usageBounds) } }
+        : {}),
       ...(this.claimedCostUsd !== undefined ? { claimedCostUsd: this.claimedCostUsd } : {}),
     };
 
@@ -243,4 +245,10 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+/** Static bounds from init() override the per-call estimate field by field. */
+function definedBounds(bounds: PolicyUsageBounds | undefined): PolicyUsageBounds {
+  if (!bounds) return {};
+  return Object.fromEntries(Object.entries(bounds).filter(([, value]) => value !== undefined && value !== null)) as PolicyUsageBounds;
 }

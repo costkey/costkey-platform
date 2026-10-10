@@ -7,7 +7,9 @@ const OPENAI_HOSTS = new Set([
 
 /** Matches Azure OpenAI endpoints like xxx.openai.azure.com */
 function isAzureOpenAI(hostname: string): boolean {
-  return hostname.endsWith(".openai.azure.com");
+  return hostname.endsWith(".openai.azure.com")
+    || hostname.endsWith(".services.ai.azure.com")
+    || hostname.endsWith(".cognitiveservices.azure.com");
 }
 
 export const openaiExtractor: ProviderExtractor = {
@@ -75,6 +77,9 @@ export const openaiExtractor: ProviderExtractor = {
 
     // Only inject for streaming requests
     if (!body["stream"]) return requestBody;
+    // The Responses API (`input`) reports usage in response.completed and
+    // rejects chat-only stream options; only Chat/Completions bodies need it.
+    if (body["messages"] === undefined && body["prompt"] === undefined) return requestBody;
 
     // Merge with existing stream_options, don't overwrite
     const existing =

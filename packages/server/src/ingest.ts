@@ -724,6 +724,41 @@ function eventCostBasis(
   };
 }
 
+/** Non-token units a provider reported with a call, kept small and numeric. */
+export function nativeUnitsJson(usage: unknown): string | null {
+  if (!usage || typeof usage !== "object") return null;
+  const raw = (usage as Record<string, unknown>)["nativeUnits"];
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const units = Object.fromEntries(
+    Object.entries(raw as Record<string, unknown>)
+      .filter(([key, value]) => /^[A-Za-z0-9_.-]{1,64}$/.test(key) && typeof value === "number" && Number.isFinite(value) && value >= 0)
+      .slice(0, 32),
+  );
+  return Object.keys(units).length > 0 ? JSON.stringify(units) : null;
+}
+
+/** SDKs before 0.6 stamped a call when it finished rather than when it started. */
+export function callTimestampIsEnd(sdkVersion: string | null): boolean {
+  if (!sdkVersion) return true;
+  const match = sdkVersion.match(/(\d+)\.(\d+)/);
+  if (!match) return true;
+  const major = Number(match[1]);
+  const minor = Number(match[2]);
+  return major === 0 && minor < 6;
+}
+
+const SPAN_CONTENT_KEYS = ["input", "output", "args", "arguments", "result", "prompt", "completion", "messages", "content"];
+
+/** Metadata-only projects keep span structure and timing but never tool or agent payloads. */
+export function stripSpanContent(event: Record<string, unknown>): void {
+  const attributes = event["attributes"];
+  if (!attributes || typeof attributes !== "object" || Array.isArray(attributes)) return;
+  for (const key of Object.keys(attributes)) {
+    const leaf = key.split(".").pop() ?? key;
+    if (SPAN_CONTENT_KEYS.includes(leaf.toLowerCase())) delete (attributes as Record<string, unknown>)[key];
+  }
+}
+
 export function createIngestRouter(pool: pg.Pool): Router {
   const router = createRouter();
 
@@ -781,6 +816,11 @@ export function createIngestRouter(pool: pg.Pool): Router {
         return;
       }
 
+      const sdkVersion = typeof payload.sdkVersion === "string" ? payload.sdkVersion.slice(0, 40) : null;
+      const legacyCallTimestamps = callTimestampIsEnd(sdkVersion);
+      let acceptedCount = 0;
+      const rejected: Array<{ index: number; id: string | null; code: string; error: string }> = [];
+
       // Batch insert events
       const client = await pool.connect();
       const frameStatsBatch: Array<{
@@ -791,274 +831,324 @@ export function createIngestRouter(pool: pg.Pool): Router {
         await client.query("BEGIN");
         await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [accountingLockKey(projectId)]);
 
-        for (const event of payload.events) {
-          const rawEvent = event as unknown as Record<string, unknown>;
-          // The DSN clock is useful for near-real-time ordering, but must not
-          // select an arbitrary historical/future effective price interval.
-          rawEvent.timestamp = trustedEventTimestamp(rawEvent.timestamp);
-          // Enforce the setting again at the persistence boundary. This keeps
-          // direct router mounts and a failed/missing privacy middleware from
-          // ever writing captured body/source fields.
-          if (rawEvent && typeof rawEvent === "object") {
-            stripIngestEventPrivacy(rawEvent, {
-              allowBody,
-              allowSource,
-              redactionEnabled: projectSettings.redaction_enabled !== false,
-            });
-          }
-          const contentStatus = contentStatusForEvent(rawEvent, {
-            captureMode: projectSettings.capture_mode,
-            bodyCaptureEnabled: projectSettings.body_capture_enabled,
-          });
-          let featureSource: "explicit" | "mapping" | "mapping_override" | "unknown" = "unknown";
-          const initialContext = rawEvent["context"] && typeof rawEvent["context"] === "object"
-            ? rawEvent["context"] as Record<string, unknown>
-            : {};
-          if (typeof initialContext["feature"] === "string" && initialContext["feature"].trim()) featureSource = "explicit";
-          let featureMappingId: string | null = null;
-          let featureMappingActionId: string | null = null;
-          let featureOriginal: string | null = null;
-          let accounting = normalizeAccountingEvent(rawEvent);
-          // Fallback: extract model from URL path if SDK didn't resolve it
-          // e.g. Google Gemini: /v1beta/models/gemini-2.5-flash:generateContent
-          if (!event.model && event.url) {
-            try {
-              const urlPath = new URL(event.url).pathname;
-              const modelMatch = urlPath.match(/\/models\/([^/:]+)/);
-              if (modelMatch) event.model = modelMatch[1];
-            } catch { /* invalid URL, ignore */ }
-          }
+        for (const [index, event] of payload.events.entries()) {
+          const handleEvent = async (): Promise<void> => {
+              const rawEvent = event as unknown as Record<string, unknown>;
+              // The DSN clock is useful for near-real-time ordering, but must not
+              // select an arbitrary historical/future effective price interval.
+              rawEvent.timestamp = trustedEventTimestamp(rawEvent.timestamp);
+              // SDKs before 0.6 stamped calls when they finished. Store every
+              // call at its start so traces, waterfalls and pricing agree.
+              const rawType = rawEvent["eventType"] ?? rawEvent["event_type"];
+              const durationMs = typeof rawEvent["durationMs"] === "number" ? rawEvent["durationMs"] : null;
+              if (legacyCallTimestamps && (rawType === undefined || rawType === "call") && durationMs !== null && durationMs > 0) {
+                rawEvent.timestamp = new Date(Date.parse(String(rawEvent.timestamp)) - durationMs).toISOString();
+              }
+              // Release filters read context.release; carry the batch release there.
+              if (release) {
+                const ctx = rawEvent["context"] && typeof rawEvent["context"] === "object" && !Array.isArray(rawEvent["context"])
+                  ? rawEvent["context"] as Record<string, unknown>
+                  : null;
+                if (ctx && ctx["release"] === undefined) ctx["release"] = release;
+                else if (!ctx && (rawType === undefined || rawType === "call")) rawEvent["context"] = { release };
+              }
+              // Enforce the setting again at the persistence boundary. This keeps
+              // direct router mounts and a failed/missing privacy middleware from
+              // ever writing captured body/source fields.
+              if (rawEvent && typeof rawEvent === "object") {
+                stripIngestEventPrivacy(rawEvent, {
+                  allowBody,
+                  allowSource,
+                  redactionEnabled: projectSettings.redaction_enabled !== false,
+                });
+              }
+              const contentStatus = contentStatusForEvent(rawEvent, {
+                captureMode: projectSettings.capture_mode,
+                bodyCaptureEnabled: projectSettings.body_capture_enabled,
+              });
+              let featureSource: "explicit" | "mapping" | "mapping_override" | "unknown" = "unknown";
+              const initialContext = rawEvent["context"] && typeof rawEvent["context"] === "object"
+                ? rawEvent["context"] as Record<string, unknown>
+                : {};
+              if (typeof initialContext["feature"] === "string" && initialContext["feature"].trim()) featureSource = "explicit";
+              let featureMappingId: string | null = null;
+              let featureMappingActionId: string | null = null;
+              let featureOriginal: string | null = null;
+              let accounting = normalizeAccountingEvent(rawEvent);
+              if (accounting.eventType === "span") {
+                // Spans are structure, not billable rows: they upsert into the
+                // spans table and never touch events or call-site rollups.
+                if (!allowBody) stripSpanContent(rawEvent);
+                for (const key of ["startedAt", "endedAt"]) {
+                  if (typeof rawEvent[key] === "string") rawEvent[key] = trustedEventTimestamp(rawEvent[key]);
+                }
+                await recordAccountingEvent(client, projectId, rawEvent);
+                return;
+              }
+              // Fallback: extract model from URL path if SDK didn't resolve it
+              // e.g. Google Gemini: /v1beta/models/gemini-2.5-flash:generateContent
+              if (!event.model && event.url) {
+                try {
+                  const urlPath = new URL(event.url).pathname;
+                  // Gemini: /models/<id>:generateContent; Bedrock: /model/<id>/invoke
+                  const modelMatch = urlPath.match(/\/models?\/([^/:]+)/);
+                  if (modelMatch) event.model = decodeURIComponent(modelMatch[1]);
+                } catch { /* invalid URL, ignore */ }
+              }
 
-          const explicitAmount = accounting.eventType === "usage" && accounting.amountPresent
-            && accounting.currency === "USD" ? accounting.amount : null;
-          const explicitUnitValue = accounting.eventType === "usage"
-            ? accounting.unitValue ?? (accounting.unitKind && accounting.usage
-              ? accounting.usage[accounting.unitKind] ?? accounting.usage[accounting.unit ?? ""] ?? null
-              : null)
-            : null;
-          if (accounting.eventType === "usage" && accounting.unitValue == null) accounting.unitValue = explicitUnitValue;
-          const resolved = accounting.eventType === "call"
-            ? await resolveEventCostWithOverrides(pool, projectId, event)
-            : accounting.eventType === "usage"
-              ? await resolveExplicitUsageCost(pool, projectId, event, {
-                provider: accounting.provider,
-                model: accounting.model,
-                unitKind: accounting.unitKind,
-                unitValue: explicitUnitValue,
-                currency: accounting.currency,
-                amount: accounting.amount,
-                amountPresent: accounting.amountPresent,
-                amountKind: accounting.amountKind,
-              })
-              : { cost: explicitAmount, basis: explicitAmount === null ? "unknown" as const : "reported" as const, source: explicitAmount === null ? null : "explicit", pricingId: null, pricingDate: null };
-          const costUsd = resolved.cost;
-          const cost = eventCostBasis(event, accounting.eventType, costUsd, resolved);
-          if (accounting.eventType === "usage") cost.currency = accounting.currency;
-          if (resolved.pricingId && !accounting.pricingId) accounting.pricingId = resolved.pricingId;
+              const explicitAmount = accounting.eventType === "usage" && accounting.amountPresent
+                && accounting.currency === "USD" ? accounting.amount : null;
+              const explicitUnitValue = accounting.eventType === "usage"
+                ? accounting.unitValue ?? (accounting.unitKind && accounting.usage
+                  ? accounting.usage[accounting.unitKind] ?? accounting.usage[accounting.unit ?? ""] ?? null
+                  : null)
+                : null;
+              if (accounting.eventType === "usage" && accounting.unitValue == null) accounting.unitValue = explicitUnitValue;
+              const resolved = accounting.eventType === "call"
+                ? await resolveEventCostWithOverrides(pool, projectId, event)
+                : accounting.eventType === "usage"
+                  ? await resolveExplicitUsageCost(pool, projectId, event, {
+                    provider: accounting.provider,
+                    model: accounting.model,
+                    unitKind: accounting.unitKind,
+                    unitValue: explicitUnitValue,
+                    currency: accounting.currency,
+                    amount: accounting.amount,
+                    amountPresent: accounting.amountPresent,
+                    amountKind: accounting.amountKind,
+                  })
+                  : { cost: explicitAmount, basis: explicitAmount === null ? "unknown" as const : "reported" as const, source: explicitAmount === null ? null : "explicit", pricingId: null, pricingDate: null };
+              const costUsd = resolved.cost;
+              const cost = eventCostBasis(event, accounting.eventType, costUsd, resolved);
+              if (accounting.eventType === "usage") cost.currency = accounting.currency;
+              if (resolved.pricingId && !accounting.pricingId) accounting.pricingId = resolved.pricingId;
 
-          // Filter stack frames server-side (strips SDK/library internals for all languages)
-          const rawFrames = event.callSite?.frames ?? null;
-          let cleanFrames = rawFrames ? filterFrames(rawFrames) : null;
-          const filterCtx = rawFrames && cleanFrames
-            ? getFilterContext(rawFrames, cleanFrames) : undefined;
+              // Filter stack frames server-side (strips SDK/library internals for all languages)
+              const rawFrames = event.callSite?.frames ?? null;
+              let cleanFrames = rawFrames ? filterFrames(rawFrames) : null;
+              const filterCtx = rawFrames && cleanFrames
+                ? getFilterContext(rawFrames, cleanFrames) : undefined;
 
-          // Translate minified frames using sourcemaps (if release + maps uploaded)
-          if (cleanFrames && release) {
-            try {
-              const { translated, wasTranslated } = await translateFrames(
-                pool, projectId, release, cleanFrames,
+              // Translate minified frames using sourcemaps (if release + maps uploaded)
+              if (cleanFrames && release) {
+                try {
+                  const { translated, wasTranslated } = await translateFrames(
+                    pool, projectId, release, cleanFrames,
+                  );
+                  if (wasTranslated) cleanFrames = translated;
+                } catch {
+                  // Sourcemap translation failure is non-fatal
+                }
+              }
+
+              // Compute business logic frame (single source of truth)
+              // Priority: explicit call graph > implicit graph (from event data) > heuristic
+              let blFunction: string | null = null;
+              let blFile: string | null = null;
+              let blLine: number | null = null;
+              if (cleanFrames && cleanFrames.length > 0) {
+                const explicitGraph = callGraphCache.get(projectId);
+                let best;
+                if (explicitGraph) {
+                  best = findBusinessLogicFrameWithGraph(cleanFrames, explicitGraph, filterCtx);
+                } else {
+                  const implicitGraph = await getImplicitGraph(pool, projectId);
+                  best = implicitGraph
+                    ? findBusinessLogicFrameWithGraph(cleanFrames, implicitGraph, filterCtx)
+                    : findBusinessLogicFrame(cleanFrames, filterCtx);
+                }
+                if (best) {
+                  blFunction = (best.functionName ?? "").split("\n")[0].trim() || null;
+                  blFile = best.fileName ?? null;
+                  blLine = best.lineNumber ?? null;
+                }
+
+              }
+
+              // Reusable mappings supply only missing business meaning. Explicit
+              // SDK feature context remains authoritative unless a user performs
+              // a separate historical override action.
+              if (accounting.eventType === "call") {
+                const enriched = await enrichFeatureContext(client, projectId, rawEvent, {
+                  file: blFile,
+                  function: blFunction,
+                  sourceAccessEnabled: allowSource,
+                });
+                if (enriched !== rawEvent) {
+                  rawEvent["context"] = enriched["context"];
+                  event.context = enriched["context"] as CostKeyEvent["context"];
+                  featureSource = enriched["featureSource"] === "mapping_override" ? "mapping_override" : "mapping";
+                  featureMappingId = typeof enriched["featureMappingId"] === "string" ? enriched["featureMappingId"] : null;
+                  // Re-read context-derived trace/group identity after mapping.
+                  accounting = normalizeAccountingEvent(rawEvent);
+                }
+              }
+
+              const inserted = await client.query(
+                `INSERT INTO events (
+                  id, timestamp, project_id, provider, model, url, method, status_code,
+                  input_tokens, output_tokens, total_tokens, reasoning_tokens,
+                  cache_read_tokens, cache_creation_tokens,
+                  cost_usd, duration_ms, streaming,
+                  ttft, tps, stream_duration, chunk_count,
+                  call_site_raw, call_site_frames,
+                  trace_id, trace_name, context, metadata, system_prompt, request_body, response_body, release,
+                  bl_function, bl_file, bl_line, image_output_tokens,
+                  event_type, source, request_model, attempt_id, parent_event_id,
+                  charge_id, component_id, execution_id, group_id, group_name,
+                  group_kind, phase, configuration, dataset_revision, case_id,
+                  lifecycle_state, lifecycle_at, lifecycle_error_type, usage_event,
+                  cost_basis, cost_source, cost_currency, unit_kind, unit_value,
+                  unit, aggregation, revision, entity_type, entity_id, pricing_id, pricing_date, sequence,
+                  content_status, feature_source, feature_mapping_id, feature_mapping_action_id, feature_original,
+                  span_id, sdk_version, native_units
+                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,$51,$52,$53,$54,$55,$56,$57,$58,$59,$60,$61,$62,$63,$64,$65,$66,$67,$68,$69,$70,$71,$72,$73,$74,$75)
+                ON CONFLICT (project_id, id) DO NOTHING`,
+                [
+                  event.id, event.timestamp, projectId,
+                  event.provider ?? accounting.provider, event.model ?? accounting.model,
+                  sanitizeEventUrl(event.url) ?? "", event.method ?? "POST", event.statusCode,
+                  event.usage?.inputTokens, event.usage?.outputTokens,
+                  event.usage?.totalTokens, event.usage?.reasoningTokens,
+                  event.usage?.cacheReadTokens, event.usage?.cacheCreationTokens,
+                  costUsd, event.durationMs, event.streaming,
+                  event.streamTiming?.ttft, event.streamTiming?.tps,
+                  event.streamTiming?.streamDuration, event.streamTiming?.chunkCount,
+                  event.callSite?.raw ?? null,
+                  cleanFrames ? JSON.stringify(cleanFrames) : null,
+                  accounting.traceId,
+                  accounting.traceName,
+                  event.context ? JSON.stringify(event.context) : null,
+                  truncateBody(event.metadata ?? extractMetadata(event.requestBody, event.responseBody)),
+                  event.systemPrompt ?? extractSystemPrompt(event.requestBody),
+                  truncateBody(event.requestBody),
+                  truncateBody(event.responseBody),
+                  release,
+                  blFunction, blFile, blLine,
+                  event.usage?.imageOutputTokens ?? null,
+                  accounting.eventType,
+                  accounting.source,
+                  accounting.requestModel,
+                  rawEvent["attemptId"] ?? rawEvent["attempt_id"] ?? null,
+                  rawEvent["parentEventId"] ?? rawEvent["parent_event_id"] ?? null,
+                  accounting.chargeId,
+                  accounting.componentId,
+                  accounting.executionId,
+                  accounting.groupId ?? null,
+                  accounting.groupName,
+                  accounting.groupKind,
+                  accounting.phase,
+                  accounting.configuration ? JSON.stringify(accounting.configuration) : null,
+                  accounting.datasetRevision,
+                  accounting.caseId,
+                  accounting.lifecycle,
+                  accounting.lifecycleAt,
+                  accounting.errorType,
+                  accounting.eventType === "usage" ? JSON.stringify({
+                    usage: accounting.usage,
+                    billingUnits: rawEvent["billingUnits"] ?? rawEvent["billing_units"] ?? undefined,
+                    amount: accounting.amountPresent ? { value: accounting.amount, currency: accounting.currency } : undefined,
+                    pricingId: accounting.pricingId,
+                  }) : null,
+                  cost.basis,
+                  cost.source,
+                  cost.currency,
+                  accounting.unitKind,
+                  accounting.unitValue,
+                  accounting.unit,
+                  accounting.aggregation,
+                  accounting.revision,
+                  accounting.entityType,
+                  accounting.entityId,
+                  accounting.pricingId,
+                  resolved.pricingDate ?? rawEvent["pricingDate"] ?? rawEvent["pricing_date"] ?? null,
+                  accounting.sequence,
+                  contentStatus,
+                  featureSource,
+                  featureMappingId,
+                  featureMappingActionId,
+                  featureOriginal,
+                  accounting.spanId,
+                  sdkVersion,
+                  nativeUnitsJson(event.usage),
+                ],
               );
-              if (wasTranslated) cleanFrames = translated;
-            } catch {
-              // Sourcemap translation failure is non-fatal
-            }
-          }
 
-          // Compute business logic frame (single source of truth)
-          // Priority: explicit call graph > implicit graph (from event data) > heuristic
-          let blFunction: string | null = null;
-          let blFile: string | null = null;
-          let blLine: number | null = null;
-          if (cleanFrames && cleanFrames.length > 0) {
-            const explicitGraph = callGraphCache.get(projectId);
-            let best;
-            if (explicitGraph) {
-              best = findBusinessLogicFrameWithGraph(cleanFrames, explicitGraph, filterCtx);
-            } else {
-              const implicitGraph = await getImplicitGraph(pool, projectId);
-              best = implicitGraph
-                ? findBusinessLogicFrameWithGraph(cleanFrames, implicitGraph, filterCtx)
-                : findBusinessLogicFrame(cleanFrames, filterCtx);
-            }
-            if (best) {
-              blFunction = (best.functionName ?? "").split("\n")[0].trim() || null;
-              blFile = best.fileName ?? null;
-              blLine = best.lineNumber ?? null;
-            }
+              if (inserted.rowCount === 0) return;
 
-          }
+              await recordAccountingEvent(client, projectId, rawEvent);
 
-          // Reusable mappings supply only missing business meaning. Explicit
-          // SDK feature context remains authoritative unless a user performs
-          // a separate historical override action.
-          if (accounting.eventType === "call") {
-            const enriched = await enrichFeatureContext(client, projectId, rawEvent, {
-              file: blFile,
-              function: blFunction,
-              sourceAccessEnabled: allowSource,
+              // Lifecycle and explicit usage envelopes are not provider calls and
+              // must never inflate call-site rollups or call counts.
+              if (accounting.eventType !== "call") return;
+
+              // Upsert call site stats and frame stats — use bl_ values (single source of truth)
+              const callSiteKey = blFunction ? `${blFile ?? "unknown"}:${blFunction}:${blLine ?? 0}` : null;
+
+
+              if (blFunction) {
+                const key = callSiteKey!;
+                const eventModel = event.model ?? "unknown";
+
+                await client.query(
+                  `INSERT INTO call_site_stats (
+                    project_id, call_site_key, file_name, function_name, line_number,
+                    provider, model,
+                    total_calls, total_cost_usd, total_input_tokens, total_output_tokens,
+                    avg_duration_ms, avg_ttft, avg_tps, first_seen, last_seen,
+                    priced_calls, unpriced_calls
+                  ) VALUES ($1,$2,$3,$4,$5,$6,$7,1,$8,$9,$10,$11,$12,$13,$14,$14,$15,$16)
+                  ON CONFLICT (project_id, call_site_key, model) DO UPDATE SET
+                    total_calls = call_site_stats.total_calls + 1,
+                    total_cost_usd = call_site_stats.total_cost_usd + EXCLUDED.total_cost_usd,
+                    priced_calls = call_site_stats.priced_calls + EXCLUDED.priced_calls,
+                    unpriced_calls = call_site_stats.unpriced_calls + EXCLUDED.unpriced_calls,
+                    total_input_tokens = call_site_stats.total_input_tokens + EXCLUDED.total_input_tokens,
+                    total_output_tokens = call_site_stats.total_output_tokens + EXCLUDED.total_output_tokens,
+                    avg_duration_ms = (call_site_stats.avg_duration_ms * call_site_stats.total_calls + EXCLUDED.avg_duration_ms) / (call_site_stats.total_calls + 1),
+                    avg_ttft = CASE WHEN EXCLUDED.avg_ttft IS NOT NULL
+                      THEN COALESCE((call_site_stats.avg_ttft * call_site_stats.total_calls + EXCLUDED.avg_ttft) / (call_site_stats.total_calls + 1), EXCLUDED.avg_ttft)
+                      ELSE call_site_stats.avg_ttft END,
+                    avg_tps = CASE WHEN EXCLUDED.avg_tps IS NOT NULL
+                      THEN COALESCE((call_site_stats.avg_tps * call_site_stats.total_calls + EXCLUDED.avg_tps) / (call_site_stats.total_calls + 1), EXCLUDED.avg_tps)
+                      ELSE call_site_stats.avg_tps END,
+                    last_seen = EXCLUDED.last_seen`,
+                  [
+                    projectId, key, blFile, blFunction, blLine,
+                    event.provider, eventModel,
+                    costUsd ?? 0,
+                    event.usage?.inputTokens ?? 0, event.usage?.outputTokens ?? 0,
+                    event.durationMs,
+                    event.streamTiming?.ttft ?? null,
+                    event.streamTiming?.tps ?? null,
+                    event.timestamp,
+                    costUsd == null ? 0 : 1,
+                    costUsd == null ? 1 : 0,
+                  ],
+                );
+              }
+
+              if (cleanFrames && cleanFrames.length > 0 && callSiteKey) {
+                frameStatsBatch.push({ frames: cleanFrames, callSiteKey });
+              }
+          };
+          // One savepoint per event: a bad or conflicting event is rejected on
+          // its own instead of discarding the rest of the batch.
+          await client.query("SAVEPOINT costkey_event");
+          try {
+            await handleEvent();
+            await client.query("RELEASE SAVEPOINT costkey_event");
+            acceptedCount += 1;
+          } catch (err) {
+            await client.query("ROLLBACK TO SAVEPOINT costkey_event");
+            const known = err instanceof InvalidAccountingEventError || err instanceof AccountingConflictError;
+            if (!known) console.error("[costkey] Ingest event error:", err);
+            rejected.push({
+              index,
+              id: typeof (event as { id?: unknown }).id === "string" ? (event as { id: string }).id : null,
+              code: known ? (err as InvalidAccountingEventError | AccountingConflictError).code : "ingest_error",
+              error: known ? (err as Error).message : "This event could not be stored.",
             });
-            if (enriched !== rawEvent) {
-              rawEvent["context"] = enriched["context"];
-              event.context = enriched["context"] as CostKeyEvent["context"];
-              featureSource = enriched["featureSource"] === "mapping_override" ? "mapping_override" : "mapping";
-              featureMappingId = typeof enriched["featureMappingId"] === "string" ? enriched["featureMappingId"] : null;
-              // Re-read context-derived trace/group identity after mapping.
-              accounting = normalizeAccountingEvent(rawEvent);
-            }
-          }
-
-          const inserted = await client.query(
-            `INSERT INTO events (
-              id, timestamp, project_id, provider, model, url, method, status_code,
-              input_tokens, output_tokens, total_tokens, reasoning_tokens,
-              cache_read_tokens, cache_creation_tokens,
-              cost_usd, duration_ms, streaming,
-              ttft, tps, stream_duration, chunk_count,
-              call_site_raw, call_site_frames,
-              trace_id, trace_name, context, metadata, system_prompt, request_body, response_body, release,
-              bl_function, bl_file, bl_line, image_output_tokens,
-              event_type, source, request_model, attempt_id, parent_event_id,
-              charge_id, component_id, execution_id, group_id, group_name,
-              group_kind, phase, configuration, dataset_revision, case_id,
-              lifecycle_state, lifecycle_at, lifecycle_error_type, usage_event,
-              cost_basis, cost_source, cost_currency, unit_kind, unit_value,
-              unit, aggregation, revision, entity_type, entity_id, pricing_id, pricing_date, sequence,
-              content_status, feature_source, feature_mapping_id, feature_mapping_action_id, feature_original
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,$51,$52,$53,$54,$55,$56,$57,$58,$59,$60,$61,$62,$63,$64,$65,$66,$67,$68,$69,$70,$71,$72)
-            ON CONFLICT (project_id, id) DO NOTHING`,
-            [
-              event.id, event.timestamp, projectId,
-              event.provider ?? accounting.provider, event.model ?? accounting.model,
-              sanitizeEventUrl(event.url) ?? "", event.method ?? "POST", event.statusCode,
-              event.usage?.inputTokens, event.usage?.outputTokens,
-              event.usage?.totalTokens, event.usage?.reasoningTokens,
-              event.usage?.cacheReadTokens, event.usage?.cacheCreationTokens,
-              costUsd, event.durationMs, event.streaming,
-              event.streamTiming?.ttft, event.streamTiming?.tps,
-              event.streamTiming?.streamDuration, event.streamTiming?.chunkCount,
-              event.callSite?.raw ?? null,
-              cleanFrames ? JSON.stringify(cleanFrames) : null,
-              accounting.traceId,
-              accounting.traceName,
-              event.context ? JSON.stringify(event.context) : null,
-              truncateBody(event.metadata ?? extractMetadata(event.requestBody, event.responseBody)),
-              event.systemPrompt ?? extractSystemPrompt(event.requestBody),
-              truncateBody(event.requestBody),
-              truncateBody(event.responseBody),
-              release,
-              blFunction, blFile, blLine,
-              event.usage?.imageOutputTokens ?? null,
-              accounting.eventType,
-              accounting.source,
-              accounting.requestModel,
-              rawEvent["attemptId"] ?? rawEvent["attempt_id"] ?? null,
-              rawEvent["parentEventId"] ?? rawEvent["parent_event_id"] ?? null,
-              accounting.chargeId,
-              accounting.componentId,
-              accounting.executionId,
-              accounting.groupId ?? null,
-              accounting.groupName,
-              accounting.groupKind,
-              accounting.phase,
-              accounting.configuration ? JSON.stringify(accounting.configuration) : null,
-              accounting.datasetRevision,
-              accounting.caseId,
-              accounting.lifecycle,
-              accounting.lifecycleAt,
-              accounting.errorType,
-              accounting.eventType === "usage" ? JSON.stringify({
-                usage: accounting.usage,
-                billingUnits: rawEvent["billingUnits"] ?? rawEvent["billing_units"] ?? undefined,
-                amount: accounting.amountPresent ? { value: accounting.amount, currency: accounting.currency } : undefined,
-                pricingId: accounting.pricingId,
-              }) : null,
-              cost.basis,
-              cost.source,
-              cost.currency,
-              accounting.unitKind,
-              accounting.unitValue,
-              accounting.unit,
-              accounting.aggregation,
-              accounting.revision,
-              accounting.entityType,
-              accounting.entityId,
-              accounting.pricingId,
-              resolved.pricingDate ?? rawEvent["pricingDate"] ?? rawEvent["pricing_date"] ?? null,
-              accounting.sequence,
-              contentStatus,
-              featureSource,
-              featureMappingId,
-              featureMappingActionId,
-              featureOriginal,
-            ],
-          );
-
-          if (inserted.rowCount === 0) continue;
-
-          await recordAccountingEvent(client, projectId, rawEvent);
-
-          // Lifecycle and explicit usage envelopes are not provider calls and
-          // must never inflate call-site rollups or call counts.
-          if (accounting.eventType !== "call") continue;
-
-          // Upsert call site stats and frame stats — use bl_ values (single source of truth)
-          const callSiteKey = blFunction ? `${blFile ?? "unknown"}:${blFunction}:${blLine ?? 0}` : null;
-
-          // Collect frame stats for batch insert after the loop
-          if (cleanFrames && cleanFrames.length > 0 && callSiteKey) {
-            frameStatsBatch.push({ frames: cleanFrames, callSiteKey });
-          }
-
-          if (blFunction) {
-            const key = callSiteKey!;
-            const eventModel = event.model ?? "unknown";
-
-            await client.query(
-              `INSERT INTO call_site_stats (
-                project_id, call_site_key, file_name, function_name, line_number,
-                provider, model,
-                total_calls, total_cost_usd, total_input_tokens, total_output_tokens,
-                avg_duration_ms, avg_ttft, avg_tps, first_seen, last_seen,
-                priced_calls, unpriced_calls
-              ) VALUES ($1,$2,$3,$4,$5,$6,$7,1,$8,$9,$10,$11,$12,$13,$14,$14,$15,$16)
-              ON CONFLICT (project_id, call_site_key, model) DO UPDATE SET
-                total_calls = call_site_stats.total_calls + 1,
-                total_cost_usd = call_site_stats.total_cost_usd + EXCLUDED.total_cost_usd,
-                priced_calls = call_site_stats.priced_calls + EXCLUDED.priced_calls,
-                unpriced_calls = call_site_stats.unpriced_calls + EXCLUDED.unpriced_calls,
-                total_input_tokens = call_site_stats.total_input_tokens + EXCLUDED.total_input_tokens,
-                total_output_tokens = call_site_stats.total_output_tokens + EXCLUDED.total_output_tokens,
-                avg_duration_ms = (call_site_stats.avg_duration_ms * call_site_stats.total_calls + EXCLUDED.avg_duration_ms) / (call_site_stats.total_calls + 1),
-                avg_ttft = CASE WHEN EXCLUDED.avg_ttft IS NOT NULL
-                  THEN COALESCE((call_site_stats.avg_ttft * call_site_stats.total_calls + EXCLUDED.avg_ttft) / (call_site_stats.total_calls + 1), EXCLUDED.avg_ttft)
-                  ELSE call_site_stats.avg_ttft END,
-                avg_tps = CASE WHEN EXCLUDED.avg_tps IS NOT NULL
-                  THEN COALESCE((call_site_stats.avg_tps * call_site_stats.total_calls + EXCLUDED.avg_tps) / (call_site_stats.total_calls + 1), EXCLUDED.avg_tps)
-                  ELSE call_site_stats.avg_tps END,
-                last_seen = EXCLUDED.last_seen`,
-              [
-                projectId, key, blFile, blFunction, blLine,
-                event.provider, eventModel,
-                costUsd ?? 0,
-                event.usage?.inputTokens ?? 0, event.usage?.outputTokens ?? 0,
-                event.durationMs,
-                event.streamTiming?.ttft ?? null,
-                event.streamTiming?.tps ?? null,
-                event.timestamp,
-                costUsd == null ? 0 : 1,
-                costUsd == null ? 1 : 0,
-              ],
-            );
           }
         }
 
@@ -1075,20 +1165,20 @@ export function createIngestRouter(pool: pg.Pool): Router {
         scheduleFindingsRefresh(pool, projectId);
       } catch (err) {
         await client.query("ROLLBACK");
-        if (err instanceof InvalidAccountingEventError) {
-          res.status(400).json({ error: err.message, code: err.code });
-          return;
-        }
-        if (err instanceof AccountingConflictError) {
-          res.status(409).json({ error: err.message, code: err.code });
-          return;
-        }
         throw err;
       } finally {
         client.release();
       }
 
-      res.status(202).json({ accepted: payload.events.length });
+      if (acceptedCount === 0 && rejected.length > 0) {
+        // Nothing was stored: keep the single-event error contract older SDKs expect.
+        const first = rejected[0];
+        const status = rejected.every((item) => item.code === "accounting_conflict") ? 409
+          : rejected.every((item) => item.code !== "ingest_error") ? 400 : 500;
+        res.status(status).json({ error: first.error, code: first.code, rejected });
+        return;
+      }
+      res.status(202).json({ accepted: acceptedCount, ...(rejected.length > 0 ? { rejected } : {}) });
     } catch (err) {
       console.error("[costkey] Ingest error:", err);
       res.status(500).json({ error: "Internal server error" });

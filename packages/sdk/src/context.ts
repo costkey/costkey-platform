@@ -5,6 +5,11 @@ import type {
   EventContext,
   ExecutionOptions,
   ExecutionLifecycle,
+  SpanAttributeValue,
+  SpanHandle,
+  SpanKind,
+  SpanOptions,
+  SpanStatus,
   TraceLifecycle,
   TraceOptions,
 } from "./types.js";
@@ -40,7 +45,35 @@ export interface LifecycleRecord {
 
 type LifecycleEmitter = (record: LifecycleRecord) => void;
 
+/** One delivery of a span: emitted when it starts and again when it ends. */
+export interface SpanRecord {
+  id: string;
+  traceId: string;
+  traceName?: string;
+  parentSpanId?: string;
+  executionId?: string;
+  kind: SpanKind;
+  name: string;
+  status: SpanStatus;
+  startedAt: string;
+  endedAt?: string;
+  durationMs?: number;
+  errorType?: string;
+  attributes: Record<string, SpanAttributeValue>;
+  input?: unknown;
+  output?: unknown;
+  context: EventContext;
+}
+
+type SpanEmitter = (record: SpanRecord) => void;
+
 let lifecycleEmitter: LifecycleEmitter | null = null;
+let spanEmitter: SpanEmitter | null = null;
+
+/** Configure the process-local sink for span deliveries. */
+export function setSpanEmitter(emitter: SpanEmitter | null): void {
+  spanEmitter = emitter;
+}
 const executionSequence = new Map<string, number>();
 const traceSequence = new Map<string, number>();
 
@@ -254,6 +287,137 @@ export function startExecution<T>(
   ));
 }
 
+const SPAN_KINDS: readonly SpanKind[] = ["agent", "step", "tool", "workflow", "task", "judge", "retrieval", "handoff", "guardrail", "chain", "custom"];
+
+/**
+ * Run `fn` inside a span. Spans nest: a span started inside another becomes
+ * its child, and every provider call made inside is attributed to the
+ * innermost span. Outside any run, the outermost span starts one.
+ */
+export function startSpan<T>(
+  options: SpanOptions,
+  fn: (span: SpanHandle) => T | Promise<T>,
+): T | Promise<T> {
+  if (!options || typeof options !== "object") throw new TypeError("CostKey span requires options");
+  const name = nonEmpty(options.name);
+  if (!name) throw new TypeError("CostKey span requires a non-empty name");
+  const kind: SpanKind = options.kind && SPAN_KINDS.includes(options.kind) ? options.kind : "custom";
+
+  const parent = storage.getStore() ?? {};
+  if (!parent.traceId) {
+    return startTrace({ name }, () => startSpan(options, fn));
+  }
+
+  const id = nonEmpty(options.spanId) ?? generateId("sp");
+  const inheritedParent = typeof parent.spanId === "string" && parent.spanId !== id ? parent.spanId : undefined;
+  const parentSpanId = nonEmpty(options.parentSpanId) ?? inheritedParent;
+  const optionContext = options.context ? normalizeContextInput(options.context) : {};
+  const context: EventContext = { ...parent, ...optionContext, spanId: id };
+  if (kind === "agent") context.agent = name;
+  if (kind === "tool") context.tool = name;
+
+  const attributes: Record<string, SpanAttributeValue> = { ...(options.attributes ?? {}) };
+  let output: unknown;
+  const handle: SpanHandle = {
+    id,
+    traceId: context.traceId as string,
+    setAttribute(key: string, value: SpanAttributeValue) {
+      attributes[key] = value;
+    },
+    setOutput(value: unknown) {
+      output = value;
+    },
+  };
+
+  const startedAt = new Date().toISOString();
+  const startedMs = Date.now();
+  const base = {
+    id,
+    traceId: context.traceId as string,
+    traceName: context.traceName,
+    parentSpanId,
+    executionId: context.executionId,
+    kind,
+    name,
+    startedAt,
+    context,
+  };
+  emitSpan({ ...base, status: "running", attributes: { ...attributes }, input: options.input });
+
+  return runBoundary(context, () => fn(handle), (lifecycle, error) => {
+    emitSpan({
+      ...base,
+      status: lifecycle === "completed" ? "ok" : lifecycle === "cancelled" ? "cancelled" : "error",
+      endedAt: new Date().toISOString(),
+      durationMs: Math.max(0, Date.now() - startedMs),
+      errorType: lifecycle === "failed" ? errorType(error) : undefined,
+      attributes: { ...attributes },
+      output,
+    });
+  });
+}
+
+/** An agent run: model calls, tool calls and sub-agents inside are attributed to it. */
+export function agent<T>(
+  name: string,
+  fn: (span: SpanHandle) => T | Promise<T>,
+  options: Omit<SpanOptions, "name" | "kind"> = {},
+): T | Promise<T> {
+  return startSpan({ ...options, name, kind: "agent" }, fn);
+}
+
+/** One step of an agent loop (a turn, a browser action, a plan stage). */
+export function step<T>(
+  name: string,
+  fn: (span: SpanHandle) => T | Promise<T>,
+  options: Omit<SpanOptions, "name" | "kind"> = {},
+): T | Promise<T> {
+  return startSpan({ ...options, name, kind: "step" }, fn);
+}
+
+/** A tool call. Its latency and any model calls it makes are attributed to it. */
+export function tool<T>(
+  name: string,
+  fn: (span: SpanHandle) => T | Promise<T>,
+  options: Omit<SpanOptions, "name" | "kind"> = {},
+): T | Promise<T> {
+  return startSpan({ ...options, name, kind: "tool" }, fn);
+}
+
+/**
+ * Wrap a map of tools that expose `execute` (Vercel AI SDK, Mastra and most
+ * agent frameworks) so each invocation is recorded as a tool span.
+ */
+export function instrumentTools<T extends Record<string, unknown>>(tools: T): T {
+  const wrapped: Record<string, unknown> = {};
+  for (const [toolName, definition] of Object.entries(tools)) {
+    const execute = definition && typeof definition === "object"
+      ? (definition as { execute?: unknown }).execute
+      : undefined;
+    if (typeof execute !== "function") {
+      wrapped[toolName] = definition;
+      continue;
+    }
+    wrapped[toolName] = {
+      ...(definition as Record<string, unknown>),
+      execute(this: unknown, ...args: unknown[]) {
+        return startSpan({ name: toolName, kind: "tool", input: args[0] }, (span) => {
+          const result = (execute as (...input: unknown[]) => unknown).apply(this, args);
+          if (isPromiseLike(result)) {
+            return Promise.resolve(result).then((value) => {
+              span.setOutput(value);
+              return value;
+            });
+          }
+          span.setOutput(result);
+          return result;
+        });
+      },
+    };
+  }
+  return wrapped as T;
+}
+
 /** Get the current context (from the nearest withContext scope). */
 export function getCurrentContext(): EventContext {
   return { ...(storage.getStore() ?? {}) };
@@ -333,6 +497,14 @@ function runBoundary<T>(
 
   onTerminal("completed");
   return result;
+}
+
+function emitSpan(record: SpanRecord): void {
+  try {
+    spanEmitter?.({ ...record, context: { ...record.context } });
+  } catch {
+    // Telemetry must never change the callback's result or error.
+  }
 }
 
 function emitLifecycle(record: LifecycleRecord): void {
@@ -435,6 +607,10 @@ const CONTEXT_CARRIER_KEYS: Array<keyof ContextCarrier> = [
   "datasetRevision",
   "conversationId",
   "voiceSessionId",
+  "spanId",
+  "agent",
+  "tool",
+  "userId",
 ];
 
 const CONTEXT_ALIASES: Record<string, keyof EventContext> = {
@@ -448,4 +624,6 @@ const CONTEXT_ALIASES: Record<string, keyof EventContext> = {
   case_id: "caseId",
   conversation_id: "conversationId",
   voice_session_id: "voiceSessionId",
+  span_id: "spanId",
+  user_id: "userId",
 };

@@ -55,13 +55,26 @@ export function resolveEventCost(event: CostKeyEvent): number | null {
     ?? openRouterImageOutputTokens(event.provider, event.responseBody)
     ?? inferImageOutputTokens(event.model, event.usage?.outputTokens ?? null);
   const estimate = computeCost(
-    event.model, event.usage?.inputTokens ?? null, event.usage?.outputTokens ?? null,
+    event.model, event.usage?.inputTokens ?? null, billableOutputTokens(event),
     event.usage?.cacheReadTokens, event.usage?.cacheCreationTokens, event.provider,
     event.timestamp, imageOutputTokens,
   );
   // The amount may be retained as a clearly labelled estimate for old events
   // whose server pricing is unavailable, but it is never provider evidence.
   return estimate ?? (validCost(event.costUsd) ? event.costUsd : null);
+}
+
+/**
+ * Gemini reports thinking tokens separately from candidate (output) tokens
+ * but bills them at the output rate. Other providers already include
+ * reasoning in their output count.
+ */
+export function billableOutputTokens(event: { provider?: string | null; model?: string | null; usage?: { outputTokens?: number | null; reasoningTokens?: number | null } | null }): number | null {
+  const output = event.usage?.outputTokens ?? null;
+  const reasoning = event.usage?.reasoningTokens ?? null;
+  const gemini = event.provider === "google" || (event.model ?? "").toLowerCase().includes("gemini");
+  if (!gemini || reasoning == null || reasoning <= 0) return output;
+  return (output ?? 0) + reasoning;
 }
 
 export interface ResolvedEventCost {
@@ -197,7 +210,7 @@ export async function resolveEventCostWithOverrides(
     ?? openRouterImageOutputTokens(event.provider, event.responseBody)
     ?? inferImageOutputTokens(event.model, event.usage?.outputTokens ?? null);
   const serverEstimate = computeCost(
-    event.model, event.usage?.inputTokens ?? null, event.usage?.outputTokens ?? null,
+    event.model, event.usage?.inputTokens ?? null, billableOutputTokens(event),
     event.usage?.cacheReadTokens, event.usage?.cacheCreationTokens, event.provider,
     event.timestamp, imageOutputTokens,
   );

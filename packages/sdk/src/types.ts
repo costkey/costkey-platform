@@ -84,6 +84,14 @@ export interface EventContext {
   conversationId?: string;
   /** Voice session identity supplied by the application or integration. */
   voiceSessionId?: string;
+  /** The span (agent, step, tool...) the current code runs inside. */
+  spanId?: string;
+  /** Name of the nearest enclosing agent span; calls inherit it for cost slicing. */
+  agent?: string;
+  /** Name of the nearest enclosing tool span. */
+  tool?: string;
+  /** End user the work is done for (first-class attribution). */
+  userId?: string;
   [key: string]: string | number | boolean | undefined;
 }
 
@@ -109,9 +117,78 @@ export type ContextCarrier = Pick<
   | "datasetRevision"
   | "conversationId"
   | "voiceSessionId"
+  | "spanId"
+  | "agent"
+  | "tool"
+  | "userId"
 >;
 
 export type TraceLifecycle = "started" | "completed" | "failed" | "cancelled";
+
+/** What a span represents. Calls inside a span are attributed to it. */
+export type SpanKind =
+  | "agent"
+  | "step"
+  | "tool"
+  | "workflow"
+  | "task"
+  | "judge"
+  | "retrieval"
+  | "handoff"
+  | "guardrail"
+  | "chain"
+  | "custom";
+
+export type SpanStatus = "running" | "ok" | "error" | "cancelled";
+
+export type SpanAttributeValue = string | number | boolean | null;
+
+export interface SpanOptions {
+  /** Stable, low-cardinality name: the agent, tool or step name. */
+  name: string;
+  kind?: SpanKind;
+  /** Small searchable attributes (model, step number, tool version...). */
+  attributes?: Record<string, SpanAttributeValue>;
+  /** Input payload; only sent when body capture is enabled. */
+  input?: unknown;
+  /** Resume a span started in another process (for example after a pause). */
+  spanId?: string;
+  /** Explicit parent when it can't be inherited (a resumed child span). */
+  parentSpanId?: string;
+  /** Additional labels merged into inherited context for calls in this span. */
+  context?: EventContext;
+}
+
+/** Handle passed to the span callback. */
+export interface SpanHandle {
+  readonly id: string;
+  readonly traceId: string;
+  /** Add or update an attribute; sent with the span's end. */
+  setAttribute(key: string, value: SpanAttributeValue): void;
+  /** Record the span's output; only sent when body capture is enabled. */
+  setOutput(value: unknown): void;
+}
+
+export interface CostKeySpanEvent {
+  id: string;
+  timestamp: string;
+  projectId: string;
+  eventType: "span";
+  source: "explicit";
+  kind: SpanKind;
+  name: string;
+  status: SpanStatus;
+  traceId: string;
+  traceName?: string;
+  parentSpanId?: string;
+  executionId?: string;
+  startedAt: string;
+  endedAt?: string;
+  durationMs?: number;
+  errorType?: string;
+  attributes?: Record<string, unknown>;
+  context: EventContext;
+}
 export type ExecutionLifecycle = TraceLifecycle;
 
 export interface TraceOptions {
@@ -411,15 +488,17 @@ export interface CostKeyUsageEvent {
 export type CostKeyTelemetryEvent =
   | CostKeyEvent
   | CostKeyLifecycleEvent
-  | CostKeyUsageEvent;
+  | CostKeyUsageEvent
+  | CostKeySpanEvent;
 
 export type BeforeSendEventHook = (
-  event: CostKeyLifecycleEvent | CostKeyUsageEvent,
+  event: CostKeyLifecycleEvent | CostKeyUsageEvent | CostKeySpanEvent,
 ) =>
   | CostKeyLifecycleEvent
   | CostKeyUsageEvent
+  | CostKeySpanEvent
   | null
-  | Promise<CostKeyLifecycleEvent | CostKeyUsageEvent | null>;
+  | Promise<CostKeyLifecycleEvent | CostKeyUsageEvent | CostKeySpanEvent | null>;
 
 /** Provider-normalized prompt/tool/agent details captured from request/response payloads */
 export interface EventMetadata {
@@ -448,6 +527,8 @@ export interface CostKeyEvent {
   /** Stable attempt identity; generated per observed request unless supplied explicitly. */
   attemptId?: string | null;
   /** Known parent attempt/event for a retry or fallback; never inferred by the SDK. */
+  /** The span this call ran inside. */
+  spanId?: string | null;
   parentEventId?: string | null;
   entityType?: "trace" | "execution" | null;
   entityId?: string | null;

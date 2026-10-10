@@ -14,6 +14,7 @@ import { projectMutationGuard, platformResponseGuards, rateLimit } from "./middl
 import { initAnomalyTable, detectAnomalies } from "./anomaly.js";
 import { seedIfEmpty } from "./seed.js";
 import { backfillCosts } from "./pricing.js";
+import { initPriceCatalog, refreshPriceCatalogIfChanged } from "./price-catalog/sync.js";
 import { createSourcemapsRouter } from "./sourcemaps.js";
 import { initSourceMaps } from "./sourcemap-resolver.js";
 import { configureRequestParsing, requestParseErrorHandler } from "./request-parsing.js";
@@ -161,12 +162,13 @@ export function createApp(options: AppOptions = {}): Express & AppRuntime {
       ?? "https://app.costkey.dev,http://localhost:5180,http://127.0.0.1:5180")
       .split(",").map((origin) => origin.trim()).filter(Boolean),
   );
-  app.use(cors({
-    credentials: true,
-    origin: (origin, callback) => {
-      if (!origin || allowedOrigins.has(origin)) callback(null, true);
-      else callback(new Error("Origin is not allowed"));
-    },
+  app.use(cors((req, callback) => {
+    const origin = req.headers.origin;
+    // The console served by this server is always allowed, whatever its domain.
+    let sameOrigin = false;
+    try { sameOrigin = Boolean(origin) && new URL(origin!).host === (req.headers["x-forwarded-host"] ?? req.headers.host); } catch { /* not a URL */ }
+    if (!origin || sameOrigin || allowedOrigins.has(origin)) callback(null, { credentials: true, origin: true });
+    else callback(new Error("Origin is not allowed"));
   }));
   // Preserve the exact signed Stripe bytes before the normal JSON parser runs.
   app.use("/api/v1/billing/webhooks/stripe", express.raw({ type: "application/json", limit: "1mb" }));
@@ -262,6 +264,9 @@ export function createApp(options: AppOptions = {}): Express & AppRuntime {
       }
       await initSourceMaps();
       await backfillCosts(pool);
+      const priceSync = await initPriceCatalog(pool, { schedule: options.startSchedulers !== false })
+        .catch((error) => { console.error("[costkey] Price catalog error:", error); return null; });
+      if (priceSync) schedulerHandles.push(priceSync);
       await initAnomalyTable(pool);
 
       const [{ createBudgetsRouter, runBudgetChecks }, { createApiRouter }] = await Promise.all([
@@ -281,6 +286,7 @@ export function createApp(options: AppOptions = {}): Express & AppRuntime {
           void detectAnomalies(pool);
           void runBudgetChecks(pool);
           void refreshAllFindings(pool).catch((error) => console.error("[costkey] Findings refresh worker error:", error));
+          void refreshPriceCatalogIfChanged(pool).catch((error) => console.error("[costkey] Price catalog refresh error:", error));
         }, 5 * 60 * 1000);
         const dailyRetention = setInterval(() => {
           void reconcileDailyAccounting(pool)

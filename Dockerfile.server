@@ -20,6 +20,8 @@ WORKDIR /app
 COPY --from=builder /app/packages/shared/dist packages/shared/dist
 COPY --from=builder /app/packages/shared/package.json packages/shared/
 COPY --from=builder /app/packages/server/dist packages/server/dist
+# Price catalog snapshot: a fresh install has prices before its first sync.
+COPY --from=builder /app/packages/server/data packages/server/data
 COPY --from=builder /app/packages/server/package.json packages/server/
 COPY --from=builder /app/node_modules node_modules
 COPY --from=builder /app/package.json ./

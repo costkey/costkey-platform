@@ -784,19 +784,23 @@ export function policyWindowBounds(
   const current = policyWindowKey(policy, at);
   const minute = 60_000;
   const maxMinutes = policy.window === "calendar_month" ? 46 * 24 * 60 : policy.window === "calendar_day" ? 3 * 24 * 60 : 3;
-  let from = new Date(Math.floor(at.getTime() / minute) * minute);
-  let scanned = 0;
-  while (scanned < maxMinutes && policyWindowKey(policy, new Date(from.getTime() - minute)) === current) {
-    from = new Date(from.getTime() - minute);
-    scanned++;
-  }
-  let to = new Date(from.getTime() + minute);
-  scanned = 0;
-  while (scanned < maxMinutes && policyWindowKey(policy, to) === current) {
-    to = new Date(to.getTime() + minute);
-    scanned++;
-  }
-  return { from, to };
+  const inWindow = (time: number) => policyWindowKey(policy, new Date(time)) === current;
+  // Window keys only change once in each direction, so the edges can be
+  // found by bisecting minutes instead of formatting every minute in a month.
+  const edge = (inside: number, outside: number): number => {
+    if (inWindow(outside)) return outside;
+    while (Math.abs(outside - inside) > minute) {
+      const mid = inside + Math.trunc((outside - inside) / minute / 2) * minute;
+      if (inWindow(mid)) inside = mid;
+      else outside = mid;
+    }
+    return outside;
+  };
+  const start = Math.floor(at.getTime() / minute) * minute;
+  const before = edge(start, start - maxMinutes * minute);
+  const from = inWindow(before) ? before : before + minute;
+  const to = edge(Math.max(start, from), from + (maxMinutes + 1) * minute);
+  return { from: new Date(from), to: new Date(to) };
 }
 
 function globToRegExp(pattern: string): RegExp {
@@ -1674,6 +1678,23 @@ export function createServerPricingResolver(): PricingResolver {
     // the ingestion worker records a late settlement.
     const pricing = await import("./pricing.js");
     const found = pricing.findPricing(model) as unknown as Record<string, unknown> | null;
+    if (!found || provider !== "deepseek") {
+      // The synced catalog prices models the built-in table doesn't know.
+      const [{ getPriceCatalog }, { maxTokenRates }] = await Promise.all([import("./price-catalog/catalog.js"), import("./price-catalog/compute.js")]);
+      const match = getPriceCatalog().resolve({ provider, model, at });
+      if (match && match.price.rates.input !== undefined && match.price.rates.output !== undefined) {
+        const rates = maxTokenRates(match.price.rates);
+        return {
+          currency: "USD",
+          inputUsdPerMillion: rates.input * 1_000_000,
+          outputUsdPerMillion: rates.output * 1_000_000,
+          ...(rates.cacheRead === undefined ? {} : { cacheReadUsdPerMillion: rates.cacheRead * 1_000_000 }),
+          ...(rates.cacheWrite === undefined ? {} : { cacheWriteUsdPerMillion: rates.cacheWrite * 1_000_000 }),
+          ...(rates.outputImage === undefined ? {} : { imageOutputUsdPerMillion: rates.outputImage * 1_000_000 }),
+          basis: `catalog:${match.price.source}:${match.price.sourceKey}:${at.toISOString().slice(0, 10)}`,
+        };
+      }
+    }
     if (!found) return null;
     const peak = asRecord(found.peak);
     const offPeak = asRecord(found.offPeak);

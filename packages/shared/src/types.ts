@@ -32,6 +32,8 @@ export interface NormalizedUsage {
   costUsd?: number | null;
   /** Image tokens included in outputTokens; absent means the breakdown is unknown. */
   imageOutputTokens?: number | null;
+  /** Non-token billing units: characters, audioSeconds, searchQueries, credits... */
+  nativeUnits?: Record<string, number> | null;
 }
 
 /** Timing data for streaming responses */

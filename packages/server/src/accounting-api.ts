@@ -36,6 +36,7 @@ import {
   updateEffectivePrice,
   type EffectivePriceInput,
 } from "./effective-prices.js";
+import { invalidateProjectPrices } from "./billing.js";
 import {
   chargesCte,
   dimensionExpression,
@@ -2840,6 +2841,7 @@ export function createAccountingRouter(pool: pg.Pool): Router {
       const actor = { id: user(req).id ?? null, role: user(req).role ?? "viewer" };
       assertCanManageEffectivePrices(actor.role);
       await createEffectivePrice(pool, req.params["projectId"] as string, input, id, actor);
+      invalidateProjectPrices(req.params["projectId"] as string);
       const prices = await listEffectivePrices(pool, req.params["projectId"] as string);
       const repricing = await repriceHistoricalForEffectivePrice(pool, req.params["projectId"] as string, id);
       res.status(201).json({ price: prices.find((price) => price.id === id) ?? { id, ...input }, repricing });
@@ -2860,6 +2862,7 @@ export function createAccountingRouter(pool: pg.Pool): Router {
       const actor = { id: user(req).id ?? null, role: user(req).role ?? "viewer" };
       const replacementId = randomId("price_");
       const id = await updateEffectivePrice(pool, req.params["projectId"] as string, req.params["priceId"] as string, input, actor, replacementId);
+      invalidateProjectPrices(req.params["projectId"] as string);
       if (!id) { res.status(404).json({ error: "Effective price not found" }); return; }
       const prices = await listEffectivePrices(pool, req.params["projectId"] as string);
       const repricing = await repriceHistoricalForEffectivePrice(pool, req.params["projectId"] as string, id);
@@ -2879,6 +2882,7 @@ export function createAccountingRouter(pool: pg.Pool): Router {
       if (!requireManager(req, res)) return;
       const actor = { id: user(req).id ?? null, role: user(req).role ?? "viewer" };
       const ok = await deleteEffectivePrice(pool, req.params["projectId"] as string, req.params["priceId"] as string, actor);
+      invalidateProjectPrices(req.params["projectId"] as string);
       if (!ok) { res.status(404).json({ error: "Effective price not found" }); return; }
       res.json({ ok: true });
     } catch (err) {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import {
   AlertTriangle,
@@ -49,6 +49,12 @@ import {
   getNotificationDestinations,
   getNotificationPreferences,
   getEffectivePrices,
+  getPriceCatalogStatus,
+  getUnpricedModels,
+  refreshPriceCatalog,
+  searchCatalogModels,
+  setModelAlias,
+  setModelRates,
   getPrivacySettings,
   getProjectDetail,
   getSubscription,
@@ -82,6 +88,9 @@ import {
   type NotificationDestination,
   type NotificationPreferences,
   type EffectivePrice,
+  type CatalogModel,
+  type PriceCatalogStatus,
+  type UnpricedModel,
   type FindingThresholds,
   type PrivacySettings,
   type ProjectDetail,
@@ -906,6 +915,92 @@ function overrideFormFromRow(override: EffectivePrice): OverrideFormState {
   return { provider: override.provider, accountScope: override.accountScope, model: override.model ?? "", nativeUnit: override.nativeUnit, pricePerUnit: String(override.pricePerUnit), currency: override.currency, effectiveFrom: formatDateInput(override.effectiveFrom), effectiveTo: formatDateInput(override.effectiveTo), version: String(override.version + 1), pricingId: override.pricingId ?? "", source: override.source };
 }
 
+/** Rate fields asked for, by the units an unpriced model bills in. */
+const UNIT_RATE_FIELDS: Record<string, Array<{ field: string; label: string }>> = {
+  tokens: [{ field: "inputPerMillion", label: "Input, $ per 1M tokens" }, { field: "outputPerMillion", label: "Output, $ per 1M tokens" }],
+  characters: [{ field: "perThousandCharacters", label: "$ per 1k characters" }],
+  audioSeconds: [{ field: "perMinute", label: "$ per minute of audio" }],
+  credits: [{ field: "perCredit", label: "$ per credit" }],
+  searchQueries: [{ field: "perThousandQueries", label: "$ per 1k searches" }],
+  pages: [{ field: "perThousandPages", label: "$ per 1k pages" }],
+  images: [{ field: "perImage", label: "$ per image" }],
+  requests: [{ field: "perRequest", label: "$ per request" }],
+};
+
+function PriceModelForm({ projectId, item, onDone, onCancel }: { projectId: string; item: UnpricedModel; onDone: (repriced: number) => void; onCancel: () => void }) {
+  const tokenModel = item.units.includes("tokens");
+  const [mode, setMode] = useState<"alias" | "rates">(tokenModel ? "alias" : "rates");
+  const [target, setTarget] = useState("");
+  const [suggestions, setSuggestions] = useState<CatalogModel[]>([]);
+  const [rates, setRates] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const fields = item.units.flatMap((unit) => UNIT_RATE_FIELDS[unit] ?? []);
+  useEffect(() => {
+    if (mode !== "alias" || target.trim().length < 2) { setSuggestions([]); return; }
+    let alive = true;
+    const timer = window.setTimeout(() => { void searchCatalogModels(item.provider, target.trim()).then((result) => { if (alive) setSuggestions(result.models); }).catch(() => undefined); }, 200);
+    return () => { alive = false; window.clearTimeout(timer); };
+  }, [mode, target, item.provider]);
+  const listId = `catalog-models-${item.provider}-${item.model ?? "none"}`.replace(/[^a-zA-Z0-9-]/g, "-");
+  const chosen = suggestions.find((suggestion) => suggestion.model === target.trim().toLowerCase());
+  async function save(): Promise<void> {
+    if (!item.model) return;
+    setSaving(true); setError(null);
+    try {
+      if (mode === "alias") {
+        if (!target.trim()) { setError("Pick the model this one is priced as."); return; }
+        onDone((await setModelAlias(projectId, { provider: item.provider, model: item.model, targetModel: target.trim() })).repriced);
+      } else {
+        const values = Object.fromEntries(Object.entries(rates).filter(([, value]) => value.trim() !== "").map(([field, value]) => [field, Number(value)]));
+        if (Object.keys(values).length === 0 || Object.values(values).some((value) => !Number.isFinite(value) || value < 0)) { setError("Enter the rates as numbers."); return; }
+        onDone((await setModelRates(projectId, { provider: item.provider, model: item.model, rates: values })).repriced);
+      }
+    } catch (saveError) { setError(errorText(saveError)); } finally { setSaving(false); }
+  }
+  return <div className="settings-form settings-price-form">
+    {tokenModel && <div className="ck-segmented" role="tablist" aria-label="How to price this model"><button type="button" role="tab" aria-selected={mode === "alias"} className={mode === "alias" ? "active" : ""} onClick={() => setMode("alias")}>Same as a known model</button><button type="button" role="tab" aria-selected={mode === "rates"} className={mode === "rates" ? "active" : ""} onClick={() => setMode("rates")}>Your rates</button></div>}
+    {mode === "alias"
+      ? <div className="settings-form-field full"><label htmlFor={`${listId}-input`}>Priced as</label><input id={`${listId}-input`} list={listId} value={target} onChange={(event) => setTarget(event.target.value)} placeholder="gpt-6-sol" autoComplete="off" /><datalist id={listId}>{suggestions.map((suggestion) => <option key={`${suggestion.provider}/${suggestion.model}`} value={suggestion.model}>{suggestion.provider}</option>)}</datalist>{chosen && <span className="settings-form-hint">{Object.entries(chosen.rates).filter(([field]) => field === "inputPerMillion" || field === "outputPerMillion").map(([field, value]) => `${field === "inputPerMillion" ? "In" : "Out"} $${Number(value.toFixed(4))}/1M`).join(" · ")}</span>}</div>
+      : <div className="settings-form-grid">{fields.map(({ field, label }) => <div className="settings-form-field" key={field}><label htmlFor={`${listId}-${field}`}>{label}</label><input id={`${listId}-${field}`} inputMode="decimal" value={rates[field] ?? ""} onChange={(event) => setRates((current) => ({ ...current, [field]: event.target.value }))} /></div>)}</div>}
+    {error && <div className="settings-status-line error" role="alert">{error}</div>}
+    <div className="settings-form-footer"><button className="ck-button ck-button-quiet" type="button" onClick={onCancel} disabled={saving}>Cancel</button><button className="ck-button ck-button-primary" type="button" onClick={() => void save()} disabled={saving}>{saving ? "Pricing" : "Save price"}</button></div>
+  </div>;
+}
+
+/** Where prices come from, and any model still waiting for one. */
+function PriceList({ projectId, canEdit }: { projectId: string; canEdit: boolean }) {
+  const [status, setStatus] = useState<PriceCatalogStatus | null>(null);
+  const [unpriced, setUnpriced] = useState<UnpricedModel[] | null>(null);
+  const [open, setOpen] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const load = useCallback(async () => {
+    const [statusResult, unpricedResult] = await Promise.allSettled([getPriceCatalogStatus(), getUnpricedModels(projectId)]);
+    if (statusResult.status === "fulfilled") setStatus(statusResult.value);
+    if (unpricedResult.status === "fulfilled") setUnpriced(unpricedResult.value.models); else { setUnpriced([]); setError(errorText(unpricedResult.reason)); }
+  }, [projectId]);
+  useEffect(() => { setUnpriced(null); setOpen(null); void load(); }, [load]);
+  async function refresh(): Promise<void> {
+    setRefreshing(true); setError(null); setMessage(null);
+    try { const result = await refreshPriceCatalog(); setMessage(result.repriced > 0 ? `Prices refreshed. Priced ${result.repriced.toLocaleString()} calls.` : "Prices are up to date."); await load(); }
+    catch (refreshError) { setError(errorText(refreshError)); } finally { setRefreshing(false); }
+  }
+  const synced = status?.lastSync?.finished_at ?? status?.loadedAt ?? null;
+  const rowKey = (item: UnpricedModel) => `${item.provider}\u0000${item.model ?? ""}`;
+  return <Panel title="Price list" actions={canEdit && status?.enabled ? <button className="ck-button ck-button-quiet" type="button" onClick={() => void refresh()} disabled={refreshing}><RefreshCw size={13} /> {refreshing ? "Refreshing" : "Refresh"}</button> : undefined}><div className="settings-card-body">
+    {(message || error) && <div className={`settings-status-line ${error ? "error" : "success"}`} role={error ? "alert" : "status"}>{error ?? message}</div>}
+    {status && <p className="settings-footnote">{status.enabled ? `${status.prices.toLocaleString()} model prices from ${status.sources.map((source) => ({ litellm: "LiteLLM", models_dev: "models.dev", openrouter: "OpenRouter" } as Record<string, string>)[source.source] ?? source.source).join(", ")}${synced ? ` · updated ${formatDateTime(synced)}` : ""}` : "The price catalog is off on this server."}</p>}
+    {unpriced === null ? <LoadingRows count={2} columns={4} /> : unpriced.length === 0
+      ? <div className="settings-empty">Every call has a price.</div>
+      : <div className="settings-table-wrap"><table className="settings-table"><thead><tr><th>Model without a price</th><th>Calls</th><th>Last seen</th><th /></tr></thead><tbody>{unpriced.map((item) => <Fragment key={rowKey(item)}>
+          <tr><td className="primary">{item.model ?? "Model not recorded"}<div className="muted">{item.provider}</div></td><td>{item.calls.toLocaleString()}</td><td className="muted">{formatDateTime(item.lastSeen)}</td><td className="actions">{canEdit && item.model && open !== rowKey(item) && <button className="ck-button ck-button-secondary" type="button" onClick={() => setOpen(rowKey(item))}>Set price</button>}</td></tr>
+          {open === rowKey(item) && <tr className="settings-expanded-row"><td colSpan={4}><PriceModelForm projectId={projectId} item={item} onCancel={() => setOpen(null)} onDone={(repriced) => { setOpen(null); setMessage(`Priced ${repriced.toLocaleString()} call${repriced === 1 ? "" : "s"}.`); void load(); }} /></td></tr>}
+        </Fragment>)}</tbody></table></div>}
+  </div></Panel>;
+}
+
 /* Pricing and credits use the live project-scoped implementation below. */
 function PricingCredits({ projects, role, currentProjectId }: { projects: SettingsProject[]; role: Role; currentProjectId: string | null }) {
   const [params] = useSearchParams();
@@ -960,7 +1055,7 @@ function PricingCredits({ projects, role, currentProjectId }: { projects: Settin
     {confirmation.dialog}
     <div className="settings-section-title"><div><h2>Prices & credits</h2></div>{!canEdit && <StatusPill tone="neutral">Read only</StatusPill>}</div>
     {(message || error) && <div className={`settings-status-line ${error ? "error" : "success"}`} role={error ? "alert" : "status"}>{error ?? message}</div>}
-    <Panel title="How calls are priced"><div className="settings-card-body"><div className="settings-definition-list"><div className="settings-definition-row"><dt>Provider-reported amount</dt><dd>Used as reported</dd></div><div className="settings-definition-row"><dt>Estimated amount</dt><dd>Your rate × usage</dd></div><div className="settings-definition-row"><dt>Unknown amount</dt><dd>Unpriced; totals marked partial</dd></div><div className="settings-definition-row"><dt>Cloud billing connection</dt><dd>Not connected</dd></div></div>{priceCapability === "unavailable" && <div className="ck-alert" style={{ marginTop: 14 }}><AlertTriangle size={15} /><span>Custom rates aren’t available on this server.</span></div>}</div></Panel>
+    {selectedId && <PriceList projectId={selectedId} canEdit={canEdit} />}
     <Panel title="Custom rates" actions={canEdit && priceCapability === "available" ? <button className="ck-button ck-button-secondary" type="button" onClick={() => { setShowPriceForm((value) => !value); setEditingPrice(null); setPriceForm(blankOverrideForm()); }}><Plus size={13} /> {showPriceForm ? "Close form" : "Add a rate"}</button> : <StatusPill tone="neutral">{priceCapability === "unavailable" ? "Unavailable" : "Read only"}</StatusPill>}><div className="settings-card-body">{showPriceForm && priceCapability === "available" && <EffectivePriceForm form={priceForm} setForm={setPriceForm} saving={saving} editing={Boolean(editingPrice)} onSave={() => void savePrice()} onCancel={() => { setShowPriceForm(false); setEditingPrice(null); }} />}{loading ? <LoadingRows count={2} columns={4} /> : prices.length === 0 ? <div className="settings-empty">{priceCapability === "unavailable" ? "Custom rates aren’t available on this server." : "No custom rates."}</div> : <div className="settings-table-wrap"><table className="settings-table"><thead><tr><th>Provider / account</th><th>Model / unit</th><th>Rate</th><th>Effective</th><th>Source</th><th /></tr></thead><tbody>{prices.map((price) => <tr key={price.id}><td className="primary">{price.provider}<div className="muted">{price.accountScope}</div></td><td className="mono">{price.model ?? "Broad account rule"}<div className="muted">{price.nativeUnit}</div></td><td className="numeric">{price.pricePerUnit} {price.currency}<div className="muted">v{price.version}</div></td><td>{formatDateInput(price.effectiveFrom)}{price.effectiveTo ? ` → ${formatDateInput(price.effectiveTo)}` : " → open"}<div className="muted">{price.revokedAt ? `Revoked ${formatDateInput(price.revokedAt)}` : "Active"}</div></td><td className="muted">{price.source}<div>User supplied</div></td><td className="actions">{canEdit && !price.revokedAt && <><button className="settings-icon-button" type="button" onClick={() => { setPriceForm(overrideFormFromRow(price)); setEditingPrice(price.id); setShowPriceForm(true); }} aria-label={`Edit ${price.model ?? price.nativeUnit} price`}><Pencil size={13} /></button><button className="settings-icon-button" type="button" onClick={(event) => revokePrice(price, event.currentTarget)} aria-label={`Revoke ${price.model ?? price.nativeUnit} price`}><Trash2 size={13} /></button></>}</td></tr>)}</tbody></table></div>}</div></Panel>
     <Panel title="Credits" actions={canEdit ? <button className="ck-button ck-button-secondary" type="button" onClick={() => { setShowCreditForm((value) => !value); setEditingCredit(null); setCreditForm(blankCreditForm()); }}><Plus size={13} /> {showCreditForm ? "Close form" : "Add credit"}</button> : <StatusPill tone="neutral">Read only</StatusPill>}><div className="settings-card-body">{showCreditForm && <CreditForm form={creditForm} setForm={setCreditForm} onSave={() => void saveCredit()} onCancel={() => { setShowCreditForm(false); setEditingCredit(null); }} saving={saving} editing={Boolean(editingCredit)} />}{loading ? <LoadingRows count={2} columns={4} /> : credits.length === 0 ? <div className="settings-empty">No credits.</div> : <div className="settings-table-wrap"><table className="settings-table"><thead><tr><th>Provider / scope</th><th>Balance</th><th>Eligibility</th><th>Expiry</th><th /></tr></thead><tbody>{credits.map((credit) => <tr key={credit.id}><td className="primary">{credit.provider}<div className="muted">{credit.account_scope} · {credit.cloud_project}</div></td><td className="numeric">{credit.balance_amount} {credit.currency}<div className="muted">as of {formatDateInput(credit.balance_as_of)}</div></td><td className="muted">{JSON.stringify(credit.eligibility)}</td><td>{credit.expires_at ? formatDateInput(credit.expires_at) : "No expiry"}<div className="muted">{credit.source === "user_supplied" ? "User supplied" : credit.source}</div></td><td className="actions">{canEdit && <><button className="settings-icon-button" type="button" onClick={() => { setCreditForm(creditFormFromRow(credit)); setEditingCredit(credit.id); setShowCreditForm(true); }} aria-label={`Edit ${credit.provider} credit`}><Pencil size={13} /></button><button className="settings-icon-button" type="button" onClick={(event) => removeCredit(credit, event.currentTarget)} aria-label={`Delete ${credit.provider} credit`}><Trash2 size={13} /></button></>}</td></tr>)}</tbody></table></div>}</div></Panel>
   </>;

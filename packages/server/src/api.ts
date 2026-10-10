@@ -7,6 +7,7 @@ import { getAnomalies, dismissAnomaly } from "./anomaly.js";
 import { orgScope } from "./middleware.js";
 import { requireAuth } from "./auth.js";
 import { createAccountingRouter } from "./accounting-api.js";
+import { createPricingRouter } from "./pricing-api.js";
 import { createFeatureMappingsRouter } from "./feature-mappings.js";
 import { listAccessibleProjects, roleCanManageWorkspace } from "./permissions.js";
 
@@ -35,6 +36,7 @@ export function createApiRouter(pool: pg.Pool): Router {
   // routes so lifecycle-aware responses (partial cost, real elapsed time and
   // grouped receipts) are authoritative while old response aliases remain.
   router.use(createAccountingRouter(pool));
+  router.use(createPricingRouter(pool));
   router.use(createFeatureMappingsRouter(pool));
 
   // GET /api/v1/projects/:projectId/summary

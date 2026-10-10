@@ -623,10 +623,19 @@ async function seedPolicyObservedUsage(pool: pg.Pool, row: Record<string, unknow
     now: new Date(),
   };
   const observations = await createPostgresObservedUsageSource(pool)(policy, windowKey, request);
+  // Resuming or editing re-reads the whole window; skip what's already
+  // recorded with one lookup instead of a transaction per observation.
+  const existing = await pool.query(
+    "SELECT observation_id, quantity, unknown FROM policy_observations WHERE policy_id = $1 AND window_key = $2",
+    [policy.id, windowKey],
+  );
+  const known = new Map(existing.rows.map((row) => [String(row.observation_id), { quantity: row.quantity == null ? null : Number(row.quantity), unknown: Boolean(row.unknown) }]));
   const store = new PostgresReservationStore(pool);
   let recorded = 0;
   for (const observation of observations) {
     const quantity = observation.quantity;
+    const prior = known.get(observation.observationId);
+    if (prior && prior.quantity === (quantity ?? null) && prior.unknown === (observation.unknown ?? quantity == null)) continue;
     const result = await store.recordObserved?.({
       observationId: observation.observationId,
       policyId: observation.policyId,

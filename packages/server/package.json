@@ -8,7 +8,8 @@
     "build": "tsc",
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.js",
-    "clean": "rm -rf dist .turbo *.tsbuildinfo"
+    "clean": "rm -rf dist .turbo *.tsbuildinfo",
+    "pricing:snapshot": "tsx scripts/price-catalog-snapshot.ts"
   },
   "dependencies": {
     "@costkey/shared": "*",

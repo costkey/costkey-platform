@@ -539,7 +539,7 @@ export default function Dashboard() {
       return { tone: "neutral", text: lastSeen ? `No new runs since ${formatDateTime(lastSeen)}.` : "No recent runs.", right: <Link className="ck-text-link" to="/settings?section=projects">Check connection</Link> };
     }
     if (finding) return { tone: "warn", text: <>{findingTitle(finding)}. Worth a look.</>, right: <Link className="ck-text-link" to={findingHref}>Review <ArrowRight size={12} /></Link> };
-    if (unpriced > 0) return { tone: "warn", text: `${unpriced.toLocaleString()} call${unpriced === 1 ? " has" : "s have"} no price yet, so totals are partial.`, right: <Link className="ck-text-link" to={`/traces?tab=calls&accounting=partial&${scopeSearch.slice(1)}`}>View calls <ArrowRight size={12} /></Link> };
+    if (unpriced > 0) return { tone: "warn", text: `${unpriced.toLocaleString()} call${unpriced === 1 ? " has" : "s have"} no price yet, so totals are partial.`, right: <Link className="ck-text-link" to="/settings?section=pricing">Set prices <ArrowRight size={12} /></Link> };
     if (budgetLimit != null && budgetSpent != null && budgetSpent >= budgetLimit) return { tone: "critical", text: `${projectName} is over its ${money(budgetLimit)} budget.`, right: <Link className="ck-text-link" to={`/budgets${scopeSearch}`}>Review budget</Link> };
     if (budgetLimit != null && projected != null && projected > budgetLimit) return { tone: "warn", text: `At this pace, ${projectName} passes its ${money(budgetLimit)} budget this month.`, right: <Link className="ck-text-link" to={`/forecast${scopeSearch}`}>See estimate</Link> };
     if (budgetLimit != null) return { tone: "good", text: `${projectName} is within its monthly budget.` };

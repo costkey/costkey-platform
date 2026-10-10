@@ -185,3 +185,8 @@
 .settings-project-actions-end { display: inline-flex; gap: 4px; margin-left: auto; }
 .ck-button.ck-button-danger-quiet { color: #a33d32; }
 .settings-project-warning { display: flex; align-items: center; gap: 12px; margin-top: 14px; }
+
+.settings-price-form { display: flex; flex-direction: column; gap: 12px; padding: 4px 0 8px; }
+.settings-price-form .ck-segmented { align-self: flex-start; }
+.settings-form-hint { color: var(--ck-slate); font-size: 12px; }
+.settings-expanded-row td { background: var(--ck-soft); }

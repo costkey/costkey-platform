@@ -447,6 +447,54 @@ export function deleteEffectivePrice(projectId: string, id: string): Promise<{ o
   return request(`/projects/${encodeURIComponent(projectId)}/effective-prices/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
+export interface PriceCatalogStatus {
+  enabled: boolean;
+  prices: number;
+  loadedAt: string | null;
+  sources: Array<{ source: string; url: string }>;
+  lastSync: { status: string; finished_at: string | null; added: number; changed: number; repriced: number } | null;
+}
+
+export interface UnpricedModel {
+  provider: string;
+  model: string | null;
+  calls: number;
+  firstSeen: string;
+  lastSeen: string;
+  units: string[];
+}
+
+export interface CatalogModel {
+  provider: string;
+  model: string;
+  source: string;
+  rates: Record<string, number>;
+}
+
+export function getPriceCatalogStatus(): Promise<PriceCatalogStatus> {
+  return request("/pricing/catalog");
+}
+
+export function refreshPriceCatalog(): Promise<{ status: string; added: number; changed: number; repriced: number }> {
+  return request("/pricing/catalog/sync", { method: "POST" });
+}
+
+export function searchCatalogModels(provider: string, query: string): Promise<{ models: CatalogModel[] }> {
+  return request(`/pricing/models?provider=${encodeURIComponent(provider)}&q=${encodeURIComponent(query)}`);
+}
+
+export function getUnpricedModels(projectId: string): Promise<{ models: UnpricedModel[] }> {
+  return request(`/projects/${encodeURIComponent(projectId)}/pricing/unpriced`);
+}
+
+export function setModelAlias(projectId: string, input: { provider: string; model: string; targetModel: string }): Promise<{ repriced: number }> {
+  return request(`/projects/${encodeURIComponent(projectId)}/pricing/aliases`, { method: "POST", body: input });
+}
+
+export function setModelRates(projectId: string, input: { provider: string; model: string; rates: Record<string, number> }): Promise<{ repriced: number }> {
+  return request(`/projects/${encodeURIComponent(projectId)}/pricing/rates`, { method: "POST", body: input });
+}
+
 export interface Subscription {
   provider: string;
   status: string;

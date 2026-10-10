@@ -9,6 +9,7 @@ import { Resend } from "resend";
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { getDb, getPool } from "./db.js";
 import { users, orgs, projects } from "./schema.js";
+import { syncSeatsLater } from "./subscription.js";
 import {
   listAccessibleProjects,
   normalizeRole,
@@ -390,6 +391,7 @@ export function createAuthRouter(pool?: pg.Pool): Router {
         } finally {
           client.release();
         }
+        syncSeatsLater(authPool, orgId);
 
         // Management roles receive setup access. Other invited roles only get
         // a project returned when the invitation explicitly assigned one.
@@ -815,6 +817,7 @@ export function createAuthRouter(pool?: pg.Pool): Router {
               }
               await client.query("COMMIT");
               userRow = { id: userId, email, name, org_id: validInvite.orgId, role: validInvite.role };
+              syncSeatsLater(authPool, validInvite.orgId);
             }
           } catch (err) {
             await client.query("ROLLBACK");

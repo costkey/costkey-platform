@@ -387,7 +387,7 @@ export async function ensurePlatformSchema(pool: pg.Pool): Promise<void> {
       provider_customer_id TEXT,
       provider_subscription_id TEXT UNIQUE,
       status TEXT NOT NULL DEFAULT 'not_configured',
-      amount_cents INTEGER NOT NULL DEFAULT 1000,
+      amount_cents INTEGER NOT NULL DEFAULT 900,
       currency TEXT NOT NULL DEFAULT 'usd',
       current_period_start TIMESTAMPTZ,
       current_period_end TIMESTAMPTZ,
@@ -399,6 +399,8 @@ export async function ensurePlatformSchema(pool: pg.Pool): Promise<void> {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS last_provider_event_at TIMESTAMPTZ;
+    ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS seats INTEGER;
+    ALTER TABLE subscriptions ALTER COLUMN amount_cents SET DEFAULT 900;
 
     CREATE TABLE IF NOT EXISTS subscription_invoices (
       id TEXT PRIMARY KEY,

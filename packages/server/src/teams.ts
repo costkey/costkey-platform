@@ -3,6 +3,7 @@ import { Router as createRouter } from "express";
 import type pg from "pg";
 import { Resend } from "resend";
 import { requireAuth } from "./auth.js";
+import { syncSeatsLater } from "./subscription.js";
 import {
   normalizeRole,
   roleCanManageWorkspace,
@@ -763,6 +764,8 @@ export function createTeamsRouter(pool: pg.Pool): Router {
         client.release();
       }
 
+      // One seat moves: onto the inviting workspace, off the one they left.
+      syncSeatsLater(pool, inv.org_id, user.orgId);
       res.json({ ok: true, orgId: inv.org_id, role: normalizeRole(inv.role) });
     } catch (err) {
       console.error("[costkey] API error:", err);
@@ -867,6 +870,7 @@ export function createTeamsRouter(pool: pg.Pool): Router {
         return;
       }
       await pool.query("DELETE FROM users WHERE id = $1 AND org_id = $2", [memberId, user.orgId]);
+      syncSeatsLater(pool, user.orgId);
       res.json({ ok: true });
     } catch (err) {
       console.error("[costkey] API error:", err);

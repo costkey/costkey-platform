@@ -7,6 +7,12 @@ import { roleCanManageSubscription } from "./permissions.js";
 
 type SubscriptionUser = { id: string; email: string; orgId: string; role: string };
 
+/** $9 per user per month. Every member of the workspace is a seat. */
+export const SEAT_PRICE_CENTS = 900;
+/** Subscriptions bought at the old flat $10 workspace price keep it. */
+const LEGACY_WORKSPACE_CENTS = 1000;
+const ENTITLED = ["active", "trialing", "past_due"];
+
 function userOf(req: Request): SubscriptionUser | null {
   return (req as Request & { user?: SubscriptionUser }).user ?? null;
 }
@@ -67,9 +73,58 @@ async function validateStripePrice(): Promise<void> {
     unit_amount?: number;
     recurring?: { interval?: string; interval_count?: number };
   }>(`/v1/prices/${encodeURIComponent(priceId)}`, "GET");
-  if (price.active !== true || price.currency?.toLowerCase() !== "usd" || price.unit_amount !== 1000
+  if (price.active !== true || price.currency?.toLowerCase() !== "usd" || price.unit_amount !== SEAT_PRICE_CENTS
     || price.recurring?.interval !== "month" || price.recurring.interval_count !== 1) {
-    throw new Error("Configured Stripe price is not the $10 USD monthly workspace subscription");
+    throw new Error("Configured Stripe price is not the $9 USD monthly per-user subscription");
+  }
+}
+
+/** Billable seats: everyone in the workspace, and never fewer than one. */
+export async function countSeats(pool: pg.Pool, orgId: string): Promise<number> {
+  const result = await pool.query("SELECT COUNT(*)::int AS seats FROM users WHERE org_id = $1", [orgId]);
+  return Math.max(1, Number(result.rows[0]?.seats) || 0);
+}
+
+function isLegacyWorkspacePlan(row: Record<string, unknown>): boolean {
+  return Number(row.amount_cents) === LEGACY_WORKSPACE_CENTS && ENTITLED.includes(String(row.status));
+}
+
+/**
+ * Keep the Stripe quantity equal to the workspace's members, prorated.
+ * Only per-user subscriptions on the configured price are touched; a
+ * workspace on the old flat price keeps it.
+ */
+export async function syncSubscriptionSeats(pool: pg.Pool, orgId: string): Promise<{ seats: number; updated: boolean }> {
+  const seats = await countSeats(pool, orgId);
+  const row = (await pool.query("SELECT * FROM subscriptions WHERE org_id = $1", [orgId])).rows[0] as Record<string, unknown> | undefined;
+  const priceId = process.env["COSTKEY_STRIPE_PRICE_ID"];
+  if (!row || row.provider !== "stripe" || typeof row.provider_subscription_id !== "string" || !ENTITLED.includes(String(row.status))
+    || isLegacyWorkspacePlan(row) || !priceId || !process.env["STRIPE_SECRET_KEY"]) {
+    return { seats, updated: false };
+  }
+  const subscriptionPath = `/v1/subscriptions/${encodeURIComponent(row.provider_subscription_id)}`;
+  const remote = await stripeRequest<{ items?: { data?: Array<{ id?: string; quantity?: number; price?: { id?: string } }> } }>(subscriptionPath, "GET");
+  const item = remote.items?.data?.find((candidate) => candidate.price?.id === priceId);
+  if (!item?.id) return { seats, updated: false };
+  let updated = false;
+  if (item.quantity !== seats) {
+    await stripeRequest(subscriptionPath, "POST", new URLSearchParams({
+      "items[0][id]": item.id,
+      "items[0][quantity]": String(seats),
+      proration_behavior: "create_prorations",
+    }));
+    updated = true;
+  }
+  await pool.query("UPDATE subscriptions SET seats = $2, updated_at = NOW() WHERE org_id = $1", [orgId, seats]);
+  return { seats, updated };
+}
+
+/** Membership changed: resync seats without holding up the request. */
+export function syncSeatsLater(pool: pg.Pool, ...orgIds: Array<string | null | undefined>): void {
+  for (const orgId of new Set(orgIds.filter((id): id is string => Boolean(id)))) {
+    void syncSubscriptionSeats(pool, orgId).catch((error: unknown) => {
+      console.error("[costkey] Seat sync failed; the next membership change or billing event retries:", error);
+    });
   }
 }
 
@@ -78,7 +133,7 @@ async function ensureSubscription(pool: pg.Pool, orgId: string): Promise<Record<
   if (existing.rows[0]) return existing.rows[0] as Record<string, unknown>;
   const inserted = await pool.query(
     `INSERT INTO subscriptions(org_id, provider, status, amount_cents, currency)
-     VALUES ($1, 'unconfigured', 'not_configured', 1000, 'usd')
+     VALUES ($1, 'unconfigured', 'not_configured', 900, 'usd')
      ON CONFLICT (org_id) DO UPDATE SET org_id = EXCLUDED.org_id
      RETURNING *`,
     [orgId],
@@ -86,12 +141,17 @@ async function ensureSubscription(pool: pg.Pool, orgId: string): Promise<Record<
   return inserted.rows[0] as Record<string, unknown>;
 }
 
-function subscriptionResponse(row: Record<string, unknown>): Record<string, unknown> {
+function subscriptionResponse(row: Record<string, unknown>, seats: number): Record<string, unknown> {
   const status = String(row.status ?? "not_configured");
+  const legacy = isLegacyWorkspacePlan(row);
+  const amountCents = legacy ? LEGACY_WORKSPACE_CENTS : SEAT_PRICE_CENTS;
   return {
     provider: row.provider,
     status,
-    amountCents: row.amount_cents,
+    pricing: legacy ? "workspace" : "per_user",
+    amountCents,
+    seats,
+    totalCents: legacy ? amountCents : amountCents * seats,
     currency: row.currency,
     currentPeriodStart: row.current_period_start,
     currentPeriodEnd: row.current_period_end,
@@ -142,6 +202,8 @@ export async function applyStripeWebhookEvent(pool: pg.Pool, event: Record<strin
     const subscriptionId = typeof data.id === "string" && eventType.startsWith("customer.subscription")
       ? data.id
       : typeof data.subscription === "string" ? data.subscription : null;
+    const items = (data.items as { data?: Array<{ quantity?: unknown }> } | undefined)?.data;
+    const quantity = typeof items?.[0]?.quantity === "number" ? items[0].quantity : null;
     const currentPeriodStart = typeof data.current_period_start === "number" ? new Date(data.current_period_start * 1000) : null;
     const currentPeriodEnd = typeof data.current_period_end === "number" ? new Date(data.current_period_end * 1000) : null;
 
@@ -175,8 +237,8 @@ export async function applyStripeWebhookEvent(pool: pg.Pool, event: Record<strin
           `INSERT INTO subscriptions(
              org_id, provider, provider_customer_id, provider_subscription_id, status,
              current_period_start, current_period_end, cancel_at_period_end, cancel_at,
-             last_provider_event_at, updated_at
-           ) VALUES ($1, 'stripe', $2, $3, $4, $5, $6, COALESCE($7, FALSE), $8, $9, NOW())
+             last_provider_event_at, seats, updated_at
+           ) VALUES ($1, 'stripe', $2, $3, $4, $5, $6, COALESCE($7, FALSE), $8, $9, $10, NOW())
            ON CONFLICT (org_id) DO UPDATE SET
              provider = 'stripe',
              provider_customer_id = COALESCE(EXCLUDED.provider_customer_id, subscriptions.provider_customer_id),
@@ -187,8 +249,9 @@ export async function applyStripeWebhookEvent(pool: pg.Pool, event: Record<strin
              cancel_at_period_end = COALESCE(EXCLUDED.cancel_at_period_end, subscriptions.cancel_at_period_end),
              cancel_at = COALESCE(EXCLUDED.cancel_at, subscriptions.cancel_at),
              last_provider_event_at = EXCLUDED.last_provider_event_at,
+             seats = COALESCE(EXCLUDED.seats, subscriptions.seats),
              updated_at = NOW()`,
-          [orgId, customerId, subscriptionId, status, currentPeriodStart, currentPeriodEnd, cancelAtPeriodEnd, cancelAt, eventCreatedAt],
+          [orgId, customerId, subscriptionId, status, currentPeriodStart, currentPeriodEnd, cancelAtPeriodEnd, cancelAt, eventCreatedAt, quantity],
         );
       }
     }
@@ -247,6 +310,8 @@ export function createSubscriptionRouter(pool: pg.Pool): Router {
     try {
       const event = JSON.parse(rawBody) as Record<string, unknown>;
       const result = await applyStripeWebhookEvent(pool, event);
+      // People may have joined while checkout was open.
+      if (result.applied && String(event.type ?? "").startsWith("customer.subscription.")) syncSeatsLater(pool, result.orgId);
       res.json({ received: true, applied: result.applied });
     } catch (error) {
       console.error("[costkey] Billing webhook error:", error);
@@ -261,8 +326,12 @@ export function createSubscriptionRouter(pool: pg.Pool): Router {
       const user = userOf(req);
       if (!user) { res.status(401).json({ error: "Authentication required" }); return; }
       if (!roleCanManageSubscription(user.role)) { res.status(403).json({ error: "Only the workspace owner can view subscription settings" }); return; }
-      const row = await ensureSubscription(pool, user.orgId);
-      res.json({ subscription: subscriptionResponse(row), target: { amountUsd: 10, interval: "month", teammatesIncluded: true } });
+      const [row, seats] = await Promise.all([ensureSubscription(pool, user.orgId), countSeats(pool, user.orgId)]);
+      const subscription = subscriptionResponse(row, seats);
+      res.json({
+        subscription,
+        target: { amountUsd: Number(subscription.amountCents) / 100, interval: "month", per: subscription.pricing === "workspace" ? "workspace" : "user", seats, totalUsd: Number(subscription.totalCents) / 100 },
+      });
     } catch (error) {
       console.error("[costkey] Subscription read error:", error);
       res.status(500).json({ error: "Internal server error" });
@@ -279,11 +348,12 @@ export function createSubscriptionRouter(pool: pg.Pool): Router {
         return;
       }
       await validateStripePrice();
+      const seats = await countSeats(pool, user.orgId);
       const base = process.env["PUBLIC_URL"] ?? "https://app.costkey.dev";
       const params = new URLSearchParams({
         mode: "subscription",
         "line_items[0][price]": process.env["COSTKEY_STRIPE_PRICE_ID"]!,
-        "line_items[0][quantity]": "1",
+        "line_items[0][quantity]": String(seats),
         success_url: `${base}/settings?billing=success`,
         cancel_url: `${base}/settings?billing=cancelled`,
         client_reference_id: user.orgId,
@@ -298,11 +368,13 @@ export function createSubscriptionRouter(pool: pg.Pool): Router {
       if (!session.id || !session.url) { res.status(502).json({ error: "Billing provider returned no checkout session" }); return; }
       await pool.query(
         `INSERT INTO subscriptions(org_id, provider, status, amount_cents, currency)
-         VALUES ($1, 'stripe', 'checkout_pending', 1000, 'usd')
-         ON CONFLICT (org_id) DO UPDATE SET provider = 'stripe', updated_at = NOW()`,
-        [user.orgId],
+         VALUES ($1, 'stripe', 'checkout_pending', $2, 'usd')
+         ON CONFLICT (org_id) DO UPDATE SET provider = 'stripe',
+           amount_cents = CASE WHEN subscriptions.status IN ('active', 'trialing', 'past_due') THEN subscriptions.amount_cents ELSE EXCLUDED.amount_cents END,
+           updated_at = NOW()`,
+        [user.orgId, SEAT_PRICE_CENTS],
       );
-      res.json({ configured: true, checkoutUrl: session.url, sessionId: session.id, status: "checkout_pending" });
+      res.json({ configured: true, checkoutUrl: session.url, sessionId: session.id, status: "checkout_pending", seats });
     } catch (error) {
       console.error("[costkey] Subscription checkout error:", error);
       res.status(502).json({ error: "Billing checkout unavailable" });
@@ -322,7 +394,7 @@ export function createSubscriptionRouter(pool: pg.Pool): Router {
          WHERE org_id = $1 RETURNING *`,
         [user.orgId],
       );
-      res.json({ subscription: subscriptionResponse(updated.rows[0] as Record<string, unknown>) });
+      res.json({ subscription: subscriptionResponse(updated.rows[0] as Record<string, unknown>, await countSeats(pool, user.orgId)) });
     } catch (error) {
       console.error("[costkey] Subscription cancellation error:", error);
       res.status(502).json({ error: "Billing cancellation unavailable" });
@@ -342,7 +414,7 @@ export function createSubscriptionRouter(pool: pg.Pool): Router {
          WHERE org_id = $1 RETURNING *`,
         [user.orgId],
       );
-      res.json({ subscription: subscriptionResponse(updated.rows[0] as Record<string, unknown>) });
+      res.json({ subscription: subscriptionResponse(updated.rows[0] as Record<string, unknown>, await countSeats(pool, user.orgId)) });
     } catch (error) {
       console.error("[costkey] Subscription resume error:", error);
       res.status(502).json({ error: "Billing resume unavailable" });

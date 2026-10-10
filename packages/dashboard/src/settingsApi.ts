@@ -525,6 +525,9 @@ export interface Subscription {
   provider: string;
   status: string;
   amountCents: number;
+  pricing?: "per_user" | "workspace";
+  seats?: number;
+  totalCents?: number;
   currency: string;
   currentPeriodStart: string | null;
   currentPeriodEnd: string | null;
@@ -536,7 +539,16 @@ export interface Subscription {
 
 export interface SubscriptionResponse {
   subscription: Subscription;
-  target: { amountUsd: number; interval: string; teammatesIncluded: boolean };
+  target: BillingTarget;
+}
+
+export interface BillingTarget {
+  amountUsd: number;
+  interval: string;
+  /** "user": $9 for each member. "workspace": the old flat plan. */
+  per: "user" | "workspace";
+  seats: number;
+  totalUsd: number;
 }
 
 export function getSubscription(): Promise<SubscriptionResponse> {

@@ -300,7 +300,7 @@ export function createInsightsRouter(pool: pg.Pool): Router {
         GROUP BY sc.trace_id
       ),
       quality AS (
-        SELECT o.trace_id, o.owner, o.owner_kind, o.started_at, o.cost, o.calls,
+        SELECT o.trace_id, o.owner, o.owner_kind, o.started_at, o.cost, o.calls, o.duration_ms,
                COALESCE(cq.failed_calls, 0) AS failed_calls, COALESCE(cq.retries, 0) AS retries, COALESCE(cq.wasted_cost, 0) AS wasted_cost,
                o.root_status = 'error' AS run_failed,
                COALESCE(sq.tool_failed, FALSE) AS tool_failed, COALESCE(sq.step_failed, FALSE) AS step_failed,
@@ -321,7 +321,10 @@ export function createInsightsRouter(pool: pg.Pool): Router {
            SELECT COUNT(*)::int AS runs, COUNT(*) FILTER (WHERE failed)::int AS failed_runs,
                   COALESCE(SUM(calls), 0)::int AS calls, COALESCE(SUM(failed_calls), 0)::int AS failed_calls,
                   COALESCE(SUM(retries), 0)::int AS retries,
-                  COALESCE(SUM(wasted_cost), 0) + COALESCE(SUM(cost) FILTER (WHERE failed AND failed_calls = 0), 0) AS wasted_cost
+                  COALESCE(SUM(wasted_cost), 0) + COALESCE(SUM(cost) FILTER (WHERE failed AND failed_calls = 0), 0) AS wasted_cost,
+                  COUNT(*) FILTER (WHERE judged)::int AS judged_runs, COUNT(*) FILTER (WHERE judged_fail)::int AS judged_failed,
+                  percentile_cont(0.5) WITHIN GROUP (ORDER BY duration_ms) AS p50_ms,
+                  percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms) AS p95_ms
            FROM verdict`,
           params,
         ),
@@ -359,7 +362,11 @@ export function createInsightsRouter(pool: pg.Pool): Router {
       ]);
       const total = totals.rows[0] ?? {};
       res.json({
-        totals: { runs: number(total.runs) ?? 0, failedRuns: number(total.failed_runs) ?? 0, calls: number(total.calls) ?? 0, failedCalls: number(total.failed_calls) ?? 0, retries: number(total.retries) ?? 0, wastedCost: number(total.wasted_cost) ?? 0 },
+        totals: {
+          runs: number(total.runs) ?? 0, failedRuns: number(total.failed_runs) ?? 0, calls: number(total.calls) ?? 0, failedCalls: number(total.failed_calls) ?? 0,
+          retries: number(total.retries) ?? 0, wastedCost: number(total.wasted_cost) ?? 0,
+          judgedRuns: number(total.judged_runs) ?? 0, judgedFailed: number(total.judged_failed) ?? 0, p50Ms: number(total.p50_ms), p95Ms: number(total.p95_ms),
+        },
         owners: owners.rows.map((row) => ({
           name: row.owner, kind: row.owner_kind, runs: row.runs, failedRuns: row.failed_runs, judgedRuns: row.judged_runs,
           judgedFailed: row.judged_failed, failedCalls: number(row.failed_calls) ?? 0, retries: number(row.retries) ?? 0,

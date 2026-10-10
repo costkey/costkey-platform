@@ -1053,7 +1053,7 @@ export function getBudgetPolicies(projectId: string): Promise<{ policies: Budget
 }
 
 export interface QualitySummary {
-  totals: { runs: number; failedRuns: number; calls: number; failedCalls: number; retries: number; wastedCost: number };
+  totals: { runs: number; failedRuns: number; calls: number; failedCalls: number; retries: number; wastedCost: number; judgedRuns?: number; judgedFailed?: number; p50Ms?: number | null; p95Ms?: number | null };
   owners: Array<{ name: string; kind: "agent" | "workflow"; runs: number; failedRuns: number; judgedRuns: number; judgedFailed: number; failedCalls: number; retries: number; toolFailures: number; wastedCost: number }>;
   models: Array<{ model: string; provider: string; calls: number; failedCalls: number; retries: number; p95Ms: number | null; wastedCost: number; statusCodes: number[] }>;
   failures: Array<{ traceId: string; name: string; kind: "agent" | "workflow"; startedAt: string; cost: number | null; reasons: string[]; detail: string | null }>;

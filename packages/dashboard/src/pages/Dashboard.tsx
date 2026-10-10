@@ -7,6 +7,7 @@ import {
   getForecast,
   getHealth,
   getOverview,
+  getQualitySummary,
   getSummary,
   getTraces,
   getTrends,
@@ -19,7 +20,9 @@ import {
   type TrendBucket,
   type ForecastResponse,
   type FindingResponse,
+  type QualitySummary,
 } from "../api";
+import { formatDuration } from "../utils";
 import { findingTitle, findingView } from "../components/findingView";
 import { useAuth } from "../contexts/useAuth";
 import {
@@ -74,9 +77,10 @@ interface OverviewData {
   policies: BudgetPolicySummary[];
   environments: string[];
   recentRuns: Trace[];
+  quality: QualitySummary["totals"] | null;
 }
 
-const EMPTY_DATA: OverviewData = { summary: null, overview: null, trends: [], contributors: [], forecast: null, health: null, findings: [], policies: [], environments: [], recentRuns: [] };
+const EMPTY_DATA: OverviewData = { summary: null, overview: null, trends: [], contributors: [], forecast: null, health: null, findings: [], policies: [], environments: [], recentRuns: [], quality: null };
 
 async function getJson<T>(path: string): Promise<T> {
   const response = await fetch(path, { credentials: "include" });
@@ -120,7 +124,7 @@ function useOverviewData(projectId: string | null, period: Period, timezone?: st
     const to = scopeOverride?.to ?? dates.to;
     const env = environment && environment !== "all" ? environment : undefined;
     const load = async () => {
-      const [summary, overview, trends, callSites, forecast, health, anomalies, policies, runs] = await Promise.allSettled([
+      const [summary, overview, trends, callSites, forecast, health, anomalies, policies, runs, quality] = await Promise.allSettled([
         getSummary(projectId),
         getOverview(projectId, from, to, env),
         getTrends(projectId, "day", period, undefined, { from, to, environment: env }),
@@ -130,6 +134,7 @@ function useOverviewData(projectId: string | null, period: Period, timezone?: st
         getJson<{ findings: FindingRow[] }>(`/api/v1/projects/${projectId}/findings`),
         getJson<{ policies: BudgetPolicySummary[] }>(`/api/v1/projects/${projectId}/budget/policies`),
         getTraces(projectId, { limit: 5, sort: "newest", from, to, environment: env }),
+        getQualitySummary(projectId, { from, to, environment: env }),
       ]);
       if (cancelled) return;
       const forecastResult = period === "mtd" ? forecast : null;
@@ -144,6 +149,7 @@ function useOverviewData(projectId: string | null, period: Period, timezone?: st
         policies: policies.status === "fulfilled" ? policies.value.policies ?? [] : [],
         environments: callSites.status === "fulfilled" ? callSites.value.availableFilters?.environments ?? [] : [],
         recentRuns: runs.status === "fulfilled" ? runs.value.traces ?? [] : [],
+        quality: quality.status === "fulfilled" ? quality.value.totals : null,
       };
       const firstError = [summary, overview, trends, callSites].find((result) => result.status === "rejected");
       setState({ key: requestKey, data: next, error: firstError?.status === "rejected" ? firstError.reason instanceof Error ? firstError.reason.message : "Could not load overview" : null });
@@ -363,7 +369,7 @@ function RecentRuns({ runs, loading, currency, fx, scopeSearch }: { runs: Trace[
       {loading ? <LoadingRows count={5} columns={5} /> : runs.length === 0 ? <EmptyPanel title="No runs in this period" /> : (
         <div className="ck-table-wrap">
           <table className="ck-table ck-runs-table">
-            <thead><tr><th>Run</th><th>Feature</th><th>Started</th><th className="numeric">Cost ({currency})</th></tr></thead>
+            <thead><tr><th>Run</th><th>Feature</th><th>Started</th><th className="numeric">Duration</th><th className="numeric">Cost ({currency})</th></tr></thead>
             <tbody>
               {runs.map((run) => {
                 const status = runStatus(run);
@@ -373,6 +379,7 @@ function RecentRuns({ runs, loading, currency, fx, scopeSearch }: { runs: Trace[
                     <td className="primary-cell"><Link className="ck-table-link" to={`/traces/${encodeURIComponent(run.trace_id)}${scopeSearch}`}>{run.trace_name || "Unnamed run"}</Link>{status.tone !== "good" && <> <StatusPill tone={status.tone}>{status.label}</StatusPill></>}</td>
                     <td>{run.feature || <span className="muted">—</span>}</td>
                     <td>{formatDateTime(run.started_at)}</td>
+                    <td className="numeric">{run.total_duration_ms ? formatDuration(Number(run.total_duration_ms)) : "—"}</td>
                     <td className="numeric ck-cost-cell">{cost == null ? "Unpriced" : formatReportedAmount(Number(cost), currency, fx)}</td>
                   </tr>
                 );
@@ -420,6 +427,41 @@ function OverviewLoadingState(): ReactNode {
     <div className="ck-metric-grid"><MetricCard label="Month to date" value="" loading icon="activity" /><MetricCard label="Monthly budget" value="" loading icon="shield" /><MetricCard label="Estimated month-end" value="" loading icon="telescope" /></div>
     <div className="ck-content-grid"><Panel className="ck-chart-card"><div className="ck-skeleton" style={{ height: 260, width: "100%" }} /></Panel><Panel><div className="ck-skeleton" style={{ height: 260, width: "100%" }} /></Panel></div>
   </>;
+}
+
+/** Run health beside spend: did the runs work, how long they took, what failures cost. */
+function RunHealth({ totals, money, scopeSearch }: { totals: QualitySummary["totals"] | null; money: (value: number | null | undefined) => string; scopeSearch: string }) {
+  if (!totals || totals.runs === 0) return null;
+  const failedShare = totals.failedRuns / totals.runs;
+  const judged = totals.judgedRuns ?? 0;
+  const judgedFailed = totals.judgedFailed ?? 0;
+  const share = (value: number) => value > 0 && value < 0.01 ? "<1%" : `${Math.round(value * 100)}%`;
+  return (
+    <Panel className="ck-run-health" title="Run health" actions={<Link className="ck-text-link" to={`/quality${scopeSearch}`}>Open quality <ArrowRight size={12} /></Link>}>
+      <div className="ck-health-grid">
+        <div className="ck-health-stat">
+          <span className="ck-health-label"><PrototypeIcon name="alert" size={14} />Failed runs</span>
+          <strong className={failedShare > 0.05 ? "ck-tone-warn" : undefined}>{share(failedShare)}</strong>
+          <span className="ck-health-detail">{totals.failedRuns.toLocaleString()} of {totals.runs.toLocaleString()} runs</span>
+        </div>
+        <div className="ck-health-stat">
+          <span className="ck-health-label"><PrototypeIcon name="clock" size={14} />Run time</span>
+          <strong>{totals.p50Ms == null ? "—" : formatDuration(totals.p50Ms)}</strong>
+          <span className="ck-health-detail">{totals.p95Ms == null ? "Typical run" : `Typical · p95 ${formatDuration(totals.p95Ms)}`}</span>
+        </div>
+        <div className="ck-health-stat">
+          <span className="ck-health-label"><PrototypeIcon name="quality" size={14} />Judge scores</span>
+          <strong>{judged === 0 ? "—" : share((judged - judgedFailed) / judged)}</strong>
+          <span className="ck-health-detail">{judged === 0 ? "No scored runs yet" : `passed · ${judgedFailed.toLocaleString()} of ${judged.toLocaleString()} failed`}</span>
+        </div>
+        <div className="ck-health-stat">
+          <span className="ck-health-label"><PrototypeIcon name="activity" size={14} />Failed calls</span>
+          <strong>{totals.failedCalls.toLocaleString()}</strong>
+          <span className="ck-health-detail">{totals.retries.toLocaleString()} {totals.retries === 1 ? "retry" : "retries"} · {money(totals.wastedCost)} wasted</span>
+        </div>
+      </div>
+    </Panel>
+  );
 }
 
 function daysInMonth(date: Date): number {
@@ -560,6 +602,7 @@ export default function Dashboard() {
           <MetricCard icon="shield" label="Monthly budget" value={budgetLimit == null ? "Not set" : money(budgetLimit)} detail={budgetLimit == null ? <Link className="ck-text-link" to={`/policy-edit${scopeSearch}`}>Set a monthly budget</Link> : budget?.mode === "enforce" ? "Stops new calls when reached" : "Alerts only"} />
           <MetricCard icon="telescope" label="Estimated month-end" value={!monthToDate ? "—" : projected == null ? "Not yet" : money(projected)} detail={!monthToDate ? "Switch to month to date to estimate" : projected == null ? pace?.reason === "incomplete_pricing" ? "Waiting for prices on every call" : "Needs a few complete days" : "At current pace"} />
         </div>
+        <RunHealth totals={resource.data.quality} money={money} scopeSearch={scopeSearch} />
         <div className="ck-content-grid">
           <Panel className="ck-chart-card" title={chartMode === "Cumulative" ? "Cumulative spend" : "Daily spend"} actions={<div className="ck-chart-head-actions">{chartMode === "Cumulative" && <div className="ck-chart-legend"><span><i />Actual</span>{monthToDate && projected != null && <span><i className="dashed" />Estimated</span>}</div>}<div className="ck-segmented ck-chart-mode" role="group" aria-label="Chart mode">{(["Cumulative", "Daily"] as const).map((mode) => <button key={mode} className={chartMode === mode ? "active" : ""} type="button" aria-pressed={chartMode === mode} onClick={() => setChartMode(mode)}>{mode}</button>)}</div></div>}>
             <SpendChart trends={resource.data.trends} loading={resource.loading} mode={chartMode} currency={reportingCurrency} fx={fx} monthToDate={monthToDate} periodDays={periodDays} projected={projected} budget={budgetLimit} />

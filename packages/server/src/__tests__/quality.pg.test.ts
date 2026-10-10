@@ -6,6 +6,7 @@ import { randomBytes } from "node:crypto";
 import { initDatabase, shutdownDatabase } from "../db.js";
 import { createIngestRouter } from "../ingest.js";
 import { createQualityRouter, readQualityScope, readThreshold } from "../quality-api.js";
+import { createInsightsRouter } from "../insights-api.js";
 import { InvalidAccountingEventError, normalizeAccountingEvent } from "../accounting.js";
 import { ensurePlatformSchema } from "../platform-storage.js";
 
@@ -77,6 +78,7 @@ test("scores ingest beside spans and calls, and the quality API reads them", { s
     );
     app.use(createIngestRouter(pool));
     app.use(createQualityRouter(pool));
+    app.use(createInsightsRouter(pool));
     const server = await new Promise<ReturnType<typeof app.listen>>((resolve) => {
       const listening = app.listen(0, "127.0.0.1", () => resolve(listening));
     });
@@ -180,6 +182,17 @@ test("scores ingest beside spans and calls, and the quality API reads them", { s
       assert.equal(agent.agent, "dash");
       assert.equal(agent.runs, 2);
       assert.equal(agent.failedRuns, 1);
+
+      // The overview's run health: failures, judges and run latency in one place.
+      const summaryResponse = await fetch(`${baseUrl}/api/v1/projects/${projectId}/quality/summary?${range}`);
+      assert.equal(summaryResponse.status, 200);
+      const summary = await summaryResponse.json() as { totals: Record<string, number | null> };
+      assert.equal(summary.totals.runs, 2);
+      assert.equal(summary.totals.failedRuns, 1);
+      assert.equal(summary.totals.judgedRuns, 2);
+      assert.equal(summary.totals.judgedFailed, 1);
+      assert.equal(summary.totals.p50Ms, 60_000, "both runs span a minute");
+      assert.equal(summary.totals.p95Ms, 60_000);
 
       const otherOrg = await fetch(`${baseUrl}/api/v1/projects/project_missing_${suffix}/quality/reliability`);
       assert.equal(otherOrg.status, 404);

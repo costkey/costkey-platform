@@ -56,6 +56,7 @@ const SAFE_CONTEXT_KEYS = new Set([
   "group", "groupName", "groupType", "executionId", "execution_id", "phase", "caseId", "case_id",
   "datasetRevision", "dataset_revision", "customer", "customerId", "customer_id", "traceId", "trace_id",
   "traceName", "trace_name", "runtime", "task",
+  "agent", "tool", "userId", "conversationId", "voiceSessionId",
 ]);
 
 interface ExplorerScope {
@@ -664,11 +665,27 @@ function traceCte(): string {
              MAX(e.bl_function) AS bl_function,
              MAX(e.execution_id) AS execution_id,
              MAX(e.phase) AS phase,
+             MAX(e.context->>'agent') AS agent,
+             MAX(e.context->>'userId') AS user_id,
+             MAX(e.context->>'conversationId') AS conversation_id,
+             SUM(e.input_tokens)::bigint AS total_input_tokens,
+             SUM(e.output_tokens)::bigint AS total_output_tokens,
              MIN(e.timestamp) AS observed_started_at,
              MAX(e.timestamp + COALESCE(e.duration_ms, 0) * INTERVAL '1 millisecond') AS observed_ended_at
       FROM events e
       WHERE COALESCE(e.event_type, 'call') = 'call' AND e.trace_id IS NOT NULL
       GROUP BY e.project_id, e.trace_id
+    ),
+    span_rollup AS (
+      SELECT project_id, trace_id,
+             COUNT(*) FILTER (WHERE kind = 'agent')::int AS agent_count,
+             COUNT(*) FILTER (WHERE kind = 'step')::int AS step_count,
+             COUNT(*) FILTER (WHERE kind = 'tool')::int AS tool_count,
+             MIN(name) FILTER (WHERE kind = 'agent' AND parent_span_id IS NULL) AS root_agent,
+             BOOL_OR(status = 'error') AS has_error
+      FROM spans
+      WHERE trace_id IS NOT NULL
+      GROUP BY project_id, trace_id
     ),
     trace_keys AS (
       SELECT t.project_id, t.id AS trace_id FROM traces t
@@ -701,6 +718,15 @@ function traceCte(): string {
              COALESCE(cr.bl_file, rr.bl_file) AS bl_file,
              COALESCE(cr.bl_function, rr.bl_function) AS bl_function,
              COALESCE(cr.phase, rr.phase) AS phase,
+             COALESCE(cr.customer, rr.customer, t.context->>'customer') AS customer,
+             COALESCE(sr.root_agent, cr.agent, t.context->>'agent') AS agent,
+             COALESCE(cr.user_id, t.context->>'userId') AS user_id,
+             COALESCE(cr.conversation_id, t.context->>'conversationId') AS conversation_id,
+             cr.total_input_tokens, cr.total_output_tokens,
+             COALESCE(sr.agent_count, 0) AS agent_count,
+             COALESCE(sr.step_count, 0) AS step_count,
+             COALESCE(sr.tool_count, 0) AS tool_count,
+             COALESCE(sr.has_error, FALSE) AS span_error,
              COALESCE(CASE WHEN jsonb_typeof(t.context) = 'object' THEN t.context ELSE NULL END, '{}'::jsonb)
              || jsonb_strip_nulls(jsonb_build_object(
                'feature', COALESCE(cr.feature, rr.feature),
@@ -714,7 +740,33 @@ function traceCte(): string {
       LEFT JOIN traces t ON t.project_id = k.project_id AND t.id = k.trace_id
       LEFT JOIN call_rollup cr ON cr.project_id = k.project_id AND cr.trace_id = k.trace_id
       LEFT JOIN charge_rollup rr ON rr.project_id = k.project_id AND rr.trace_id = k.trace_id
+      LEFT JOIN span_rollup sr ON sr.project_id = k.project_id AND sr.trace_id = k.trace_id
     )`;
+}
+
+const SPAN_CONTENT_ATTRIBUTES = new Set(["input", "output", "args", "arguments", "result", "prompt", "completion", "messages", "content"]);
+
+/** Span payloads are content: roles without content access only see structure. */
+function exposeSpan(row: Record<string, unknown>, restricted: boolean): Record<string, unknown> {
+  const started = row.started_at ? new Date(String(row.started_at)).getTime() : NaN;
+  const ended = row.ended_at ? new Date(String(row.ended_at)).getTime() : NaN;
+  let attributes = row.attributes && typeof row.attributes === "object" ? row.attributes as Record<string, unknown> : null;
+  if (attributes && restricted) {
+    attributes = Object.fromEntries(Object.entries(attributes).filter(([key]) => !SPAN_CONTENT_ATTRIBUTES.has((key.split(".").pop() ?? key).toLowerCase())));
+  }
+  return {
+    id: row.id,
+    parent_span_id: row.parent_span_id ?? null,
+    kind: row.kind,
+    name: row.name,
+    status: row.status,
+    error_type: row.error_type ?? null,
+    started_at: row.started_at ?? null,
+    ended_at: row.ended_at ?? null,
+    duration_ms: Number.isFinite(started) && Number.isFinite(ended) ? Math.max(0, ended - started) : null,
+    attributes,
+    execution_id: row.execution_id ?? null,
+  };
 }
 
 function serializeTrace(row: Record<string, unknown>): Record<string, unknown> {
@@ -751,6 +803,16 @@ function serializeTrace(row: Record<string, unknown>): Record<string, unknown> {
     environment: row.environment ?? null,
     service: row.service ?? null,
     release: row.release ?? null,
+    customer: row.customer ?? null,
+    agent: row.agent ?? null,
+    user_id: row.user_id ?? null,
+    conversation_id: row.conversation_id ?? null,
+    total_input_tokens: row.total_input_tokens == null ? null : Number(row.total_input_tokens),
+    total_output_tokens: row.total_output_tokens == null ? null : Number(row.total_output_tokens),
+    agent_count: number(row.agent_count, 0),
+    step_count: number(row.step_count, 0),
+    tool_count: number(row.tool_count, 0),
+    span_error: row.span_error === true,
   };
 }
 
@@ -846,6 +908,7 @@ export function createAccountingRouter(pool: pg.Pool): Router {
            SELECT COUNT(*)::int AS observations,
                   COUNT(*) FILTER (WHERE c.record_type = 'call')::int AS calls,
                   COUNT(*) FILTER (WHERE c.cost_usd IS NOT NULL)::int AS priced,
+                  COUNT(DISTINCT c.trace_id)::int AS traces,
                   SUM(c.cost_usd) FILTER (WHERE c.cost_usd IS NOT NULL) AS known_cost,
                   COALESCE(SUM(c.input_tokens),0)::bigint AS input_tokens,
                   COALESCE(SUM(c.output_tokens),0)::bigint AS output_tokens,
@@ -931,6 +994,7 @@ export function createAccountingRouter(pool: pg.Pool): Router {
           avg_ttft: 0,
           avg_tps: 0,
           observations,
+          trace_count: Number(totalsResult.rows[0]?.traces) || 0,
           priced_observations: total.priced,
           unpriced_count: unpriced,
           pricing_coverage: observations > 0 ? total.priced / observations : null,
@@ -1353,11 +1417,20 @@ export function createAccountingRouter(pool: pg.Pool): Router {
                 content_status, feature_source, feature_mapping_id,
                 feature_mapping_action_id, feature_original,
                 call_site_raw, call_site_frames, bl_function, bl_file, bl_line,
-                context, metadata, system_prompt, request_body, response_body
+                context, metadata, system_prompt, request_body, response_body,
+                span_id, native_units
          FROM events
          WHERE project_id = $1 AND trace_id = $2
            AND COALESCE(event_type, 'call') = 'call'
          ORDER BY timestamp ASC, id ASC`,
+        params,
+      );
+      const spans = await pool.query(
+        `SELECT id, parent_span_id, kind, name, status, error_type,
+                started_at, ended_at, attributes, execution_id
+         FROM spans
+         WHERE project_id = $1 AND trace_id = $2
+         ORDER BY started_at ASC NULLS LAST, id ASC`,
         params,
       );
       const lifecycleEvents = await pool.query(
@@ -1406,6 +1479,7 @@ export function createAccountingRouter(pool: pg.Pool): Router {
         events: events.rows.map((row) => exposeEvent(row as Record<string, unknown>, restricted)),
         lifecycleEvents: lifecycleEvents.rows.map((row) => exposeEvent(row as Record<string, unknown>, restricted)),
         usageComponents,
+        spans: spans.rows.map((row) => exposeSpan(row as Record<string, unknown>, restricted)),
       });
     } catch (err) {
       console.error("[costkey] Accounting trace detail error:", err);

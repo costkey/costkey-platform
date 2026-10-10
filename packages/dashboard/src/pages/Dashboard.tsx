@@ -47,6 +47,7 @@ interface BudgetPolicySummary {
   allowance: number;
   currency?: string | null;
   window: string;
+  scope?: Record<string, string> | null;
   usage?: { observed?: number | null; settled?: number | null; reserved?: number | null; remaining?: number | null; overage?: number | null } | null;
 }
 
@@ -183,16 +184,16 @@ function normalizeOverview(value: Overview | null): Overview | null {
   };
 }
 
+/** The summary already reports change as a percentage. */
 function asPercent(value: number | null | undefined): number | null {
   if (value == null || !Number.isFinite(Number(value))) return null;
-  const numeric = Number(value);
-  return Math.abs(numeric) <= 1 ? numeric * 100 : numeric;
+  return Number(value);
 }
 
 /** The active money policy that reads as "the monthly budget" for this project. */
 function monthlyBudget(policies: BudgetPolicySummary[]): BudgetPolicySummary | null {
-  const active = policies.filter((item) => item.status === "active" && item.unit === "money");
-  return active.find((item) => item.window === "calendar_month") ?? active[0] ?? null;
+  return policies.find((item) => item.status === "active" && item.unit === "money" && item.window === "calendar_month"
+    && Object.keys(item.scope ?? {}).every((key) => key === "project")) ?? null;
 }
 
 function niceCeiling(value: number): number {
@@ -454,7 +455,7 @@ export default function Dashboard() {
   const currentCost = overview?.known_cost === undefined ? null : overview.known_cost;
   const currentObservations = Number(overview?.observations ?? overview?.total_calls) || 0;
   const forecastObserved = resource.data.forecast?.observed;
-  const runCount = Number(forecastObserved?.fullyPricedTraces ?? overview?.priced_trace_count ?? overview?.trace_count) || 0;
+  const runCount = Number(overview?.trace_count ?? forecastObserved?.fullyPricedTraces) || 0;
   const pace = resource.data.forecast?.currentPace;
   const projected = pace?.available && pace.projectedCost != null ? Number(pace.projectedCost) : null;
   const now = new Date();

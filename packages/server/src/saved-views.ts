@@ -104,7 +104,7 @@ async function canReadView(pool: pg.Pool, user: SavedViewUser, row: Record<strin
 
 export function createSavedViewsRouter(pool: pg.Pool): Router {
   const router = createRouter();
-  router.use(requireAuth);
+  router.use("/api", requireAuth);
 
   router.post("/api/v1/saved-views/scenario/calculate", async (req: Request, res: Response) => {
     try {

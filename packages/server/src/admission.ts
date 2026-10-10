@@ -38,6 +38,8 @@ export const POLICY_SCOPE_KEYS = [
   "provider",
   "model",
   "group",
+  "agent",
+  "tool",
 ] as const;
 export type PolicyScopeKey = (typeof POLICY_SCOPE_KEYS)[number];
 export type PolicyScope = Partial<Record<PolicyScopeKey, string>>;
@@ -544,6 +546,8 @@ export function normalizeSpendingPolicy(row: Record<string, unknown>): SpendingP
     ["provider", ["scope_provider"]],
     ["model", ["scope_model", "model_glob"]],
     ["group", ["scope_group", "group_name"]],
+    ["agent", ["scope_agent", "agent_name"]],
+    ["tool", ["scope_tool", "tool_name"]],
   ];
   for (const [key, aliases] of legacyScope) {
     if (!scope[key]) {
@@ -823,6 +827,8 @@ function requestScope(request: AdmissionRequest): PolicyScope {
     provider: ["provider"],
     model: ["model"],
     group: ["group", "groupName", "executionGroup"],
+    agent: ["agent", "agentName"],
+    tool: ["tool", "toolName"],
   };
   for (const key of POLICY_SCOPE_KEYS) {
     if (scope[key]) continue;
@@ -881,6 +887,8 @@ function observedCanonicalScope(policy: SpendingPolicy, projectId: string): { cl
   if (policy.scope.provider) add("COALESCE(c.provider, '')", policy.scope.provider);
   if (policy.scope.model) add("COALESCE(c.model, '')", policy.scope.model);
   if (policy.scope.group) add("COALESCE(c.group_name, c.context->>'group', '')", policy.scope.group);
+  if (policy.scope.agent) add("COALESCE(c.context->>'agent', '')", policy.scope.agent);
+  if (policy.scope.tool) add("COALESCE(c.context->>'tool', '')", policy.scope.tool);
   return { clauses, params };
 }
 

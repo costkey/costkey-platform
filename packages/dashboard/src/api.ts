@@ -273,6 +273,31 @@ export interface Trace {
   pricing_coverage?: number | null;
   execution_state?: string | null;
   accounting_state?: string | null;
+  customer?: string | null;
+  agent?: string | null;
+  user_id?: string | null;
+  conversation_id?: string | null;
+  agent_count?: number;
+  step_count?: number;
+  tool_count?: number;
+  span_error?: boolean;
+}
+
+export type SpanKind = "agent" | "step" | "tool" | "workflow" | "task" | "judge" | "retrieval" | "handoff" | "guardrail" | "chain" | "custom";
+
+/** An agent, step or tool span inside a run. Calls link to it by span_id. */
+export interface TraceSpan {
+  id: string;
+  parent_span_id: string | null;
+  kind: SpanKind;
+  name: string;
+  status: "running" | "ok" | "error" | "cancelled";
+  error_type: string | null;
+  started_at: string | null;
+  ended_at: string | null;
+  duration_ms: number | null;
+  attributes: Record<string, unknown> | null;
+  execution_id: string | null;
 }
 
 export interface TraceEvent {
@@ -284,6 +309,8 @@ export interface TraceEvent {
   event_type?: string | null;
   source?: string | null;
   attempt_id?: string | null;
+  span_id?: string | null;
+  native_units?: Record<string, number> | null;
   parent_event_id?: string | null;
   charge_id?: string | null;
   cost_basis?: "reported" | "estimated" | "unknown" | null;
@@ -432,7 +459,7 @@ export async function getTraces(
 export async function getTrace(
   projectId: string,
   traceId: string,
-): Promise<{ traceId: string; summary: Record<string, unknown>; events: TraceEvent[]; usageComponents?: UsageComponent[] }> {
+): Promise<{ traceId: string; summary: Record<string, unknown>; events: TraceEvent[]; usageComponents?: UsageComponent[]; spans?: TraceSpan[] }> {
   return get(`/projects/${projectId}/traces/${traceId}`);
 }
 

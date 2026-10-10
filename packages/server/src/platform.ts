@@ -423,7 +423,7 @@ function publicProject(row: Record<string, unknown>, includeAuthKey: boolean): R
 
 export function createPlatformRouter(pool: pg.Pool): Router {
   const router = createRouter();
-  router.use(requireAuth);
+  router.use("/api", requireAuth);
 
   router.get("/api/v1/workspace/settings", async (req: Request, res: Response) => {
     try {

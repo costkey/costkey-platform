@@ -254,7 +254,7 @@ export function createSubscriptionRouter(pool: pg.Pool): Router {
     }
   });
 
-  router.use(requireAuth);
+  router.use("/api", requireAuth);
 
   router.get("/api/v1/subscription", async (req: Request, res: Response) => {
     try {

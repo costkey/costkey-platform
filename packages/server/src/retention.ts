@@ -287,7 +287,7 @@ export async function runRetention(pool: pg.Pool, now = new Date(), orgId?: stri
 
 export function createRetentionRouter(pool: pg.Pool): Router {
   const router = createRouter();
-  router.use(requireAuth);
+  router.use("/api", requireAuth);
 
   router.get("/api/v1/retention/status", async (req: Request, res: Response) => {
     try {

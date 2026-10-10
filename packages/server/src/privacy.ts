@@ -322,7 +322,7 @@ async function getProjectSettings(pool: pg.Pool, projectId: string): Promise<Pri
 
 export function createPrivacyRouter(pool: pg.Pool): Router {
   const router = createRouter();
-  router.use(requireAuth);
+  router.use("/api", requireAuth);
 
   router.get("/api/v1/projects/:projectId/privacy", async (req: Request, res: Response) => {
     try {

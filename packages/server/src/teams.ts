@@ -11,11 +11,15 @@ import {
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const APP_URL = process.env["PUBLIC_URL"] ?? "https://app.costkey.dev";
 
+function inviteEmailEnabled(): boolean {
+  return Boolean(process.env["RESEND_API_KEY"])
+    && process.env["NODE_ENV"] !== "test"
+    && process.env["COSTKEY_NOTIFICATION_SINK"] !== "memory"
+    && (process.env["NODE_ENV"] === "production" || process.env["COSTKEY_ALLOW_EXTERNAL_NOTIFICATIONS"] === "true");
+}
+
 async function sendInviteEmail(to: string, inviterName: string, orgName: string, inviteUrl: string, role = "viewer"): Promise<void> {
-  if (!process.env["RESEND_API_KEY"]
-    || process.env["NODE_ENV"] === "test"
-    || process.env["COSTKEY_NOTIFICATION_SINK"] === "memory"
-    || (process.env["NODE_ENV"] !== "production" && process.env["COSTKEY_ALLOW_EXTERNAL_NOTIFICATIONS"] !== "true")) return;
+  if (!inviteEmailEnabled()) return;
   try {
     const resend = new Resend(process.env["RESEND_API_KEY"]!);
     await resend.emails.send({
@@ -390,7 +394,7 @@ export function createTeamsRouter(pool: pg.Pool): Router {
   router.use(createInvitePreviewRouter(pool));
 
   // All team routes require auth
-  router.use(requireAuth);
+  router.use("/api", requireAuth);
 
   // POST /api/v1/team/invite — invite a team member
   router.post("/api/v1/team/invite", async (req: Request, res: Response) => {
@@ -484,6 +488,7 @@ export function createTeamsRouter(pool: pg.Pool): Router {
         role: memberRole,
         projectIds: assignedProjectIds,
         inviteUrl,
+        emailSent: inviteEmailEnabled(),
         expiresAt,
       });
     } catch (err) {
@@ -642,6 +647,7 @@ export function createTeamsRouter(pool: pg.Pool): Router {
         role: inv.role,
         projectIds: inv.project_ids ?? [],
         inviteUrl,
+        emailSent: inviteEmailEnabled(),
         expiresAt: newExpiresAt,
       });
     } catch (err) {

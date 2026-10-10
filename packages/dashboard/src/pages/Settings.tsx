@@ -10,6 +10,7 @@ import {
   Eye,
   EyeOff,
   KeyRound,
+  Link2,
   Lock,
   Pencil,
   Plus,
@@ -435,7 +436,7 @@ function ProjectsConnections({ projects, role, refresh, currentProjectId }: { pr
     {(actionMessage || actionError) && <div className={`settings-status-line ${actionError ? "error" : "success"}`} role={actionError ? "alert" : "status"}>{actionError ?? actionMessage}</div>}
     {error && <div className="ck-alert"><AlertTriangle size={15} /><span>{error}</span></div>}
     {loading ? <div className="settings-card-body"><LoadingRows count={4} columns={3} /></div> : projects.length === 0 ? <div className="settings-card-body"><EmptyPanel title="No project yet" body={canManage(role) ? "Create a project, then add its DSN to your app. New projects record cost and usage only." : "You don’t have a project yet. Ask an Owner or Admin to add you to one."} icon={<Server size={18} />} /></div> : <div className="settings-project-list">{projects.map((project) => {
-      const detail = details[project.id]; const pipeline = health[project.id]; const authKey = typeof project.authKey === "string" ? project.authKey : null; const dsn = authKey ? `https://${authKey}@app.costkey.dev/${project.id}` : null;
+      const detail = details[project.id]; const pipeline = health[project.id]; const authKey = typeof project.authKey === "string" ? project.authKey : null; const dsn = authKey ? `${window.location.protocol}//${authKey}@${window.location.host}/${project.id}` : null;
       const pricingHint = pipeline?.hints?.find((hint) => hint.type === "unpriced_calls");
       const receivingLabel = pipeline?.status === "active" ? "Receiving runs" : healthLabel(pipeline);
       const projectDescription = project.id === "proj_preview" ? "Production, Development · search-api, document-worker, voice-service" : (detail?.description ?? project.description ?? "");
@@ -467,6 +468,7 @@ function CustomProvidersPanel({ projectId, role }: { projectId: string; role: Ro
 function TeamAccess({ projects, members, userId, role, orgName, refresh }: { projects: SettingsProject[]; members: SettingsMember[]; userId: string; role: Role; orgName: string; refresh: () => Promise<void> }) {
   const [invites, setInvites] = useState<TeamInvite[]>([]);
   const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteLink, setInviteLink] = useState<{ email: string; url: string } | null>(null);
   const [inviteRole, setInviteRole] = useState<"admin" | "developer" | "viewer">("viewer");
   const [inviteProjects, setInviteProjects] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
@@ -518,10 +520,14 @@ function TeamAccess({ projects, members, userId, role, orgName, refresh }: { pro
     return () => { alive = false; };
   }, [canManageTeam, members]);
 
+  function inviteSent(email: string, result: { inviteUrl?: string; emailSent?: boolean }): void {
+    if (result.emailSent === false && result.inviteUrl) { setInviteLink({ email, url: result.inviteUrl }); setMessage(`No email sent. Share this link with ${email}.`); return; }
+    setInviteLink(null); setMessage(`Invitation sent to ${email}.`);
+  }
   async function invite(): Promise<void> {
     if (!canManageTeam || !inviteEmail.trim()) return;
     setSaving(true); setError(null); setMessage(null);
-    try { const result = await createTeamInvite({ email: inviteEmail.trim(), role: inviteRole, projectIds: inviteProjects }); setInvites((current) => [{ id: result.id, email: result.email, role: result.role, project_ids: result.projectIds, status: "pending", created_at: new Date().toISOString(), expires_at: result.expiresAt, accepted_at: null, revoked_at: null, resent_count: 0, invited_by_name: "You" }, ...current]); setInviteEmail(""); setMessage(`Invitation sent to ${result.email}.`); }
+    try { const result = await createTeamInvite({ email: inviteEmail.trim(), role: inviteRole, projectIds: inviteProjects }); setInvites((current) => [{ id: result.id, email: result.email, role: result.role, project_ids: result.projectIds, status: "pending", created_at: new Date().toISOString(), expires_at: result.expiresAt, accepted_at: null, revoked_at: null, resent_count: 0, invited_by_name: "You" }, ...current]); setInviteEmail(""); inviteSent(result.email, result); }
     catch (inviteError) { setError(errorText(inviteError)); }
     finally { setSaving(false); }
   }
@@ -534,7 +540,7 @@ function TeamAccess({ projects, members, userId, role, orgName, refresh }: { pro
     await revokeTeamInvite(inviteId); setInvites((current) => current.map((invite) => invite.id === inviteId ? { ...invite, status: "revoked", revoked_at: new Date().toISOString() } : invite));
   }
   async function resend(invite: TeamInvite): Promise<void> {
-    try { const result = await resendTeamInvite(invite.id); setInvites((current) => current.map((item) => item.id === invite.id ? { ...item, status: "pending", expires_at: result.expiresAt, resent_count: item.resent_count + 1 } : item)); setMessage(`Invitation resent to ${invite.email}.`); }
+    try { const result = await resendTeamInvite(invite.id); setInvites((current) => current.map((item) => item.id === invite.id ? { ...item, status: "pending", expires_at: result.expiresAt, resent_count: item.resent_count + 1 } : item)); inviteSent(invite.email, result); }
     catch (resendError) { setError(errorText(resendError)); }
   }
   async function updateRole(member: SettingsMember, nextRole: Role): Promise<void> {
@@ -586,6 +592,7 @@ function TeamAccess({ projects, members, userId, role, orgName, refresh }: { pro
     {confirmation.dialog}
     <div className="settings-section-title"><div><h2>Team</h2></div>{!canManageTeam && <StatusPill tone="neutral">Assigned-project access</StatusPill>}</div>
     {(message || error) && <div className={`settings-status-line ${error ? "error" : "success"}`} role={error ? "alert" : "status"}>{error ?? message}</div>}
+    {inviteLink && <div className="settings-key-row"><Link2 size={14} aria-hidden="true" /><code className="revealed">{inviteLink.url}</code><CopyButton value={inviteLink.url} label={`Copy invite link for ${inviteLink.email}`} /></div>}
     {!canManageTeam && <div className="ck-alert"><Lock size={15} /><div><strong>View only.</strong> Ask an Owner or Admin to invite people or change roles.</div></div>}
     {canManageTeam && <Panel title="Invite a member"><div className="settings-card-body"><div className="settings-form"><div className="settings-form-grid"><div className="settings-form-field"><label htmlFor="invite-email">Email</label><input id="invite-email" type="email" value={inviteEmail} onChange={(event) => setInviteEmail(event.target.value)} placeholder="colleague@company.com" onKeyDown={(event) => { if (event.key === "Enter") void invite(); }} /></div><div className="settings-form-field"><label htmlFor="invite-role">Role</label><select id="invite-role" value={inviteRole} onChange={(event) => { const nextRole = event.target.value as typeof inviteRole; setInviteRole(nextRole); if (nextRole === "admin") setInviteProjects([]); }}><option value="viewer">Viewer: sees costs</option><option value="developer">Developer: also sees prompts and code</option><option value="admin">Admin: manages the workspace</option></select></div><div className="settings-form-field full"><span className="settings-form-field-label" id="invite-projects-label">Assigned projects</span><div className="settings-assignment-list" aria-labelledby="invite-projects-label">{projects.map((project) => <button className={`settings-assignment ${inviteProjects.includes(project.id) ? "selected" : ""}`} type="button" key={project.id} aria-pressed={inviteProjects.includes(project.id)} disabled={inviteRole === "admin"} onClick={() => setInviteProjects((current) => current.includes(project.id) ? current.filter((id) => id !== project.id) : [...current, project.id])}>{project.name}</button>)}</div><small>{inviteRole === "admin" ? "Admins see every project." : inviteProjects.length === 0 ? "No project picked." : `${inviteProjects.length} project${inviteProjects.length === 1 ? "" : "s"} selected`}</small></div></div><div className="settings-form-footer"><button className="ck-button ck-button-primary" type="button" onClick={() => void invite()} disabled={saving || !inviteEmail.trim()}><UserPlus size={13} /> {saving ? "Sending" : "Send invitation"}</button></div></div></div></Panel>}
     {role === "owner" && transferTargets.length > 0 && <div id="ownership-transfer"><Panel title="Transfer workspace ownership"><div className="settings-card-body"><div className="ck-alert"><Shield size={15} /><div><strong>Check before confirming.</strong> The new Owner will manage billing. Your DSNs, data and provider accounts don’t change.</div></div>{transferTargets.length === 0 ? <div className="settings-empty" style={{ marginTop: 14 }}>Invite someone first.</div> : <div className="settings-form"><div className="settings-form-grid"><div className="settings-form-field"><label htmlFor="ownership-target">New Owner</label><select id="ownership-target" value={transferTargetId} onChange={(event) => setTransferTargetId(event.target.value)}><option value="">Select an existing member</option>{transferTargets.map((member) => <option key={member.id} value={member.id}>{member.name} · {member.email} · {normalizeRole(member.role)}</option>)}</select><small>Pick someone already in this workspace.</small></div></div><div className="settings-form-footer"><button className="ck-button ck-button-danger" type="button" onClick={(event) => reviewOwnershipTransfer(event.currentTarget)} disabled={transferSaving || !transferTargetId} aria-label="Transfer ownership">{transferSaving ? "Transferring" : "Review transfer"}</button></div></div>}</div></Panel></div>}
@@ -647,7 +654,11 @@ function NotificationsSettings({ projects, role, userEmail }: { projects: Settin
   async function testDestination(destination: NotificationDestination): Promise<void> {
     setError(null); setMessage(null);
     try { const result = await testNotificationDestination(destination.id); setMessage(result.delivery.status === "sent" ? "Test delivered." : `Test ${result.delivery.status}: ${result.delivery.error ?? "No delivery was recorded."}`); await load(); }
-    catch (testError) { setError(errorText(testError)); }
+    catch (testError) {
+      const delivery = testError instanceof SettingsApiError ? (testError.body as { delivery?: { status?: string; error?: string | null } } | null)?.delivery : undefined;
+      setError(delivery ? `Test ${delivery.status === "suppressed" ? "not sent" : "failed"}: ${delivery.error ?? "no reason given"}` : errorText(testError));
+      if (delivery) await load();
+    }
   }
   const latestFailure = deliveries.find((delivery) => delivery.status === "failed");
   const thresholds = preferences?.policyWarningThresholds ?? [0.8, 1];

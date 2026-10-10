@@ -15,6 +15,7 @@ import {
   type TraceFilterOption,
   type TraceSort,
   type UsageComponent,
+  type TraceSpan,
 } from "../api";
 import { useAuth } from "../contexts/useAuth";
 import {
@@ -29,6 +30,8 @@ import {
 import { dateInputToIso, displayTimeZoneLabel, formatAbsoluteDate, formatCurrencyAmount, formatDateTime, formatProviders, formatReportedAmount, periodDates, reportingCurrencyNote, sourceAttributionStatus, type ReportingFx } from "../components/consoleFormatters";
 import { restoreTraceView, serializeTraceView, TRACE_VIEW_FILTER_KEYS } from "./traceViewState";
 import { formatDuration } from "../utils";
+import { RunTree, SpanInspector } from "../components/RunTree";
+import { buildRunTree, defaultCollapsed, flattenRunTree, type RunTreeNode, type RunTreeSpanNode } from "../components/runTreeModel";
 import { prototypeRole, prototypeState, PrototypeStateNotice, PrototypeStatePanel, type PrototypeState } from "../components/PrototypeState";
 import { isPrototypePreview } from "../prototypePreview";
 import "./PrototypeRoute.css";
@@ -225,6 +228,16 @@ function ListToolbar({ draft, onDraftChange, onSubmit, sort, onSort, selectedCou
 // The fixture adapter records a human call name in event metadata; prefer it
 // for tree/step labels like the prototype ("Embed query"), falling back to
 // the recorded function for live events that carry no friendly name.
+function findSpanNode(nodes: RunTreeNode[], spanId: string): RunTreeSpanNode | null {
+  for (const node of nodes) {
+    if (node.type !== "span") continue;
+    if (node.id === spanId) return node;
+    const nested = findSpanNode(node.children, spanId);
+    if (nested) return nested;
+  }
+  return null;
+}
+
 function eventDisplayName(event: { metadata?: unknown; bl_function?: string | null; model?: string | null }): string {
   try {
     const raw = event.metadata;
@@ -252,7 +265,10 @@ function TraceRows({ traces, selected, onToggle, onToggleAll, onSort, sort, curr
   return <div className="ck-table-wrap"><table className="ck-table ck-traces-table"><thead><tr><th aria-label="Select"><input type="checkbox" checked={allSelected} onChange={onToggleAll} aria-label="Select loaded rows" /></th><th>Run</th><th className="ck-trace-hide-mobile"><button type="button" className="ck-table-sort" onClick={() => onSort("newest")}>Started{sort === "newest" && <span aria-hidden="true"> ↓</span>}</button></th><th className="numeric ck-trace-hide-mobile"><button type="button" className="ck-table-sort" onClick={() => onSort(sort === "duration_desc" ? "newest" : "duration_desc")}>Duration{sort === "duration_desc" && <span aria-hidden="true"> ↓</span>}</button></th><th className="numeric ck-trace-hide-mobile">Calls</th><th className="numeric"><button type="button" className="ck-table-sort" onClick={() => onSort(sort === "cost_desc" ? "newest" : "cost_desc")}>Cost ({currency}){sort === "cost_desc" && <span aria-hidden="true"> ↓</span>}</button></th></tr></thead><tbody>{traces.map((trace) => {
     const cost = knownTraceCost(trace);
     const status = runStatus(trace, cost);
-    const labels = [trace.feature, trace.environment].filter(Boolean).join(" · ");
+    const agentShape = (trace.step_count ?? 0) > 0 || (trace.tool_count ?? 0) > 0
+      ? [(trace.step_count ?? 0) > 0 ? `${trace.step_count} step${trace.step_count === 1 ? "" : "s"}` : null, (trace.tool_count ?? 0) > 0 ? `${trace.tool_count} tool call${trace.tool_count === 1 ? "" : "s"}` : null].filter(Boolean).join(", ")
+      : null;
+    const labels = [trace.feature, trace.environment, agentShape].filter(Boolean).join(" · ");
     return <tr key={trace.trace_id}><td><input type="checkbox" checked={selected.has(trace.trace_id)} onChange={() => onToggle(trace.trace_id)} aria-label={`Select ${traceLabel(trace)}`} /></td><td className="primary-cell"><Link className="ck-table-link" to={`/traces/${encodeURIComponent(trace.trace_id)}`} state={{ returnTo: `${window.location.pathname}${window.location.search}` }}>{traceLabel(trace)}</Link>{status.tone !== "good" && <> <StatusPill tone={status.tone}>{status.label}</StatusPill></>}{labels && <div className="muted">{labels}</div>}<span className="ck-trace-mobile-line muted">{formatDateTime(trace.started_at)}</span></td><td className="ck-trace-hide-mobile">{formatDateTime(trace.started_at)}</td><td className="numeric ck-trace-hide-mobile">{traceDuration(trace)}</td><td className="numeric ck-trace-hide-mobile">{trace.call_count.toLocaleString()}</td><td className="numeric ck-cost-cell">{cost == null ? <span title="Calls without a price are not counted as free">Unpriced</span> : formatTraceTableCost(cost, currency, fx)}</td></tr>;
   })}</tbody></table></div>;
 }
@@ -591,11 +607,13 @@ function TraceDetail({ projectId, traceId }: { projectId: string; traceId: strin
   const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
   const requestKey = `${projectId}:${traceId}`;
-  const [state, setState] = useState<{ key: string; trace: { traceId: string; summary: Record<string, unknown>; events: TraceEvent[]; usageComponents?: UsageComponent[] } | null; error: string | null }>({ key: "", trace: null, error: null });
+  const [state, setState] = useState<{ key: string; trace: { traceId: string; summary: Record<string, unknown>; events: TraceEvent[]; usageComponents?: UsageComponent[]; spans?: TraceSpan[] } | null; error: string | null }>({ key: "", trace: null, error: null });
   const loading = state.key !== requestKey;
   const trace = state.key === requestKey ? state.trace : null;
   const error = state.key === requestKey ? state.error : null;
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedSpanId, setSelectedSpanId] = useState<string | null>(null);
+  const [collapsedState, setCollapsedState] = useState<Set<string> | null>(null);
   const [copied, setCopied] = useState(false);
   const [shareFallback, setShareFallback] = useState<string | null>(null);
   const explicitState = prototypeState(searchParams);
@@ -645,19 +663,26 @@ function TraceDetail({ projectId, traceId }: { projectId: string; traceId: strin
   const accountingState = ["accounting", "in-progress"].includes(explicitState) ? "updating" : explicitState === "partial" ? "partial" : String(summary.accounting_state ?? (unpriced > 0 ? "partial" : "complete"));
   const mostExpensive = events.reduce<TraceEvent | null>((current, event) => event.cost_usd != null && (current == null || Number(event.cost_usd) > Number(current.cost_usd)) ? event : current, null);
   const traceName = String(summary.trace_name ?? traceId);
-  const operationName = String(summary.operation_name ?? summary.name ?? summary.trace_name ?? "Run");
   const service = typeof summary.service === "string" ? summary.service : null;
   const customer = typeof summary.customer === "string" ? summary.customer : null;
   const release = typeof summary.release === "string" ? summary.release : null;
   const retryEvents = events.filter((event) => Boolean(event.parent_event_id));
   const retrySubtotal = retryEvents.reduce((total, event) => total + (event.cost_usd == null ? 0 : Number(event.cost_usd) || 0), 0);
-  const contextSummary = typeof summary.context_summary === "string" ? summary.context_summary : retryEvents.length > 0 ? `Includes ${retryEvents.length} retr${retryEvents.length === 1 ? "y" : "ies"}` : null;
-  const contextBaseEvent = contextSummary ? events.find((event) => !(event.parent_event_id) && `${event.bl_function ?? ""} ${event.model ?? ""}`.toLowerCase().includes("context")) : null;
-  const contextTotal = contextSummary ? retrySubtotal + (contextBaseEvent?.cost_usd == null ? 0 : Number(contextBaseEvent.cost_usd) || 0) : 0;
   const orderedEvents = [...events].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
   const eventStartMs = orderedEvents.reduce((minimum, event) => Math.min(minimum, new Date(event.timestamp).getTime()), Number.POSITIVE_INFINITY);
   const eventEndMs = orderedEvents.reduce((maximum, event) => Math.max(maximum, new Date(event.timestamp).getTime() + (Number(event.duration_ms) || 0)), eventStartMs);
   const eventSpan = Number.isFinite(eventStartMs) && eventEndMs > eventStartMs ? eventEndMs - eventStartMs : Math.max(elapsed, 1);
+  const spans = trace.spans ?? [];
+  const treeRoots = buildRunTree(spans, events);
+  const collapsed = collapsedState ?? defaultCollapsed(spans);
+  const treeRows = flattenRunTree(treeRoots, collapsed);
+  const selectedSpan = selectedSpanId ? findSpanNode(treeRoots, selectedSpanId) : null;
+  const toggleSpan = (spanId: string): void => setCollapsedState((current) => {
+    const next = new Set(current ?? defaultCollapsed(spans));
+    if (next.has(spanId)) next.delete(spanId);
+    else next.add(spanId);
+    return next;
+  });
   const detailStatus = runStatus({ execution_state: executionState, unpriced_count: unpriced } as Trace, knownCost);
   const timeZoneLabel = displayTimeZoneLabel();
 
@@ -669,8 +694,8 @@ function TraceDetail({ projectId, traceId }: { projectId: string; traceId: strin
     void navigator.clipboard.writeText(link).then(() => { setCopied(true); window.setTimeout(() => setCopied(false), 1600); }).catch(() => setShareFallback(link));
   }
   const returnTo = typeof location.state === "object" && location.state !== null && "returnTo" in location.state && typeof (location.state as { returnTo?: unknown }).returnTo === "string" ? (location.state as { returnTo: string }).returnTo : "/traces";
-  function selectRoot(): void { setSelectedId("__root__"); setSearchParams((current) => { current.delete("call"); return current; }, { replace: true }); }
-  function selectEvent(eventId: string): void { setSelectedId(eventId); setSearchParams((current) => { current.set("call", eventId); return current; }, { replace: true }); }
+  function selectRoot(): void { setSelectedSpanId(null); setSelectedId("__root__"); setSearchParams((current) => { current.delete("call"); return current; }, { replace: true }); }
+  function selectEvent(eventId: string): void { setSelectedSpanId(null); setSelectedId(eventId); setSearchParams((current) => { current.set("call", eventId); return current; }, { replace: true }); }
   const feature = typeof summary.feature === "string" ? summary.feature : null;
   const allowanceParams = new URLSearchParams({ project: projectId });
   if (feature) { allowanceParams.set("scopeDimension", "feature"); allowanceParams.set("scopeValue", feature); }
@@ -680,8 +705,8 @@ function TraceDetail({ projectId, traceId }: { projectId: string; traceId: strin
     <PrototypeStateNotice state={explicitState} family="trace" role={effectiveRole} onRetry={() => window.location.reload()} />
     <div className="ck-detail-header prototype-trace-header"><div><Link className="ck-back-link" to={returnTo}><ArrowLeft size={13} aria-hidden="true" /> Runs</Link><h1 className="ck-detail-title">{traceName}</h1><div className="ck-detail-id">{start ? `${formatAbsoluteDate(start)}${timeZoneLabel ? ` ${timeZoneLabel}` : ""} · ` : ""}<span className="mono">{traceId}</span></div>{shareFallback && <label className="ck-share-fallback">Copy this authenticated link manually<input readOnly value={shareFallback} onFocus={(event) => event.currentTarget.select()} /></label>}<div className="ck-pill-row" style={{ marginTop: 12, marginBottom: 0 }}>{[feature, customer ?? service, typeof summary.environment === "string" ? summary.environment : null, release ? `Release ${release}` : null].filter(Boolean).map((value) => <StatusPill tone="neutral" key={String(value)}>{String(value)}</StatusPill>)}</div></div><div className="ck-detail-actions"><button className="ck-button ck-button-secondary" type="button" onClick={share}>{copied ? <Check size={13} /> : <Share size={13} />}{copied ? "Link copied" : shareFallback ? "Try copy again" : "Share"}</button><Link className="ck-button ck-button-secondary" to={`/compare?ids=${encodeURIComponent(traceId)}&project=${encodeURIComponent(projectId)}`}><GitCompare size={13} /> Compare</Link></div></div>
     <div className="ck-summary-strip prototype-trace-summary"><div className="ck-summary-item"><div className="prototype-summary-label">Cost</div><div className="ck-summary-value">{knownCost == null ? "Unpriced" : formatReportedAmount(knownCost, reportingCurrency, fx)}</div>{unpriced > 0 && <div className="ck-summary-meta">{`${unpriced} of ${events.length} calls unpriced`}</div>}</div><div className="ck-summary-item"><div className="prototype-summary-label">Duration</div><div className="ck-summary-value">{Number.isFinite(elapsed) && elapsed >= 0 ? formatDuration(elapsed) : "Unknown"}</div></div><div className="ck-summary-item"><div className="prototype-summary-label">Calls</div><div className="ck-summary-value">{events.length.toLocaleString()}</div><div className="ck-summary-meta">{formatProviders([...new Set(events.map((event) => event.provider).filter(Boolean))].join(","))}</div></div><div className="ck-summary-item"><div className="prototype-summary-label">Status</div><div className="ck-summary-value"><StatusPill tone={detailStatus.tone}>{detailStatus.label}</StatusPill></div>{accountingState !== "complete" && <div className="ck-summary-meta">{accountingState === "updating" ? "Cost still updating" : "Some prices missing"}</div>}</div></div>
-    {contextSummary && <div className="ck-alert ck-trace-context-notice"><Info size={15} aria-hidden="true" /><span><strong>{contextSummary}:</strong> {contextTotal > 0 ? formatReportedAmount(contextTotal, reportingCurrency, fx) : "Recorded evidence"}. </span><Link className="ck-finding-link" to={`/compare?ids=${encodeURIComponent(traceId)}&project=${encodeURIComponent(projectId)}`}>Compare runs</Link></div>}
-    <div className={`ck-trace-layout prototype-trace-layout ${selected ? "has-selection" : ""}`}><Panel className="ck-trace-tree" title="Calls">{eventSpan > 1 && <div className="ck-tree-ticks" style={{ display: "flex", justifyContent: "space-between", padding: "7px 18px 6px 50%", color: "var(--ck-slate)", fontSize: 12, background: "var(--ck-paper)" }}><span>0 s</span><span>{formatDuration(eventSpan / 3)}</span><span>{formatDuration(eventSpan * 2 / 3)}</span><span>{formatDuration(eventSpan)}</span></div>}<div className="ck-trace-steps"><button className={`ck-step ${selectedId === "__root__" ? "selected" : ""}`} type="button" style={{ textAlign: "left" }} onClick={selectRoot}><span className="ck-step-rail" aria-hidden="true" /><span><span className="ck-step-name">{operationName}</span><span className="ck-step-meta"><span>Whole run · {events.length} call{events.length === 1 ? "" : "s"}</span></span><span className="ck-waterfall" style={{ display: "block", height: 3, marginTop: 8, borderRadius: 3, background: "var(--ck-soft)" }}><span style={{ display: "block", width: "100%", height: 3, borderRadius: 3, background: "var(--ck-ink)" }} /></span></span><span className="ck-step-cost">{knownCost == null ? "Unpriced" : formatReportedAmount(knownCost, reportingCurrency, fx)}<small style={{ display: "block", color: "var(--ck-slate)", fontSize: 12 }}>{formatDuration(elapsed)}</small></span></button>{events.length === 0 ? <EmptyPanel title="No calls recorded" /> : orderedEvents.map((event) => { const eventStart = new Date(event.timestamp).getTime(); const offset = Number.isFinite(eventStart) && Number.isFinite(eventStartMs) ? Math.max(0, Math.min(94, (eventStart - eventStartMs) / eventSpan * 100)) : 0; const width = Math.max(3, Math.min(100 - offset, (Number(event.duration_ms) || 0) / eventSpan * 100)); return <button className={`ck-step ${selectedId === event.id ? "selected" : ""}`} style={{ textAlign: "left" }} key={event.id} type="button" onClick={() => selectEvent(event.id)}><span className="ck-step-rail" aria-hidden="true" /><span><span className="ck-step-name">{eventDisplayName(event)}</span><span className="ck-step-meta"><span>{formatProviders(event.provider)} · {event.model || "Model not recorded"}</span>{event.parent_event_id && <span>Retry</span>}</span><span className="ck-waterfall" style={{ display: "block", height: 3, marginTop: 8, borderRadius: 3, background: "var(--ck-soft)" }}><span style={{ display: "block", width: `${width}%`, marginLeft: `${offset}%`, height: 3, borderRadius: 3, background: "var(--ck-blue)" }} /></span></span><span className="ck-step-cost">{event.cost_usd == null ? "Unpriced" : formatReportedAmount(Number(event.cost_usd), reportingCurrency, fx)}<small style={{ display: "block", color: "var(--ck-slate)", fontSize: 12 }}>{formatDuration(Number(event.duration_ms) || 0)}</small></span></button>; })}</div></Panel>{selected ? <CallInspector projectId={projectId} event={selected} role={effectiveRole} currency={reportingCurrency} fx={fx} initialTab={requestedTab} prototypeVariant={explicitState} forceError={explicitState === "child-error"} /> : <RootInspector summary={summary} context={events[0]?.context ?? null} knownCost={knownCost} unpriced={unpriced} usageComponents={trace.usageComponents} callEvents={events} mostExpensive={mostExpensive} currency={reportingCurrency} fx={fx} initialTab={requestedTab} />}</div>
+    {retryEvents.length > 0 && <div className="ck-alert ck-trace-context-notice"><Info size={15} aria-hidden="true" /><span><strong>{retryEvents.length} retr{retryEvents.length === 1 ? "y" : "ies"}:</strong> {formatReportedAmount(retrySubtotal, reportingCurrency, fx)}</span></div>}
+    <div className={`ck-trace-layout prototype-trace-layout ${selected || selectedSpan ? "has-selection" : ""}`}><Panel className="ck-trace-tree" title={spans.length > 0 ? "Timeline" : "Calls"}>{eventSpan > 1 && <div className="ck-tree-ticks"><span>0 s</span><span>{formatDuration(eventSpan / 3)}</span><span>{formatDuration(eventSpan * 2 / 3)}</span><span>{formatDuration(eventSpan)}</span></div>}{events.length === 0 && spans.length === 0 ? <EmptyPanel title="No calls recorded" /> : <RunTree rows={treeRows} collapsed={collapsed} onToggle={toggleSpan} selectedId={selectedSpan ? `span:${selectedSpan.id}` : selectedId} onSelectRoot={selectRoot} onSelectCall={selectEvent} onSelectSpan={(spanId) => { setSelectedSpanId(spanId); setSelectedId(null); }} runName={traceName} runCost={knownCost} runDurationMs={elapsed} callCount={events.length} runStartMs={eventStartMs} runSpanMs={eventSpan} callName={eventDisplayName} currency={reportingCurrency} fx={fx} />}</Panel>{selectedSpan ? <SpanInspector node={selectedSpan} currency={reportingCurrency} fx={fx} /> : selected ? <CallInspector projectId={projectId} event={selected} role={effectiveRole} currency={reportingCurrency} fx={fx} initialTab={requestedTab} prototypeVariant={explicitState} forceError={explicitState === "child-error"} /> : <RootInspector summary={summary} context={events[0]?.context ?? null} knownCost={knownCost} unpriced={unpriced} usageComponents={trace.usageComponents} callEvents={events} mostExpensive={mostExpensive} currency={reportingCurrency} fx={fx} initialTab={requestedTab} />}</div>
   </div>;
 }
 

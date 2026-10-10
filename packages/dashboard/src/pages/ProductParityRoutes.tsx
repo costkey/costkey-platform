@@ -31,6 +31,7 @@ const dimensionForType: Record<string, CostDimension> = {
   model: "model",
   provider: "provider",
   context: "context",
+  label: "context",
 };
 
 function scopeParams(projectId: string, period: Period, timezone?: string | null): { from: string; to: string; query: string } {
@@ -136,7 +137,7 @@ function ContributorPage() {
     
     <div className="ck-metric-grid"><MetricCard icon="activity" label="Spend" value={summary?.known_cost == null ? "Unpriced" : formatReportedAmount(Number(summary.known_cost), currency, fx)} detail={summary?.coverage != null && Number(summary.coverage) < 1 ? `${Math.round(Number(summary.coverage) * 100)}% of calls priced` : "Every call priced"} /><MetricCard icon="trace" label="Runs" value={Number(summary?.trace_count ?? summary?.observations ?? detail.traces.length).toLocaleString()} /><MetricCard icon="cost" label="Per run" value={summary?.mean_cost_per_trace == null ? "—" : formatReportedAmount(Number(summary.mean_cost_per_trace), currency, fx)} detail="Average" /></div>
     {tab === "Traces" ? <Panel title="Runs">{detail.traces.length === 0 ? <EmptyPanel title="No runs in this period" /> : <div className="ck-table-wrap"><table className="ck-table"><thead><tr><th>Run</th><th>Started</th><th className="numeric">Calls</th><th className="numeric">Cost ({currency})</th></tr></thead><tbody>{detail.traces.slice(0, 50).map((trace) => <tr key={trace.trace_id}><td className="primary-cell"><Link className="ck-table-link" to={`/traces/${encodeURIComponent(trace.trace_id)}?project=${encodeURIComponent(projectId)}`}>{trace.trace_name || trace.trace_id}</Link><div className="muted mono">{trace.trace_id}</div></td><td>{formatDateTime(trace.started_at)}</td><td className="numeric">{trace.call_count.toLocaleString()}</td><td className="numeric">{trace.known_cost == null ? "Unpriced" : formatReportedAmount(Number(trace.known_cost), currency, fx)}</td></tr>)}</tbody></table></div>}</Panel> : <div className="ck-stack ck-contributor-history"><Panel title="Daily cost"><div className="ck-chart-wrap"><ContributorHistory detail={detail} currency={currency} fx={fx} /></div>{history.length === 0 && <p className="ck-table-note">No daily history for this period yet.</p>}</Panel></div>}
-    {tab === "Summary" && <div className="ck-content-grid" style={{ marginTop: 16 }}><Panel title="Where in your code">{relatedFunctions.length === 0 ? <p className="ck-table-note" style={{ borderTop: 0 }}>No functions recorded for this yet.</p> : <div className="ck-table-wrap"><table className="ck-table"><thead><tr><th>Function</th><th className="numeric">Cost ({currency})</th><th className="numeric">Share</th><th className="numeric">Runs</th><th className="numeric">Per run</th></tr></thead><tbody>{relatedFunctions.slice(0, 5).map((row) => <tr key={row.key}><td className="primary-cell"><Link className="ck-table-link" to={`/contributor?type=Function&name=${encodeURIComponent(row.key)}&project=${encodeURIComponent(projectId)}&period=${period}`}>{row.label || row.key}</Link></td><td className="numeric">{row.known_cost == null ? "Unpriced" : formatReportedAmount(Number(row.known_cost), currency, fx)}</td><td className="numeric">{summary?.known_cost && row.known_cost != null ? formatPercent(Number(row.known_cost) / Number(summary.known_cost) * 100) : "—"}</td><td className="numeric">{Number((row as { trace_count?: unknown }).trace_count ?? row.observations).toLocaleString()}</td><td className="numeric">{row.known_cost == null || row.observations === 0 ? "Unpriced" : (row as { mean_cost_per_trace?: unknown }).mean_cost_per_trace != null ? isPrototypePreview() && currency.toUpperCase() === "USD" ? `$${Number((row as { mean_cost_per_trace?: unknown }).mean_cost_per_trace).toFixed(4)}` : formatReportedAmount(Number((row as { mean_cost_per_trace?: unknown }).mean_cost_per_trace), currency, fx) : isPrototypePreview() && currency.toUpperCase() === "USD" ? `$${(Number(row.known_cost) / row.observations).toFixed(4)}` : formatReportedAmount(Number(row.known_cost) / row.observations, currency, fx)}</td></tr>)}</tbody></table></div>}</Panel><Panel title="Budget">{(() => { const policies = detail.policyActions?.policies ?? []; if (policies.length === 0) return <div className="ck-budget-check"><p className="ck-budget-check-empty">No budget covers {name} yet.</p><Link className="ck-button ck-button-secondary" to={`/policy-edit?${scopeQuery.toString()}&scopeDimension=${dimension}&scopeValue=${encodeURIComponent(name)}`}><ShieldCheck size={14} /> Set a budget</Link></div>; return <div className="ck-definition-list">{policies.slice(0, 3).map((policy) => <div key={String(policy["id"] ?? policy["name"])}><span>{String(policy["name"] ?? "Budget")}</span><strong>{policy["allowance"] != null ? formatReportedAmount(Number(policy["allowance"]), currency, fx) : ""} {String(policy["mode"]) === "enforce" ? "· stops calls" : "· alerts only"}</strong></div>)}</div>; })()}</Panel></div>}
+    {tab === "Summary" && <div className="ck-content-grid" style={{ marginTop: 16 }}><Panel title="Where in your code">{relatedFunctions.length === 0 ? <p className="ck-table-note" style={{ borderTop: 0 }}>No functions recorded for this yet.</p> : <div className="ck-table-wrap"><table className="ck-table"><thead><tr><th>Function</th><th className="numeric">Cost ({currency})</th><th className="numeric">Share</th><th className="numeric">Calls</th><th className="numeric">Per call</th></tr></thead><tbody>{relatedFunctions.slice(0, 5).map((row) => <tr key={row.key}><td className="primary-cell"><Link className="ck-table-link" to={`/contributor?type=Function&name=${encodeURIComponent(row.key)}&project=${encodeURIComponent(projectId)}&period=${period}`}>{row.label || row.key}</Link></td><td className="numeric">{row.known_cost == null ? "Unpriced" : formatReportedAmount(Number(row.known_cost), currency, fx)}</td><td className="numeric">{summary?.known_cost && row.known_cost != null ? formatPercent(Number(row.known_cost) / Number(summary.known_cost) * 100) : "—"}</td><td className="numeric">{Number(row.observations).toLocaleString()}</td><td className="numeric">{row.known_cost == null || !Number(row.priced_observations ?? row.observations) ? "Unpriced" : formatReportedAmount(Number(row.known_cost) / Number(row.priced_observations ?? row.observations), currency, fx)}</td></tr>)}</tbody></table></div>}</Panel><Panel title="Budget">{(() => { const policies = detail.policyActions?.policies ?? []; if (policies.length === 0) return <div className="ck-budget-check"><p className="ck-budget-check-empty">No budget covers {name} yet.</p><Link className="ck-button ck-button-secondary" to={`/policy-edit?${scopeQuery.toString()}&scopeDimension=${dimension}&scopeValue=${encodeURIComponent(name)}`}><ShieldCheck size={14} /> Set a budget</Link></div>; return <div className="ck-definition-list">{policies.slice(0, 3).map((policy) => <div key={String(policy["id"] ?? policy["name"])}><span>{String(policy["name"] ?? "Budget")}</span><strong>{policy["allowance"] != null ? formatReportedAmount(Number(policy["allowance"]), currency, fx) : ""} {String(policy["mode"]) === "enforce" ? "· stops calls" : "· alerts only"}</strong></div>)}</div>; })()}</Panel></div>}
   </div>;
 }
 
@@ -294,6 +295,22 @@ interface PolicyRecord {
   usage?: { observed?: number | null; committed?: number | null };
 }
 
+const REFUSAL_REASON: Record<string, string> = {
+  budget_exhausted: "Limit reached",
+  price_unavailable: "Price unknown",
+  decision_unavailable: "Budget check unavailable",
+  unsupported_integration: "Unsupported integration",
+  unbounded_request: "No size limit on the call",
+  missing_context: "Missing budget labels",
+  idempotency_conflict: "Duplicate request",
+};
+
+function refusalReason(decision: Record<string, unknown>): string {
+  const refusal = decision.refusal as { reason?: string } | null | undefined;
+  const reason = refusal?.reason ?? (decision.reason as string | undefined);
+  return reason ? REFUSAL_REASON[reason] ?? reason : "—";
+}
+
 function policyDisplayValue(policy: PolicyRecord, value: number | null | undefined, currency: string): string {
   if (value == null) return "Unavailable";
   return policy.unit === "money" ? formatReportedAmount(value, currency, undefined) : `${value.toLocaleString()} ${policy.unit}`;
@@ -340,9 +357,26 @@ function PolicyDetailPage() {
   const [decisions, setDecisions] = useState<Array<Record<string, unknown>>>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [statusSaving, setStatusSaving] = useState(false);
+  const [statusError, setStatusError] = useState<string | null>(null);
+  const canManage = user?.role === "owner" || user?.role === "admin";
   useEffect(() => {
     if (requestedProject && requestedProject.id !== currentProjectId) setCurrentProjectId(requestedProject.id);
   }, [requestedProject, currentProjectId, setCurrentProjectId]);
+  async function setPolicyStatus(next: "active" | "paused"): Promise<void> {
+    if (!projectId || !policy) return;
+    setStatusSaving(true); setStatusError(null);
+    try {
+      const response = await fetch(`/api/v1/projects/${projectId}/budget/policies/${encodeURIComponent(policy.id)}`, { method: "PATCH", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: next }) });
+      if (!response.ok) throw new Error(next === "paused" ? "Couldn’t pause this budget." : "Couldn’t resume this budget.");
+      const data = await response.json() as { policy?: PolicyRecord };
+      setPolicy((current) => data.policy ? { ...current, ...data.policy } : current ? { ...current, status: next } : current);
+    } catch (reason) {
+      setStatusError(reason instanceof Error ? reason.message : "Couldn’t update this budget.");
+    } finally {
+      setStatusSaving(false);
+    }
+  }
   useEffect(() => {
     if (!projectId || !policyId) return;
     let cancelled = false;
@@ -385,7 +419,8 @@ function PolicyDetailPage() {
   const scopeWords = Object.entries(policy.scope ?? {}).filter(([key]) => key !== "project").map(([key, value]) => `${key === "group" ? "Experiment" : key.charAt(0).toUpperCase() + key.slice(1)}: ${value}`).join(" · ") || "Whole project";
   return <div className="ck-main-inner ck-policy-detail-page">
     <Link className="ck-back-link" to="/budgets"><ArrowLeft size={13} /> Budgets</Link>
-    <PageHeader title={policy.name || "Budget"} description={`${scopeWords} · ${policy.mode === "enforce" ? "Stops new calls when reached" : "Alerts only"}`} actions={<Link className="ck-button ck-button-secondary" to={`/policy-edit?id=${encodeURIComponent(policy.id)}&project=${encodeURIComponent(projectId)}`}><Save size={14} /> Edit budget</Link>} />
+    <PageHeader title={policy.name || "Budget"} description={`${scopeWords} · ${policy.mode === "enforce" ? "Stops new calls when reached" : "Alerts only"}`} actions={canManage ? <>{policy.status !== "archived" && <button className="ck-button ck-button-quiet" type="button" disabled={statusSaving} onClick={() => void setPolicyStatus(policy.status === "paused" ? "active" : "paused")}>{policy.status === "paused" ? statusSaving ? "Resuming" : "Resume" : statusSaving ? "Pausing" : "Pause"}</button>}<Link className="ck-button ck-button-secondary" to={`/policy-edit?id=${encodeURIComponent(policy.id)}&project=${encodeURIComponent(projectId)}`}><Save size={14} /> Edit budget</Link></> : undefined} />
+    {statusError && <div className="ck-alert ck-alert-error" role="alert"><CircleAlert size={15} /><div><strong>{statusError}</strong></div></div>}
     <PrototypeStateNotice state={explicitState} family="policy" role="viewer" />
     {["refused", "stop-requested", "stop-confirmed", "decision-unavailable", "unknown-exposure", "paused"].includes(explicitState) && <div className="ck-alert" role="status"><ShieldCheck size={15} /><div><strong>{explicitState === "refused" ? "A call was refused." : explicitState === "decision-unavailable" ? "We couldn’t check a call, so it was refused." : explicitState === "unknown-exposure" ? "Some spend isn’t known yet." : explicitState === "paused" ? "This budget is paused." : explicitState === "stop-requested" ? "Pause requested. Stop not yet confirmed." : "Stop confirmed."}</strong> Late costs still show below.</div></div>}
     <StatusLine tone={status.tone} right={<span>{policy.status === "active" ? "Checking new calls" : "Not checking"}</span>}>{status.label === "Within budget" ? `${policy.name || "This budget"} is within its limit.` : status.label === "Needs a look" ? `${Math.floor((ratio ?? 0) * 100)}% of this budget is used.` : status.label === "Limit reached" ? (policy.mode === "enforce" ? "Limit reached. New matching calls are being refused." : "Limit reached. Nothing is blocked; alerts were sent.") : status.label === "Waiting for usage" ? "No usage counted yet." : `This budget is ${status.label.toLowerCase()}.`}</StatusLine>
@@ -394,7 +429,7 @@ function PolicyDetailPage() {
       <MetricCard icon="activity" label="Used" value={policyDisplayValue(policy, observed, policy.currency ?? currency)} detail={ratio == null ? "Nothing counted yet" : `${Math.floor(ratio * 100)}% of the limit`} />
       {policy.mode === "enforce" && <MetricCard icon="clock" label="Reserved for calls in progress" value={policyDisplayValue(policy, committed, policy.currency ?? currency)} />}
     </div>
-    {policy.mode === "enforce" && <Panel title="Recent decisions">{decisions.length === 0 ? <EmptyPanel title="No calls refused yet" /> : <div className="ck-table-wrap"><table className="ck-table"><thead><tr><th>Decision</th><th>Reason</th><th>When</th></tr></thead><tbody>{decisions.map((decision, index) => <tr key={String(decision.id ?? index)}><td><StatusPill tone={decision.decision === "refuse" ? "critical" : "good"}>{decision.decision === "refuse" ? "Refused" : "Allowed"}</StatusPill></td><td>{String(decision.reason ?? decision.refusal_reason ?? "—")}</td><td>{decision.created_at ? formatDateTime(String(decision.created_at)) : "—"}</td></tr>)}</tbody></table></div>}</Panel>}
+    {policy.mode === "enforce" && <Panel title="Recent decisions">{decisions.length === 0 ? <EmptyPanel title="No calls refused yet" /> : <div className="ck-table-wrap"><table className="ck-table"><thead><tr><th>Decision</th><th>Reason</th><th>When</th></tr></thead><tbody>{decisions.map((decision, index) => <tr key={String(decision.id ?? index)}><td><StatusPill tone={decision.decision === "refuse" ? "critical" : "good"}>{decision.decision === "refuse" ? "Refused" : "Allowed"}</StatusPill></td><td>{refusalReason(decision)}</td><td>{decision.created_at ? formatDateTime(String(decision.created_at)) : "—"}</td></tr>)}</tbody></table></div>}</Panel>}
   </div>;
 }
 
@@ -414,7 +449,7 @@ function PrototypePolicyReview({ projectName, scopeValue, amount, windowLabel, t
 }
 
 function PolicyEditPage() {
-  const { currentProjectId, projects, org, workspaceSettings, setCurrentProjectId } = useAuth();
+  const { currentProjectId, projects, org, workspaceSettings, setCurrentProjectId, user } = useAuth();
   const [params] = useSearchParams();
   const navigate = useNavigate();
   const requestedProjectId = params.get("project");
@@ -442,7 +477,9 @@ function PolicyEditPage() {
   const [error, setError] = useState<string | null>(null);
   const [reviewed, setReviewed] = useState(false);
   const prototype = isPrototypePreview();
-  const proposal = explicitState === "proposal" || params.get("role") === "Developer" || params.get("role") === "Viewer";
+  const role = prototype ? prototypeRole(params, user?.role ?? "owner") : user?.role ?? "viewer";
+  const proposal = explicitState === "proposal" || (role !== "owner" && role !== "admin");
+  const [copied, setCopied] = useState(false);
   const prototypeLoading = prototype && explicitState === "loading";
   const prototypeError = prototype && explicitState === "error";
   const unavailable = explicitState === "unavailable";
@@ -479,12 +516,19 @@ function PolicyEditPage() {
     void load();
     return () => { cancelled = true; };
   }, [projectId, policyId, currency]);
+  async function copySummary(): Promise<void> {
+    const windowWords = ({ calendar_month: "per month", calendar_day: "per day", calendar_minute: "per minute", per_trace: "per run", per_execution: "per batch" } as Record<string, string>)[windowKind] ?? windowKind;
+    const limit = unit === "money" ? `${policyCurrency} ${allowance || "?"}` : `${allowance || "?"} ${unit}`;
+    const covers = scopeDimension === "project" || !scopeValue ? "Whole project" : `${scopeDimension}: ${scopeValue}`;
+    const text = `${name}\n${limit} ${windowWords} · ${covers} · ${mode === "enforce" ? "Stops new calls" : "Alerts only"}`;
+    try { await navigator.clipboard.writeText(text); setCopied(true); window.setTimeout(() => setCopied(false), 1600); } catch { setError("Couldn’t copy. Select the form and copy it manually."); }
+  }
   async function review(): Promise<void> {
     if (!projectId || !allowance || Number(allowance) <= 0) { setError("Enter a limit greater than zero."); return; }
     if (scopeDimension !== "project" && !scopeValue.trim()) { setError(`Enter which ${scopeDimension} this budget covers, or choose Whole project.`); return; }
     setSaving(true); setError(null);
     try {
-      const payload = { name, scope: scopeDimension !== "project" && scopeValue ? { [scopeDimension]: scopeValue } : { project: projectId }, unit, allowance: Number(allowance), currency: unit === "money" ? policyCurrency : undefined, window: windowKind, timezone, mode, status: "active" };
+      const payload = { name, scope: scopeDimension !== "project" && scopeValue ? { [scopeDimension]: scopeValue } : { project: projectId }, unit, allowance: Number(allowance), currency: unit === "money" ? policyCurrency : undefined, window: windowKind, timezone, mode, ...(policyId ? {} : { status: "active" }) };
       const response = await fetch(`/api/v1/projects/${projectId}/budget/policies${policyId ? `/${encodeURIComponent(policyId)}` : ""}`, { method: policyId ? "PATCH" : "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
       if (!response.ok) throw new Error(response.status === 403 ? "Only Owners and Admins can save budgets." : "Couldn’t save this budget. Try again.");
       setReviewed(true);
@@ -531,8 +575,8 @@ function PolicyEditPage() {
         </div>
         <div className="ck-form-section prototype-policy-section prototype-policy-scope-section">
           <div className="ck-form-section-title"><span className="ck-section-number">2</span> Applies to</div>
-          <div className="ck-form-grid prototype-policy-two-col"><label className="ck-form-field"><span>Project</span><span className="ck-form-select-wrap"><select className="ck-select" name="project" value={projectId ?? ""} onChange={(event) => setSelectedProjectId(event.target.value)}>{projects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}</select><PrototypeIcon name="down" size={14} /></span></label><label className="ck-form-field"><span>Covers</span><span className="ck-form-select-wrap"><select className="ck-select" name="dimension" value={scopeDimension} onChange={(event) => setScopeDimension(event.target.value)}><option value="project">Whole project</option><option value="feature">A feature</option><option value="customer">A customer</option><option value="function">A function</option><option value="model">A model</option><option value="group">An experiment</option></select><PrototypeIcon name="down" size={14} /></span></label></div>
-          {scopeDimension !== "project" && <label className="ck-form-field prototype-policy-match-field"><span>Which {scopeDimension === "group" ? "experiment" : scopeDimension}?</span><input className="ck-input" name="scope" value={scopeValue} onChange={(event) => setScopeValue(event.target.value)} placeholder={scopeDimension === "feature" ? "e.g. search" : scopeDimension === "model" ? "e.g. gpt-4o" : ""} /><small>Exact name, as your app sends it.</small></label>}
+          <div className="ck-form-grid prototype-policy-two-col"><label className="ck-form-field"><span>Project</span><span className="ck-form-select-wrap"><select className="ck-select" name="project" value={projectId ?? ""} onChange={(event) => setSelectedProjectId(event.target.value)}>{projects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}</select><PrototypeIcon name="down" size={14} /></span></label><label className="ck-form-field"><span>Covers</span><span className="ck-form-select-wrap"><select className="ck-select" name="dimension" value={scopeDimension} onChange={(event) => setScopeDimension(event.target.value)}><option value="project">Whole project</option><option value="feature">A feature</option><option value="customer">A customer</option><option value="function">A function</option><option value="model">A model</option><option value="group">An experiment</option><option value="agent">An agent</option><option value="tool">A tool</option></select><PrototypeIcon name="down" size={14} /></span></label></div>
+          {scopeDimension !== "project" && <label className="ck-form-field prototype-policy-match-field"><span>Which {scopeDimension === "group" ? "experiment" : scopeDimension}?</span><input className="ck-input" name="scope" value={scopeValue} onChange={(event) => setScopeValue(event.target.value)} placeholder={scopeDimension === "feature" ? "e.g. search" : scopeDimension === "model" ? "e.g. gpt-4o" : scopeDimension === "agent" ? "e.g. browser-agent" : scopeDimension === "tool" ? "e.g. search_funds" : ""} /><small>Exact name, as your app sends it.</small></label>}
           {prototype && <details className="prototype-policy-advanced"><summary>Advanced matching</summary><div className="prototype-policy-advanced-body"><label className="prototype-policy-check"><input type="checkbox" /> <span>Use a wildcard pattern. Preview matches before activation.</span></label><div className="ck-definition-list"><div><span>Project</span><strong>{projectName}</strong></div><div><span>Scope</span><strong>{scopeLabel}</strong></div><div><span>Future work</span><strong>Matching calls only</strong></div></div></div></details>}
           {prototype && <div className="prototype-policy-preview"><PrototypeIcon name="trace" size={15} /><span>Recent match preview: {preview} · 1–20 Sep · {environmentLabel}</span></div>}
         </div>
@@ -550,7 +594,7 @@ function PolicyEditPage() {
       </form>
       <aside className="ck-panel prototype-policy-summary"><div className="prototype-policy-summary-body"><h2>Summary</h2><dl className="ck-definition-list"><div><dt>Covers</dt><dd>{scopeLabel} · {projectName}</dd></div><div><dt>Limit</dt><dd>{allowance ? `${summaryAmount} · ${windowLabel.toLowerCase()}` : "—"}</dd></div><div><dt>When reached</dt><dd>{summaryAction}</dd></div></dl><span className="prototype-policy-default"><PrototypeIcon name={mode === "enforce" ? "shield" : "info"} size={14} /> {mode === "enforce" ? "Stops new calls" : "Alerts only"}</span></div></aside>
     </div>
-    <div className="prototype-policy-save-footer"><span>{proposal ? "Not active until an Owner or Admin saves it." : mode === "enforce" ? "Starts refusing calls as soon as you save." : ""}</span><div><button className="ck-button ck-button-secondary" type="button" onClick={() => navigate("/budgets")} disabled={saving}>Cancel</button><button className="ck-button ck-button-primary" form="policy-form" type="submit" disabled={saving}>{proposal ? "Copy summary" : saving ? "Saving" : reviewed ? "Saved" : policyId ? "Save changes" : "Save budget"}</button></div></div>
+    <div className="prototype-policy-save-footer"><span>{proposal ? "Not active until an Owner or Admin saves it." : mode === "enforce" ? "Starts refusing calls as soon as you save." : ""}</span><div><button className="ck-button ck-button-secondary" type="button" onClick={() => navigate("/budgets")} disabled={saving}>Cancel</button>{proposal ? <button className="ck-button ck-button-primary" type="button" onClick={() => void copySummary()}>{copied ? "Copied" : "Copy summary"}</button> : <button className="ck-button ck-button-primary" form="policy-form" type="submit" disabled={saving}>{saving ? "Saving" : reviewed ? "Saved" : policyId ? "Save changes" : "Save budget"}</button>}</div></div>
   </div>;
 }
 

@@ -19,7 +19,7 @@ import {
   StatusPill,
   type Period,
 } from "../components/ConsolePrimitives";
-import { formatCurrencyAmount, formatDateTime, formatProviders, formatReportedAmount, periodDates, type ReportingFx } from "../components/consoleFormatters";
+import { formatCurrencyAmount, formatDateTime, formatReportedAmount, periodDates, type ReportingFx } from "../components/consoleFormatters";
 import { isPrototypePreview } from "../prototypePreview";
 import { PrototypeIcon } from "../components/PrototypeIcon";
 import { prototypeRole, prototypeState, PrototypeStateNotice, PrototypeStatePanel } from "../components/PrototypeState";
@@ -105,7 +105,6 @@ function ForecastResultCard({ forecast, currency, fx, operations, unit, projectI
   const chosen = forecast?.chosenScale;
   const cash = forecast?.cash;
   const cashAmount = (value: number | null): string => cash?.currency && cash.currency !== "USD" ? formatCurrencyAmount(value, cash.currency) : formatReportedAmount(value, currency, fx);
-  const prototype = isPrototypePreview();
   const displayAmount = (value: number | null | undefined): string => formatPrototypeUsd(value, currency, fx);
   const labels = UNIT_LABEL[unit];
   const volume = Number(operations || 0);
@@ -132,7 +131,6 @@ function ForecastResultCard({ forecast, currency, fx, operations, unit, projectI
         {chosen?.selectionBiasWarning && <div className="ck-alert prototype-forecast-warning"><CircleAlert size={14} /><div>Runs with missing prices were left out, so this may run a little low.</div></div>}
         
         {cash?.available && <details className="prototype-explain"><summary>Credits and what you’d pay</summary><div className="prototype-cloud-body">{cash ? <dl className="ck-definition-list"><div><dt>Before credits</dt><dd>{cashAmount(cash.originalAmount)}</dd></div><div><dt>Credits that apply</dt><dd>{cashAmount(cash.eligibleCredits)}</dd></div><div><dt>You’d pay</dt><dd>{cashAmount(cash.estimatedPayable)}</dd></div>{!cash.available && cash.reason && <div><dt>Note</dt><dd>{cash.reason}</dd></div>}</dl> : <><p className="ck-panel-subtitle">Have provider or cloud credits? Add them to see what you’d actually pay.</p><Link className="ck-text-link" to={`/settings?section=pricing&state=credit-form&project=${encodeURIComponent(projectId)}`}>Add credits <ArrowRight size={12} /></Link></>}</div></details>}
-        {(prototype && amount != null) || (cash?.byProvider && Object.keys(cash.byProvider).length > 0) ? <div className="prototype-forecast-provider-block"><h3>By provider</h3>{prototype && amount != null ? <><div className="prototype-line-item"><span>OpenAI</span><span>{displayAmount(4089.95)}</span></div><div className="prototype-line-item"><span>Anthropic</span><span>{displayAmount(1860.05)}</span></div></> : Object.entries(cash?.byProvider ?? {}).map(([provider, values]) => <div className="prototype-line-item" key={provider}><span>{formatProviders(provider)}</span><span>{cashAmount(values.eligible ?? values.balance)}</span></div>)}</div> : null}
       </div>
     </section>
   </div>;
@@ -206,11 +204,12 @@ export default function Forecast() {
     if (!projectId) return;
     let cancelled = false;
     fetch(`/api/v1/projects/${projectId}/budget/policies`, { credentials: "include" })
-      .then(async (response) => response.ok ? response.json() as Promise<{ policies?: Array<{ status: string; unit: string; window: string; allowance: number }> }> : { policies: [] })
+      .then(async (response) => response.ok ? response.json() as Promise<{ policies?: Array<{ status: string; unit: string; window: string; allowance: number; scope?: Record<string, string> | null }> }> : { policies: [] })
       .then((result) => {
         if (cancelled) return;
-        const active = (result.policies ?? []).filter((policy) => policy.status === "active" && policy.unit === "money");
-        const monthly = active.find((policy) => policy.window === "calendar_month") ?? active[0];
+        // Only a whole-project monthly money budget is comparable to the projection.
+        const monthly = (result.policies ?? []).find((policy) => policy.status === "active" && policy.unit === "money" && policy.window === "calendar_month"
+          && Object.keys(policy.scope ?? {}).every((key) => key === "project"));
         setBudget(monthly ? Number(monthly.allowance) || null : null);
       })
       .catch(() => { if (!cancelled) setBudget(null); });

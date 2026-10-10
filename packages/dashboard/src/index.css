@@ -4239,3 +4239,17 @@ body {
 .ck-scope-dates input { min-height: 32px; padding: 0 10px; border: 1px solid var(--ck-border-strong); border-radius: 10px; background: var(--ck-raised); color: var(--ck-ink); font: inherit; font-size: 13px; }
 .ck-page-actions { flex-wrap: wrap; }
 .ck-page-actions > .ck-button, .ck-page-actions > a.ck-button { flex: 0 0 auto; white-space: nowrap; }
+/* Run timeline: agents, steps and tools with the calls made inside them. */
+.ck-tree-ticks { display: flex; justify-content: space-between; padding: 7px 18px 6px 50%; color: var(--ck-slate); font-size: 12px; background: var(--ck-paper); }
+.ck-waterfall { display: block; height: 3px; margin-top: 8px; border-radius: 3px; background: var(--ck-soft); }
+.ck-waterfall > span { display: block; height: 3px; border-radius: 3px; }
+.ck-step-cost small { display: block; color: var(--ck-slate); font-size: 12px; }
+.ck-run-tree .ck-step { text-align: left; }
+.ck-span-row { display: flex; align-items: stretch; gap: 2px; padding-top: 0; padding-bottom: 0; padding-right: 0; }
+.ck-span-toggle { flex: 0 0 22px; display: inline-flex; align-items: center; justify-content: center; border: 0; background: transparent; color: var(--ck-slate); cursor: pointer; border-radius: 6px; }
+button.ck-span-toggle:hover { color: var(--ck-ink); background: var(--ck-soft); }
+.ck-span-select { flex: 1 1 auto; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; padding: 6px 14px 6px 4px; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.ck-span-kind { display: inline-block; margin-right: 6px; color: var(--ck-slate); font-size: 12px; font-weight: 500; }
+.ck-span-kind.kind-agent { color: var(--ck-ink); font-weight: 600; }
+.ck-span-row.is-error .ck-step-name { color: #a33d32; }
+.ck-tone-critical-text { color: #a33d32; }

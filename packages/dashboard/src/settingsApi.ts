@@ -178,7 +178,7 @@ export function createTeamInvite(input: {
   email: string;
   role: "admin" | "developer" | "viewer";
   projectIds: string[];
-}): Promise<{ id: string; email: string; role: string; projectIds: string[]; expiresAt: string }> {
+}): Promise<{ id: string; email: string; role: string; projectIds: string[]; expiresAt: string; inviteUrl?: string; emailSent?: boolean }> {
   return request("/team/invite", { method: "POST", body: input });
 }
 
@@ -186,7 +186,7 @@ export function revokeTeamInvite(inviteId: string): Promise<{ ok: true }> {
   return request(`/team/invites/${encodeURIComponent(inviteId)}`, { method: "DELETE" });
 }
 
-export function resendTeamInvite(inviteId: string): Promise<{ id: string; expiresAt: string }> {
+export function resendTeamInvite(inviteId: string): Promise<{ id: string; expiresAt: string; inviteUrl?: string; emailSent?: boolean }> {
   return request(`/team/invites/${encodeURIComponent(inviteId)}/resend`, { method: "POST" });
 }
 

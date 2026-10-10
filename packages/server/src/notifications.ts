@@ -1998,7 +1998,7 @@ export async function dispatchFindingNotification(pool: pg.Pool, input: FindingN
 
 export function createNotificationsRouter(pool: pg.Pool): Router {
   const router = createRouter();
-  router.use(requireAuth);
+  router.use("/api", requireAuth);
 
   router.get("/api/v1/notifications/preferences", async (req: Request, res: Response) => {
     try {

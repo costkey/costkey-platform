@@ -17,7 +17,7 @@ function randomId(): string {
 
 export function createAlertsRouter(pool: pg.Pool): Router {
   const router = createRouter();
-  router.use(requireAuth);
+  router.use("/api", requireAuth);
 
   // GET /api/v1/alerts — list alerts for org
   router.get("/api/v1/alerts", async (req, res) => {

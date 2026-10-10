@@ -601,6 +601,8 @@ function scopedEventWhere(projectId: string, scope: Record<string, string>): { s
   if (scope["provider"]) add("COALESCE(provider, '')", scope["provider"]);
   if (scope["model"]) add("COALESCE(model, '')", scope["model"]);
   if (scope["group"]) add("COALESCE(group_name, context->>'group', '')", scope["group"]);
+  if (scope["agent"]) add("COALESCE(context->>'agent', '')", scope["agent"]);
+  if (scope["tool"]) add("COALESCE(context->>'tool', '')", scope["tool"]);
   return { sql: clauses.join(" AND "), params };
 }
 
@@ -1110,7 +1112,8 @@ export function createBudgetsRouter(pool: pg.Pool): Router {
          policyId, id],
       );
       if (!result.rows[0]) { res.status(404).json({ error: "Policy not found" }); return; }
-      await seedPolicyObservedUsage(pool, result.rows[0] as Record<string, unknown>);
+      // A paused or archived policy checks nothing; resuming seeds the window.
+      if (parsed.status === "active") await seedPolicyObservedUsage(pool, result.rows[0] as Record<string, unknown>);
       res.json({ policy: await publicPolicyWithUsage(pool, result.rows[0] as Record<string, unknown>) });
     } catch (err) {
       console.error("[costkey] UPDATE policy error:", err);

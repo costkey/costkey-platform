@@ -164,7 +164,12 @@ export function patchFetch(options: FetchPatchOptions): void {
     }
 
     const isStreaming = isStreamingRequest(url, requestBody);
-    const method = init?.method ?? "POST";
+    // fetch defaults to GET; polling APIs (AssemblyAI) bill on a GET.
+    const method = (
+      init?.method
+      ?? (typeof Request !== "undefined" && input instanceof Request ? input.method : null)
+      ?? (init?.body != null ? "POST" : "GET")
+    ).toUpperCase();
     const requestCall: ExtractorCall = {
       url,
       method,
@@ -330,6 +335,8 @@ function responseBodyMode(
   const contentType = call.responseHeaders?.get("content-type")?.toLowerCase() ?? "";
   if (contentType.includes("application/vnd.amazon.eventstream")) return "eventstream";
   if (contentType.includes("text/event-stream")) return "sse";
+  // Newline-delimited JSON streams (Ollama) are read as they pass through.
+  if (contentType.includes("ndjson")) return "sse";
   if (contentType && !contentType.includes("json") && !contentType.startsWith("text/")) return "none";
   return isStreaming ? "sse" : "json";
 }
@@ -936,8 +943,9 @@ export class StreamUsage {
 }
 
 /**
- * JSON records of a streamed text body: SSE `data:` events, or a plain JSON
- * array (Gemini streamGenerateContent without alt=sse).
+ * JSON records of a streamed text body: SSE `data:` events, a plain JSON
+ * array (Gemini streamGenerateContent without alt=sse), or newline-delimited
+ * JSON (Ollama).
  */
 function parseStreamRecords(text: string): unknown[] {
   const records: unknown[] = [];
@@ -959,7 +967,16 @@ function parseStreamRecords(text: string): unknown[] {
         const parsed = JSON.parse(body) as unknown;
         return Array.isArray(parsed) ? parsed : [parsed];
       } catch {
-        // Not a JSON body either.
+        // Not one JSON value: try one per line.
+      }
+      for (const line of body.split("\n")) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith("{")) continue;
+        try {
+          records.push(JSON.parse(trimmed));
+        } catch {
+          continue;
+        }
       }
     }
   }
@@ -1027,7 +1044,7 @@ export function isStreamingRequest(url: URL, requestBody: unknown): boolean {
     return true;
   }
   const path = url.pathname;
-  if (/:streamGenerateContent$/.test(path) || url.searchParams.get("alt") === "sse") return true;
+  if (/:(streamGenerateContent|streamRawPredict)$/.test(path) || url.searchParams.get("alt") === "sse") return true;
   if (/\/(invoke-with-response-stream|converse-stream)$/.test(path)) return true;
   return false;
 }

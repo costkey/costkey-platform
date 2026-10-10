@@ -1,5 +1,6 @@
 import { Provider } from "../types.js";
 import type { ProviderExtractor, NormalizedUsage } from "./types.js";
+import { asCount, asRecord } from "./units.js";
 
 function asNumber(val: unknown): number | null {
   if (typeof val === "number" && !Number.isNaN(val)) return val;
@@ -34,31 +35,47 @@ function extractModel(requestBody: unknown, responseBody: unknown): string | nul
   return null;
 }
 
-/** Cohere — api.cohere.com */
+/**
+ * Cohere usage. v1 bodies carry `meta`, v2 bodies `usage`, and a v2 stream's
+ * message-end event `delta.usage`; each holds `billed_units` (what is
+ * charged) and `tokens`. Embed bills input tokens (and images), rerank bills
+ * search units.
+ */
+function cohereUsage(body: unknown): NormalizedUsage | null {
+  const b = asRecord(body);
+  if (!b) return null;
+  const meta =
+    asRecord(b["meta"]) ??
+    asRecord(b["usage"]) ??
+    asRecord(asRecord(b["delta"])?.["usage"]);
+  const billed = asRecord(meta?.["billed_units"]);
+  const tokens = asRecord(meta?.["tokens"]);
+  if (!billed && !tokens) return extractOpenAIUsage(body);
+
+  const inputTokens = asCount(billed?.["input_tokens"]) ?? asCount(tokens?.["input_tokens"]);
+  const outputTokens = asCount(billed?.["output_tokens"]) ?? asCount(tokens?.["output_tokens"]);
+  const searchUnits = asCount(billed?.["search_units"]);
+  const images = asCount(billed?.["images"]);
+  const nativeUnits: Record<string, number> = {};
+  if (searchUnits != null && searchUnits > 0) nativeUnits["searchQueries"] = searchUnits;
+  if (images != null && images > 0) nativeUnits["images"] = images;
+  if (inputTokens == null && outputTokens == null && Object.keys(nativeUnits).length === 0) return null;
+  return {
+    inputTokens,
+    outputTokens,
+    totalTokens: inputTokens != null && outputTokens != null ? inputTokens + outputTokens : null,
+    reasoningTokens: null,
+    cacheReadTokens: null,
+    cacheCreationTokens: null,
+    ...(Object.keys(nativeUnits).length > 0 ? { nativeUnits } : {}),
+  };
+}
+
+/** Cohere — api.cohere.com (and the legacy api.cohere.ai) */
 export const cohereExtractor: ProviderExtractor = {
   provider: Provider.Cohere,
-  match(url: URL) { return url.hostname === "api.cohere.com"; },
-  extractUsage(body: unknown): NormalizedUsage | null {
-    if (!body || typeof body !== "object") return null;
-    const b = body as Record<string, unknown>;
-    // Cohere Chat API uses meta.tokens
-    const meta = b["meta"] as Record<string, unknown> | undefined;
-    if (meta) {
-      const tokens = meta["tokens"] as Record<string, unknown> | undefined;
-      if (tokens) {
-        return {
-          inputTokens: asNumber(tokens["input_tokens"]),
-          outputTokens: asNumber(tokens["output_tokens"]),
-          totalTokens: null,
-          reasoningTokens: null,
-          cacheReadTokens: null,
-          cacheCreationTokens: null,
-        };
-      }
-    }
-    // Fallback to OpenAI format (Cohere v2 API)
-    return extractOpenAIUsage(body);
-  },
+  match(url: URL) { return url.hostname === "api.cohere.com" || url.hostname === "api.cohere.ai"; },
+  extractUsage: cohereUsage,
   extractModel,
 };
 

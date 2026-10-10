@@ -19,19 +19,25 @@ Bedrock.
 
 | Provider | Matched endpoint(s) | What's recorded |
 | --- | --- | --- |
-| OpenAI | `api.openai.com` | Tokens, cached input, reasoning (Chat Completions and Responses, streamed or not) |
+| OpenAI | `api.openai.com` | Tokens, cached input, reasoning; speech characters; transcription seconds or tokens |
 | Azure OpenAI / AI Foundry | `*.openai.azure.com`, `*.services.ai.azure.com`, `*.cognitiveservices.azure.com` | Same as OpenAI; priced at the Azure rate |
 | Anthropic | `api.anthropic.com` | Tokens, cache reads and writes |
 | Google Gemini | `generativelanguage.googleapis.com` | Tokens, thinking, cached input, tool-use prompt tokens, search and Maps grounding |
-| Google Vertex AI | `aiplatform.googleapis.com`, `*-aiplatform.googleapis.com` | Same as Gemini |
+| Google Vertex AI | `aiplatform.googleapis.com`, `*-aiplatform.googleapis.com` | Gemini as above; Claude and other partner models with their own usage |
 | AWS Bedrock | `bedrock-runtime.*.amazonaws.com` | Tokens and cache, including Converse and InvokeModel event streams |
-| OpenRouter | `openrouter.ai` | Tokens; provider-reported cost |
-| Groq, xAI, Mistral, DeepSeek, Cohere, Together, Fireworks, Perplexity, Cerebras | Their API hosts | Tokens |
-| ElevenLabs | `api.elevenlabs.io` | Characters for text to speech; audio duration for speech to text |
-| Rumik Silk | `*.rumik.ai` | Characters |
-| Exa | `api.exa.ai` | Searches and results, pages; provider-reported cost |
-| Firecrawl | `api.firecrawl.dev` | Credits; searches and results |
+| OpenRouter, Vercel AI Gateway, Portkey, Helicone | Their gateway hosts | Tokens; provider-reported cost where sent |
+| Mistral, DeepSeek, xAI, Cohere, Groq, Together, Fireworks, Perplexity, Cerebras | Their API hosts | Tokens; Cohere embed tokens and rerank search units |
+| Alibaba Qwen, Moonshot Kimi, Z.ai GLM, MiniMax | DashScope, `api.moonshot.ai`/`.cn`, `api.z.ai`, `open.bigmodel.cn`, `api.minimax.io` | Tokens; MiniMax speech characters |
+| DeepInfra, NVIDIA NIM, SambaNova, Novita, Hyperbolic, Nebius, Hugging Face, Baseten, Lambda, Featherless, Friendli, AI21, Upstage, Cloudflare Workers AI | Their API hosts | Tokens |
+| Ollama | `localhost:11434` | Tokens (set your own rate) |
+| ElevenLabs, Cartesia, Deepgram Aura, Rumik Silk, Sarvam Bulbul | Their API hosts | Characters |
+| Deepgram, AssemblyAI, Sarvam, ElevenLabs Scribe | Their API hosts | Audio seconds |
+| Voyage, Jina | `api.voyageai.com`, `api.jina.ai` | Embedding and rerank tokens |
+| Exa, Tavily, Firecrawl | Their API hosts | Searches and results, credits, pages |
 | TypeSafe | `api.typesafe.ai` | Tokens |
+
+WebSocket and realtime APIs (OpenAI Realtime, Deepgram live, Cartesia
+websocket) aren't captured.
 
 Failed calls (4xx/5xx) are recorded without billable units. Audio responses
 are never read or buffered.

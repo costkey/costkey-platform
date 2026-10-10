@@ -37,7 +37,7 @@ const MODELS_DEV_PROVIDERS: Record<string, string> = {
   "novita-ai": "novita", nebius: "nebius", alibaba: "alibaba", moonshotai: "moonshot",
   minimax: "minimax", zai: "zai", huggingface: "huggingface", "cloudflare-workers-ai": "cloudflare",
   baseten: "baseten", friendli: "friendli", databricks: "databricks", "snowflake-cortex": "snowflake",
-  watsonx: "watsonx", oci: "oci", ai21: "ai21", llama: "meta",
+  watsonx: "watsonx", oci: "oci", ai21: "ai21", llama: "meta", upstage: "upstage",
 };
 
 /** OpenRouter id prefixes that name the first-party vendor. */
@@ -122,6 +122,8 @@ export function modelCandidates(raw: string): Array<{ model: string; match: Matc
   add(normalized, "normalized");
   const fineTune = normalized.match(/^ft:([^:]+)/);
   if (fineTune?.[1]) add(`ft:${fineTune[1]}`, "normalized");
+  // Gateway routing suffixes: `model:groq` (Hugging Face), `model:nitro` (OpenRouter).
+  if (!fineTune) add(normalized.replace(/:[a-z][a-z0-9-]*$/, ""), "normalized");
   const undated = stripModelVersion(fineTune?.[1] ?? normalized);
   add(undated, "undated");
   const regionless = normalized.replace(BEDROCK_REGION_PREFIX, "");

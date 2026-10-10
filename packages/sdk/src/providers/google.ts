@@ -1,5 +1,7 @@
 import { Provider } from "../types.js";
-import type { ProviderExtractor, NormalizedUsage } from "./types.js";
+import type { ProviderExtractor, NormalizedUsage, ExtractorCall } from "./types.js";
+import { anthropicUsage } from "./anthropic.js";
+import { openaiUsage, responseOrRequestModel } from "./openai.js";
 import { asRecord } from "./units.js";
 
 const GOOGLE_HOSTS = new Set([
@@ -9,6 +11,37 @@ const GOOGLE_HOSTS = new Set([
 /** Matches Vertex AI endpoints: the global aiplatform.googleapis.com and regional xxx-aiplatform.googleapis.com */
 function isVertexAI(hostname: string): boolean {
   return hostname === "aiplatform.googleapis.com" || hostname.endsWith("-aiplatform.googleapis.com");
+}
+
+/** Vertex Model Garden: /publishers/{publisher}/models/{model}[:method] */
+const PUBLISHER_MODEL_PATH = /\/publishers\/([^/]+)\/models\/([^/:]+)/;
+
+/**
+ * The publisher and model of a partner (non-Google) model call on Vertex AI:
+ * Claude via :rawPredict/:streamRawPredict, Mistral, Llama, DeepSeek, Qwen
+ * and AI21 via :rawPredict or /chat/completions. The model keeps its
+ * `@version` suffix.
+ */
+export function vertexPartnerModel(url: URL): { publisher: string; model: string } | null {
+  const match = PUBLISHER_MODEL_PATH.exec(url.pathname);
+  if (!match || match[1] === "google") return null;
+  return { publisher: safeDecode(match[1]!), model: safeDecode(match[2]!) };
+}
+
+/**
+ * Partner model bodies use their publisher's own usage shape instead of
+ * `usageMetadata`: Anthropic's (input/output plus cache read and write) for
+ * Claude, OpenAI's (`prompt_tokens`/`completion_tokens`) for the rest,
+ * including the OpenAI-compatible /endpoints/openapi/chat/completions route.
+ */
+function partnerUsage(body: Record<string, unknown>, call: ExtractorCall | undefined): NormalizedUsage | null {
+  const usage = asRecord(body["usage"]);
+  if (!usage) return null;
+  const publisher = call ? vertexPartnerModel(call.url)?.publisher : undefined;
+  const openaiShape = publisher
+    ? publisher !== "anthropic"
+    : "prompt_tokens" in usage || "completion_tokens" in usage;
+  return openaiShape ? openaiUsage(body) : anthropicUsage(body);
 }
 
 /**
@@ -60,9 +93,10 @@ export const googleExtractor: ProviderExtractor = {
     return GOOGLE_HOSTS.has(url.hostname) || isVertexAI(url.hostname);
   },
 
-  extractUsage(body: unknown): NormalizedUsage | null {
+  extractUsage(body: unknown, call?: ExtractorCall): NormalizedUsage | null {
     if (!body || typeof body !== "object") return null;
     const b = body as Record<string, unknown>;
+    if (!("usageMetadata" in b) && "usage" in b) return partnerUsage(b, call);
     const nativeUnits = geminiGroundingUnits([body]);
 
     const metadata = b["usageMetadata"] as Record<string, unknown> | undefined;
@@ -105,7 +139,17 @@ export const googleExtractor: ProviderExtractor = {
     };
   },
 
-  extractModel(requestBody: unknown, responseBody: unknown): string | null {
+  extractModel(requestBody: unknown, responseBody: unknown, call?: ExtractorCall): string | null {
+    // Partner models are named by the URL; Model Garden's OpenAI-compatible
+    // endpoint by the body.
+    if (call) {
+      const partner = vertexPartnerModel(call.url);
+      if (partner) return partner.model;
+      if (/\/endpoints\/openapi\/chat\/completions\/?$/.test(call.url.pathname)) {
+        return responseOrRequestModel(requestBody, responseBody);
+      }
+    }
+
     // Google returns modelVersion in response
     const resp = responseBody as Record<string, unknown> | null;
     if (resp && typeof resp["modelVersion"] === "string")
@@ -123,6 +167,14 @@ export const googleExtractor: ProviderExtractor = {
 
   // Google includes usageMetadata in streaming by default — no injection needed
 };
+
+function safeDecode(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
 
 function asNumber(val: unknown): number | null {
   if (typeof val === "number" && !Number.isNaN(val)) return val;

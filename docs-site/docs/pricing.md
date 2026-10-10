@@ -31,8 +31,9 @@ CostKey syncs three public catalogs every 6 hours:
 
 1. **Your project's prices.** These are set in **Settings → Prices & credits**,
    for negotiated rates or self-hosted models.
-2. **Rates CostKey maintains** for APIs the catalogs miss or list stale. These
-   cover Exa, Firecrawl credits, Rumik Silk, and ElevenLabs Flash/Turbo.
+2. **Rates CostKey maintains** for APIs the catalogs miss or list stale: Exa,
+   Firecrawl and Tavily credits, Rumik Silk, ElevenLabs Flash/Turbo, Deepgram
+   Aura, AssemblyAI Universal, Cartesia, Sarvam (converted from INR) and Jina.
 3. **The synced catalog.**
 4. **A built-in table** for older models.
 

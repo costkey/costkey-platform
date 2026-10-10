@@ -220,18 +220,18 @@ instruction content.
 
 ## Supported Providers
 
-| Provider | Hostname | Streaming |
+| Provider | Hostname | Streaming / units |
 |---|---|---|
-| OpenAI | `api.openai.com` | Yes (auto-injects `include_usage`) |
+| OpenAI | `api.openai.com` | Yes (auto-injects `include_usage`); TTS characters, transcription seconds or tokens |
 | Anthropic | `api.anthropic.com` | Yes |
 | Google Gemini | `generativelanguage.googleapis.com` | Yes |
-| Azure OpenAI | `*.openai.azure.com` | Yes |
-| Google Vertex AI | `*-aiplatform.googleapis.com` | Yes |
+| Azure OpenAI | `*.openai.azure.com`, `*.services.ai.azure.com`, `*.cognitiveservices.azure.com` | Yes; audio as OpenAI |
+| Google Vertex AI | `aiplatform.googleapis.com`, `*-aiplatform.googleapis.com` | Yes; Gemini plus partner models (Claude via `:rawPredict`/`:streamRawPredict` with cache tokens, Mistral, Llama, DeepSeek, Qwen, AI21) |
 | Groq | `api.groq.com` | Yes |
 | xAI (Grok) | `api.x.ai` | Yes |
 | Mistral | `api.mistral.ai` | Yes |
 | DeepSeek | `api.deepseek.com` | Yes |
-| Cohere | `api.cohere.com` | Yes |
+| Cohere | `api.cohere.com` | Yes; billed units (embed tokens, rerank search units) |
 | Together AI | `api.together.xyz` | Yes |
 | Fireworks | `api.fireworks.ai` | Yes |
 | Perplexity | `api.perplexity.ai` | Yes |
@@ -239,17 +239,46 @@ instruction content.
 | OpenRouter | `openrouter.ai` | Yes |
 | AWS Bedrock | `bedrock-runtime.*.amazonaws.com` | Yes (AWS event stream) |
 | Typesafe | `api.typesafe.ai` | Yes |
+| DeepInfra | `api.deepinfra.com` | Yes |
+| NVIDIA NIM | `integrate.api.nvidia.com` | Yes |
+| SambaNova | `api.sambanova.ai` | Yes |
+| Novita | `api.novita.ai` | Yes |
+| Hyperbolic | `api.hyperbolic.xyz` | Yes |
+| Nebius | `api.studio.nebius.com`, `api.studio.nebius.ai`, `api.tokenfactory.nebius.com` | Yes |
+| Alibaba (DashScope / Qwen) | `dashscope.aliyuncs.com`, `dashscope-intl.aliyuncs.com`, `dashscope-us.aliyuncs.com` | Yes |
+| Moonshot (Kimi) | `api.moonshot.ai`, `api.moonshot.cn` | Yes |
+| Z.ai (GLM) | `api.z.ai`, `open.bigmodel.cn` | Yes |
+| MiniMax | `api.minimax.io`, `api.minimaxi.com`, `api.minimax.chat` | Yes; T2A characters |
+| Hugging Face | `router.huggingface.co`, `api-inference.huggingface.co` | Yes |
+| Baseten | `inference.baseten.co` | Yes |
+| Lambda | `api.lambda.ai` | Yes |
+| Featherless | `api.featherless.ai` | Yes |
+| Friendli | `api.friendli.ai` | Yes |
+| AI21 | `api.ai21.com` | Yes |
+| Upstage | `api.upstage.ai` | Yes; document pages |
+| Sarvam | `api.sarvam.ai` | Yes; TTS characters, STT seconds when reported |
+| Cloudflare Workers AI | `api.cloudflare.com` (`/ai/` routes only) | Yes; native `/ai/run/@cf/...` and `/ai/v1` |
+| Vercel AI Gateway | `ai-gateway.vercel.sh` | Yes |
+| Portkey, Helicone | `api.portkey.ai`, `oai.helicone.ai`, `gateway.helicone.ai` (as `openai`), `anthropic.helicone.ai` (as `anthropic`) | Yes |
+| Ollama | `localhost:11434`, `127.0.0.1:11434` (inference routes) | Yes (NDJSON and SSE) |
 | ElevenLabs | `*.elevenlabs.io` | Characters (TTS), audio seconds (STT) |
 | Rumik | `*.rumik.ai` | Characters |
+| Deepgram | `api.deepgram.com` | Audio seconds (`/v1/listen`), characters (`/v1/speak`) |
+| AssemblyAI | `api.assemblyai.com`, `api.eu.assemblyai.com` | Audio seconds, on the completed transcript |
+| Cartesia | `api.cartesia.ai` | Characters (`/tts/bytes`, `/tts/sse`) |
+| Voyage AI | `api.voyageai.com` | Tokens (embeddings, rerank) |
+| Jina AI | `api.jina.ai` | Tokens (embeddings, rerank) |
 | Exa | `api.exa.ai` | Queries, results, pages, reported cost |
 | Firecrawl | `api.firecrawl.dev` | Credits, queries, results |
+| Tavily | `api.tavily.com` | Queries, credits |
 
 Providers that don't bill in tokens report `usage.nativeUnits` (`characters`,
 `audioSeconds`, `searchQueries`, `searchResults`, `groundingRequests`,
 `mapsGroundingRequests`, `credits`, `pages`, `images`, `requests`), which the
 server prices from its catalog. Gemini search and Maps grounding are counted
 the same way. Audio responses are never read or buffered: TTS characters come
-from the request text or the `character-cost` header.
+from the request text or the `character-cost` header. Units read from the
+request only count on a 2xx response.
 
 Custom providers: `CostKey.registerExtractor(extractor)`
 

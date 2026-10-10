@@ -52,7 +52,7 @@ export function providerChain(provider: string, url?: string | null): string[] {
 export function modelVendor(model: string): { vendor: string; model: string } | null {
   let name = normalizeModelId(model).replace(/^(us|eu|apac|global|in|jp|au|ca|us-gov)\./, "");
   const prefixed = name.match(/^([a-z0-9-]+)[./](.+)$/);
-  if (prefixed && ["openai", "anthropic", "google", "x-ai", "xai", "deepseek", "mistral", "mistralai", "cohere", "perplexity"].includes(prefixed[1]!)) {
+  if (prefixed && ["openai", "anthropic", "google", "x-ai", "xai", "deepseek", "deepseek-ai", "mistral", "mistralai", "cohere", "perplexity", "qwen", "alibaba", "moonshotai", "zai", "zai-org", "minimax", "minimaxai"].includes(prefixed[1]!)) {
     name = prefixed[2]!;
   }
   const vendor =
@@ -64,7 +64,11 @@ export function modelVendor(model: string): { vendor: string; model: string } | 
               : /^(mistral|mixtral|codestral|ministral|pixtral|magistral|devstral|voxtral)/.test(name) ? "mistral"
                 : /^(command|embed-|rerank-)/.test(name) ? "cohere"
                   : /^sonar/.test(name) ? "perplexity"
-                    : null;
+                    : /^(qwen|qwq)/.test(name) ? "alibaba"
+                      : /^(kimi|moonshot)/.test(name) ? "moonshot"
+                        : /^glm/.test(name) ? "zai"
+                          : /^minimax/.test(name) ? "minimax"
+                            : null;
   return vendor ? { vendor, model: name } : null;
 }
 
@@ -72,11 +76,17 @@ export class PriceCatalog {
   private readonly exact = new Map<string, CatalogPrice[]>();
   private readonly undated = new Map<string, CatalogPrice[]>();
   private readonly prices: CatalogPrice[];
+  /** Curated prices for every model starting with a prefix (`aura-2-*`, or `*` for all). */
+  private readonly prefixes: Array<{ prefix: string; price: CatalogPrice }> = [];
   readonly size: number;
 
   constructor(prices: CatalogPrice[], readonly loadedAt: Date = new Date()) {
     this.prices = prices;
     for (const price of prices) {
+      if (price.model.endsWith("*")) {
+        this.prefixes.push({ prefix: price.model.slice(0, -1), price });
+        continue;
+      }
       push(this.exact, key(price.provider, price.model), price);
       const base = stripModelVersion(price.model);
       if (base !== price.model) push(this.undated, key(price.provider, base), price);
@@ -136,6 +146,15 @@ export class PriceCatalog {
           if (price) return { price, match: index === 0 ? candidate.match : "first_party" };
         }
       }
+    }
+    // A curated price for a family of models (`aura-2-*`) or a whole provider (`*`).
+    const provider = chain[0] ?? input.provider;
+    for (const name of names) {
+      const model = normalizeModelId(name);
+      const family = this.prefixes
+        .filter((entry) => entry.price.provider === provider && model.startsWith(entry.prefix))
+        .sort((a, b) => b.prefix.length - a.prefix.length)[0];
+      if (family) return { price: family.price, match: "inferred" };
     }
     for (const name of names) {
       const vendor = modelVendor(name);

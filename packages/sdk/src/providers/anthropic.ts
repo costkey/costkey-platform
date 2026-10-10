@@ -5,6 +5,34 @@ const ANTHROPIC_HOSTS = new Set([
   "api.anthropic.com",
 ]);
 
+/**
+ * Anthropic Messages usage, including prompt-cache reads and writes. Also used
+ * for Claude on Vertex AI, which returns the same body and stream events.
+ */
+export function anthropicUsage(body: unknown): NormalizedUsage | null {
+  if (!body || typeof body !== "object") return null;
+  const b = body as Record<string, unknown>;
+
+  const usage = b["usage"] as Record<string, unknown> | undefined;
+  if (!usage || typeof usage !== "object") return null;
+
+  const inputTokens = asNumber(usage["input_tokens"]);
+  const outputTokens = asNumber(usage["output_tokens"]);
+  const totalTokens =
+    inputTokens != null && outputTokens != null
+      ? inputTokens + outputTokens
+      : null;
+
+  return {
+    inputTokens,
+    outputTokens,
+    totalTokens,
+    reasoningTokens: null,
+    cacheReadTokens: asNumber(usage["cache_read_input_tokens"]),
+    cacheCreationTokens: asNumber(usage["cache_creation_input_tokens"]),
+  };
+}
+
 export const anthropicExtractor: ProviderExtractor = {
   provider: Provider.Anthropic,
 
@@ -12,29 +40,7 @@ export const anthropicExtractor: ProviderExtractor = {
     return ANTHROPIC_HOSTS.has(url.hostname);
   },
 
-  extractUsage(body: unknown): NormalizedUsage | null {
-    if (!body || typeof body !== "object") return null;
-    const b = body as Record<string, unknown>;
-
-    const usage = b["usage"] as Record<string, unknown> | undefined;
-    if (!usage) return null;
-
-    const inputTokens = asNumber(usage["input_tokens"]);
-    const outputTokens = asNumber(usage["output_tokens"]);
-    const totalTokens =
-      inputTokens != null && outputTokens != null
-        ? inputTokens + outputTokens
-        : null;
-
-    return {
-      inputTokens,
-      outputTokens,
-      totalTokens,
-      reasoningTokens: null,
-      cacheReadTokens: asNumber(usage["cache_read_input_tokens"]),
-      cacheCreationTokens: asNumber(usage["cache_creation_input_tokens"]),
-    };
-  },
+  extractUsage: anthropicUsage,
 
   extractModel(requestBody: unknown, responseBody: unknown): string | null {
     const resp = responseBody as Record<string, unknown> | null;

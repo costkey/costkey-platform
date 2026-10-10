@@ -170,6 +170,15 @@ describe("price catalog resolution", () => {
     assert.equal(all.resolve({ provider: "openrouter", model: "meta-llama/llama-4:free" })?.price.rates.input, 0);
   });
 
+  it("prices model families, whole providers, gateway suffixes and open-weight vendors", () => {
+    assert.equal(all.price({ provider: "deepgram", model: "aura-2-thalia-en", usage: { nativeUnits: { characters: 1000 } } })?.cost, 0.03);
+    assert.equal(all.price({ provider: "deepgram", model: "aura-asteria-en", usage: { nativeUnits: { characters: 1000 } } })?.cost, 0.015);
+    assert.ok(all.price({ provider: "cartesia", model: "sonic-9", usage: { nativeUnits: { characters: 1000 } } }));
+    assert.equal(all.resolve({ provider: "openrouter", model: "perplexity/sonar:nitro" })?.price.model, "perplexity/sonar");
+    const qwen = new PriceCatalog([{ source: "litellm", provider: "alibaba", model: "qwen3-max", sourceKey: "dashscope/qwen3-max", mode: null, rates: { input: 1e-6, output: 5e-6 }, id: "q", effectiveFrom: EPOCH, effectiveTo: null }]);
+    assert.equal(qwen.resolve({ provider: "vercel", model: "alibaba/qwen3-max" })?.match, "inferred");
+  });
+
   it("lets curated prices win and keeps history on the version in force", () => {
     assert.equal(all.resolve({ provider: "exa", model: "search" })?.price.source, "costkey");
     assert.equal(all.price({ provider: "rumik", model: "mulberry", usage: { nativeUnits: { characters: 2000 } } })?.cost, 0.01);

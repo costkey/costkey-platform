@@ -1,13 +1,56 @@
 import { Provider } from "../types.js";
 import type { ProviderExtractor, NormalizedUsage } from "./types.js";
+import { asRecord } from "./units.js";
 
 const GOOGLE_HOSTS = new Set([
   "generativelanguage.googleapis.com",
 ]);
 
-/** Matches Vertex AI endpoints like xxx-aiplatform.googleapis.com */
+/** Matches Vertex AI endpoints: the global aiplatform.googleapis.com and regional xxx-aiplatform.googleapis.com */
 function isVertexAI(hostname: string): boolean {
-  return hostname.endsWith("-aiplatform.googleapis.com");
+  return hostname === "aiplatform.googleapis.com" || hostname.endsWith("-aiplatform.googleapis.com");
+}
+
+/**
+ * Billable grounding units from `candidates[].groundingMetadata` across one
+ * or more response bodies (a stream's chunks). Gemini 3+ bills each distinct
+ * executed search query; Gemini 2.x bills each grounded prompt; Maps
+ * grounding is billed per grounded prompt.
+ */
+export function geminiGroundingUnits(bodies: readonly unknown[]): Record<string, number> | null {
+  const queries = new Set<string>();
+  let web = false;
+  let maps = false;
+  for (const body of bodies) {
+    const candidates = asRecord(body)?.["candidates"];
+    if (!Array.isArray(candidates)) continue;
+    for (const candidate of candidates) {
+      const entry = asRecord(candidate);
+      const metadata = asRecord(entry?.["groundingMetadata"] ?? entry?.["grounding_metadata"]);
+      if (!metadata) continue;
+      const searchQueries = metadata["webSearchQueries"] ?? metadata["web_search_queries"];
+      if (Array.isArray(searchQueries) && searchQueries.length > 0) {
+        web = true;
+        for (const query of searchQueries) {
+          if (typeof query === "string" && query) queries.add(query);
+        }
+      }
+      const chunks = metadata["groundingChunks"] ?? metadata["grounding_chunks"];
+      if (Array.isArray(chunks)) {
+        for (const chunk of chunks) {
+          const source = asRecord(chunk);
+          if (source?.["web"]) web = true;
+          if (source?.["maps"]) maps = true;
+        }
+      }
+      if (metadata["googleMapsWidgetContextToken"] ?? metadata["google_maps_widget_context_token"]) maps = true;
+    }
+  }
+  const units: Record<string, number> = {};
+  if (queries.size > 0) units["searchQueries"] = queries.size;
+  if (web) units["groundingRequests"] = 1;
+  if (maps) units["mapsGroundingRequests"] = 1;
+  return Object.keys(units).length > 0 ? units : null;
 }
 
 export const googleExtractor: ProviderExtractor = {
@@ -20,11 +63,28 @@ export const googleExtractor: ProviderExtractor = {
   extractUsage(body: unknown): NormalizedUsage | null {
     if (!body || typeof body !== "object") return null;
     const b = body as Record<string, unknown>;
+    const nativeUnits = geminiGroundingUnits([body]);
 
     const metadata = b["usageMetadata"] as Record<string, unknown> | undefined;
-    if (!metadata) return null;
+    if (!metadata) {
+      // A streamed chunk can carry grounding without token counts.
+      return nativeUnits
+        ? {
+            inputTokens: null,
+            outputTokens: null,
+            totalTokens: null,
+            reasoningTokens: null,
+            cacheReadTokens: null,
+            cacheCreationTokens: null,
+            nativeUnits,
+          }
+        : null;
+    }
 
-    const inputTokens = asNumber(metadata["promptTokenCount"]);
+    // Grounding and tool calls add prompt tokens billed as input.
+    const promptTokens = asNumber(metadata["promptTokenCount"]);
+    const toolUseTokens = asNumber(metadata["toolUsePromptTokenCount"]);
+    const inputTokens = toolUseTokens ? (promptTokens ?? 0) + toolUseTokens : promptTokens;
     const outputTokens = asNumber(metadata["candidatesTokenCount"]);
     const totalTokens =
       asNumber(metadata["totalTokenCount"]) ??
@@ -41,6 +101,7 @@ export const googleExtractor: ProviderExtractor = {
       reasoningTokens: thoughtsTokens,
       cacheReadTokens: asNumber(metadata["cachedContentTokenCount"]),
       cacheCreationTokens: null,
+      ...(nativeUnits ? { nativeUnits } : {}),
     };
   },
 
@@ -53,6 +114,11 @@ export const googleExtractor: ProviderExtractor = {
     // Try to extract from the URL path (models/gemini-pro:generateContent)
     // This is handled at the fetch-patch level instead
     return null;
+  },
+
+  // Distinct queries are a union over all chunks, not the largest chunk.
+  extractStreamUnits(records: unknown[]): Record<string, number> | null {
+    return geminiGroundingUnits(records);
   },
 
   // Google includes usageMetadata in streaming by default — no injection needed

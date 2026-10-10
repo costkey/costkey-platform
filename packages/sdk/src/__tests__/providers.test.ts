@@ -24,6 +24,7 @@ describe("Provider Registry", () => {
 
   it("matches Vertex AI URLs", () => {
     expect(findExtractor(new URL("https://us-central1-aiplatform.googleapis.com/v1/projects/my-proj/locations/us-central1/publishers/google/models/gemini-pro:generateContent"))).toBe(googleExtractor);
+    expect(findExtractor(new URL("https://aiplatform.googleapis.com/v1/projects/p/locations/global/publishers/google/models/gemini-3.7-flash:generateContent"))).toBe(googleExtractor);
   });
 
   it("returns null for non-AI URLs", () => {
@@ -228,5 +229,13 @@ describe("Google Extractor", () => {
 
     const usage = googleExtractor.extractUsage(body);
     expect(usage?.reasoningTokens).toBe(100);
+  });
+});
+
+describe("Gemini tool-use prompt tokens", () => {
+  it("bills grounding and tool prompt tokens as input", () => {
+    const usage = googleExtractor.extractUsage({ usageMetadata: { promptTokenCount: 100, toolUsePromptTokenCount: 900, candidatesTokenCount: 20, totalTokenCount: 1020 } });
+    expect(usage?.inputTokens).toBe(1000);
+    expect(usage?.totalTokens).toBe(1020);
   });
 });

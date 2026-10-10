@@ -44,6 +44,7 @@ import { Provider as ProviderValue } from "./types.js";
 import { randomBytes } from "node:crypto";
 import { CostKeyPolicyClient, CostKeyPolicyRefused, type PolicyAdmissionClient } from "./policy.js";
 import { recordLiveKitUsage, recordLiveKitSessionUsage } from "./livekit.js";
+import { instrumentBedrockClient } from "./bedrock-client.js";
 
 export type {
   BeforeSendEventHook,
@@ -51,6 +52,7 @@ export type {
   EventContext,
   BeforeSendHook,
   ProviderExtractor,
+  ExtractorCall,
   ContextCarrier,
   TraceOptions,
   ExecutionOptions,
@@ -1028,11 +1030,14 @@ export const CostKey = {
   registerExtractor,
   recordLiveKitUsage,
   recordLiveKitSessionUsage,
+  instrumentBedrockClient,
 } as const;
 
 export default CostKey;
 
 export { recordLiveKitUsage, recordLiveKitSessionUsage } from "./livekit.js";
+export { instrumentBedrockClient } from "./bedrock-client.js";
+export type { BedrockClientLike } from "./bedrock-client.js";
 export type {
   LiveKitModelUsage,
   LiveKitSessionUsageUpdatedEvent,

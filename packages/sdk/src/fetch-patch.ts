@@ -4,10 +4,12 @@ import type {
   StreamTiming,
   BeforeSendHook,
   EventContext,
+  ExtractorCall,
+  ProviderExtractor,
 } from "./types.js";
-import { Provider } from "./types.js";
 import { findExtractor } from "./providers/registry.js";
 import { captureCallSite } from "./stack.js";
+import { EventStreamDecoder, bedrockStreamRecord } from "./eventstream.js";
 import { getCurrentContext, importContext } from "./context.js";
 import { Transport } from "./transport.js";
 import { randomBytes } from "node:crypto";
@@ -37,6 +39,8 @@ export interface FetchPatchOptions {
 
 let originalFetch: typeof globalThis.fetch | null = null;
 let isPatched = false;
+// Calls observed outside fetch (AWS SDK middleware) report through the same pipeline.
+let activeOptions: FetchPatchOptions | null = null;
 const pendingCaptures = new Set<Promise<void>>();
 const pendingPolicySettlements = new Set<Promise<void>>();
 
@@ -55,6 +59,7 @@ export function patchFetch(options: FetchPatchOptions): void {
 
   originalFetch = globalThis.fetch;
   isPatched = true;
+  activeOptions = options;
 
   globalThis.fetch = async function costKeyFetchWrapper(
     input: string | URL | Request,
@@ -130,6 +135,7 @@ export function patchFetch(options: FetchPatchOptions): void {
 
     // Parse and potentially modify the request body
     let requestBody: unknown = null;
+    let multipart = false;
     let modifiedInit = removeContextHeaders(init);
     const forwardedInput = removeContextHeadersFromRequest(input);
 
@@ -150,9 +156,22 @@ export function patchFetch(options: FetchPatchOptions): void {
       } catch {
         // Body isn't JSON or can't be parsed — that's fine
       }
+      // Multipart uploads (speech-to-text) still name the model in a form field.
+      if (requestBody === null) {
+        requestBody = formFields(init.body);
+        multipart = requestBody !== null;
+      }
     }
 
     const isStreaming = isStreamingRequest(url, requestBody);
+    const method = init?.method ?? "POST";
+    const requestCall: ExtractorCall = {
+      url,
+      method,
+      requestBody,
+      statusCode: null,
+      responseHeaders: null,
+    };
 
     // A caller may provide a per-attempt identity in the narrow context of a
     // provider call. Otherwise each observed request gets a fresh attempt ID;
@@ -174,11 +193,14 @@ export function patchFetch(options: FetchPatchOptions): void {
         admissionId: attemptId,
         requestId: attemptId,
         provider: String(extractor.provider),
-        model: extractor.extractModel(requestBody, null),
+        model: safeExtractModel(extractor, requestBody, null, requestCall),
         traceId: context.traceId,
         executionId: context.executionId,
         context: policyContext(context),
-        usageBounds: estimateUsageBounds(requestBody, typeof init?.body === "string" ? init.body : null),
+        // Form fields exclude the uploaded file, so they bound nothing.
+        usageBounds: multipart
+          ? undefined
+          : estimateUsageBounds(requestBody, typeof init?.body === "string" ? init.body : null),
       });
     }
 
@@ -193,14 +215,15 @@ export function patchFetch(options: FetchPatchOptions): void {
       const event = buildEvent({
         projectId: options.projectId,
         extractor,
+        call: requestCall,
         url,
-        method: init?.method ?? "POST",
+        method,
         statusCode: null,
         requestBody,
         responseBody: null,
         captureBody,
         usage: null,
-        model: extractor.extractModel(requestBody, null),
+        model: safeExtractModel(extractor, requestBody, null, requestCall),
         providerRequestId: null,
         attemptId,
         retryAttemptId,
@@ -228,19 +251,29 @@ export function patchFetch(options: FetchPatchOptions): void {
       throw err; // Re-throw — we never swallow user-facing errors
     }
 
-    // For non-streaming responses: clone, read body, extract usage
-    if (!isStreaming) {
+    const call: ExtractorCall = {
+      ...requestCall,
+      statusCode: response.status,
+      responseHeaders: response.headers,
+    };
+    const bodyMode = responseBodyMode(extractor, call, isStreaming, response.body != null);
+
+    // JSON responses: clone, read body, extract usage. Audio and other binary
+    // bodies are never read; their usage comes from the request and headers.
+    if (bodyMode === "json" || bodyMode === "none") {
       const pending = processNonStreamingResponse(
-        response.clone(),
+        bodyMode === "json" ? response.clone() : null,
         {
           startTime,
           url,
-          method: init?.method ?? "POST",
+          method,
           statusCode: response.status,
           requestBody,
           callSite,
           context,
           extractor,
+          call,
+          streaming: isStreaming,
           attemptId,
           retryAttemptId,
           startedAt,
@@ -253,15 +286,17 @@ export function patchFetch(options: FetchPatchOptions): void {
       return response;
     }
 
-    // For streaming responses: wrap the body to capture timing + final usage
+    // SSE and AWS event streams: wrap the body to capture timing + final usage
     return processStreamingResponse(response, {
       startTime,
       url,
-      method: init?.method ?? "POST",
+      method,
       requestBody,
       callSite,
       context,
       extractor,
+      call,
+      eventStream: bodyMode === "eventstream",
       attemptId,
       retryAttemptId,
       startedAt,
@@ -272,6 +307,69 @@ export function patchFetch(options: FetchPatchOptions): void {
   };
 }
 
+type ResponseBodyMode = "json" | "sse" | "eventstream" | "none";
+
+/**
+ * How to observe a response without disturbing the caller: JSON is read from
+ * a clone, SSE and AWS event streams are read as they pass through, and audio
+ * or other binary bodies are never read (a clone would buffer audio the caller
+ * is streaming and keep downloading it after the caller cancels).
+ */
+function responseBodyMode(
+  extractor: ProviderExtractor,
+  call: ExtractorCall,
+  isStreaming: boolean,
+  hasBody: boolean,
+): ResponseBodyMode {
+  if (!hasBody) return "none";
+  try {
+    if (extractor.readResponseBody?.(call) === false) return "none";
+  } catch {
+    // A failing custom hook falls back to the content-type decision.
+  }
+  const contentType = call.responseHeaders?.get("content-type")?.toLowerCase() ?? "";
+  if (contentType.includes("application/vnd.amazon.eventstream")) return "eventstream";
+  if (contentType.includes("text/event-stream")) return "sse";
+  if (contentType && !contentType.includes("json") && !contentType.startsWith("text/")) return "none";
+  return isStreaming ? "sse" : "json";
+}
+
+/** String fields of a FormData body; files are skipped. */
+function formFields(body: unknown): Record<string, string> | null {
+  if (typeof FormData === "undefined" || !(body instanceof FormData)) return null;
+  const fields: Record<string, string> = {};
+  for (const [key, value] of body.entries()) {
+    if (typeof value === "string") fields[key] = value;
+  }
+  return Object.keys(fields).length > 0 ? fields : null;
+}
+
+/** Extractors are user-extensible; a throwing one must not drop the call. */
+function safeExtractUsage(
+  extractor: ProviderExtractor,
+  body: unknown,
+  call?: ExtractorCall,
+): NormalizedUsage | null {
+  try {
+    return extractor.extractUsage(body, call) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function safeExtractModel(
+  extractor: ProviderExtractor,
+  requestBody: unknown,
+  responseBody: unknown,
+  call?: ExtractorCall,
+): string | null {
+  try {
+    return extractor.extractModel(requestBody, responseBody, call) ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /** Restore the original fetch. Used for cleanup/testing. */
 export function unpatchFetch(): void {
   if (originalFetch) {
@@ -279,6 +377,7 @@ export function unpatchFetch(): void {
     originalFetch = null;
     isPatched = false;
   }
+  activeOptions = null;
 }
 
 /** Wait for response-clone processing already started by fetch(). */
@@ -336,6 +435,72 @@ function trackPendingCapture(pending: Promise<void>): void {
   void pending.finally(() => pendingCaptures.delete(pending));
 }
 
+// ── Calls observed outside fetch ──
+
+/** A provider call seen by another integration (for example AWS SDK middleware). */
+export interface ObservedCall {
+  extractor: ProviderExtractor;
+  call: ExtractorCall;
+  responseBody: unknown;
+  usage: NormalizedUsage | null;
+  model: string | null;
+  providerRequestId?: string | null;
+  startedAt: string;
+  durationMs: number;
+  streaming: boolean;
+  streamTiming: StreamTiming | null;
+  callSite: ReturnType<typeof captureCallSite>;
+  /** Context captured when the call was made; default context is added here. */
+  context: EventContext;
+}
+
+/** Whether the SDK is initialized with a DSN and can record calls. */
+export function isCaptureActive(): boolean {
+  return isPatched && activeOptions !== null;
+}
+
+/** Record a call observed outside fetch through the same event pipeline. */
+export function recordObservedCall(observed: ObservedCall): void {
+  const options = activeOptions;
+  if (!options) return;
+  const pending = (async () => {
+    try {
+      const context = { ...options.defaultContext, ...observed.context };
+      const retryAttemptId =
+        typeof context.attemptId === "string" && context.attemptId.trim()
+          ? context.attemptId.trim()
+          : undefined;
+      const captureBody = shouldCaptureBody(options);
+      const event = buildEvent({
+        projectId: options.projectId,
+        extractor: observed.extractor,
+        call: observed.call,
+        url: observed.call.url,
+        method: observed.call.method,
+        statusCode: observed.call.statusCode,
+        requestBody: observed.call.requestBody,
+        responseBody: observed.responseBody,
+        captureBody,
+        providerRequestId: observed.providerRequestId,
+        attemptId: generateId(),
+        retryAttemptId,
+        startedAt: observed.startedAt,
+        usage: observed.usage,
+        model: observed.model,
+        durationMs: observed.durationMs,
+        streaming: observed.streaming,
+        streamTiming: observed.streamTiming,
+        callSite: observed.callSite,
+        context,
+      });
+      await sendEvent(event, options, captureBody);
+    } catch {
+      // Never crash the caller.
+    }
+  })();
+  trackPendingCapture(pending);
+}
+
 // ── Non-streaming response processing ──
 
 interface ResponseMeta {
@@ -347,6 +512,8 @@ interface ResponseMeta {
   callSite: ReturnType<typeof captureCallSite>;
   context: EventContext;
   extractor: ReturnType<typeof findExtractor> & {};
+  call: ExtractorCall;
+  streaming: boolean;
   attemptId: string;
   retryAttemptId?: string;
   startedAt: string;
@@ -355,7 +522,7 @@ interface ResponseMeta {
 }
 
 async function processNonStreamingResponse(
-  clonedResponse: Response,
+  clonedResponse: Response | null,
   meta: ResponseMeta,
   options: FetchPatchOptions,
 ): Promise<void> {
@@ -363,20 +530,23 @@ async function processNonStreamingResponse(
     const durationMs = performance.now() - meta.startTime;
     let responseBody: unknown = null;
 
-    try {
-      responseBody = await clonedResponse.json();
-    } catch {
-      // Response isn't JSON — still record the call, just without usage
+    if (clonedResponse) {
+      try {
+        responseBody = await clonedResponse.json();
+      } catch {
+        // Response isn't JSON — still record the call, just without usage
+      }
     }
 
-    const usage = responseBody
-      ? meta.extractor.extractUsage(responseBody)
-      : null;
-    const model = meta.extractor.extractModel(meta.requestBody, responseBody);
+    // Extractors also price from the request and headers (TTS characters,
+    // search result counts), so they run even without a response body.
+    const usage = safeExtractUsage(meta.extractor, responseBody, meta.call);
+    const model = safeExtractModel(meta.extractor, meta.requestBody, responseBody, meta.call);
 
     const event = buildEvent({
       projectId: options.projectId,
       extractor: meta.extractor,
+      call: meta.call,
       url: meta.url,
       method: meta.method,
       statusCode: meta.statusCode,
@@ -390,7 +560,7 @@ async function processNonStreamingResponse(
       usage,
       model,
       durationMs,
-      streaming: false,
+      streaming: meta.streaming,
       streamTiming: null,
       callSite: meta.callSite,
       context: meta.context,
@@ -524,6 +694,9 @@ interface StreamMeta {
   callSite: ReturnType<typeof captureCallSite>;
   context: EventContext;
   extractor: ReturnType<typeof findExtractor> & {};
+  call: ExtractorCall;
+  /** AWS binary event stream (Bedrock) rather than SSE text. */
+  eventStream: boolean;
   attemptId: string;
   retryAttemptId?: string;
   startedAt: string;
@@ -540,6 +713,8 @@ function processStreamingResponse(
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
+  const eventDecoder = meta.eventStream ? new EventStreamDecoder() : null;
+  const streamUsage = new StreamUsage(meta.extractor, meta.call);
   let streamFinished = false;
   let resolveStream!: () => void;
   const streamCompletion = new Promise<void>((resolve) => {
@@ -555,7 +730,81 @@ function processStreamingResponse(
   let firstChunkTime: number | null = null;
   let chunkCount = 0;
   let accumulatedText = "";
-  let lastUsage: NormalizedUsage | null = null;
+  let recorded = false;
+
+  // Record the call once: when the stream ends, or with the usage seen so far
+  // when the caller cancels or the stream fails (the call was still paid for).
+  const recordStream = async (completed: boolean): Promise<void> => {
+    if (recorded) return;
+    recorded = true;
+    try {
+      const endTime = performance.now();
+      const durationMs = endTime - meta.startTime;
+
+      if (!eventDecoder) {
+        for (const record of parseStreamRecords(accumulatedText)) streamUsage.add(record);
+      }
+      const usage = streamUsage.finish();
+
+      const streamTiming: StreamTiming = {
+        ttft: firstChunkTime
+          ? firstChunkTime - meta.startTime
+          : null,
+        tps:
+          usage?.outputTokens && firstChunkTime
+            ? usage.outputTokens /
+              ((endTime - firstChunkTime) / 1000)
+            : null,
+        streamDuration: durationMs,
+        chunkCount,
+      };
+
+      const model = streamUsage.model
+        ?? safeExtractModel(meta.extractor, meta.requestBody, null, meta.call);
+
+      const event = buildEvent({
+        projectId: meta.options.projectId,
+        extractor: meta.extractor,
+        call: meta.call,
+        url: meta.url,
+        method: meta.method,
+        statusCode: response.status,
+        requestBody: meta.requestBody,
+        responseBody: null, // Don't capture full stream body
+        captureBody: meta.captureBody,
+        providerRequestId: streamUsage.providerRequestId,
+        attemptId: meta.attemptId,
+        retryAttemptId: meta.retryAttemptId,
+        startedAt: meta.startedAt,
+        usage,
+        model,
+        durationMs,
+        streaming: true,
+        streamTiming,
+        callSite: meta.callSite,
+        context: meta.context,
+      });
+
+      if (meta.options.policy && meta.admission?.reservationId) {
+        trackPolicySettlement(
+          settlePolicy(
+            meta.options.policy,
+            meta.admission,
+            meta.options.projectId,
+            meta.attemptId,
+            completed && response.status >= 200 && response.status < 300
+              ? "success"
+              : "unknown",
+            completed ? usage : null,
+            true,
+          ),
+        );
+      }
+      await sendEvent(event, meta.options, meta.captureBody);
+    } catch {
+      // Telemetry never errors the caller's stream.
+    }
+  };
 
   const wrappedStream = new ReadableStream({
     async pull(controller) {
@@ -564,73 +813,8 @@ function processStreamingResponse(
 
         if (done) {
           controller.close();
-
           // Stream complete — build and send event
-          const endTime = performance.now();
-          const durationMs = endTime - meta.startTime;
-
-          // Try to parse accumulated SSE data for usage (from the final chunks)
-          if (!lastUsage) {
-            lastUsage = extractUsageFromSSE(accumulatedText, meta.extractor);
-          }
-
-          const streamTiming: StreamTiming = {
-            ttft: firstChunkTime
-              ? firstChunkTime - meta.startTime
-              : null,
-            tps:
-              lastUsage?.outputTokens && firstChunkTime
-                ? lastUsage.outputTokens /
-                  ((endTime - firstChunkTime) / 1000)
-                : null,
-            streamDuration: durationMs,
-            chunkCount,
-          };
-
-          const model = extractModelFromSSE(
-            accumulatedText,
-            meta.requestBody,
-            meta.extractor,
-          );
-
-          const event = buildEvent({
-            projectId: meta.options.projectId,
-            extractor: meta.extractor,
-            url: meta.url,
-            method: meta.method,
-            statusCode: response.status,
-            requestBody: meta.requestBody,
-            responseBody: null, // Don't capture full stream body
-            captureBody: meta.captureBody,
-            providerRequestId: extractProviderRequestIdFromSSE(accumulatedText),
-            attemptId: meta.attemptId,
-            retryAttemptId: meta.retryAttemptId,
-            startedAt: meta.startedAt,
-            usage: lastUsage,
-            model,
-            durationMs,
-            streaming: true,
-            streamTiming,
-            callSite: meta.callSite,
-            context: meta.context,
-          });
-
-          if (meta.options.policy && meta.admission?.reservationId) {
-            trackPolicySettlement(
-              settlePolicy(
-                meta.options.policy,
-                meta.admission,
-                meta.options.projectId,
-                meta.attemptId,
-                response.status >= 200 && response.status < 300
-                  ? "success"
-                  : "unknown",
-                lastUsage,
-                true,
-              ),
-            );
-          }
-          await sendEvent(event, meta.options, meta.captureBody);
+          await recordStream(true);
           finishStream();
           return;
         }
@@ -643,29 +827,36 @@ function processStreamingResponse(
           firstChunkTime = performance.now();
         }
 
-        // Accumulate text for SSE parsing (usage extraction)
-        accumulatedText += decoder.decode(value, { stream: true });
-      } catch (err) {
-        if (meta.options.policy && meta.admission?.reservationId) {
-          trackPolicySettlement(
-            settlePolicy(
-              meta.options.policy,
-              meta.admission,
-              meta.options.projectId,
-              meta.attemptId,
-              "unknown",
-              null,
-              true,
-            ),
-          );
+        if (eventDecoder) {
+          // Event-stream frames are decoded as they arrive; only usage
+          // events are parsed and nothing else is retained.
+          try {
+            for (const message of eventDecoder.push(value)) {
+              try {
+                streamUsage.add(bedrockStreamRecord(message));
+              } catch {
+                // Skip a malformed event payload.
+              }
+            }
+          } catch {
+            // Usage capture never interrupts the caller's stream.
+          }
+        } else {
+          // Accumulate text for SSE parsing (usage extraction)
+          accumulatedText += decoder.decode(value, { stream: true });
         }
-        finishStream();
+      } catch (err) {
         controller.error(err);
+        await recordStream(false);
+        finishStream();
       }
     },
 
-    cancel() {
-      void reader.cancel().finally(finishStream);
+    cancel(reason) {
+      void reader.cancel(reason)
+        .catch(() => undefined)
+        .then(() => recordStream(false))
+        .finally(finishStream);
     },
   });
 
@@ -678,40 +869,123 @@ function processStreamingResponse(
 }
 
 /**
- * Extract usage from a whole SSE stream. Providers put usage in different
- * events: OpenAI chat in the final chunk, the Responses API under
+ * Merges usage over the records of one stream: SSE data events, AWS
+ * event-stream payloads or AWS SDK stream events. Providers put usage in
+ * different events: OpenAI chat in the final chunk, the Responses API under
  * response.completed's `response`, Anthropic input in message_start and output
  * in message_delta, Gemini cumulatively on every chunk. Each field keeps its
  * largest reported value, which is correct for all of these shapes.
  */
-export function extractUsageFromSSE(
-  sseText: string,
-  extractor: ReturnType<typeof findExtractor> & {},
-): NormalizedUsage | null {
-  let merged: NormalizedUsage | null = null;
-  for (const rawLine of sseText.split("\n")) {
+export class StreamUsage {
+  /** First model any record names (falls back to the request's model). */
+  model: string | null = null;
+  providerRequestId: string | null = null;
+  private usage: NormalizedUsage | null = null;
+  private readonly records: unknown[] | null;
+
+  constructor(
+    private readonly extractor: ProviderExtractor,
+    private readonly call?: ExtractorCall,
+  ) {
+    // Records are only retained for extractors with stream-wide units.
+    this.records = extractor.extractStreamUnits ? [] : null;
+  }
+
+  add(record: unknown): void {
+    if (!record || typeof record !== "object") return;
+    this.records?.push(record);
+    const object = record as Record<string, unknown>;
+    for (const candidate of [object, object["response"], object["message"]]) {
+      if (!candidate || typeof candidate !== "object") continue;
+      const usage = safeExtractUsage(this.extractor, candidate, this.call);
+      if (usage) this.usage = mergeUsage(this.usage, usage);
+    }
+    if (this.model === null) {
+      this.model = safeExtractModel(this.extractor, this.call?.requestBody ?? null, object, this.call);
+    }
+    if (this.providerRequestId === null) this.providerRequestId = extractProviderRequestId(object);
+  }
+
+  finish(): NormalizedUsage | null {
+    let usage = this.usage;
+    // Units read from the request or headers (search result counts) don't
+    // depend on any one record.
+    if (this.call) {
+      const base = safeExtractUsage(this.extractor, null, this.call);
+      if (base) usage = mergeUsage(usage, base);
+    }
+    if (this.records) {
+      let units: Record<string, number> | null = null;
+      try {
+        units = this.extractor.extractStreamUnits?.(this.records) ?? null;
+      } catch {
+        // Keep the per-chunk units.
+      }
+      if (units) {
+        usage = {
+          ...(usage ?? emptyUsage()),
+          nativeUnits: { ...(usage?.nativeUnits ?? {}), ...units },
+        };
+      }
+    }
+    if (usage && usage.totalTokens == null && usage.inputTokens != null && usage.outputTokens != null) {
+      usage = { ...usage, totalTokens: usage.inputTokens + usage.outputTokens };
+    }
+    return usage;
+  }
+}
+
+/**
+ * JSON records of a streamed text body: SSE `data:` events, or a plain JSON
+ * array (Gemini streamGenerateContent without alt=sse).
+ */
+function parseStreamRecords(text: string): unknown[] {
+  const records: unknown[] = [];
+  for (const rawLine of text.split("\n")) {
     const line = rawLine.trimStart();
     if (!line.startsWith("data:")) continue;
     const data = line.slice(5).trim();
     if (!data || data === "[DONE]") continue;
-    let parsed: unknown;
     try {
-      parsed = JSON.parse(data);
+      records.push(JSON.parse(data));
     } catch {
       continue;
     }
-    if (!parsed || typeof parsed !== "object") continue;
-    const record = parsed as Record<string, unknown>;
-    for (const candidate of [record, record["response"], record["message"]]) {
-      if (!candidate || typeof candidate !== "object") continue;
-      const usage = extractor.extractUsage(candidate);
-      if (usage) merged = mergeUsage(merged, usage);
+  }
+  if (records.length === 0) {
+    const body = text.trim();
+    if (body.startsWith("[") || body.startsWith("{")) {
+      try {
+        const parsed = JSON.parse(body) as unknown;
+        return Array.isArray(parsed) ? parsed : [parsed];
+      } catch {
+        // Not a JSON body either.
+      }
     }
   }
-  if (merged && merged.totalTokens == null && merged.inputTokens != null && merged.outputTokens != null) {
-    merged.totalTokens = merged.inputTokens + merged.outputTokens;
-  }
-  return merged;
+  return records;
+}
+
+/** Extract usage from a whole SSE stream (see StreamUsage). */
+export function extractUsageFromSSE(
+  sseText: string,
+  extractor: ReturnType<typeof findExtractor> & {},
+  call?: ExtractorCall,
+): NormalizedUsage | null {
+  const usage = new StreamUsage(extractor, call);
+  for (const record of parseStreamRecords(sseText)) usage.add(record);
+  return usage.finish();
+}
+
+function emptyUsage(): NormalizedUsage {
+  return {
+    inputTokens: null,
+    outputTokens: null,
+    totalTokens: null,
+    reasoningTokens: null,
+    cacheReadTokens: null,
+    cacheCreationTokens: null,
+  };
 }
 
 function mergeUsage(current: NormalizedUsage | null, next: NormalizedUsage): NormalizedUsage {
@@ -734,6 +1008,13 @@ function mergeUsage(current: NormalizedUsage | null, next: NormalizedUsage): Nor
   if (cost != null) merged.costUsd = cost;
   const image = pick(current.imageOutputTokens, next.imageOutputTokens);
   if (image != null) merged.imageOutputTokens = image;
+  if (current.nativeUnits || next.nativeUnits) {
+    const units: Record<string, number> = { ...current.nativeUnits };
+    for (const [unit, value] of Object.entries(next.nativeUnits ?? {})) {
+      units[unit] = pick(units[unit], value) ?? value;
+    }
+    merged.nativeUnits = units;
+  }
   return merged;
 }
 
@@ -781,50 +1062,13 @@ function safeStringify(value: unknown): string | null {
   }
 }
 
-/** Try to extract model name from accumulated SSE text */
-function extractModelFromSSE(
-  sseText: string,
-  requestBody: unknown,
-  extractor: ReturnType<typeof findExtractor> & {},
-): string | null {
-  const lines = sseText.split("\n");
-  for (const line of lines) {
-    if (!line.startsWith("data: ")) continue;
-    const data = line.slice(6).trim();
-    if (data === "[DONE]") continue;
-
-    try {
-      const parsed = JSON.parse(data);
-      const model = extractor.extractModel(requestBody, parsed);
-      if (model) return model;
-    } catch {
-      continue;
-    }
-  }
-  return null;
-}
-
-function extractProviderRequestIdFromSSE(sseText: string): string | null {
-  const lines = sseText.split("\n");
-  for (const line of lines) {
-    if (!line.startsWith("data: ")) continue;
-    const data = line.slice(6).trim();
-    if (data === "[DONE]") continue;
-    try {
-      const id = extractProviderRequestId(JSON.parse(data));
-      if (id) return id;
-    } catch {
-      // Ignore incomplete/non-JSON SSE chunks.
-    }
-  }
-  return null;
-}
-
 // ── Event building ──
 
 interface BuildEventParams {
   projectId: string;
   extractor: ReturnType<typeof findExtractor> & {};
+  /** Request/response facts for extractors that read the URL or headers. */
+  call?: ExtractorCall;
   url: URL;
   method: string;
   statusCode: number | null;
@@ -857,7 +1101,12 @@ function buildEvent(params: BuildEventParams): CostKeyEvent {
   const eventId = params.attemptId ?? generateId();
   const providerRequestId =
     params.providerRequestId ?? extractProviderRequestId(params.responseBody);
-  const requestModel = params.extractor.extractModel(params.requestBody, null);
+  const requestModel = safeExtractModel(
+    params.extractor,
+    params.requestBody,
+    null,
+    params.call ? { ...params.call, statusCode: null, responseHeaders: null } : undefined,
+  );
   return {
     id: eventId,
     eventType: "call",

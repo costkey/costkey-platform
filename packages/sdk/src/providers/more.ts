@@ -125,3 +125,23 @@ export const cerebrasExtractor: ProviderExtractor = {
   extractUsage: extractOpenAIUsage,
   extractModel,
 };
+
+/** Typesafe (Jev) — api.typesafe.ai, OpenAI-style usage */
+export const typesafeExtractor: ProviderExtractor = {
+  provider: Provider.Typesafe,
+  match(url: URL) { return url.hostname === "api.typesafe.ai"; },
+  extractUsage(body: unknown): NormalizedUsage | null {
+    const usage = extractOpenAIUsage(body);
+    if (usage && usage.totalTokens == null && usage.inputTokens != null && usage.outputTokens != null) {
+      usage.totalTokens = usage.inputTokens + usage.outputTokens;
+    }
+    return usage;
+  },
+  extractModel(requestBody: unknown, responseBody: unknown): string | null {
+    const req = requestBody as Record<string, unknown> | null;
+    if (req && typeof req["model"] === "string") return req["model"];
+    const resp = responseBody as Record<string, unknown> | null;
+    if (resp && typeof resp["model"] === "string") return resp["model"];
+    return "jev-latest";
+  },
+};

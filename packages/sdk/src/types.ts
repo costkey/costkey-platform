@@ -15,6 +15,11 @@ export enum Provider {
   Cerebras = "cerebras",
   OpenRouter = "openrouter",
   Bedrock = "bedrock",
+  ElevenLabs = "elevenlabs",
+  Rumik = "rumik",
+  Exa = "exa",
+  Firecrawl = "firecrawl",
+  Typesafe = "typesafe",
   Unknown = "unknown",
 }
 
@@ -32,6 +37,13 @@ export interface NormalizedUsage {
   costUsd?: number | null;
   /** Image tokens included in outputTokens; absent means the breakdown is unknown. */
   imageOutputTokens?: number | null;
+  /**
+   * Non-token billable units the server prices from its catalog: `characters`,
+   * `audioSeconds`, `searchQueries`, `searchResults`, `groundingRequests`,
+   * `mapsGroundingRequests`, `credits`, `pages`, `images`, `requests`.
+   * Absent means none were observed, not zero.
+   */
+  nativeUnits?: Record<string, number>;
 }
 
 /** Timing data for streaming responses */
@@ -602,18 +614,48 @@ export interface CostKeyEvent {
   responseBody: unknown | null;
 }
 
+/**
+ * Request and response facts beyond the JSON body. Providers that bill by
+ * request size (TTS characters, search result counts) or report usage in
+ * headers read it from here.
+ */
+export interface ExtractorCall {
+  url: URL;
+  method: string;
+  /** Parsed JSON request body (or string fields of a FormData body). */
+  requestBody: unknown;
+  /** HTTP status; null before a response exists. */
+  statusCode: number | null;
+  /** Response headers; null before a response exists. */
+  responseHeaders: Headers | null;
+}
+
 /** Provider extractor interface — one per AI provider */
 export interface ProviderExtractor {
   /** Provider identifier */
   provider: Provider;
   /** Check if a URL belongs to this provider */
   match(url: URL): boolean;
-  /** Extract normalized usage from the response body */
-  extractUsage(body: unknown): NormalizedUsage | null;
+  /**
+   * Extract normalized usage from the response body. The body is null when
+   * it was not read (audio/binary responses); `call` is absent for callers
+   * that only have a body.
+   */
+  extractUsage(body: unknown, call?: ExtractorCall): NormalizedUsage | null;
   /** Extract the model name from request or response body */
-  extractModel(requestBody: unknown, responseBody: unknown): string | null;
+  extractModel(requestBody: unknown, responseBody: unknown, call?: ExtractorCall): string | null;
   /** Optionally modify request body before sending (e.g., inject stream_options) */
   injectStreamOptions?(requestBody: unknown): unknown;
+  /**
+   * Return false when the response body must not be read (audio or other
+   * binary output). By default JSON and text bodies are read.
+   */
+  readResponseBody?(call: ExtractorCall): boolean;
+  /**
+   * Units computed over a whole stream rather than merged chunk by chunk,
+   * such as distinct search queries across Gemini chunks.
+   */
+  extractStreamUnits?(records: unknown[]): Record<string, number> | null;
 }
 
 /** Hook called before an event is sent — return null to drop the event */

@@ -13,6 +13,12 @@ const INTERNAL_PATTERNS = [
   "/node_modules/@anthropic-ai/",
   "/node_modules/@google/generative-ai/",
   "/node_modules/cohere-ai/",
+  "/node_modules/@aws-sdk/",
+  "/node_modules/@smithy/",
+  "/node_modules/@ai-sdk/",
+  "/node_modules/@elevenlabs/",
+  "/node_modules/exa-js/",
+  "/node_modules/@mendable/firecrawl-js/",
   // HTTP clients
   "/node_modules/node-fetch/",
   "/node_modules/undici/",

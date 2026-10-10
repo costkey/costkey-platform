@@ -596,7 +596,7 @@ describe("Bedrock Extractor", () => {
       const usage = bedrockExtractor.extractUsage(body);
       assert.strictEqual(usage!.inputTokens, 100);
       assert.strictEqual(usage!.outputTokens, 50);
-      assert.strictEqual(usage!.totalTokens, null);
+      assert.strictEqual(usage!.totalTokens, 150);
     });
   });
 

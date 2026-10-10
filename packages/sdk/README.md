@@ -237,9 +237,37 @@ instruction content.
 | Perplexity | `api.perplexity.ai` | Yes |
 | Cerebras | `api.cerebras.ai` | Yes |
 | OpenRouter | `openrouter.ai` | Yes |
-| AWS Bedrock | `bedrock-runtime.*.amazonaws.com` | No |
+| AWS Bedrock | `bedrock-runtime.*.amazonaws.com` | Yes (AWS event stream) |
+| Typesafe | `api.typesafe.ai` | Yes |
+| ElevenLabs | `*.elevenlabs.io` | Characters (TTS), audio seconds (STT) |
+| Rumik | `*.rumik.ai` | Characters |
+| Exa | `api.exa.ai` | Queries, results, pages, reported cost |
+| Firecrawl | `api.firecrawl.dev` | Credits, queries, results |
+
+Providers that don't bill in tokens report `usage.nativeUnits` (`characters`,
+`audioSeconds`, `searchQueries`, `searchResults`, `groundingRequests`,
+`mapsGroundingRequests`, `credits`, `pages`, `images`, `requests`), which the
+server prices from its catalog. Gemini search and Maps grounding are counted
+the same way. Audio responses are never read or buffered: TTS characters come
+from the request text or the `character-cost` header.
 
 Custom providers: `CostKey.registerExtractor(extractor)`
+
+### AWS SDK for JavaScript (Bedrock)
+
+`@aws-sdk/client-bedrock-runtime` sends requests through Node's `http` module,
+not `fetch`, so instrument the client once:
+
+```typescript
+import { BedrockRuntimeClient } from '@aws-sdk/client-bedrock-runtime'
+
+const bedrock = CostKey.instrumentBedrockClient(new BedrockRuntimeClient({ region: 'us-east-1' }))
+```
+
+Converse, ConverseStream, InvokeModel and InvokeModelWithResponseStream calls
+are then recorded with token usage; streamed usage is recorded when your code
+finishes reading the stream. Bedrock calls made through `fetch` (for example
+`@ai-sdk/amazon-bedrock`) need no setup.
 
 ## Options
 
@@ -272,6 +300,7 @@ Custom providers: `CostKey.registerExtractor(extractor)`
 | `CostKey.exportContext()` / `exportContextHeaders()` | Explicit allowlisted cross-process carrier. |
 | `CostKey.shutdown()` | Flush and restore original fetch. |
 | `CostKey.registerExtractor(ext)` | Add custom AI provider. |
+| `CostKey.instrumentBedrockClient(client)` | Record usage from an AWS SDK v3 `BedrockRuntimeClient`. |
 
 ## Measuring overhead
 

@@ -6,6 +6,10 @@ import { openrouterExtractor } from "./openrouter.js";
 import { xaiExtractor } from "./xai.js";
 import { groqExtractor } from "./groq.js";
 import { bedrockExtractor } from "./bedrock.js";
+import { elevenlabsExtractor } from "./elevenlabs.js";
+import { rumikExtractor } from "./rumik.js";
+import { exaExtractor } from "./exa.js";
+import { firecrawlExtractor } from "./firecrawl.js";
 import {
   cohereExtractor,
   mistralExtractor,
@@ -14,6 +18,7 @@ import {
   fireworksExtractor,
   perplexityExtractor,
   cerebrasExtractor,
+  typesafeExtractor,
 } from "./more.js";
 
 /** All registered provider extractors — checked in order */
@@ -41,6 +46,15 @@ const extractors: ProviderExtractor[] = [
   deepseekExtractor,     // api.deepseek.com
   cohereExtractor,       // api.cohere.com
   perplexityExtractor,   // api.perplexity.ai
+  typesafeExtractor,     // api.typesafe.ai
+
+  // Voice (billed per character / audio second)
+  elevenlabsExtractor,   // *.elevenlabs.io
+  rumikExtractor,        // *.rumik.ai
+
+  // Search and scraping (billed per query, page or credit)
+  exaExtractor,          // api.exa.ai
+  firecrawlExtractor,    // api.firecrawl.dev
 ];
 
 /**

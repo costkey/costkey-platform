@@ -81,7 +81,7 @@ Each note shows the comparison, the amounts and the runs behind it. It doesn't g
 - **Team**: invite people as Viewers, Developers or Admins
 - **Notifications**: weekly summaries, flagged changes, budget alerts and refused calls, by email or webhook
 - **Privacy & data**: time zone, reporting currency, text capture, redaction and retention
-- **Prices & credits**: custom rates for negotiated or self-hosted models, and provider credits
+- **Prices & credits**: models without a price, custom rates for negotiated or self-hosted models, and provider credits
 - **Billing**: your plan and invoices
 
 When body capture is on, known secrets such as API keys, bearer tokens and JWTs are replaced with `[REDACTED]` before they leave your app.

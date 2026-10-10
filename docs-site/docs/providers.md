@@ -13,35 +13,37 @@ provider-routing gateway is required.
 
 ## Supported providers
 
-| Provider label | Matched endpoint(s) | TypeScript `fetch` | Python HTTPX | Python `requests` | Response evidence |
-| --- | --- | :---: | :---: | :---: | --- |
-| OpenAI | `api.openai.com` | ✓ | ✓ | ✓ | `usage.prompt_tokens`/`completion_tokens`; Responses-style `input_tokens`/`output_tokens` |
-| Anthropic | `api.anthropic.com` | ✓ | ✓ | ✓ | `usage.input_tokens`/`output_tokens`; cache fields when present |
-| Google | `generativelanguage.googleapis.com` | ✓ | ✓ | ✓ | `usageMetadata.promptTokenCount`/`candidatesTokenCount` |
-| Google / Vertex | `*-aiplatform.googleapis.com` | ✓ | ✓ | ✓ | Same `usageMetadata` shape when returned |
-| Azure OpenAI | `*.openai.azure.com` | ✓ | ✓ | ✓ | OpenAI-style usage; event provider label is `openai` in the current extractor |
-| Groq | `api.groq.com` | ✓ | ✓ | ✓ | OpenAI-compatible `usage` fields when present |
-| xAI | `api.x.ai`, `api.grok.xai.com` | ✓ | ✓ | ✓ | OpenAI-compatible `usage` fields when present |
-| Mistral | `api.mistral.ai` | ✓ | ✓ | ✓ | OpenAI-compatible `usage` fields when present |
-| DeepSeek | `api.deepseek.com` | ✓ | ✓ | ✓ | OpenAI-style usage plus reasoning/cache fields when present |
-| Cohere | `api.cohere.com` | ✓ | ✓ | ✓ | `meta.tokens` or OpenAI-compatible `usage` |
-| Together AI | `api.together.xyz` | ✓ | ✓ | ✓ | OpenAI-compatible `usage` fields when present |
-| Fireworks AI | `api.fireworks.ai` | ✓ | ✓ | ✓ | OpenAI-compatible `usage` fields when present |
-| Perplexity | `api.perplexity.ai` | ✓ | ✓ | ✓ | OpenAI-compatible `usage` fields when present |
-| Cerebras | `api.cerebras.ai` | ✓ | ✓ | ✓ | OpenAI-compatible `usage` fields when present |
-| OpenRouter | `openrouter.ai` | ✓ | ✓ | ✓ | OpenAI-style usage; TypeScript also reads provider-reported `usage.cost` when present |
-| AWS Bedrock | `bedrock-runtime.*.amazonaws.com` | ✓ | ✓ | ✓ | `usage.inputTokens`/`outputTokens` or `amazon-bedrock-invocationMetrics` |
+TypeScript patches `globalThis.fetch`. Python patches `httpx`, `requests` and
+`aiohttp` (which google-genai uses whenever it's installed), plus boto3 for
+Bedrock.
 
-The checkmarks identify the patched method, not every library that may call
-that method. TypeScript patches `globalThis.fetch`; Python patches
-`httpx.Client.send`, `httpx.AsyncClient.send`, and `requests.Session.send`.
-The endpoint rows correspond to the extractor registries and provider-shape
-tests in the SDK source; a hostname match alone is not live-provider proof.
-Python stream iteration is implemented for HTTPX; the `requests` path is
-JSON-oriented and has no separate SSE iterator wrapper. The current
-TypeScript and HTTPX stream paths require a JSON request with `stream: true`
-and usage in a parseable SSE `data:` frame. Bedrock streaming is not asserted
-by this table.
+| Provider | Matched endpoint(s) | What's recorded |
+| --- | --- | --- |
+| OpenAI | `api.openai.com` | Tokens, cached input, reasoning (Chat Completions and Responses, streamed or not) |
+| Azure OpenAI / AI Foundry | `*.openai.azure.com`, `*.services.ai.azure.com`, `*.cognitiveservices.azure.com` | Same as OpenAI; priced at the Azure rate |
+| Anthropic | `api.anthropic.com` | Tokens, cache reads and writes |
+| Google Gemini | `generativelanguage.googleapis.com` | Tokens, thinking, cached input, tool-use prompt tokens, search and Maps grounding |
+| Google Vertex AI | `aiplatform.googleapis.com`, `*-aiplatform.googleapis.com` | Same as Gemini |
+| AWS Bedrock | `bedrock-runtime.*.amazonaws.com` | Tokens and cache, including Converse and InvokeModel event streams |
+| OpenRouter | `openrouter.ai` | Tokens; provider-reported cost |
+| Groq, xAI, Mistral, DeepSeek, Cohere, Together, Fireworks, Perplexity, Cerebras | Their API hosts | Tokens |
+| ElevenLabs | `api.elevenlabs.io` | Characters for text to speech; audio duration for speech to text |
+| Rumik Silk | `*.rumik.ai` | Characters |
+| Exa | `api.exa.ai` | Searches and results, pages; provider-reported cost |
+| Firecrawl | `api.firecrawl.dev` | Credits; searches and results |
+| TypeSafe | `api.typesafe.ai` | Tokens |
+
+Failed calls (4xx/5xx) are recorded without billable units. Audio responses
+are never read or buffered.
+
+### Bedrock with the AWS SDK
+
+boto3 is covered automatically. In Node, the AWS SDK v3 doesn't use `fetch`,
+so instrument the client once:
+
+```typescript
+const bedrock = CostKey.instrumentBedrockClient(new BedrockRuntimeClient({ region: "us-east-1" }))
+```
 
 ## How endpoint detection works
 
@@ -64,17 +66,11 @@ For supported streaming responses, the SDK wraps the response stream to capture
 timing metrics (TTFT, tokens/sec) and looks for usage in SSE data frames. This
 does not provide complete voice or non-HTTP transport coverage.
 
-## Server-side cost calculation
+## Cost
 
-The SDK sends raw token counts to the CostKey server. The server calculates costs using a fuzzy model matching system:
-
-- `claude-sonnet-4-5-20250514` matches pricing for `claude-sonnet-4-5`
-- `ft:gpt-4o:my-org:custom:abc` matches pricing for `gpt-4o`
-- `accounts/fireworks/models/llama-v3p1-70b-instruct` matches `llama-3.1-70b`
-
-Pricing is resolved server-side when the model and usage are known. A missing
-price remains unknown; it is not rendered as zero. This page intentionally does
-not publish model rates.
+The SDK sends usage; the server prices it from a synced catalog. See
+[Pricing](/pricing) for sources, matching and what to do when a model has no
+price.
 
 ## Adding a custom provider
 

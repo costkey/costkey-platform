@@ -5,6 +5,7 @@ const sidebars = {
     'python-sdk',
     'typescript-sdk',
     'agents',
+    'pricing',
     'recipes',
     'providers',
     'dashboard',

@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import "./index.css";
 import { initAnalytics } from "./analytics.ts";
 import BootScreen from "./BootScreen";
+import { installFieldValidation } from "./fieldValidation";
 
 const rootElement = document.getElementById("root");
 
@@ -17,6 +18,7 @@ function render(node: ReactNode): void {
   appRoot.render(<StrictMode>{node}</StrictMode>);
 }
 
+installFieldValidation();
 render(<BootScreen />);
 void initAnalytics().catch(() => {});
 

@@ -381,7 +381,7 @@ function AppShell() {
             <span className="ck-preview-badge">Design preview</span><button className="ck-topbar-icon" type="button" onClick={() => setTopbarPanel("info")} aria-label="About this screen" title="About this screen"><PrototypeIcon name="info" size={16} /></button><button className="ck-topbar-icon" type="button" onClick={() => setTopbarPanel("index")} aria-label="Open screen index" title="Open screen index"><PrototypeIcon name="overview" size={16} /></button>
           </div>
         </header>}
-        <Outlet />
+        <div key={location.pathname} className="ck-route"><Outlet /></div>
         {topbarPanel && <div className="ck-dialog-backdrop" role="presentation" onClick={() => setTopbarPanel(null)}><section className="ck-dialog" role="dialog" aria-modal="true" aria-labelledby="topbar-panel-title" onClick={(event) => event.stopPropagation()}><div className="ck-dialog-header"><div><div className="ck-overline">CostKey console</div><h2 id="topbar-panel-title">{topbarPanel === "info" ? "About this screen" : "Screen index"}</h2></div><button className="ck-icon-button" type="button" onClick={() => setTopbarPanel(null)} aria-label="Close"><X size={16} /></button></div>{topbarPanel === "info" ? <p className="ck-dialog-copy">This view covers the selected project and period.</p> : <nav className="ck-screen-index">{[["/", "Overview"], ["/traces", "Runs"], ["/costs", "Costs"], ["/executions", "Experiments"], ["/forecast", "Forecasts"], ["/budgets", "Budgets"], ["/settings", "Settings"]].map(([to, label]) => <Link key={to} to={to} onClick={() => setTopbarPanel(null)}>{label}<ArrowRight size={13} /></Link>)}</nav>}</section></div>}
       </main>
     </div>

@@ -160,13 +160,13 @@ function RunGroupsPage({ kind }: { kind: GroupKind }) {
   return <div className="ck-main-inner">
     <PageHeader title={title} actions={headerAction} />
     <div className="ck-tabs ck-page-tabs" role="tablist" aria-label={`${title} views`}>{VIEWS.map((item) => <button key={item.id} className={`ck-tab ${view === item.id ? "active" : ""}`} role="tab" aria-selected={view === item.id} type="button" onClick={() => setView(item.id)}>{item.label}</button>)}</div>
-    {view === "runs" && <>
+    {view === "runs" && <div className="ck-view">
       <Totals groups={groups} currency={currency} fx={fx} loading={loading && !data} />
       <Panel>{error && !data ? <EmptyPanel title={`Couldn’t load ${title.toLowerCase()}`} body={error} /> : loading && !data ? <LoadingRows count={6} columns={6} /> : groups.length === 0
         ? <EmptyPanel illustration="first-light" title={kind === "agent" ? "No agent runs yet" : "No workflows yet"} body={kind === "agent" ? "Wrap a run in CostKey.agent() to see it here." : "Name a run with startTrace to see it here."} />
         : <GroupTable groups={groups} label={kind === "agent" ? "Agent" : "Workflow"} showShape={kind === "agent"} currency={currency} fx={fx} onOpen={(group) => navigate(kind === "agent" ? `/agents/${encodeURIComponent(group.name)}${window.location.search}` : `/traces?q=${encodeURIComponent(group.name)}`)} />}</Panel>
-    </>}
-    {view !== "runs" && projectId && <Panel>
+    </div>}
+    {view !== "runs" && projectId && <Panel key={view} className="ck-view">
       {view === "models" && <ModelsView kind={kind} projectId={projectId} scope={scope} scopeKey={scopeKey} currency={currency} fx={fx} />}
       {view === "budgets" && <BudgetsView kind={kind} projectId={projectId} currency={currency} fx={fx} />}
       {view === "forecast" && <ForecastView kind={kind} projectId={projectId} currency={currency} fx={fx} timezone={workspaceSettings?.timezone ?? org?.timezone ?? undefined} />}

@@ -88,7 +88,7 @@ export default function Quality() {
       <MetricCard icon="cost" label="Wasted" value={formatReportedAmount(totals?.wastedCost ?? 0, currency, fx)} loading={loading && !data} />
     </div>
     <div className="ck-tabs ck-page-tabs" role="tablist" aria-label="Quality views">{VIEWS.map((item) => <button key={item.id} className={`ck-tab ${view === item.id ? "active" : ""}`} role="tab" aria-selected={view === item.id} type="button" onClick={() => setView(item.id)}>{item.label}</button>)}</div>
-    <Panel title={view === "failures" && owner ? owner : undefined} actions={view === "failures" && owner ? <button className="ck-button ck-button-quiet" type="button" onClick={() => setView("failures")}>All runs</button> : undefined}>
+    <Panel key={`${view}|${owner ?? ""}`} className="ck-view" title={view === "failures" && owner ? owner : undefined} actions={view === "failures" && owner ? <button className="ck-button ck-button-quiet" type="button" onClick={() => setView("failures")}>All runs</button> : undefined}>
       {error && !data ? <EmptyPanel title="Couldn’t load quality" body={error} />
         : loading && !data ? <LoadingRows count={6} columns={6} />
           : view === "runs" ? <Owners data={data!} currency={currency} fx={fx} onOpen={(name) => setView("failures", name)} />

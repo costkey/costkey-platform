@@ -4323,3 +4323,44 @@ input:disabled,
 .ck-breakdown-table .ck-col-share { width: 110px; }
 .ck-breakdown-table td:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .auth-brand-lockup { position: relative; z-index: 1; }
+
+/* Inline field errors replace the browser's validation bubbles. */
+.ck-field-error {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  color: #a33a2b;
+  font-size: 12.5px;
+  font-weight: 500;
+}
+.ck-field-error::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  flex: 0 0 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+input[aria-invalid="true"],
+select[aria-invalid="true"],
+textarea[aria-invalid="true"] {
+  border-color: #c4553f !important;
+  box-shadow: 0 0 0 3px rgba(196, 85, 63, 0.14) !important;
+}
+
+/* Motion: pages ease in on navigation; views and controls glide. */
+.ck-route { animation: ck-rise 240ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+.ck-view { animation: ck-fade 200ms ease-out both; }
+@keyframes ck-rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes ck-fade { from { opacity: 0; } to { opacity: 1; } }
+.ck-nav-link, .ck-tab, .ck-segmented button, .ck-button, .ck-table tbody tr td, .ck-status-pill, .settings-switch {
+  transition: background-color 180ms ease, color 180ms ease, border-color 180ms ease, box-shadow 180ms ease, opacity 180ms ease;
+}
+.ck-tab { border-bottom: 2px solid transparent; transition: color 180ms ease, border-color 220ms ease; }
+.ck-button:active:not(:disabled) { transform: translateY(1px); }
+.ck-metric-card, .ck-panel { transition: border-color 180ms ease, box-shadow 180ms ease; }
+@media (prefers-reduced-motion: reduce) {
+  .ck-route, .ck-view { animation: none; }
+  .ck-button:active:not(:disabled) { transform: none; }
+}

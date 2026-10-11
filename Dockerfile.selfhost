@@ -16,6 +16,8 @@ RUN node scripts/install-linux-native.mjs
 COPY packages/shared packages/shared
 COPY packages/server packages/server
 COPY packages/dashboard packages/dashboard
+# The console build bundles the design prototype's fixture data.
+COPY design/console-prototype/data.js design/console-prototype/data.js
 RUN cd packages/shared && npx tsc \
   && cd ../server && npx tsc \
   && cd ../dashboard && npx vite build

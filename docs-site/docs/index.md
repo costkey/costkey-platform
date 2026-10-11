@@ -2,7 +2,7 @@
 slug: /
 sidebar_position: 1
 title: Getting started
-description: Connect CostKey with a project DSN and inspect supported AI usage.
+description: Start self-hosted CostKey, connect your app with a project DSN, and inspect AI usage.
 ---
 
 # Getting started
@@ -14,7 +14,17 @@ captured only when the project explicitly enables text capture, the SDK allows
 body capture, and the endpoint exposes a supported response shape. One CLI
 command gets you started; no provider-routing gateway is required.
 
-## Setup
+## Start CostKey
+
+CostKey runs on your own machines. One command starts it with Docker:
+
+```bash
+curl -fsSL https://costkey.dev/install.sh | sh
+```
+
+Open `http://localhost:4100`, sign up and create your workspace. See [Self-hosting](./self-hosting) for settings, HTTPS and upgrades.
+
+## Connect your app
 
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
@@ -36,7 +46,7 @@ npx costkey setup
 </TabItem>
 </Tabs>
 
-The setup command authenticates with CostKey in your browser, creates a
+The setup command signs in to your CostKey (`http://localhost:4100` by default; pass `--host` for another address), creates a
 project, writes `COSTKEY_DSN` to `.env`, detects your framework, and writes
 `.costkey/setup.md` with the exact snippet and no-code preload option. New
 projects start in metadata-only mode. Enable text capture deliberately in the
@@ -46,7 +56,7 @@ Supported detections include Next.js, Vite, Express, Fastify, Hono, Koa, NestJS,
 
 ## Initialize manually
 
-Prefer the setup command above. If you need to wire CostKey manually, get your DSN from the [CostKey dashboard](https://app.costkey.dev) and initialize before your first AI call.
+Prefer the setup command above. If you need to wire CostKey manually, copy your DSN from **Settings → Projects** in your CostKey console and initialize before your first AI call.
 
 <Tabs>
 <TabItem value="python" label="Python">
@@ -55,7 +65,7 @@ Prefer the setup command above. If you need to wire CostKey manually, get your D
 import costkey
 
 costkey.init(
-    dsn="https://ck_your_key@app.costkey.dev/your_project_id",
+    dsn="http://ck_your_key@localhost:4100/your_project_id",
     release="v1.0.0",  # Track cost per deploy
 )
 ```
@@ -67,7 +77,7 @@ costkey.init(
 import { CostKey } from 'costkey'
 
 CostKey.init({
-  dsn: 'https://ck_your_key@app.costkey.dev/your_project_id',
+  dsn: 'http://ck_your_key@localhost:4100/your_project_id',
   release: 'v1.0.0',  // Track cost per deploy
 })
 ```
@@ -104,7 +114,7 @@ matrix](/recipes).
 import costkey
 from anthropic import Anthropic
 
-costkey.init(dsn="https://ck_your_key@app.costkey.dev/your_project_id")
+costkey.init(dsn="http://ck_your_key@localhost:4100/your_project_id")
 
 client = Anthropic()
 
@@ -125,7 +135,7 @@ print(response.content[0].text)
 import { CostKey } from 'costkey'
 import OpenAI from 'openai'
 
-CostKey.init({ dsn: 'https://ck_your_key@app.costkey.dev/your_project_id' })
+CostKey.init({ dsn: 'http://ck_your_key@localhost:4100/your_project_id' })
 
 const openai = new OpenAI()
 
@@ -141,7 +151,7 @@ console.log(response.choices[0].message.content)
 </TabItem>
 </Tabs>
 
-Open the [dashboard](https://app.costkey.dev) and you'll see:
+Open your CostKey console and you'll see:
 
 - **Known cost** per priced observed call; missing prices remain unknown
 - **Token usage** (input, output, cache, and reasoning tokens when reported)

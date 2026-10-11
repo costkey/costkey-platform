@@ -20,17 +20,17 @@ describe("DSN Parsing", () => {
 
   it("throws on invalid URL with dashboard link", () => {
     expect(() => parseDSN("not-a-url")).toThrow("Invalid DSN");
-    expect(() => parseDSN("not-a-url")).toThrow("app.costkey.dev");
+    expect(() => parseDSN("not-a-url")).toThrow("Settings, Projects");
   });
 
   it("throws on missing auth key with dashboard link", () => {
     expect(() => parseDSN("https://costkey.dev/my-project")).toThrow("missing auth key");
-    expect(() => parseDSN("https://costkey.dev/my-project")).toThrow("app.costkey.dev");
+    expect(() => parseDSN("https://costkey.dev/my-project")).toThrow("Settings, Projects");
   });
 
   it("throws on missing project ID with dashboard link", () => {
     expect(() => parseDSN("https://key@costkey.dev/")).toThrow("missing project ID");
-    expect(() => parseDSN("https://key@costkey.dev/")).toThrow("app.costkey.dev");
+    expect(() => parseDSN("https://key@costkey.dev/")).toThrow("Settings, Projects");
     expect(() => parseDSN("https://key@costkey.dev")).toThrow("missing project ID");
   });
 });

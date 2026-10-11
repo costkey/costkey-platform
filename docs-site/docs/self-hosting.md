@@ -10,18 +10,23 @@ CostKey is MIT licensed. A self-hosted install is two containers: Postgres, and 
 
 ## Start it
 
-You need Docker with Compose v2.
+You need Docker with Compose v2. Then:
 
 ```bash
-git clone https://github.com/costkey/platform.git costkey
-cd costkey
-cp .env.example .env
+curl -fsSL https://costkey.dev/install.sh | sh
 ```
 
-Fill in the two secrets in `.env`. Generate each with:
+It creates a `costkey` folder with the compose file and a `.env` with fresh secrets, pulls the image (`ghcr.io/costkey/costkey`, for Intel and Apple Silicon) and starts it.
+
+Open `http://localhost:4100`, sign up and create your workspace. The first person to sign up owns it. Invite your team from **Settings → Team**.
+
+### By hand
+
+Download [`docker-compose.yml`](https://costkey.dev/self-host/docker-compose.yml) into a folder and add a `.env` beside it with the two secrets. Generate each with `openssl rand -hex 32`:
 
 ```bash
-openssl rand -hex 32
+COSTKEY_JWT_SECRET=...
+COSTKEY_NOTIFICATION_ENCRYPTION_KEY=...
 ```
 
 Then start it:
@@ -29,8 +34,6 @@ Then start it:
 ```bash
 docker compose up -d
 ```
-
-Open `http://localhost:4100`, sign up and create your workspace. The first person to sign up owns it. Invite your team from **Settings → Team**.
 
 ## Point your SDK at it
 
@@ -60,7 +63,7 @@ npx costkey setup --host http://localhost:4100
 
 ## Settings
 
-All settings live in `.env`.
+All settings live in `.env` next to `docker-compose.yml`.
 
 | Setting | What it does |
 | --- | --- |
@@ -86,9 +89,12 @@ Restart with `docker compose up -d`. New DSNs and email links use the new addres
 ## Upgrade
 
 ```bash
-git pull
-docker compose up -d --build
+cd costkey
+docker compose pull
+docker compose up -d
 ```
+
+Pin a version with `COSTKEY_VERSION=0.6.1` in `.env`.
 
 The server applies database migrations when it starts.
 

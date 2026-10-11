@@ -15,6 +15,7 @@ import {
   normalizeRole,
   roleCanManageWorkspace,
 } from "./permissions.js";
+import { publicOrigin, publicUrl } from "./public-url.js";
 
 export type NotificationEventType =
   | "weekly_summary"
@@ -240,7 +241,7 @@ function cleanText(value: unknown, max: number): string {
 }
 
 function publicAppOrigin(): URL {
-  const configured = process.env["PUBLIC_URL"] ?? "https://app.costkey.dev";
+  const configured = publicOrigin();
   try {
     const url = new URL(configured);
     if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) throw new Error("invalid public URL");
@@ -248,7 +249,7 @@ function publicAppOrigin(): URL {
     url.search = "";
     return url;
   } catch {
-    return new URL("https://app.costkey.dev");
+    return publicUrl();
   }
 }
 

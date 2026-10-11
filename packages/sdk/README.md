@@ -14,7 +14,7 @@ npm install costkey
 import { CostKey } from 'costkey'
 
 CostKey.init({
-  dsn: 'https://ck_your_key@app.costkey.dev/your-project'
+  dsn: 'http://ck_your_key@localhost:4100/your-project'
 })
 
 // Supported provider calls made through fetch are tracked automatically.
@@ -302,7 +302,7 @@ finishes reading the stream. Bedrock calls made through `fetch` (for example
 
 | Option | Default | Description |
 |---|---|---|
-| `dsn` | required | `https://ck_key@app.costkey.dev/project` |
+| `dsn` | required | `http://ck_key@localhost:4100/project` |
 | `captureBody` | `true` | Capture request/response bodies |
 | `release` | — | Release version for sourcemap translation |
 | `beforeSend` | — | Hook to modify/filter events |

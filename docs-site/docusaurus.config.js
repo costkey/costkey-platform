@@ -75,8 +75,8 @@ const config = {
             position: 'right',
           },
           {
-            href: 'https://app.costkey.dev',
-            label: 'Open CostKey',
+            to: '/self-hosting',
+            label: 'Self-host',
             position: 'right',
           },
         ],

@@ -83,7 +83,7 @@ import TabItem from '@theme/TabItem';
 
 ```python
 costkey.init(
-    dsn="https://ck_key@app.costkey.dev/proj_id",
+    dsn="http://ck_key@localhost:4100/proj_id",
     capture_body=False,  # Only send metadata, tokens, and cost
 )
 ```
@@ -93,7 +93,7 @@ costkey.init(
 
 ```typescript
 CostKey.init({
-  dsn: 'https://ck_key@app.costkey.dev/proj_id',
+  dsn: 'http://ck_key@localhost:4100/proj_id',
   captureBody: false,  // Only send metadata, tokens, and cost
 })
 ```
@@ -130,7 +130,7 @@ def my_hook(event: CostKeyEvent) -> CostKeyEvent | None:
     return event
 
 costkey.init(
-    dsn="https://ck_key@app.costkey.dev/proj_id",
+    dsn="http://ck_key@localhost:4100/proj_id",
     before_send=my_hook,
 )
 ```
@@ -142,7 +142,7 @@ costkey.init(
 import type { CostKeyEvent } from 'costkey'
 
 CostKey.init({
-  dsn: 'https://ck_key@app.costkey.dev/proj_id',
+  dsn: 'http://ck_key@localhost:4100/proj_id',
   beforeSend: (event: CostKeyEvent): CostKeyEvent | null => {
     // Drop events from dev/test models
     if (event.model?.includes('test')) return null

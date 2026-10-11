@@ -12,6 +12,9 @@ import {
   slackMessage,
 } from "../notifications.js";
 
+// Links in messages must stay on this server's own address.
+process.env["PUBLIC_URL"] = "https://costkey.example.com";
+
 // Synthetic, never a real workspace: the token shape only has to satisfy validation.
 const SLACK_URL = "https://hooks.slack.com/services/T00TESTWS/B00TESTCH/abcdefghijklmnopqrstuvwx";
 const TOKEN = "abcdefghijklmnopqrstuvwx";
@@ -65,7 +68,7 @@ test("Slack webhook URLs are masked without the token", () => {
 
 test("Slack messages carry a header, 1-3 fields and a CostKey link button for every event type", () => {
   const cases: Array<Record<string, unknown>> = [
-    { eventType: "daily_summary", title: "Daily spend · 2026-10-09", message: "$12.00 yesterday.", evidence: { cost: 12, changePct: 0.25, unpricedCalls: 3 }, link: "https://app.costkey.dev/overview?project=p1" },
+    { eventType: "daily_summary", title: "Daily spend · 2026-10-09", message: "$12.00 yesterday.", evidence: { cost: 12, changePct: 0.25, unpricedCalls: 3 }, link: "https://costkey.example.com/overview?project=p1" },
     { eventType: "weekly_summary", title: "Your CostKey spending summary", message: "Week.", evidence: { cost: 80, changePct: -0.1, calls: 900 } },
     { eventType: "policy_warning", title: "Allowance warning at 80%", message: "Warn.", evidence: { policyId: "pol_1", threshold: 0.8, observedUsage: 8, allowance: 10 } },
     { eventType: "enforcement", title: "A CostKey policy refused a call", message: "Refused.", evidence: { policyId: "pol_1", reason: "budget_exhausted" } },
@@ -87,7 +90,7 @@ test("Slack messages carry a header, 1-3 fields and a CostKey link button for ev
     assert.ok(actions);
     const button = (actions.elements as Blocks)[0];
     assert.equal((button.text as Record<string, unknown>).text, "View in CostKey");
-    assert.match(String(button.url), /^https:\/\/app\.costkey\.dev\//);
+    assert.match(String(button.url), /^https:\/\/costkey\.example\.com\//);
   }
   const daily = slackMessage(cases[0]);
   const dailyFields = ((daily.blocks as Blocks)[1].fields as Array<{ text: string }>).map((field) => field.text);
@@ -105,7 +108,7 @@ test("Slack messages escape markup and drop off-origin links", () => {
   const section = (message.blocks as Blocks).find((block) => block.type === "section")!;
   assert.equal((section.text as Record<string, unknown>).text, "See &lt;https://evil.test|here&gt; &amp; more");
   const actions = (message.blocks as Blocks).find((block) => block.type === "actions")!;
-  assert.equal(String((actions.elements as Blocks)[0].url).startsWith("https://app.costkey.dev/"), true);
+  assert.equal(String((actions.elements as Blocks)[0].url).startsWith("https://costkey.example.com/"), true);
 });
 
 test("Slack delivery uses the memory sink and never records the token", async () => {

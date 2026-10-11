@@ -6,7 +6,7 @@ description: What each screen in the CostKey dashboard shows.
 
 # Dashboard
 
-The dashboard shows what your AI calls cost, where the spend comes from and where it is heading. Open it at [app.costkey.dev](https://app.costkey.dev).
+The dashboard shows what your AI calls cost, where the spend comes from and where it is heading. Open it at your CostKey address, `http://localhost:4100` by default. See [Self-hosting](./self-hosting).
 
 Runs, Costs and Experiments have a filter bar with a date range (month to date by default) and an environment. It also shows the workspace time zone and reporting currency, and every timestamp uses that time zone. The Overview has its period and environment in the page header.
 

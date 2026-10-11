@@ -159,7 +159,7 @@ export function createApp(options: AppOptions = {}): Express & AppRuntime {
 
   const allowedOrigins = new Set(
     (process.env["COSTKEY_ALLOWED_ORIGINS"]
-      ?? "https://app.costkey.dev,http://localhost:5180,http://127.0.0.1:5180")
+      ?? "http://localhost:5180,http://127.0.0.1:5180")
       .split(",").map((origin) => origin.trim()).filter(Boolean),
   );
   app.use(cors((req, callback) => {

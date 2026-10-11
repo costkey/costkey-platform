@@ -82,7 +82,7 @@ Initialize the SDK. Call once at app startup, before any AI calls.
 import { CostKey } from 'costkey'
 
 CostKey.init({
-  dsn: 'https://ck_your_key@app.costkey.dev/your_project_id',
+  dsn: 'http://ck_your_key@localhost:4100/your_project_id',
   captureBody: true, // local permission; project capture mode still controls text
   debug: false,
   release: 'v1.2.3',
@@ -97,7 +97,7 @@ CostKey.init({
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `dsn` | `string \| undefined` | `COSTKEY_DSN` | DSN from the dashboard. Format: `https://<key>@app.costkey.dev/<project-id>`; omitting both values leaves the SDK in no-op/test mode. |
+| `dsn` | `string \| undefined` | `COSTKEY_DSN` | DSN from the dashboard. Format: `http(s)://<key>@<your CostKey host>/<project-id>`; omitting both values leaves the SDK in no-op/test mode. |
 | `captureBody` | `boolean` | `true` | Local permission for request/response body capture; the project config must explicitly enable text capture. `false` is always strongest. |
 | `beforeSend` | `BeforeSendHook` | `null` | Hook called before each event is sent. Return `null` to drop the event. |
 | `maxBatchSize` | `number` | `50` | Maximum events to buffer before flushing. |
@@ -349,7 +349,7 @@ Usage data is extracted from the final SSE chunk (where providers include the `u
 import { CostKey } from 'costkey'
 import OpenAI from 'openai'
 
-CostKey.init({ dsn: 'https://ck_key@app.costkey.dev/proj_id' })
+CostKey.init({ dsn: 'http://ck_key@localhost:4100/proj_id' })
 
 const openai = new OpenAI()
 
@@ -371,7 +371,7 @@ for await (const chunk of stream) {
 import { CostKey } from 'costkey'
 import Anthropic from '@anthropic-ai/sdk'
 
-CostKey.init({ dsn: 'https://ck_key@app.costkey.dev/proj_id' })
+CostKey.init({ dsn: 'http://ck_key@localhost:4100/proj_id' })
 
 const anthropic = new Anthropic()
 
@@ -401,7 +401,7 @@ import OpenAI from 'openai'
 const app = express()
 const openai = new OpenAI()
 
-CostKey.init({ dsn: 'https://ck_key@app.costkey.dev/proj_id' })
+CostKey.init({ dsn: 'http://ck_key@localhost:4100/proj_id' })
 
 // Trace middleware — groups supported provider calls per request
 app.use((req, res, next) => {
@@ -454,7 +454,7 @@ import { CostKey } from 'costkey'
 import type { CostKeyEvent } from 'costkey'
 
 CostKey.init({
-  dsn: 'https://ck_key@app.costkey.dev/proj_id',
+  dsn: 'http://ck_key@localhost:4100/proj_id',
   beforeSend: (event: CostKeyEvent): CostKeyEvent | null => {
     // Drop test events
     if (event.model?.includes('test')) return null
@@ -476,7 +476,7 @@ For production builds with minified/bundled JavaScript, CostKey can translate st
 
 ```typescript
 CostKey.init({
-  dsn: 'https://ck_key@app.costkey.dev/proj_id',
+  dsn: 'http://ck_key@localhost:4100/proj_id',
   release: process.env.GIT_SHA,  // Must match the release used during upload
 })
 ```

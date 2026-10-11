@@ -413,7 +413,7 @@ pipx run costkey setup
 For a running server, the unauthenticated service check is:
 
 ```bash
-curl -fsS https://app.costkey.dev/health
+curl -fsS http://localhost:4100/health
 ```
 
 An SDK-side DSN error names the expected `https://<key>@<host>/<project-id>`

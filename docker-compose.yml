@@ -1,10 +1,14 @@
 # Self-hosted CostKey: Postgres, plus the server and console on one port.
 #
-#   cp .env.example .env      # then fill in the two secrets
+#   curl -fsSL https://costkey.dev/install.sh | sh
+#
+# or by hand, next to a .env made from .env.example:
+#
 #   docker compose up -d
 #   open http://localhost:4100
 #
-# Optional settings (email, GitHub sign-in) go in .env too.
+# Build the image from source instead with:
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 services:
   postgres:
     image: postgres:16-alpine
@@ -22,9 +26,7 @@ services:
       retries: 30
 
   costkey:
-    build:
-      context: .
-      dockerfile: Dockerfile.selfhost
+    image: ghcr.io/costkey/costkey:${COSTKEY_VERSION:-latest}
     restart: unless-stopped
     depends_on:
       postgres:

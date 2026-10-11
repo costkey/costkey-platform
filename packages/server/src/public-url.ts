@@ -1,15 +1,20 @@
 /**
- * Where people and SDKs reach this server. The hosted service is
- * app.costkey.dev; a self-hosted install sets PUBLIC_URL to its own address.
+ * Where people and SDKs reach this server: PUBLIC_URL, or this machine on
+ * its own port when that is unset.
  */
-const HOSTED = "https://app.costkey.dev";
+function localUrl(): URL {
+  return new URL(`http://localhost:${process.env["PORT"] || 4100}`);
+}
 
 export function publicUrl(): URL {
   const configured = process.env["PUBLIC_URL"]?.trim();
   if (configured) {
-    try { return new URL(configured); } catch { /* fall back to the hosted URL */ }
+    try {
+      const url = new URL(configured);
+      if (url.protocol === "http:" || url.protocol === "https:") return url;
+    } catch { /* fall back to this machine */ }
   }
-  return new URL(HOSTED);
+  return localUrl();
 }
 
 /** The origin with no trailing slash, for building links. */
@@ -32,6 +37,5 @@ export function secureCookies(): boolean {
   const override = process.env["COSTKEY_COOKIE_SECURE"];
   if (override === "true") return true;
   if (override === "false") return false;
-  if (process.env["PUBLIC_URL"]?.trim()) return publicUrl().protocol === "https:";
-  return process.env["NODE_ENV"] === "production";
+  return publicUrl().protocol === "https:";
 }

@@ -8,9 +8,10 @@ import {
   normalizeRole,
   roleCanManageWorkspace,
 } from "./permissions.js";
+import { publicOrigin } from "./public-url.js";
 
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
-const APP_URL = process.env["PUBLIC_URL"] ?? "https://app.costkey.dev";
+const APP_URL = publicOrigin();
 
 function inviteEmailEnabled(): boolean {
   return Boolean(process.env["RESEND_API_KEY"])

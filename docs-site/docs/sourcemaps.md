@@ -28,7 +28,7 @@ Tag your SDK init with a release identifier. This connects events to the right s
 import { CostKey } from 'costkey'
 
 CostKey.init({
-  dsn: 'https://ck_key@app.costkey.dev/proj_id',
+  dsn: 'http://ck_key@localhost:4100/proj_id',
   release: process.env.GIT_SHA,  // e.g., "a1b2c3d" or "v1.2.3"
 })
 ```
@@ -73,7 +73,7 @@ Then in your instrumentation file:
 import { CostKey } from 'costkey'
 
 CostKey.init({
-  dsn: 'https://ck_key@app.costkey.dev/proj_id',
+  dsn: 'http://ck_key@localhost:4100/proj_id',
   release: process.env.NEXT_PUBLIC_GIT_SHA || process.env.VERCEL_GIT_COMMIT_SHA,
 })
 ```
@@ -108,7 +108,7 @@ CLI options:
 |------|:--------:|-------------|
 | `--release <version>` | Yes | Release version. Must match the `release` in your SDK init. |
 | `--auth-key <key>` | Yes | Project auth key (`ck_...`). Can also be set via `COSTKEY_AUTH_KEY` env var. |
-| `--host <url>` | No | CostKey server URL. Default: `https://app.costkey.dev` |
+| `--host <url>` | No | CostKey server URL. Default: `http://localhost:4100` |
 
 The CLI reads each `.map` file, parses the `file` field from the sourcemap JSON to determine which source file it maps, and uploads it to the server.
 

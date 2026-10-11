@@ -15,14 +15,14 @@ import {
   normalizeRole,
   roleCanManageWorkspace,
 } from "./permissions.js";
-import { projectDsn, secureCookies } from "./public-url.js";
+import { projectDsn, publicOrigin, secureCookies } from "./public-url.js";
 
 async function sendWelcomeEmail(to: string, name: string, projectId: string): Promise<void> {
   if (!process.env["RESEND_API_KEY"]
     || process.env["NODE_ENV"] === "test"
     || process.env["COSTKEY_NOTIFICATION_SINK"] === "memory"
     || (process.env["NODE_ENV"] !== "production" && process.env["COSTKEY_ALLOW_EXTERNAL_NOTIFICATIONS"] !== "true")) return;
-  const setupUrl = `${process.env["PUBLIC_URL"] ?? "https://app.costkey.dev"}/onboarding?project=${encodeURIComponent(projectId)}`;
+  const setupUrl = `${publicOrigin()}/onboarding?project=${encodeURIComponent(projectId)}`;
   try {
     const resend = new Resend(process.env["RESEND_API_KEY"]!);
     await resend.emails.send({
@@ -670,7 +670,7 @@ export function createAuthRouter(pool?: pg.Pool): Router {
       client_id: GITHUB_CLIENT_ID,
       scope: "user:email",
       state,
-      redirect_uri: `${process.env["PUBLIC_URL"] ?? "https://app.costkey.dev"}/auth/github/callback`,
+      redirect_uri: `${publicOrigin()}/auth/github/callback`,
     });
     res.redirect(`https://github.com/login/oauth/authorize?${params}`);
   });

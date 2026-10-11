@@ -63,13 +63,13 @@ The call graph identifies which functions in your code are business logic vs. th
 
 ```python
 # Default: scan is enabled, project root is auto-detected
-costkey.init(dsn="https://ck_key@app.costkey.dev/proj_id")
+costkey.init(dsn="http://ck_key@localhost:4100/proj_id")
 
 # Disable call graph scanning
-costkey.init(dsn="https://ck_key@app.costkey.dev/proj_id", scan_callgraph=False)
+costkey.init(dsn="http://ck_key@localhost:4100/proj_id", scan_callgraph=False)
 
 # Specify the project root explicitly
-costkey.init(dsn="https://ck_key@app.costkey.dev/proj_id", project_root="/app/src")
+costkey.init(dsn="http://ck_key@localhost:4100/proj_id", project_root="/app/src")
 ```
 
 The scan only reads `.py` files to extract function/method names and call relationships. It does not execute any code, and no source code content is sent to the server — only the structural call graph.
@@ -109,7 +109,7 @@ Initialize the SDK. Call once at app startup, before any AI calls.
 import costkey
 
 costkey.init(
-    dsn="https://ck_your_key@app.costkey.dev/your_project_id",
+    dsn="http://ck_your_key@localhost:4100/your_project_id",
     capture_body=None,  # project capture mode controls text; False is always off
     debug=False,
     release="v1.2.3",
@@ -124,7 +124,7 @@ costkey.init(
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `dsn` | `str \| None` | `COSTKEY_DSN` | DSN from the dashboard. Format: `https://<key>@app.costkey.dev/<project-id>`; omitting both values leaves the SDK in no-op/test mode. |
+| `dsn` | `str \| None` | `COSTKEY_DSN` | DSN from the dashboard. Format: `http(s)://<key>@<your CostKey host>/<project-id>`; omitting both values leaves the SDK in no-op/test mode. |
 | `capture_body` | `bool \| None` | `None` | Local body-capture preference. Metadata-only remains active until remote project text capture is known; `False` is always strongest. |
 | `before_send` | `Callable` | `None` | Hook called before each event is sent. Return `None` to drop the event. |
 | `max_batch_size` | `int` | `50` | Maximum events to buffer before flushing. |
@@ -366,7 +366,7 @@ adapter observes timing; profile this work in the runtime where you deploy.
 import costkey
 from anthropic import Anthropic
 
-costkey.init(dsn="https://ck_key@app.costkey.dev/proj_id")
+costkey.init(dsn="http://ck_key@localhost:4100/proj_id")
 
 client = Anthropic()
 
@@ -388,7 +388,7 @@ with client.messages.stream(
 import costkey
 import openai
 
-costkey.init(dsn="https://ck_key@app.costkey.dev/proj_id")
+costkey.init(dsn="http://ck_key@localhost:4100/proj_id")
 
 client = openai.OpenAI()
 
@@ -411,7 +411,7 @@ for chunk in stream:
 import costkey
 from anthropic import Anthropic
 
-costkey.init(dsn="https://ck_key@app.costkey.dev/proj_id")
+costkey.init(dsn="http://ck_key@localhost:4100/proj_id")
 
 client = Anthropic()
 
@@ -431,7 +431,7 @@ print(response.content[0].text)
 import costkey
 import openai
 
-costkey.init(dsn="https://ck_key@app.costkey.dev/proj_id")
+costkey.init(dsn="http://ck_key@localhost:4100/proj_id")
 
 client = openai.OpenAI()
 
@@ -450,7 +450,7 @@ print(response.choices[0].message.content)
 import costkey
 import google.generativeai as genai
 
-costkey.init(dsn="https://ck_key@app.costkey.dev/proj_id")
+costkey.init(dsn="http://ck_key@localhost:4100/proj_id")
 
 model = genai.GenerativeModel("gemini-2.0-flash")
 response = model.generate_content("What is the capital of France?")
@@ -464,7 +464,7 @@ from fastapi import FastAPI, Request
 import costkey
 
 app = FastAPI()
-costkey.init(dsn="https://ck_key@app.costkey.dev/proj_id")
+costkey.init(dsn="http://ck_key@localhost:4100/proj_id")
 
 @app.middleware("http")
 async def costkey_trace(request: Request, call_next):
@@ -528,7 +528,7 @@ def my_hook(event: CostKeyEvent) -> CostKeyEvent | None:
     return event
 
 costkey.init(
-    dsn="https://ck_key@app.costkey.dev/proj_id",
+    dsn="http://ck_key@localhost:4100/proj_id",
     before_send=my_hook,
 )
 ```

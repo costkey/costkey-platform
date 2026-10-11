@@ -6,6 +6,7 @@ import {
   canAccessProject,
   roleCanPublishSharedView,
 } from "./permissions.js";
+import { publicOrigin } from "./public-url.js";
 
 type SavedViewUser = { id: string; orgId: string; role: string };
 
@@ -293,7 +294,7 @@ export function createSavedViewsRouter(pool: pg.Pool): Router {
       const viewId = String(req.params.viewId);
       const row = (await pool.query("SELECT * FROM saved_views WHERE id = $1 AND org_id = $2", [viewId, user.orgId])).rows[0] as Record<string, unknown> | undefined;
       if (!row || !await canReadView(pool, user, row)) { res.status(404).json({ error: "Saved view not found" }); return; }
-      const base = process.env["PUBLIC_URL"] ?? "https://app.costkey.dev";
+      const base = publicOrigin();
       // This is an authenticated deep link, not a bearer token or access grant.
       res.json({ url: `${base}/traces?view=${encodeURIComponent(viewId)}`, access: "requires_workspace_permission" });
     } catch (error) {

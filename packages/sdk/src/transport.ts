@@ -110,7 +110,7 @@ export class Transport {
         if (response.status === 401 || response.status === 403) {
           // Auth failures always log — developer needs to know their DSN is wrong
           console.warn(
-            `[costkey] Authentication failed (${response.status}). Check your DSN at https://app.costkey.dev/settings`,
+            `[costkey] Authentication failed (${response.status}). Check the DSN under Settings, Projects in your CostKey console`,
           );
           return;
         }

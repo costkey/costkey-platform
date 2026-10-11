@@ -6,16 +6,17 @@ description: Full API reference for the CostKey TypeScript/Node.js SDK.
 
 # TypeScript SDK
 
-The CostKey TypeScript SDK patches `globalThis.fetch` in Node.js to observe
-supported provider endpoints. SDKs that use this fetch path can work when their
-endpoint and response shape are covered; see the [developer capability
-matrix](/recipes#capability-matrix). No provider-routing gateway is required.
+The CostKey TypeScript SDK patches `globalThis.fetch` in Node.js and records
+calls to supported provider hosts. SDKs that use this fetch path are covered;
+see the [developer capability matrix](/recipes#capability-matrix). No
+provider-routing gateway is required.
 
 ```bash
 npx costkey setup
 ```
 
-**Current version:** 0.6.0
+**Current version:** 0.7.0. SDK 0.7 needs CostKey server 0.7 or later. Older
+SDKs keep working with the new server.
 
 `npx costkey setup` logs you in, creates a CostKey project, writes `COSTKEY_DSN`, detects frameworks like Next.js, Vite, Express, Fastify, Hono, Koa, NestJS, Remix, Astro, and SvelteKit, and writes `.costkey/setup.md`.
 
@@ -30,23 +31,44 @@ Bundled apps such as Next.js, Vite, Remix, Astro, and SvelteKit should also conf
 ## How it works
 
 When you call `CostKey.init()`, the SDK replaces `globalThis.fetch` with a
-wrapper. It checks the URL hostname against known provider endpoints. Other
-requests pass through; matched AI requests are observed for timing, usage, and
-stack traces. The wrapper and response inspection add work, so benchmark your
-runtime instead of assuming the work is free.
+wrapper. It checks the URL hostname against the capture list. Other requests
+pass through untouched. For a matched request, the SDK records the request and
+response, passes streams through while recording their chunks, captures the
+stack, and sends the event in the background. The wrapper adds work, so
+benchmark your runtime instead of assuming the work is free.
 
-The SDK leaves provider response data available to your application. For
-supported OpenAI-compatible streaming requests it may add the usage-inclusion
-option needed to observe a final usage chunk, and it removes explicit CostKey
-carrier headers before the provider request. Events are batched and sent in the
-background.
+The SDK leaves provider response data available to your application. On
+streamed Chat Completions calls to hosts that need it, it adds
+`stream_options.include_usage` so the final chunk reports usage. It also
+removes explicit CostKey carrier headers before the provider request.
 
 Capture mode is negotiated from the DSN-authenticated project configuration.
 The SDK starts metadata-only until that response is known; a remote
 metadata-only setting, revoked configuration, or failed config request keeps
-prompt/response content off without blocking the provider call. A local
-`captureBody: false` is always an opt-out. Existing projects retain text
+prompt and response text off without blocking the provider call. A local
+`captureBody: false` is always an opt-out. Existing projects keep text
 capture only when the server explicitly reports text capture enabled.
+
+## What the SDK sends
+
+The SDK only sends telemetry. All processing happens on the server: provider
+and model detection, token and character counts, usage extraction, stream
+timing, pricing, deduplication, error classification and stack frame
+filtering. Pricing and provider fixes ship with the server, without an SDK
+upgrade.
+
+Every captured call carries a `telemetry` field with the request and response
+as a **skeleton**: every key and number is kept, and every string is replaced
+by its length (`{"$s": 42}`) unless it is an identifier such as `model` or
+`id`. In a metadata-only project, that skeleton is all that is sent, so prompt
+and response text never leave your process. When the project captures text,
+the scrubbed, size-limited `requestBody` and `responseBody` are sent as well.
+
+Credentials are removed first: credential query parameters are dropped, only a
+short allowlist of request headers is sent, and cookie, authorization and API
+key response headers are dropped. Arrays over 32 items keep the first 8, so
+embedding vectors don't ship. The full contract is
+`packages/shared/RAW_TELEMETRY.md` in the CostKey repository.
 
 ## Using with Sentry, New Relic, or other APM tools
 
@@ -64,13 +86,29 @@ CostKey.init({ dsn: '...' })  // CostKey wraps Sentry's patch
 
 **What to know:**
 - CostKey does not replace provider credentials or route the call through a
-  gateway; supported stream/carrier bookkeeping can adjust the outgoing
-  request as described above
-- CostKey catches its own capture/delivery failures; provider errors still
-  remain visible to your application
-- Stack traces may be slightly deeper (CostKey filters its own frames automatically)
-- Streaming responses flow through both tools while CostKey observes the
-  stream; measure the overhead in your runtime
+  gateway. The only change it makes to a request is the stream usage option
+  described above.
+- CostKey catches its own capture and delivery failures. Provider errors still
+  reach your application.
+- Stack traces may be deeper because of the wrappers. The SDK sends every
+  frame and the server picks the call site.
+- Streaming responses flow through both tools while CostKey records the
+  stream. Measure the overhead in your runtime.
+
+## Agent frameworks
+
+Integrations for the OpenAI Agents SDK, Vercel AI SDK, Mastra, LangChain.js
+and LangGraph.js, the Claude Agent SDK and OpenTelemetry are subpath exports
+under `costkey/integrations/*`:
+
+```typescript
+import { CostKeyCallbackHandler } from 'costkey/integrations/langchain'
+
+await graph.invoke(input, { callbacks: [new CostKeyCallbackHandler()] })
+```
+
+See [Agents and frameworks](/agents) for every integration and how calls are
+attributed to spans.
 
 ## API Reference
 
@@ -97,17 +135,17 @@ CostKey.init({
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `dsn` | `string \| undefined` | `COSTKEY_DSN` | DSN from the dashboard. Format: `http(s)://<key>@<your CostKey host>/<project-id>`; omitting both values leaves the SDK in no-op/test mode. |
-| `captureBody` | `boolean` | `true` | Local permission for request/response body capture; the project config must explicitly enable text capture. `false` is always strongest. |
-| `beforeSend` | `BeforeSendHook` | `null` | Hook called before each event is sent. Return `null` to drop the event. |
+| `dsn` | `string \| undefined` | `COSTKEY_DSN` | DSN from the dashboard. Format: `http(s)://<key>@<your CostKey host>/<project-id>`. Omitting both values leaves the SDK in no-op/test mode. |
+| `captureBody` | `boolean` | `true` | Local permission for request/response body capture. The project config must also enable text capture. `false` always wins. |
+| `beforeSend` | `BeforeSendHook` | `null` | Hook called before each call event is sent. Return `null` to drop the event. |
 | `maxBatchSize` | `number` | `50` | Maximum events to buffer before flushing. |
 | `flushInterval` | `number` | `5000` | Milliseconds between automatic flushes. |
 | `debug` | `boolean` | `false` | Enable debug logging to console. |
 | `defaultContext` | `EventContext` | `{}` | Default context applied to every event. |
 | `release` | `string` | `undefined` | Release version. Used for [sourcemap translation](/sourcemaps). |
-| `beforeSendEvent` | `BeforeSendEventHook` | `null` | Hook for lifecycle and explicit-usage events; return `null` to drop one. |
-| `configRefreshInterval` | `number` | `60000` | Milliseconds between DSN project capture/provider config refreshes; runtime config is fetched asynchronously. |
-| `policy` | `PolicyOptions` | `undefined` | Optional explicit monitor/enforce admission integration; omitted means observation only. |
+| `beforeSendEvent` | `BeforeSendEventHook` | `null` | Hook for lifecycle, span and explicit usage events. Return `null` to drop one. |
+| `configRefreshInterval` | `number` | `60000` | Milliseconds between DSN project config refreshes (capture mode and custom provider hosts). |
+| `policy` | `PolicyOptions` | `undefined` | Optional explicit monitor/enforce admission. Omitted means observation only. |
 
 ### `CostKey.withContext()`
 
@@ -143,8 +181,8 @@ await CostKey.withContext({ team: 'search' }, async () => {
 
 ### `CostKey.startTrace()`
 
-Group observed provider calls within a function under one trace ID. Traces
-appear in the dashboard's Traces tab.
+Group provider calls within a function under one trace ID. Traces appear on
+the dashboard's Runs page.
 
 ```typescript
 await CostKey.startTrace({ name: 'POST /api/search' }, async () => {
@@ -166,8 +204,8 @@ Parameters:
 
 `CostKey.agent()`, `CostKey.step()`, `CostKey.tool()` and `CostKey.startSpan()`
 record an agent run as a tree. Calls inside a span are attributed to it. See
-[Agents and tools](/agents) for kinds, framework integrations and resuming a
-paused run.
+[Agents and frameworks](/agents) for kinds, framework integrations and resuming
+a paused run.
 
 ```typescript
 await CostKey.agent('dash', async (span) => {
@@ -189,11 +227,6 @@ and `setOutput(value)`.
 
 ### Grouped executions and explicit usage
 
-The workspace source also exposes grouped execution, explicit usage, and
-allowlisted context-carrier helpers. Check the installed package version and
-the [recipes release note](/recipes#status-at-a-glance) before using these
-helpers in an application.
-
 ```typescript
 await CostKey.startExecution(
   {
@@ -208,33 +241,33 @@ await CostKey.startExecution(
 await CostKey.recordUsage({
   id: 'voice:tts:session-42:r1',
   componentId: 'voice:tts:session-42',
-  chargeId: 'voice:tts:session-42',
   revision: 1,
   aggregation: 'cumulative',
   provider: 'speech-provider',
   model: 'speech-model',
   usage: { audioSeconds: 2.1, characters: 320 },
-  context: CostKey.getCurrentContext(),
 })
 
 // Attach only to a trusted service/queue request. It is not automatic.
 const carrierHeaders = CostKey.exportContextHeaders()
 ```
 
-`recordUsage` requires a caller-supplied event ID (preserved as the explicit
-event/caller identity) and monotonic revision. A
-`cumulative` snapshot is the full component value: the latest accepted revision
-supersedes an earlier one, while a duplicate revision is idempotent rather than
-added again. A missing amount or pricing identity remains unknown.
-`startExecution` emits lifecycle records and keeps a stable group name separate
-from its fresh execution ID.
+`startExecution` emits lifecycle records and keeps a stable group name
+separate from its fresh execution ID. `expectedItems`, `completedItems` and
+`failedItems` are copied onto both lifecycle events.
+
+`recordUsage` sends the event exactly as you pass it. The server dedupes
+repeated IDs and ignores stale revisions. `delta` events are increments;
+a `cumulative` event replaces the latest snapshot for its component and is
+not summed. A missing amount or price stays unknown.
 
 ### `recordLiveKitUsage()`
 
-The source SDK includes an explicit adapter for LiveKit's cumulative
-`ev.usage.modelUsage` callback. It records one component per provider/model and
-preserves native units; it does not intercept LiveKit WebRTC/audio traffic.
-Verify the installed package exports this adapter before using it:
+Send each cumulative LiveKit `SessionUsageUpdated` snapshot as it is. The SDK
+sends the snapshot's rows as a skeleton (provider, model, type and every
+number) with your options. The server separates the STT, LLM and TTS
+components, sums duplicate rows and converts LiveKit's milliseconds. It does
+not intercept LiveKit audio or WebRTC traffic.
 
 ```typescript
 import { recordLiveKitUsage } from 'costkey'
@@ -244,14 +277,19 @@ session.on(voice.AgentSessionEventTypes.SessionUsageUpdated, async (ev) => {
     sessionId,
     revision: nextSnapshotRevision(),
     executionId,
-    expectedComponents: ['stt', 'llm', 'tts'],
+    excludeComponents: ['llm'], // when HTTP capture already records the LLM calls
   })
 })
 ```
 
-LiveKit's Node durations are milliseconds; map amounts only when the
-application has an explicit provider-reported amount or pricing identity.
-Missing components and missing prices remain visible as partial/unknown.
+### `CostKey.instrumentBedrockClient()`
+
+`@aws-sdk/client-bedrock-runtime` sends requests through Node's `http` module,
+not `fetch`, so instrument the client once:
+
+```typescript
+const bedrock = CostKey.instrumentBedrockClient(new BedrockRuntimeClient({ region: 'us-east-1' }))
+```
 
 ### `CostKey.flush()`
 
@@ -286,62 +324,20 @@ Get the current trace ID if inside a `startTrace` scope.
 const traceId = CostKey.getCurrentTraceId()
 ```
 
-### `CostKey.registerExtractor()`
+## Custom providers
 
-Register a custom provider extractor for AI providers not in the built-in list.
-
-```typescript
-import { CostKey, Provider } from 'costkey'
-import type { ProviderExtractor, NormalizedUsage } from 'costkey'
-
-const myExtractor: ProviderExtractor = {
-  provider: Provider.Unknown,
-
-  match(url: URL): boolean {
-    return url.hostname === 'api.myprovider.com'
-  },
-
-  extractUsage(body: unknown): NormalizedUsage | null {
-    const b = body as Record<string, any>
-    const usage = b?.usage
-    if (!usage) return null
-    return {
-      inputTokens: usage.input_tokens ?? null,
-      outputTokens: usage.output_tokens ?? null,
-      totalTokens: usage.total_tokens ?? null,
-      reasoningTokens: null,
-      cacheReadTokens: null,
-      cacheCreationTokens: null,
-    }
-  },
-
-  extractModel(requestBody: unknown, responseBody: unknown): string | null {
-    const resp = responseBody as Record<string, any>
-    if (resp?.model) return resp.model
-    const req = requestBody as Record<string, any>
-    if (req?.model) return req.model
-    return null
-  },
-}
-
-CostKey.registerExtractor(myExtractor)
-```
+Hosts that aren't built in are configured on the server, per project. The SDK
+picks the hostnames up from the DSN runtime config and captures them like any
+other provider. See [Providers](/providers#custom-providers).
 
 ## Streaming support
 
-For supported provider endpoints, CostKey detects streaming responses
-(`stream: true` in the request body) and wraps the response's `ReadableStream`
-to capture metrics while yielding chunks as they are read. This does not extend
-coverage to arbitrary voice, WebSocket, or other non-HTTP transports.
-
-Captured streaming metrics:
-
-- **TTFT** (Time to First Token) — ms before the first chunk
-- **Tokens/sec** — output token throughput
-- **Stream duration** — total ms from request to last chunk
-- **Chunk count** — number of SSE chunks
-
-Usage data is extracted from the final SSE chunk (where providers include the `usage` field).
+For supported provider endpoints, CostKey wraps the response's
+`ReadableStream` and records each chunk as a skeleton while yielding chunks as
+they are read. It sends the chunks (up to 200; past that, the first 20 and the
+last 50), the real chunk count, and the times of the first and last chunk. The
+server works out time to first token, tokens per second and usage from them.
+This does not cover WebSocket or other non-HTTP transports.
 
 ### OpenAI streaming
 
@@ -390,7 +386,7 @@ for await (const event of stream) {
 
 ## Express middleware
 
-Auto-trace every HTTP request so supported provider calls within a request
+Trace every HTTP request so supported provider calls within a request
 handler are grouped.
 
 ```typescript
@@ -403,7 +399,7 @@ const openai = new OpenAI()
 
 CostKey.init({ dsn: 'http://ck_key@localhost:4100/proj_id' })
 
-// Trace middleware — groups supported provider calls per request
+// Trace middleware: groups supported provider calls per request
 app.use((req, res, next) => {
   CostKey.startTrace({ name: `${req.method} ${req.path}` }, () => {
     next()
@@ -447,7 +443,9 @@ not a guarantee of complete distributed propagation.
 
 ## `beforeSend` hook
 
-Modify or drop events before they are sent.
+Modify or drop call events before they are sent. Provider, model and usage are
+worked out on the server, so the event carries `url`, `context`,
+`requestBody`, `responseBody` and the raw `telemetry`, not a model or a cost.
 
 ```typescript
 import { CostKey } from 'costkey'
@@ -456,13 +454,10 @@ import type { CostKeyEvent } from 'costkey'
 CostKey.init({
   dsn: 'http://ck_key@localhost:4100/proj_id',
   beforeSend: (event: CostKeyEvent): CostKeyEvent | null => {
-    // Drop test events
-    if (event.model?.includes('test')) return null
+    // Drop events from a test environment
+    if (event.context.environment === 'test') return null
 
-    // Add environment tag
-    event.context.environment = 'production'
-
-    // Remove request body to save bandwidth
+    // Remove request body content
     event.requestBody = null
 
     return event
@@ -483,19 +478,42 @@ CostKey.init({
 
 ## Type exports
 
-The SDK exports all relevant types:
-
 ```typescript
 import type {
   CostKeyOptions,
   CostKeyEvent,
+  CallTelemetry,
   EventContext,
   BeforeSendHook,
-  ProviderExtractor,
-  NormalizedUsage,
+  BeforeSendEventHook,
   CallSite,
-  StreamTiming,
+  SpanOptions,
+  SpanHandle,
 } from 'costkey'
-
-import { Provider } from 'costkey'
 ```
+
+## Upgrading from 0.6
+
+0.7.0 makes the SDK telemetry-only. It needs CostKey server 0.7.0 or later;
+the server keeps accepting events from 0.6 SDKs.
+
+- Call events carry `telemetry` and no longer have `provider`, `model`,
+  `usage`, `costUsd`, `streamTiming`, `requestModel`, `providerRequestId`,
+  `chargeId`, `metadata` or `systemPrompt`. A `beforeSend` hook that read them
+  should read `event.telemetry` instead.
+- `CostKey.score()` and its types are removed. Use
+  [quality checks](/quality-checks), which run on the server.
+- `CostKey.registerExtractor()`, `ProviderExtractor` and `ExtractorCall` are
+  removed. Custom providers are [server configuration](/providers#custom-providers).
+- `policy.usageBounds` and `policy.claimedCostUsd` are removed. `/admit`
+  receives the request skeleton and the server estimates the bounds.
+  Settlement no longer carries `actualUsage` or `actualCostUsd`.
+- `recordUsage` no longer dedupes, fences revisions, infers `unitValue` or
+  derives `costUsd` from `amount`. `UsageConflictError` is removed.
+- `recordLiveKitUsage` sends one raw event per snapshot (it returns one ID)
+  instead of classified, summed per-component events.
+- Errors carry the raw `errorName` (`AbortError`, `TypeError`). A thrown
+  `AbortError` ends a trace as `failed` with `errorName: "AbortError"` and a
+  span with status `error`; the server maps it to cancelled.
+- `callSite.frames` holds every frame, unfiltered.
+- The legacy `Provider` enum is still exported but no longer used.

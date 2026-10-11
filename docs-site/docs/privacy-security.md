@@ -13,7 +13,10 @@ matrix](/recipes#capability-matrix).
 
 ## What CostKey captures
 
-By default, the SDK captures the following for each supported AI API call:
+For each supported AI API call, CostKey records the following. The SDK only
+sends raw telemetry: a skeleton of the request and response in which keys and
+numbers are kept and text is replaced by its length. The server works out the
+provider, model, token counts and latency from it.
 
 | Data | Captured | Purpose |
 |------|:--------:|---------|
@@ -41,11 +44,11 @@ system-instruction content.
 
 ### What CostKey doesn’t capture
 
-- **API keys or auth headers** — the SDK reads response bodies, not request headers
-- **Non-AI HTTP calls** — only requests to known AI provider hostnames are intercepted
-- **Environment variables** — not sent (except the DSN/configuration values you explicitly provide)
-- **Source contents** — not sent as prompt data; the Python call-graph option may read `.py` structure locally and sends only its structural graph
-- **Other network traffic** — non-AI fetch/httpx calls pass through untouched
+- **API keys or auth headers**: only an allowlist of request headers is sent (such as `content-type` and `anthropic-version`), credential query parameters are dropped, and cookie, authorization and API key response headers are dropped
+- **Non-AI HTTP calls**: only requests to known AI provider hostnames are intercepted
+- **Environment variables**: not sent (except the DSN/configuration values you explicitly provide)
+- **Source contents**: not sent as prompt data; the Python call-graph option reads `.py` structure locally and sends only its structural graph
+- **Other network traffic**: non-AI fetch/httpx calls pass through untouched
 
 ## Credential scrubbing
 
@@ -116,8 +119,8 @@ For fine-grained control, use the `before_send` hook to modify or drop events be
 from costkey.types import CostKeyEvent
 
 def my_hook(event: CostKeyEvent) -> CostKeyEvent | None:
-    # Drop events from dev/test models
-    if event.model and "test" in event.model:
+    # Drop events from a test environment
+    if event.context.get("environment") == "test":
         return None
 
     # Strip all request bodies (keep responses for debugging)
@@ -144,8 +147,8 @@ import type { CostKeyEvent } from 'costkey'
 CostKey.init({
   dsn: 'http://ck_key@localhost:4100/proj_id',
   beforeSend: (event: CostKeyEvent): CostKeyEvent | null => {
-    // Drop events from dev/test models
-    if (event.model?.includes('test')) return null
+    // Drop events from a test environment
+    if (event.context.environment === 'test') return null
 
     // Strip all request bodies
     event.requestBody = null
@@ -161,7 +164,7 @@ CostKey.init({
 </TabItem>
 </Tabs>
 
-If the `before_send` hook throws an exception, the event is dropped (not sent). The SDK never crashes your app — errors in hooks are caught silently (or logged if `debug: true`).
+If the `before_send` hook throws an exception, the event is dropped (not sent). The SDK never crashes your app: errors in hooks are caught silently (or logged if `debug: true`).
 
 ## Data retention
 

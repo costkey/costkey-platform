@@ -18,7 +18,9 @@ curl -fsSL https://costkey.dev/install.sh | sh
 
 It creates a `costkey` folder with the compose file and a `.env` with fresh secrets, pulls the image (`ghcr.io/costkey/costkey`, for Intel and Apple Silicon) and starts it.
 
-Open `http://localhost:4100`, sign up and create your workspace. The first person to sign up owns it. Invite your team from **Settings → Team**.
+SDK 0.7 needs CostKey server 0.7.0 or later. Older SDKs keep working with the new server, so upgrade the server first.
+
+Open `http://localhost:4100`, sign up and create your workspace. The first person to sign up owns it. Invite your team from **Settings, Team**.
 
 ### By hand
 
@@ -70,11 +72,15 @@ All settings live in `.env` next to `docker-compose.yml`.
 | `PUBLIC_URL` | Where people and SDKs reach this server. DSNs and links in emails use it. Default `http://localhost:4100`. |
 | `COSTKEY_PORT` | The port published on the host. Default `4100`. |
 | `COSTKEY_JWT_SECRET` | Signs sign-in sessions. Required. |
-| `COSTKEY_NOTIFICATION_ENCRYPTION_KEY` | Encrypts saved Slack and webhook URLs. Required. |
+| `COSTKEY_NOTIFICATION_ENCRYPTION_KEY` | Encrypts saved Slack and webhook URLs and quality check judge API keys. Required. |
 | `POSTGRES_PASSWORD` | The database password. Default `costkey`. |
 | `RESEND_API_KEY`, `COSTKEY_NOTIFICATION_FROM` | Optional. Send invites, alerts and daily or weekly summaries by email through Resend. Without them, invites show a link to copy. |
 | `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | Optional. Sign in with GitHub. |
 | `COSTKEY_COOKIE_SECURE` | Optional. Sign-in cookies are Secure when `PUBLIC_URL` is `https://`. Set `true` or `false` to override. |
+| `COSTKEY_VERSION` | Optional. The image tag to run, such as `0.7.0`. Default `latest`. |
+| `COSTKEY_QUALITY_SETTLE_SECONDS` | Optional. Seconds a run must be idle before [quality checks](./quality-checks) score it. Default `120`. |
+| `COSTKEY_QUALITY_JUDGE_RPM` | Optional. Most LLM judge calls per minute for each project. Default `30`. |
+| `COSTKEY_QUALITY_WORKER_INTERVAL_SECONDS` | Optional. Seconds between runs of the quality check worker. Default `15`. |
 
 ## Put it behind HTTPS
 
@@ -94,7 +100,7 @@ docker compose pull
 docker compose up -d
 ```
 
-Pin a version with `COSTKEY_VERSION=0.6.1` in `.env`.
+Pin a version with `COSTKEY_VERSION=0.7.0` in `.env`.
 
 The server applies database migrations when it starts.
 
@@ -110,5 +116,6 @@ docker compose exec postgres pg_dump -U costkey costkey > costkey-backup.sql
 
 - **Prices.** The server syncs model prices every six hours from LiteLLM, models.dev and OpenRouter. The image includes a snapshot, so a fresh install has prices before its first sync.
 - **Email and GitHub sign-in**, only if you set them up.
+- **LLM judges.** [Quality checks](./quality-checks) that use a judge call the provider you pick (OpenAI, Anthropic or Google) from the server.
 
 Calls from your app go straight to your providers. CostKey never sits in between.

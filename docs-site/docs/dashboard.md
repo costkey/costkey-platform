@@ -36,6 +36,10 @@ A run is one request your app made, such as `POST /api/search` or one nightly jo
 
 Open a run to see its cost, duration, calls and status, plus a timeline of its calls. Select a call to see its cost, tokens, model, the source line that made it, its labels and, if text capture is on for the project, the prompt and response.
 
+## Quality
+
+Quality shows how runs went. The **Checks** view lists your quality checks with each one's pass rate, average score and runs scored. Rule checks such as Run succeeded need no prompt text; LLM judges score runs against a rubric when the project captures text. Each run's results are on its **Checks** tab. See [Quality checks](./quality-checks).
+
 ## Costs
 
 Costs shows where the spend went. Split it by feature, function, model or customer to see each one's spend, share, runs and cost per run. Open any row for its daily cost and how cost is spread across its runs.

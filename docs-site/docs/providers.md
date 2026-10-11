@@ -6,14 +6,19 @@ description: Provider endpoint, response-shape, and transport coverage for CostK
 
 # Providers
 
-CostKey has built-in extractors for the provider endpoints below. Detection is
-an exact hostname/pattern match in the current SDKs; it is not a claim that
-every API, proxy, WebSocket, or SDK transport for a provider is covered. No
-provider-routing gateway is required.
+CostKey captures calls to the provider hosts below. Both SDKs, TypeScript and
+Python, capture every provider listed. Detection is an exact hostname or
+pattern match; it is not a claim that every API, proxy, WebSocket, or SDK
+transport for a provider is covered. No provider-routing gateway is required.
+
+The SDKs only match the host and send raw telemetry. The server works out the
+provider, model and usage for each call and prices it, so support for a new
+response shape ships with the server.
 
 ## Supported providers
 
-TypeScript patches `globalThis.fetch`. Python patches `httpx`, `requests` and
+TypeScript patches `globalThis.fetch`. Python patches `httpx`, `httpx2`
+(used by openai 3.x, anthropic 1.x and mistralai 3.x), `requests` and
 `aiohttp` (which google-genai uses whenever it's installed), plus boto3 for
 Bedrock.
 
@@ -54,131 +59,92 @@ const bedrock = CostKey.instrumentBedrockClient(new BedrockRuntimeClient({ regio
 ## How endpoint detection works
 
 On every patched call, the SDK checks the request URL's hostname against the
-provider list. Matching is intentionally narrow. Non-matching calls pass
-through, while matched calls are observed for usage and timing. Request/response
-copying, parsing, stack capture, and serialization still have a cost; profile
-your application before choosing performance-sensitive settings.
+capture list. Matching is intentionally narrow. Non-matching calls pass
+through untouched.
 
 When a match is found, the SDK:
 
-1. Captures a stack trace (for call site attribution)
+1. Captures the stack trace (every frame; the server picks the call site)
 2. Records the start time
-3. Passes the request to the provider; supported streaming may add a usage
-   inclusion option and explicit CostKey carrier headers are removed
-4. Reads the response (cloned) to extract token usage
-5. Sends a CostKey event asynchronously
+3. Passes the request to the provider. On streamed Chat Completions calls to
+   hosts that need it, it adds a usage option, and it removes explicit
+   CostKey carrier headers.
+4. Records the request and response as skeletons: keys and numbers are kept,
+   text is replaced by its length. Streams are recorded chunk by chunk as your
+   code reads them.
+5. Sends the event asynchronously
 
-For supported streaming responses, the SDK wraps the response stream to capture
-timing metrics (TTFT, tokens/sec) and looks for usage in SSE data frames. This
-does not provide complete voice or non-HTTP transport coverage.
+Recording, stack capture and serialization still have a cost; profile your
+application before choosing performance-sensitive settings. Streams over
+WebSocket and other non-HTTP transports aren't covered.
 
 ## Cost
 
-The SDK sends usage; the server prices it from a synced catalog. See
-[Pricing](/pricing) for sources, matching and what to do when a model has no
-price.
+The server extracts usage from the telemetry and prices it from a synced
+catalog. See [Pricing](/pricing) for sources, matching and what to do when a
+model has no price.
 
-## Adding a custom provider
+## Custom providers
 
-If you use an AI provider not in the built-in list, register a custom extractor:
+A host that isn't built in, such as an internal gateway or a self-hosted
+model server, is configured on the CostKey server for each project. There is
+no SDK code to write. Owners and admins create one with the projects API,
+authenticated with a sign-in token such as the one `npx costkey setup` saves
+in `~/.costkey/token`:
 
-import Tabs from '@theme/Tabs';
-import TabItem from '@theme/TabItem';
-
-<Tabs>
-<TabItem value="python" label="Python">
-
-```python
-import costkey
-from costkey.types import Provider, NormalizedUsage
-
-class MyProviderExtractor:
-    provider = Provider.UNKNOWN
-
-    def match(self, url: str) -> bool:
-        from urllib.parse import urlparse
-        return urlparse(url).hostname == "api.myprovider.com"
-
-    def extract_usage(self, body: dict) -> NormalizedUsage | None:
-        usage = body.get("usage")
-        if not usage:
-            return None
-        return NormalizedUsage(
-            input_tokens=usage.get("prompt_tokens"),
-            output_tokens=usage.get("completion_tokens"),
-            total_tokens=usage.get("total_tokens"),
-        )
-
-    def extract_model(self, request_body, response_body) -> str | None:
-        if isinstance(response_body, dict):
-            return response_body.get("model")
-        if isinstance(request_body, dict):
-            return request_body.get("model")
-        return None
-
-costkey.register_extractor(MyProviderExtractor())
+```bash
+curl -X POST "$COSTKEY_URL/api/v1/projects/$PROJECT_ID/providers" \
+  -H "Authorization: Bearer $(cat ~/.costkey/token)" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "internal-llm",
+    "hostname": "llm.internal.example.com",
+    "usageInputPath": "usage.prompt_tokens",
+    "usageOutputPath": "usage.completion_tokens",
+    "modelPath": "model"
+  }'
 ```
 
-</TabItem>
-<TabItem value="typescript" label="TypeScript">
+| Field | Meaning |
+| --- | --- |
+| `name` | The provider name shown in the console. Required. |
+| `hostname` | The host to capture. `*.example.com` matches any subdomain. Required. |
+| `usageInputPath` | Dot path to the input token count in the response body. Default `usage.prompt_tokens`. |
+| `usageOutputPath` | Dot path to the output token count. Default `usage.completion_tokens`. |
+| `modelPath` | Dot path to the model name in the response or request body. Default `model`. |
 
-```typescript
-import { CostKey, Provider } from 'costkey'
-import type { ProviderExtractor, NormalizedUsage } from 'costkey'
+`GET` lists a project's custom providers, and
+`PATCH` and `DELETE` on `/api/v1/projects/:projectId/providers/:providerId`
+change or remove one (`"enabled": false` turns one off).
 
-CostKey.registerExtractor({
-  provider: Provider.Unknown,
+How it works:
 
-  match(url: URL): boolean {
-    return url.hostname === 'api.myprovider.com'
-  },
-
-  extractUsage(body: unknown): NormalizedUsage | null {
-    const b = body as Record<string, any>
-    const usage = b?.usage
-    if (!usage) return null
-    return {
-      inputTokens: usage.prompt_tokens ?? null,
-      outputTokens: usage.completion_tokens ?? null,
-      totalTokens: usage.total_tokens ?? null,
-      reasoningTokens: null,
-      cacheReadTokens: null,
-      cacheCreationTokens: null,
-    }
-  },
-
-  extractModel(requestBody: unknown, responseBody: unknown): string | null {
-    const resp = responseBody as Record<string, any>
-    if (resp?.model) return resp.model
-    const req = requestBody as Record<string, any>
-    if (req?.model) return req.model
-    return null
-  },
-})
-```
-
-</TabItem>
-</Tabs>
+- SDKs pick up the enabled hostnames from the DSN runtime config, which they
+  refresh every 60 seconds by default, and capture those calls like any other
+  provider.
+- The server applies the paths to the raw telemetry. Built-in providers are
+  matched first, so a custom entry can't take over a known host.
+- The model is read only from a key the skeleton keeps as text, such as
+  `model`. Other strings arrive as lengths.
+- Set a price for the model in **Settings, Prices & credits**.
 
 ## Provider-specific notes
 
 ### OpenAI
 
-CostKey injects `stream_options: { include_usage: true }` into streaming requests so that the final SSE chunk includes token usage. This is done transparently — your code doesn't need to change.
+The TypeScript SDK adds `stream_options: { include_usage: true }` to streamed Chat Completions requests so the final SSE chunk includes token usage. Your code doesn't need to change.
 
 ### Anthropic
 
-Cache tokens are tracked separately:
-- `cacheReadTokens` / `cache_read_tokens` — tokens read from Anthropic's prompt cache
-- `cacheCreationTokens` / `cache_creation_tokens` — tokens written to cache
+Cache reads and cache writes are tracked and priced separately from other input tokens.
 
 ### DeepSeek
 
-Reasoning tokens (from DeepSeek-R1) are captured in the `reasoningTokens` field. Cache hit/miss tokens are also tracked.
+Reasoning tokens and cache hit and miss tokens are tracked.
 
 ### AWS Bedrock
 
-Bedrock URLs follow the pattern `bedrock-runtime.<region>.amazonaws.com`. All regions are auto-detected. The SDK extracts usage from Bedrock's response format, which wraps the underlying model's response.
+Bedrock URLs follow the pattern `bedrock-runtime.<region>.amazonaws.com`. All regions are detected. The server extracts usage from Bedrock's response format, which wraps the underlying model's response, and from its token count headers.
 
 ### Google / Vertex AI
 

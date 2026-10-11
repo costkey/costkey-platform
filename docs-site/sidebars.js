@@ -9,6 +9,7 @@ const sidebars = {
     'recipes',
     'providers',
     'dashboard',
+    'quality-checks',
 
     'sourcemaps',
     'self-hosting',

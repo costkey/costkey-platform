@@ -56,7 +56,7 @@ Supported detections include Next.js, Vite, Express, Fastify, Hono, Koa, NestJS,
 
 ## Initialize manually
 
-Prefer the setup command above. If you need to wire CostKey manually, copy your DSN from **Settings → Projects** in your CostKey console and initialize before your first AI call.
+Prefer the setup command above. If you need to wire CostKey manually, copy your DSN from **Settings, Projects** in your CostKey console and initialize before your first AI call.
 
 <Tabs>
 <TabItem value="python" label="Python">
@@ -106,6 +106,8 @@ observed automatically for metadata, usage, timing, and attribution. Coverage
 depends on the endpoint, transport, response shape, capture mode, and whether
 the process flushes its telemetry; see the [developer recipes and capability
 matrix](/recipes).
+
+Using an agent framework such as the OpenAI Agents SDK, LangGraph, CrewAI or the Vercel AI SDK? Add its integration to see each step and tool call; see [Agents and frameworks](/agents).
 
 <Tabs>
 <TabItem value="python" label="Python">
@@ -158,15 +160,15 @@ Open your CostKey console and you'll see:
 - **Latency** and streaming metrics (TTFT, tokens/sec) when the transport exposes them
 - **Stack trace** showing the captured source frame when available
 - **Call site grouping** so you can see which observed code paths cost the most
-- **Captured content** — inspect prompts/completions only for calls allowed by
+- **Captured content**: inspect prompts/completions only for calls allowed by
   project text-capture, SDK body-capture, endpoint, permission, and retention
   settings
-- **System prompts and tool calls** — inspect these only when content capture is
+- **System prompts and tool calls**: inspect these only when content capture is
   enabled and the provider response shape exposes them
-- **Agent runs** — group model calls, tool calls, retries, and errors when the
+- **Agent runs**: group model calls, tool calls, retries, and errors when the
   application supplies an explicit trace/execution boundary
-- **Cost per deploy** — set `release` to see how costs change across deployments
-- **Executive summary** — a plain-English summary of your AI spend for stakeholders
+- **Cost per deploy**: set `release` to see how costs change across deployments
+- **Executive summary**: a plain-English summary of your AI spend for stakeholders
 
 ## Add context
 
@@ -252,9 +254,11 @@ await CostKey.shutdown()
 
 ## Next steps
 
-- [Python SDK](/python-sdk) — full API reference, all options, streaming details
-- [TypeScript SDK](/typescript-sdk) — full API reference, Express middleware, sourcemaps
-- [Developer recipes & diagnostics](/recipes) — HTTP, workers, mixed-language handoff, grouped work, evals, and voice boundaries
-- [Providers](/providers) — built-in provider endpoints and transport coverage
-- [Dashboard](/dashboard) — what each tab shows
-- [Privacy & security](/privacy-security) — what data is captured, credential scrubbing, data retention
+- [Python SDK](/python-sdk): full API reference, all options, streaming details
+- [TypeScript SDK](/typescript-sdk): full API reference, Express middleware, sourcemaps
+- [Developer recipes & diagnostics](/recipes): HTTP, workers, mixed-language handoff, grouped work, evals, and voice boundaries
+- [Providers](/providers): built-in provider endpoints and transport coverage
+- [Agents and frameworks](/agents): framework integrations and agent spans
+- [Dashboard](/dashboard): what each tab shows
+- [Quality checks](/quality-checks): score every run with rules and LLM judges
+- [Privacy & security](/privacy-security): what data is captured, credential scrubbing, data retention

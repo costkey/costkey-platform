@@ -16,7 +16,7 @@ You need sourcemaps if your production code is:
 - **Minified** (terser, uglify, etc.)
 - **Transpiled** from TypeScript
 
-If you're running raw `.ts` files with `tsx` or `ts-node` in development, you don't need sourcemaps — stack traces already point to the right files.
+If you're running raw `.ts` files with `tsx` or `ts-node` in development, you don't need sourcemaps: stack traces already point to the right files.
 
 ## Setup
 

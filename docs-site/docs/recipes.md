@@ -38,11 +38,11 @@ Verified in the existing SDK API surface:
 - nested business context (`withContext` / `with_context`);
 - explicit trace boundaries (`startTrace` / `start_trace`);
 - `flush` and `shutdown`; and
-- custom provider extractors.
+- custom providers, configured on the server (see [Providers](/providers#custom-providers)).
 
 The workspace source now also contains `startExecution`/`start_execution`,
 `recordUsage`/`record_usage`, and an explicit carrier pair. They are marked
-**source implemented — release pending** below because the installed package
+**source implemented, release pending** below because the installed package
 version may not export them yet. Do not claim a feature is shipped from source
 presence alone.
 
@@ -68,16 +68,16 @@ covered.
 
 | Path | Endpoint evidence | Transport/response evidence | Automatically observed | Current status |
 | --- | --- | --- | --- | --- |
-| TypeScript/Node | Built-in host matchers such as `api.openai.com`, `api.anthropic.com`, `generativelanguage.googleapis.com`, and `bedrock-runtime.*.amazonaws.com` | `globalThis.fetch`; JSON responses and SSE-style `data:` responses when the JSON request has `stream: true` | Provider/model, usage fields recognized by the extractor, duration, stack, and current context | Source implemented; release/acceptance caveat |
-| Python async/sync HTTP | The same built-in provider host matchers in the Python SDK | `httpx.AsyncClient.send` and `httpx.Client.send`; JSON responses and wrapped HTTPX stream iteration (`iter_*`, `aiter_*`, `read`, `aread`) | Provider/model, recognized usage, duration, stack, and current context | Source implemented; release/acceptance caveat |
+| TypeScript/Node | Built-in host matchers such as `api.openai.com`, `api.anthropic.com`, `generativelanguage.googleapis.com`, and `bedrock-runtime.*.amazonaws.com` | `globalThis.fetch`; JSON responses and SSE-style `data:` responses when the JSON request has `stream: true` | Raw request/response telemetry, duration, stack, and current context; the server derives provider, model and usage | Source implemented; release/acceptance caveat |
+| Python async/sync HTTP | The same built-in provider host matchers in the Python SDK | `httpx` and `httpx2` `AsyncClient.send` and `Client.send`; JSON responses and wrapped HTTPX stream iteration (`iter_*`, `aiter_*`, `read`, `aread`) | Provider/model, recognized usage, duration, stack, and current context | Source implemented; release/acceptance caveat |
 | Python `requests` | The same host matchers | `requests.Session.send`; response JSON is inspected; no separate SSE iterator wrapper is provided | Provider/model, recognized usage, duration, stack, and current context | Source implemented; JSON path |
-| Custom HTTP provider | Your extractor's `match(url)` predicate | The transport must expose a response body in the extractor's expected shape | Whatever the custom extractor returns | Implemented extension point |
+| Custom HTTP provider | A hostname configured on the server for the project ([custom providers](/providers#custom-providers)) | Any patched HTTP transport; the server reads token counts and model from the configured paths | Raw telemetry; usage from the configured paths | Server configuration |
 | LiveKit Agents | No CostKey HTTP endpoint is involved; LiveKit emits plugin metrics and cumulative `session.usage.model_usage` | `session_usage_updated`/`session.usage` are application callbacks, not auto-captured HTTP | Nothing automatically; an adapter must preserve native units and identity | Explicit adapter; source implemented, release/acceptance pending |
 | WebSocket, gRPC, or other non-matched transport | No built-in endpoint matcher or hook in the current packages | No automatic response inspection path; caller can emit an explicit usage event | Nothing automatically | `recordUsage`/`record_usage` source implemented; adapter/acceptance pending |
 
 Streaming capture is conditional: the current HTTP implementations need a JSON
 request with `stream: true`, and usage must be present in a response shape that
-the provider extractor understands. Do not infer voice, WebSocket, or gRPC
+the server's provider extractor understands. Do not infer voice, WebSocket, or gRPC
 coverage from ordinary `fetch`/HTTP support. Measure application overhead in
 your own runtime before making performance claims; this documentation does not
 promise that instrumentation adds no application work or latency.
@@ -240,7 +240,7 @@ TypeScript: CostKey.withContext({ traceId: appRequestId }, handler)
 Python:     costkey.with_context(traceId=app_request_id)
 ```
 
-This is an explicit, app-owned convention—not automatic propagation. Keep the
+This is an explicit, app-owned convention, not automatic propagation. Keep the
 value on a trusted, allowlisted service/queue path. Do not forward arbitrary
 context, credentials, prompt bodies, or request headers.
 
@@ -252,7 +252,7 @@ These helpers may not yet be in the package version you installed.
 ### Explicit carrier (source implemented; release caveat above)
 
 ```text
-SOURCE IMPLEMENTED — check the installed package before calling
+SOURCE IMPLEMENTED: check the installed package before calling
 
 carrier = CostKey.exportContext()
 trustedRequest.headers = CostKey.exportContextHeaders()
@@ -278,7 +278,7 @@ The following shape is implemented in workspace source for both SDKs. It is
 shown here with the release caveat above; verify exports before running it:
 
 ```text
-SOURCE IMPLEMENTED — check installed package version before calling
+SOURCE IMPLEMENTED: check installed package version before calling
 
 await CostKey.startExecution(
   { name: "nightly-document-import", kind: "batch", expectedItems: itemCount },
@@ -310,7 +310,7 @@ and call it instrumentation; use the current trace/context APIs for calls that
 are actually observed.
 
 ```text
-SOURCE IMPLEMENTED — verify installed package exports before running
+SOURCE IMPLEMENTED: verify installed package exports before running
 
 execution(kind=evaluation, name="search-eval", configuration=variant,
           datasetRevision=revision)
@@ -475,7 +475,7 @@ preserve semantic context when a runtime cannot provide useful stacks.
 
 Body capture is explicit and can be disabled. `beforeSend` can redact or drop
 events before delivery. Diagnostics should display statuses, counts, endpoint
-capability, coverage, and targeted next actions—not credentials or captured
+capability, coverage, and targeted next actions, not credentials or captured
 bodies. Delivery is best-effort and bounded; profile the real application before
 choosing batch/flush settings or enabling enforcement. CostKey’s product claim
 is no gateway required, not a promise of no CPU/latency impact, complete

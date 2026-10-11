@@ -18,7 +18,7 @@ curl -fsSL https://costkey.dev/install.sh | sh
 
 Docker Compose with Postgres, on port 4100. See [Self-hosting](./self-hosting) for settings, HTTPS, upgrades and backups.
 
-## Any VPS: DigitalOcean, Hetzner, Linode, Vultr
+## Any VPS: DigitalOcean Droplets, Hetzner, Linode, Vultr
 
 Create an Ubuntu or Debian server and paste [`cloud-init.yaml`](https://costkey.dev/self-host/cloud-init.yaml) as its user data. When it boots, open `http://<server-ip>:4100`.
 
@@ -39,9 +39,15 @@ helm install costkey oci://ghcr.io/costkey/charts/costkey \
 
 Use a managed database with `--set postgres.enabled=false --set externalDatabaseUrl=postgresql://...`.
 
-## Render
+## One click: Render and DigitalOcean
 
-Deploy the [`render.yaml`](https://costkey.dev/self-host/render.yaml) Blueprint: in Render, **New → Blueprint**, point it at a repository containing that file. It creates the service from the published image and a Render Postgres, and generates the secrets. DSNs use the `onrender.com` address until you set `PUBLIC_URL`.
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/costkey/deploy)
+[![Deploy to DigitalOcean](https://www.deploytodo.com/do-btn-blue.svg)](https://cloud.digitalocean.com/apps/new?repo=https://github.com/costkey/deploy/tree/main)
+
+- **Render** creates the service from the published image and a Render Postgres, and generates the secrets. DSNs use the `onrender.com` address until you set `PUBLIC_URL`.
+- **DigitalOcean** creates an App Platform app and a Postgres, and asks for the two secrets (`openssl rand -hex 32` each).
+
+Every template here lives in [github.com/costkey/deploy](https://github.com/costkey/deploy).
 
 ## Railway
 

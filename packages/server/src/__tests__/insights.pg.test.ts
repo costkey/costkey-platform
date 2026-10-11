@@ -50,6 +50,8 @@ test("runs group into agents and workflows; a batch or eval is one workflow", { 
     assert.equal(agents.rows[0].runs, 2);
     assert.ok(Math.abs(Number(agents.rows[0].cost) - 0.06) < 1e-9, "a run's cost is the whole run, tools included");
     assert.equal(agents.rows[0].failed_runs, 1);
+    // 2 runs, 1 failed: the one success carries the whole $0.06.
+    assert.ok(Math.abs(Number(agents.rows[0].cost_per_success) - 0.06) < 1e-9, "a success costs all spend over successful runs");
     assert.equal(Number(agents.rows[0].avg_tools), 1);
 
     const workflows = await pool.query(

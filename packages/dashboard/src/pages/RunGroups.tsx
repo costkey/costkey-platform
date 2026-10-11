@@ -31,12 +31,13 @@ function Totals({ groups, currency, fx, loading }: { groups: RunGroup[]; currenc
 
 function GroupTable({ groups, label, showShape, currency, fx, onOpen }: { groups: RunGroup[]; label: string; showShape: boolean; currency: string; fx?: ReportingFx | null; onOpen: (group: RunGroup) => void }) {
   return <div className="ck-table-wrap"><table className="ck-table ck-table-clickable">
-    <thead><tr><th>{label}</th><th className="numeric">Runs</th><th className="numeric">Spend</th><th className="numeric">Per run</th>{showShape && <th className="numeric hide-mobile">Steps</th>}{showShape && <th className="numeric hide-mobile">Tool calls</th>}<th className="numeric hide-mobile">p95</th><th className="numeric">Failed</th><th className="hide-mobile">Last run</th></tr></thead>
+    <thead><tr><th>{label}</th><th className="numeric">Runs</th><th className="numeric">Spend</th><th className="numeric">Per run</th><th className="numeric hide-mobile" title="Spend over runs that succeeded, failed runs included">Per success</th>{showShape && <th className="numeric hide-mobile">Steps</th>}{showShape && <th className="numeric hide-mobile">Tool calls</th>}<th className="numeric hide-mobile">p95</th><th className="numeric">Failed</th><th className="hide-mobile">Last run</th></tr></thead>
     <tbody>{groups.map((group) => <tr key={group.name} tabIndex={0} onClick={() => onOpen(group)} onKeyDown={(event) => { if (event.key === "Enter") onOpen(group); }}>
       <td className="primary-cell">{group.name}</td>
       <td className="numeric">{group.runs.toLocaleString()}</td>
       <td className="numeric">{money(group.cost, currency, fx)}{group.partlyPricedRuns > 0 && <small className="ck-table-sub">{group.partlyPricedRuns} partly priced</small>}</td>
       <td className="numeric">{money(group.costPerRun, currency, fx)}</td>
+      <td className="numeric hide-mobile">{money(group.costPerSuccess ?? null, currency, fx)}</td>
       {showShape && <td className="numeric hide-mobile">{group.avgSteps == null ? "—" : group.avgSteps.toFixed(1)}</td>}
       {showShape && <td className="numeric hide-mobile">{group.avgTools == null ? "—" : group.avgTools.toFixed(1)}</td>}
       <td className="numeric hide-mobile">{group.p95Ms == null ? "—" : formatDuration(group.p95Ms)}</td>
@@ -193,9 +194,10 @@ export function AgentDetailPage() {
     <Link className="ck-back-link" to="/agents"><ArrowLeft size={13} /> Agents</Link>
     <PageHeader title={name} actions={toolbar} />
     {error && !data ? <Panel><EmptyPanel title="Couldn’t load this agent" body={error} /></Panel> : <>
-      <div className="ck-metric-grid">
+      <div className="ck-metric-grid ck-metric-grid-4">
         <MetricCard icon="trace" label="Runs" value={(agent?.runs ?? 0).toLocaleString()} detail={agent && agent.failedRuns > 0 ? `${agent.failedRuns} failed` : undefined} loading={loading && !data} />
         <MetricCard icon="cost" label="Per run" value={money(agent?.costPerRun, currency, fx)} detail={agent ? `${money(agent.cost, currency, fx)} total` : undefined} loading={loading && !data} />
+        <MetricCard icon="cost" label="Per successful run" value={money(agent?.costPerSuccess ?? null, currency, fx)} detail={agent && agent.runs > 0 ? `${(agent.runs - agent.failedRuns).toLocaleString()} of ${agent.runs.toLocaleString()} succeeded` : undefined} loading={loading && !data} />
         <MetricCard icon="clock" label="p95 run time" value={agent?.p95Ms == null ? "—" : formatDuration(agent.p95Ms)} detail={agent?.avgSteps != null ? `${agent.avgSteps.toFixed(1)} steps · ${(agent.avgTools ?? 0).toFixed(1)} tool calls` : undefined} loading={loading && !data} />
       </div>
       <Panel title="Runs">{loading && !data ? <LoadingRows count={5} columns={6} /> : (data?.runs.length ?? 0) === 0 ? <EmptyPanel title="No runs in this period" /> : <div className="ck-table-wrap"><table className="ck-table">

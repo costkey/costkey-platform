@@ -89,6 +89,9 @@ export const GROUP_COLUMNS = `
   COUNT(*)::int AS runs,
   SUM(cost) AS cost,
   SUM(cost) FILTER (WHERE unpriced = 0) / NULLIF(COUNT(*) FILTER (WHERE unpriced = 0), 0) AS cost_per_run,
+  -- What each successful run really costs: every priced run's spend, failed
+  -- runs included, over the priced runs that succeeded.
+  SUM(cost) FILTER (WHERE unpriced = 0) / NULLIF(COUNT(*) FILTER (WHERE unpriced = 0 AND NOT failed), 0) AS cost_per_success,
   COUNT(*) FILTER (WHERE unpriced > 0)::int AS partly_priced_runs,
   SUM(calls)::int AS calls,
   percentile_cont(0.5) WITHIN GROUP (ORDER BY duration_ms) AS p50_ms,
@@ -110,6 +113,7 @@ function groupRow(row: Record<string, unknown>): Record<string, unknown> {
     runs: number(row.runs) ?? 0,
     cost: number(row.cost),
     costPerRun: number(row.cost_per_run),
+    costPerSuccess: number(row.cost_per_success),
     partlyPricedRuns: number(row.partly_priced_runs) ?? 0,
     calls: number(row.calls) ?? 0,
     p50Ms: number(row.p50_ms),

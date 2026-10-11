@@ -806,6 +806,10 @@ textarea {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   display: grid;
 }
+.ck-metric-grid.ck-metric-grid-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+@media (max-width: 1000px) {
+  .ck-metric-grid.ck-metric-grid-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 .ck-metric-label {
   font-weight: 400;
   letter-spacing: 0;

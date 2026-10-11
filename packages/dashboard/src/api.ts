@@ -970,6 +970,8 @@ export interface RunGroup {
   runs: number;
   cost: number | null;
   costPerRun: number | null;
+  /** Spend over successful runs: what each success really costs, failures included. */
+  costPerSuccess?: number | null;
   partlyPricedRuns: number;
   calls: number;
   p50Ms: number | null;

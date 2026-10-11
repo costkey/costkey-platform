@@ -1,6 +1,6 @@
 {
   "name": "costkey",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "Sentry for AI costs. Sends raw AI-call and agent telemetry (no processing in your app); the CostKey server derives cost, tokens and usage.",
   "type": "module",
   "main": "./dist/index.js",
@@ -52,7 +52,7 @@
   ],
   "scripts": {
     "build": "npm run clean && tsc",
-    "test": "vitest run",
+    "test": "vitest run && tsc -p tsconfig.integrations.json",
     "test:watch": "vitest",
     "benchmark:overhead": "npm run build && node benchmarks/sdk-overhead.mjs",
     "test:pack": "npm run build && node benchmarks/check-pack.mjs",

@@ -957,6 +957,39 @@ export function createAuthRouter(pool?: pg.Pool): Router {
   return router;
 }
 
+// ── Single sign-on hooks (used by sso/) ─────────────────────────────────────
+// IAP and OIDC sign-ins end in the same session cookie as a password login,
+// so the rest of the app works unchanged.
+
+/** Issue the normal console session for a user signed in by IAP or OIDC. */
+export function issueSessionCookie(res: Response, user: { id: string; orgId: string; role: string }): void {
+  const token = jwt.sign({ userId: user.id, orgId: user.orgId, role: normalizeRole(user.role) }, JWT_SECRET, { expiresIn: JWT_EXPIRES });
+  setTokenCookie(res, token);
+}
+
+/** Clear the console session cookie. */
+export function clearSessionCookie(res: Response): void {
+  res.clearCookie("ck_token", { httpOnly: true, secure: secureCookies(), sameSite: "lax", path: cookiePath() });
+}
+
+const SSO_FLOW_AUDIENCE = "costkey:sso-flow";
+
+/** Sign short-lived sign-in flow state (OIDC state, nonce, PKCE verifier). */
+export function signSsoFlowState(payload: Record<string, unknown>, ttlSeconds: number): string {
+  return jwt.sign(payload, JWT_SECRET, { algorithm: "HS256", expiresIn: ttlSeconds, audience: SSO_FLOW_AUDIENCE });
+}
+
+export function verifySsoFlowState(token: unknown): Record<string, unknown> | null {
+  if (typeof token !== "string" || !token) return null;
+  try {
+    const payload = jwt.verify(token, JWT_SECRET, { algorithms: ["HS256"], audience: SSO_FLOW_AUDIENCE });
+    return typeof payload === "object" && payload ? payload as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
+}
+// ── End single sign-on hooks ────────────────────────────────────────────────
+
 /** Auth middleware */
 export function authMiddleware(pool?: pg.Pool) {
   const authPool = pool ?? getPool();

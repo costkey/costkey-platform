@@ -1,8 +1,9 @@
 import { appUrl } from "../basePath";
 import { useState } from "react";
 import { ArrowRight, GitBranch, LoaderCircle } from "lucide-react";
-import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { Link, Navigate, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../contexts/useAuth";
+import { useAuthConfig } from "../authConfig";
 import { BrandLockup } from "../components/BrandMark";
 import { AuthBrandPanel, AuthFooter } from "./Login";
 
@@ -16,6 +17,13 @@ export default function Signup() {
   const [password, setPassword] = useState("");
   const [orgName, setOrgName] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const authConfig = useAuthConfig();
+
+  // Single sign-on servers have no signup: the first sign-in creates the account.
+  if (authConfig && authConfig.mode !== "password") {
+    const query = searchParams.get("cli") === "1" ? "?cli=1" : "";
+    return <Navigate to={`/login${query}`} replace />;
+  }
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();

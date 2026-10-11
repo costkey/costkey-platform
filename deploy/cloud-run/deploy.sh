@@ -16,6 +16,9 @@
 #   COSTKEY_PUBLIC_URL=https://costkey.internal.example.com
 #                            The address SDKs and people use, e.g. an internal DNS name.
 #                            DSNs and email links use it. Default: the Cloud Run URL.
+#   COSTKEY_AUTH=iap         Console sign-in: password (default), iap or oidc. With iap,
+#   COSTKEY_IAP_AUDIENCE=... set the audience load-balancer-path.sh prints. For oidc,
+#                            set COSTKEY_OIDC_* (see the self-hosting docs).
 #   COSTKEY_INGRESS=internal internal (default), internal-and-cloud-load-balancing, or all.
 #                            "all" makes the service reachable from the internet;
 #                            the database stays private either way.
@@ -135,7 +138,7 @@ gc run deploy "$SERVICE" --image "$IMAGE" --region "$REGION" --port 4100 \
   --ingress "$INGRESS" --no-invoker-iam-check \
   --network "$NETWORK" --subnet "$SUBNET" --vpc-egress private-ranges-only \
   --min-instances 1 --no-cpu-throttling --memory 1Gi \
-  --set-env-vars NODE_ENV=production \
+  --set-env-vars "^|^NODE_ENV=production|COSTKEY_AUTH=${COSTKEY_AUTH:-password}${COSTKEY_IAP_AUDIENCE:+|COSTKEY_IAP_AUDIENCE=${COSTKEY_IAP_AUDIENCE}}${COSTKEY_SSO_DEFAULT_ROLE:+|COSTKEY_SSO_DEFAULT_ROLE=${COSTKEY_SSO_DEFAULT_ROLE}}" \
   --set-secrets DATABASE_URL=costkey-database-url:latest,COSTKEY_JWT_SECRET=costkey-jwt-secret:latest,COSTKEY_NOTIFICATION_ENCRYPTION_KEY=costkey-notification-key:latest
 
 URL="$(gc run services describe "$SERVICE" --region "$REGION" --format='value(status.url)')"

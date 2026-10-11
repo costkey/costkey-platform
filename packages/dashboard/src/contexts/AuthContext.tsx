@@ -155,13 +155,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const logout = async () => {
     analytics.capture("user_logged_out");
-    await fetch(appUrl("/auth/logout"), { method: "POST", credentials: "include" });
+    const res = await fetch(appUrl("/auth/logout"), { method: "POST", credentials: "include" });
     setUser(null);
     setOrg(null);
     setProjects([]);
     setCurrentProjectId(null);
     setWorkspaceSettings(null);
     analytics.reset();
+    // Single sign-on: behind IAP the server names IAP's clear-login-cookie
+    // path, otherwise the next request would sign straight back in.
+    const body = await res.json().catch(() => null) as { redirectTo?: unknown } | null;
+    if (typeof body?.redirectTo === "string" && body.redirectTo.startsWith("/") && !body.redirectTo.startsWith("//")) {
+      window.location.assign(body.redirectTo);
+      // The page is leaving; don't let callers route to /login and sign in again.
+      await new Promise<never>(() => undefined);
+    }
   };
 
   return (

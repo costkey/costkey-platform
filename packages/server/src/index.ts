@@ -8,6 +8,8 @@ import type pg from "pg";
 import { ensureQualityCheckSchema, getPool, initDatabase } from "./db.js";
 import { createIngestRouter, loadCallGraphCache } from "./ingest.js";
 import { createAuthRouter, authMiddleware } from "./auth.js";
+import { createSsoRouter, ssoSessionMiddleware } from "./sso/router.js"; // single sign-on
+import { reportAuthSettingsAtStartup } from "./sso/config.js"; // single sign-on
 import { createInvitePreviewRouter, createTeamsRouter } from "./teams.js";
 import { createAlertsRouter, checkAlerts } from "./alerts.js";
 import { projectMutationGuard, platformResponseGuards, rateLimit } from "./middleware.js";
@@ -153,6 +155,8 @@ function addSpaFallback(app: Express, includeDashboard: boolean): void {
  */
 export function createApp(options: AppOptions = {}): Express & AppRuntime {
   const pool = options.pool ?? getPool();
+  // Single sign-on: throws for an unknown COSTKEY_AUTH, logs missing settings.
+  reportAuthSettingsAtStartup();
   const app = express();
   const schedulerHandles: NodeJS.Timeout[] = [];
   let initialized = false;
@@ -196,6 +200,8 @@ export function createApp(options: AppOptions = {}): Express & AppRuntime {
   // Authentication is non-blocking for SDK and public routes. API routers
   // enforce it where a user identity is required.
   app.use(authMiddleware(pool));
+  // Single sign-on: in IAP mode the signed IAP header decides who this is.
+  app.use(ssoSessionMiddleware(pool));
 
   app.use("/auth/login", rateLimit({ windowMs: 15 * 60 * 1000, max: 20 }));
   app.use("/auth/signup", rateLimit({ windowMs: 60 * 60 * 1000, max: 10 }));
@@ -227,6 +233,9 @@ export function createApp(options: AppOptions = {}): Express & AppRuntime {
   // the legacy budget/API routers remain lazy until database initialization.
   app.use(createSdkAdmissionRouter(pool));
   app.use(createSdkBudgetCompatibilityRouter(pool));
+  // Single sign-on: /auth/config, OIDC routes, and the password-route guard
+  // must precede the password auth router.
+  app.use(createSsoRouter(pool));
   app.use(createAuthRouter(pool));
   app.use(createIngestRuntimeConfigRouter(pool));
   app.use(createIngestRouter(pool));

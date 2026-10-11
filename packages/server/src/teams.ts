@@ -9,6 +9,7 @@ import {
   roleCanManageWorkspace,
 } from "./permissions.js";
 import { publicOrigin } from "./public-url.js";
+import { recordSsoRemoval, ssoInviteTerms } from "./sso/provision.js"; // single sign-on
 
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const APP_URL = publicOrigin();
@@ -469,7 +470,8 @@ export function createTeamsRouter(pool: pg.Pool): Router {
 
       const id = `inv_${randomId()}`;
       const token = randomToken();
-      const expiresAt = new Date(Date.now() + INVITE_TTL_MS).toISOString();
+      const sso = ssoInviteTerms(); // single sign-on: applies on first SSO sign-in
+      const expiresAt = new Date(Date.now() + (sso?.ttlMs ?? INVITE_TTL_MS)).toISOString();
 
       await pool.query(
         `INSERT INTO team_invites (id, org_id, email, role, project_ids, invited_by, token, status, expires_at)
@@ -477,7 +479,7 @@ export function createTeamsRouter(pool: pg.Pool): Router {
         [id, user.orgId, email, memberRole, assignedProjectIds, user.id, token, expiresAt],
       );
 
-      const inviteUrl = `${APP_URL}/invite/${token}`;
+      const inviteUrl = sso?.url ?? `${APP_URL}/invite/${token}`;
 
       const orgResult = await pool.query("SELECT name FROM orgs WHERE id = $1", [user.orgId]);
       const orgName = orgResult.rows[0]?.name ?? "your team";
@@ -624,7 +626,8 @@ export function createTeamsRouter(pool: pg.Pool): Router {
 
       // Rotate token, reset expiry, flip back to pending
       const newToken = randomToken();
-      const newExpiresAt = new Date(Date.now() + INVITE_TTL_MS).toISOString();
+      const sso = ssoInviteTerms(); // single sign-on: applies on first SSO sign-in
+      const newExpiresAt = new Date(Date.now() + (sso?.ttlMs ?? INVITE_TTL_MS)).toISOString();
 
       await pool.query(
         `UPDATE team_invites
@@ -637,7 +640,7 @@ export function createTeamsRouter(pool: pg.Pool): Router {
         [newToken, newExpiresAt, inv.id],
       );
 
-      const inviteUrl = `${APP_URL}/invite/${newToken}`;
+      const inviteUrl = sso?.url ?? `${APP_URL}/invite/${newToken}`;
       const orgResult = await pool.query("SELECT name FROM orgs WHERE id = $1", [user.orgId]);
       const orgName = orgResult.rows[0]?.name ?? "your team";
 
@@ -865,12 +868,15 @@ export function createTeamsRouter(pool: pg.Pool): Router {
         return;
       }
 
-      const target = await pool.query("SELECT role FROM users WHERE id = $1 AND org_id = $2", [memberId, user.orgId]);
+      const target = await pool.query("SELECT role, email FROM users WHERE id = $1 AND org_id = $2", [memberId, user.orgId]);
       if (target.rows[0]?.role === "owner") {
         res.status(403).json({ error: "Owners cannot be removed" });
         return;
       }
-      await pool.query("DELETE FROM users WHERE id = $1 AND org_id = $2", [memberId, user.orgId]);
+      const removed = await pool.query("DELETE FROM users WHERE id = $1 AND org_id = $2", [memberId, user.orgId]);
+      // Single sign-on: keep a removed member from being re-added at their next SSO sign-in.
+      if ((removed.rowCount ?? 0) > 0 && target.rows[0]?.email) await recordSsoRemoval(pool, target.rows[0].email, user.orgId, user.id)
+        .catch((error: unknown) => console.error("[costkey] Could not record SSO removal:", error));
       syncSeatsLater(pool, user.orgId);
       res.json({ ok: true });
     } catch (err) {

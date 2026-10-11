@@ -9,6 +9,20 @@ function notifyUnauthenticated(): void {
 export interface Overview {
   total_calls: number;
   total_cost: number;
+  known_cost?: number | null;
+  observations?: number;
+  priced_observations?: number;
+  unpriced_count?: number;
+  pricing_coverage?: number | null;
+  average_cost_per_trace?: number | null;
+  trace_count?: number;
+  priced_trace_count?: number;
+  forecast?: {
+    status: "available" | "not_enough_history" | "incomplete_pricing" | "unavailable" | string;
+    amount?: number | null;
+    method?: string | null;
+    completed_days?: number | null;
+  } | null;
   total_input_tokens: number;
   total_output_tokens: number;
   avg_duration_ms: number;
@@ -42,6 +56,9 @@ export interface CallSite {
   model: string;
   total_calls: number;
   total_cost_usd: number;
+  priced_calls?: number;
+  unpriced_calls?: number;
+  pricing_coverage?: number | null;
   total_input_tokens: number;
   total_output_tokens: number;
   avg_duration_ms: number;
@@ -54,16 +71,30 @@ export interface CallSite {
 export interface EventRow {
   id: string;
   timestamp: string;
+  trace_id?: string | null;
+  trace_name?: string | null;
   provider: string;
   model: string;
+  request_model?: string | null;
   url: string;
   method: string;
   status_code: number;
   input_tokens: number | null;
   output_tokens: number | null;
   total_tokens: number | null;
+  reasoning_tokens?: number | null;
+  cache_read_tokens?: number | null;
+  cache_creation_tokens?: number | null;
   image_output_tokens?: number | null;
   cost_usd: number | null;
+  cost_basis?: "reported" | "estimated" | "unknown" | null;
+  cost_source?: string | null;
+  cost_currency?: string | null;
+  content_status?: "captured" | "metadata_only" | "redacted" | "expired" | "not_available" | "unknown" | "restricted" | string | null;
+  unit_kind?: string | null;
+  unit_value?: number | null;
+  unit?: string | null;
+  aggregation?: string | null;
   duration_ms: number;
   streaming: boolean;
   ttft: number | null;
@@ -78,12 +109,18 @@ export interface EventRow {
   bl_function?: string | null;
   bl_file?: string | null;
   bl_line?: number | null;
+  feature_source?: string | null;
+  feature_mapping_id?: string | null;
+  feature_original?: string | null;
 }
 
 export interface TrendBucket {
   bucket: string;
   calls: number;
-  cost: number;
+  cost: number | null;
+  observations?: number;
+  unpriced_count?: number;
+  coverage?: number | null;
   input_tokens: number;
   output_tokens: number;
   avg_duration_ms: number;
@@ -147,6 +184,7 @@ export async function getOverview(
   projectId: string,
   from?: string,
   to?: string,
+  environment?: string | string[],
 ): Promise<{
   overview: Overview;
   byModel: ModelBreakdown[];
@@ -155,6 +193,8 @@ export async function getOverview(
   const params = new URLSearchParams();
   if (from) params.set("from", from);
   if (to) params.set("to", to);
+  if (Array.isArray(environment)) environment.forEach((value) => params.append("environment", value));
+  else if (environment) params.set("environment", environment);
   const qs = params.toString() ? `?${params}` : "";
   return get(`/projects/${projectId}/overview${qs}`);
 }
@@ -173,14 +213,33 @@ export async function getCallSites(
 
 export async function getEvents(
   projectId: string,
-  opts?: { limit?: number; offset?: number; model?: string; provider?: string; fn?: string },
+  opts?: { limit?: number; offset?: number; sort?: TraceSort; model?: string | string[]; provider?: string | string[]; fn?: string | string[]; function?: string | string[]; customer?: string | string[]; feature?: string | string[]; environment?: string | string[]; lifecycle?: string | string[]; accounting?: string | string[]; status?: string | string[]; coverage?: string | string[]; q?: string; from?: string; to?: string; groupBy?: "context"; contextKey?: string; contextValue?: string | string[] },
 ): Promise<{ events: EventRow[]; total: number }> {
   const params = new URLSearchParams();
   if (opts?.limit) params.set("limit", String(opts.limit));
   if (opts?.offset) params.set("offset", String(opts.offset));
-  if (opts?.model) params.set("model", opts.model);
-  if (opts?.provider) params.set("provider", opts.provider);
-  if (opts?.fn) params.set("fn", opts.fn);
+  if (opts?.sort) params.set("sort", opts.sort);
+  const appendValues = (key: string, value: string | string[] | undefined): void => {
+    if (Array.isArray(value)) value.forEach((item) => params.append(key, item));
+    else if (value) params.set(key, value);
+  };
+  appendValues("model", opts?.model);
+  appendValues("provider", opts?.provider);
+  appendValues("fn", opts?.fn);
+  appendValues("function", opts?.function);
+  appendValues("customer", opts?.customer);
+  appendValues("feature", opts?.feature);
+  appendValues("environment", opts?.environment);
+  appendValues("lifecycle", opts?.lifecycle);
+  appendValues("accounting", opts?.accounting);
+  appendValues("status", opts?.status);
+  appendValues("coverage", opts?.coverage);
+  if (opts?.groupBy) params.set("groupBy", opts.groupBy);
+  if (opts?.contextKey) params.set("contextKey", opts.contextKey);
+  appendValues("contextValue", opts?.contextValue);
+  if (opts?.q) params.set("q", opts.q);
+  if (opts?.from) params.set("from", opts.from);
+  if (opts?.to) params.set("to", opts.to);
   const qs = params.toString() ? `?${params}` : "";
   return get(`/projects/${projectId}/events${qs}`);
 }
@@ -204,6 +263,41 @@ export interface Trace {
   total_duration_ms: number;
   models: string;
   providers: string;
+  elapsed_ms?: number | null;
+  feature?: string | null;
+  environment?: string | null;
+  execution_id?: string | null;
+  group_id?: string | null;
+  known_cost?: number | null;
+  unpriced_count?: number;
+  pricing_coverage?: number | null;
+  execution_state?: string | null;
+  accounting_state?: string | null;
+  customer?: string | null;
+  agent?: string | null;
+  user_id?: string | null;
+  conversation_id?: string | null;
+  agent_count?: number;
+  step_count?: number;
+  tool_count?: number;
+  span_error?: boolean;
+}
+
+export type SpanKind = "agent" | "step" | "tool" | "workflow" | "task" | "judge" | "retrieval" | "handoff" | "guardrail" | "chain" | "custom";
+
+/** An agent, step or tool span inside a run. Calls link to it by span_id. */
+export interface TraceSpan {
+  id: string;
+  parent_span_id: string | null;
+  kind: SpanKind;
+  name: string;
+  status: "running" | "ok" | "error" | "cancelled";
+  error_type: string | null;
+  started_at: string | null;
+  ended_at: string | null;
+  duration_ms: number | null;
+  attributes: Record<string, unknown> | null;
+  execution_id: string | null;
 }
 
 export interface TraceEvent {
@@ -211,28 +305,482 @@ export interface TraceEvent {
   timestamp: string;
   provider: string;
   model: string;
+  request_model?: string | null;
+  event_type?: string | null;
+  source?: string | null;
+  attempt_id?: string | null;
+  span_id?: string | null;
+  native_units?: Record<string, number> | null;
+  parent_event_id?: string | null;
+  charge_id?: string | null;
+  cost_basis?: "reported" | "estimated" | "unknown" | null;
+  cost_source?: string | null;
+  cost_currency?: string | null;
+  content_status?: "captured" | "metadata_only" | "redacted" | "expired" | "not_available" | "unknown" | "restricted" | string | null;
+  unit_kind?: string | null;
+  unit_value?: number | null;
+  unit?: string | null;
+  aggregation?: string | null;
+  url?: string | null;
+  method?: string | null;
+  status_code?: number | null;
   input_tokens: number | null;
   output_tokens: number | null;
+  total_tokens: number | null;
   cost_usd: number | null;
   duration_ms: number;
   streaming: number;
   ttft: number | null;
+  tps: number | null;
   call_site_frames: string | null;
   context: string | null;
+  call_site_raw?: string | null;
+  bl_function?: string | null;
+  bl_file?: string | null;
+  bl_line?: number | null;
+  feature_source?: string | null;
+  feature_mapping_id?: string | null;
+  feature_original?: string | null;
+}
+
+export interface TraceQuery {
+  limit?: number;
+  offset?: number;
+  sort?: TraceSort;
+  q?: string;
+  from?: string;
+  to?: string;
+  environment?: string | string[];
+  lifecycle?: string | string[];
+  accounting?: string | string[];
+  status?: string | string[];
+  coverage?: string | string[];
+  provider?: string | string[];
+  model?: string | string[];
+  function?: string | string[];
+  customer?: string | string[];
+  feature?: string | string[];
+  groupBy?: "context";
+  contextKey?: string;
+  contextValue?: string | string[];
+}
+
+export type TraceSort = "newest" | "cost_desc" | "duration_desc" | "calls_desc";
+
+export interface TraceFilterOption { value: string; count?: number; }
+export type TraceFilterDimension = "provider" | "model" | "feature" | "function" | "customer" | "environment" | "lifecycle" | "accounting" | "status" | "coverage" | `context:${string}`;
+export interface TraceFilterOptionsResponse {
+  scope?: Record<string, unknown>;
+  options?: Partial<Record<TraceFilterDimension, TraceFilterOption[]>>;
+  availableFilters?: {
+    providers?: string[];
+    models?: string[];
+    environments?: string[];
+    features?: string[];
+    customers?: string[];
+    functions?: string[];
+    lifecycles?: string[];
+    accounting?: string[];
+    coverage?: string[];
+    statuses?: string[];
+    contextKeys?: string[];
+    contexts?: Record<string, { values?: string[]; counts?: Record<string, number> }>;
+    counts?: Record<string, Record<string, number>>;
+    countUnits?: Record<string, string>;
+  };
+  complete?: boolean;
+  nextCursor?: string | null;
+  limit?: number;
+  offset?: number;
+}
+
+export function normalizeTraceFilterOptions(result: TraceFilterOptionsResponse): TraceFilterOptionsResponse {
+  const filters = result.availableFilters ?? {};
+  const optionsFor = (dimension: string, values?: string[]): TraceFilterOption[] | undefined => values?.map((value) => ({ value, count: filters.counts?.[dimension]?.[value] }));
+  const optionsByDimension: Partial<Record<TraceFilterDimension, TraceFilterOption[]>> = {
+    provider: optionsFor("provider", filters.providers),
+    model: optionsFor("model", filters.models),
+    environment: optionsFor("environment", filters.environments),
+    feature: optionsFor("feature", filters.features),
+    customer: optionsFor("customer", filters.customers),
+    function: optionsFor("function", filters.functions),
+    lifecycle: optionsFor("lifecycle", filters.lifecycles),
+    accounting: optionsFor("accounting", filters.accounting),
+    coverage: optionsFor("coverage", filters.coverage),
+    status: optionsFor("status", filters.statuses),
+  };
+  for (const [key, context] of Object.entries(filters.contexts ?? {})) {
+    optionsByDimension[`context:${key}` as TraceFilterDimension] = (context.values ?? []).map((value) => ({ value, count: context.counts?.[value] }));
+  }
+  return { ...result, options: optionsByDimension };
+}
+
+export async function getTraceFilterOptions(projectId: string, options: { from: string; to: string; q?: string; search?: string; offset?: number; limit?: number } ): Promise<TraceFilterOptionsResponse> {
+  const params = new URLSearchParams({ from: options.from, to: options.to, dimensions: "provider,model,feature,function,customer,environment,lifecycle,accounting,status,coverage", limit: String(options.limit ?? 100), offset: String(options.offset ?? 0) });
+  if (options.q) params.set("q", options.q);
+  if (options.search) params.set("search", options.search);
+  const result = await get<Omit<TraceFilterOptionsResponse, "options"> & { availableFilters?: TraceFilterOptionsResponse["availableFilters"] }>(`/projects/${projectId}/filter-options?${params.toString()}`);
+  return normalizeTraceFilterOptions(result);
 }
 
 export async function getTraces(
   projectId: string,
-  limit = 30,
+  options: number | TraceQuery = 30,
 ): Promise<{ traces: Trace[]; total: number }> {
-  return get(`/projects/${projectId}/traces?limit=${limit}`);
+  const params = new URLSearchParams();
+  const query = typeof options === "number" ? { limit: options } : options;
+  if (query.limit) params.set("limit", String(query.limit));
+  if (query.offset) params.set("offset", String(query.offset));
+  if (query.sort) params.set("sort", query.sort);
+  if (query.q) params.set("q", query.q);
+  if (query.from) params.set("from", query.from);
+  if (query.to) params.set("to", query.to);
+  const appendValues = (key: string, value: string | string[] | undefined): void => {
+    if (Array.isArray(value)) value.forEach((item) => params.append(key, item));
+    else if (value) params.set(key, value);
+  };
+  appendValues("environment", query.environment);
+  appendValues("lifecycle", query.lifecycle);
+  appendValues("accounting", query.accounting);
+  appendValues("status", query.status);
+  appendValues("coverage", query.coverage);
+  appendValues("provider", query.provider);
+  appendValues("model", query.model);
+  appendValues("function", query.function);
+  appendValues("customer", query.customer);
+  appendValues("feature", query.feature);
+  if (query.groupBy) params.set("groupBy", query.groupBy);
+  if (query.contextKey) params.set("contextKey", query.contextKey);
+  appendValues("contextValue", query.contextValue);
+  const qs = params.toString() ? `?${params}` : "";
+  return get(`/projects/${projectId}/traces${qs}`);
 }
 
 export async function getTrace(
   projectId: string,
   traceId: string,
-): Promise<{ traceId: string; summary: Record<string, unknown>; events: TraceEvent[] }> {
+): Promise<{ traceId: string; summary: Record<string, unknown>; events: TraceEvent[]; usageComponents?: UsageComponent[]; spans?: TraceSpan[] }> {
   return get(`/projects/${projectId}/traces/${traceId}`);
+}
+
+export interface UsageComponent {
+  id: string;
+  charge_id?: string | null;
+  component_id?: string | null;
+  provider?: string | null;
+  model?: string | null;
+  unit_kind?: string | null;
+  unit_value?: number | null;
+  unit?: string | null;
+  amount?: number | null;
+  currency?: string | null;
+  amount_kind?: string | null;
+  aggregation?: string | null;
+  phase?: string | null;
+  observed_at?: string | null;
+}
+
+export type CostDimension = "feature" | "function" | "customer" | "model" | "provider" | "context";
+
+export interface CostContributor {
+  key?: string | null;
+  label?: string | null;
+  name?: string | null;
+  secondary?: string | null;
+  cost?: number | null;
+  known_cost?: number | null;
+  observations?: number | null;
+  calls?: number | null;
+  priced_observations?: number | null;
+  unpriced_count?: number | null;
+  coverage?: number | null;
+  unit_cost?: number | null;
+  change_abs?: number | null;
+  change_pct?: number | null;
+  inferred?: boolean;
+}
+
+export interface CostBreakdownResponse {
+  scope?: Record<string, unknown>;
+  groupBy?: CostDimension;
+  totals?: {
+    known_cost?: number | null;
+    observations?: number | null;
+    priced_observations?: number | null;
+    unpriced_count?: number | null;
+    coverage?: number | null;
+  };
+  contributors?: CostContributor[];
+  total?: number;
+  limit?: number;
+  offset?: number;
+  availableDimensions?: Array<CostDimension | string>;
+  availableFilters?: {
+    providers?: string[];
+    models?: string[];
+    environments?: string[];
+    features?: string[];
+    customers?: string[];
+    functions?: string[];
+    contextKeys?: string[];
+  };
+  message?: string;
+}
+
+export async function getCostBreakdown(
+  projectId: string,
+  options: { groupBy: CostDimension; from: string; to: string; environment?: string | string[]; q?: string; groupValue?: string; contextKey?: string; contextValue?: string; limit?: number; offset?: number },
+): Promise<CostBreakdownResponse> {
+  const params = new URLSearchParams({ groupBy: options.groupBy, from: options.from, to: options.to });
+  if (Array.isArray(options.environment)) options.environment.forEach((value) => params.append("environment", value));
+  else if (options.environment) params.set("environment", options.environment);
+  if (options.q) params.set("q", options.q);
+  if (options.groupValue) params.set("groupValue", options.groupValue);
+  if (options.contextKey) params.set("contextKey", options.contextKey);
+  if (options.contextValue) params.set("contextValue", options.contextValue);
+  if (options.limit != null) params.set("limit", String(options.limit));
+  if (options.offset != null) params.set("offset", String(options.offset));
+  return get(`/projects/${projectId}/costs?${params.toString()}`);
+}
+
+export interface CostContributorHistoryRow {
+  day: string;
+  observations: number;
+  known_cost: number | null;
+  unpriced_count: number;
+  coverage: number | null;
+}
+
+export interface CostContributorMetric {
+  known_cost: number | null;
+  observations: number;
+  priced_observations: number;
+  unpriced_count: number;
+  coverage: number | null;
+  call_count: number;
+  trace_count: number;
+  fully_priced_trace_count: number;
+  fully_priced_trace_cost: number | null;
+  mean_cost_per_trace: number | null;
+  untraced_usage_count: number;
+  untraced_usage_cost: number | null;
+  unit_cost?: number | null;
+  unit_basis?: string | null;
+  period?: { from: string; to: string };
+  change_abs?: number | null;
+  change_pct?: number | null;
+}
+
+export interface CostContributorDistributionRow {
+  key: string;
+  label: string;
+  observations: number;
+  priced_observations: number;
+  unpriced_count: number;
+  known_cost: number | null;
+  coverage: number | null;
+}
+
+export interface CostContributorPolicyActions {
+  policies?: Array<Record<string, unknown>>;
+  decisions?: Array<Record<string, unknown>>;
+  firings?: Array<Record<string, unknown>>;
+  legacyRules?: Array<Record<string, unknown>>;
+  legacyFirings?: Array<Record<string, unknown>>;
+}
+
+export interface CostContributorDetailResponse {
+  dimension: CostDimension;
+  value: string;
+  history: CostContributorHistoryRow[];
+  traces: CostContributorTraceRow[];
+  summary?: CostContributorMetric;
+  baseline?: CostContributorMetric;
+  distributions?: Partial<Record<"providers" | "models" | "services" | "releases" | "functions" | "features", CostContributorDistributionRow[]>>;
+  related?: Partial<Record<"providers" | "models" | "services" | "releases" | "functions" | "features", CostContributorDistributionRow[]>>;
+  policyActions?: CostContributorPolicyActions;
+}
+
+export interface CostContributorTraceRow {
+  trace_id: string;
+  trace_name: string | null;
+  call_count: number;
+  known_cost: number | null;
+  unpriced_count: number;
+  started_at: string;
+}
+
+export async function getCostContributor(
+  projectId: string,
+  dimension: CostDimension,
+  contributor: string,
+  options: { from?: string; to?: string; environment?: string; contextKey?: string } = {},
+): Promise<CostContributorDetailResponse> {
+  const params = new URLSearchParams();
+  if (options.from) params.set("from", options.from);
+  if (options.to) params.set("to", options.to);
+  if (options.environment) params.set("environment", options.environment);
+  if (options.contextKey) params.set("contextKey", options.contextKey);
+  const qs = params.toString() ? `?${params}` : "";
+  return get(`/projects/${projectId}/costs/contributors/${dimension}/${encodeURIComponent(contributor)}${qs}`);
+}
+
+export interface ForecastResponse {
+  scope?: Record<string, unknown>;
+  calculatedAt?: string;
+  currentPace?: {
+    available: boolean;
+    reason: string | null;
+    completedElapsedDays: number;
+    periodDays: number;
+    knownCost: number | null;
+    projectedCost: number | null;
+    pricingCoverage: number | null;
+    excludedUnpriced: number;
+    method: string;
+  };
+  observed?: {
+    observations: number;
+    pricedObservations: number;
+    unpricedObservations: number;
+    meanCostPerOperation: number | null;
+    fullyPricedTraces: number;
+    incompleteTraces: number;
+    knownCost?: number | null;
+    pricingCoverage?: number | null;
+    traceObservations?: number;
+    excludedActivity?: { count: number; reasons: string[] };
+  };
+  chosenScale?: {
+    available: boolean;
+    automatic: boolean;
+    reason: string | null;
+    unit: string;
+    volume: number | null;
+    operations: number | null;
+    operationsPerUser: number | null;
+    costPerOperation: number | null;
+    costPerUnit: number | null;
+    projectedCost: number | null;
+    sampleSize: number;
+    requiredSampleSize: number;
+    sampleSufficient: boolean;
+    fullyPricedTraces: number;
+    excludedUnpriced: number;
+    selectionBiasWarning: boolean;
+    pricingBasis: string | null;
+    unitBasis?: string | null;
+    formula?: string | null;
+    assumptions?: {
+      volumeOnly: boolean;
+      manualCostPerUnit: number | null;
+      targetPeriodDays: number | null;
+      unitBasis?: string | null;
+      formula?: string | null;
+    };
+  };
+  cash?: { available: boolean; reason: string | null; originalAmount: number | null; eligibleCredits: number | null; estimatedPayable: number | null; currency: string; byProvider?: Record<string, { balance: number; eligible: number }> };
+  calculation?: { timezone?: string; pricingBasis?: string; observedWindow?: { from: string; to: string } };
+}
+
+export async function getForecast(
+  projectId: string,
+  options: { from?: string; to?: string; timezone?: string; groupBy?: CostDimension; groupValue?: string; contextKey?: string; contextValue?: string | string[]; environment?: string | string[] } = {},
+): Promise<{ forecast: ForecastResponse }> {
+  const params = new URLSearchParams();
+  if (options.from) params.set("from", options.from);
+  if (options.to) params.set("to", options.to);
+  if (options.timezone) params.set("timezone", options.timezone);
+  if (options.groupBy) params.set("groupBy", options.groupBy);
+  if (options.groupValue) params.set("groupValue", options.groupValue);
+  if (options.contextKey) params.set("contextKey", options.contextKey);
+  if (Array.isArray(options.contextValue)) options.contextValue.forEach((value) => params.append("contextValue", value));
+  else if (options.contextValue) params.set("contextValue", options.contextValue);
+  if (Array.isArray(options.environment)) options.environment.forEach((value) => params.append("environment", value));
+  else if (options.environment) params.set("environment", options.environment);
+  const query = params.toString() ? `?${params.toString()}` : "";
+  return get(`/projects/${projectId}/forecast${query}`);
+}
+
+export async function calculateForecast(
+  projectId: string,
+  scope: Record<string, unknown>,
+): Promise<{ forecast: ForecastResponse }> {
+  const response = await fetch(`${API_BASE}/projects/${projectId}/forecast`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(scope),
+  });
+  if (response.status === 401) notifyUnauthenticated();
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({})) as { error?: string };
+    throw new Error(body.error ?? `API error: ${response.status}`);
+  }
+  return response.json() as Promise<{ forecast: ForecastResponse }>;
+}
+
+export async function saveForecastScenario(
+  projectId: string,
+  payload: { name: string; scope: Record<string, unknown>; assumptions?: Record<string, unknown>; shared?: boolean },
+): Promise<{ id: string; scenario: ForecastResponse }> {
+  const response = await fetch(`${API_BASE}/projects/${projectId}/forecast/scenarios`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (response.status === 401) notifyUnauthenticated();
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({})) as { error?: string };
+    throw new Error(body.error ?? `API error: ${response.status}`);
+  }
+  return response.json() as Promise<{ id: string; scenario: ForecastResponse }>;
+}
+
+export interface ForecastScenarioRow {
+  id: string;
+  name: string;
+  scope: Record<string, unknown> | string;
+  assumptions: Record<string, unknown> | string;
+  result: ForecastResponse | string;
+  shared: boolean;
+  calculated_at: string;
+  updated_at?: string;
+}
+
+export async function listForecastScenarios(projectId: string): Promise<{ scenarios: ForecastScenarioRow[] }> {
+  return get(`/projects/${projectId}/forecast/scenarios`);
+}
+
+export interface FindingResponse {
+  id: string;
+  projectId?: string;
+  family: string;
+  state: string;
+  scope: Record<string, unknown>;
+  observedAt: string;
+  lastSeenAt: string;
+  baseline: Record<string, unknown> | null;
+  evidence: Record<string, unknown>;
+  nextActions: string[];
+  occurrenceCount?: number;
+  acknowledgedAt?: string | null;
+  acknowledgedBy?: string | null;
+}
+
+export async function getFinding(projectId: string, findingId: string): Promise<{ finding: FindingResponse }> {
+  return get(`/projects/${projectId}/findings/${encodeURIComponent(findingId)}`);
+}
+
+export async function acknowledgeFinding(projectId: string, findingId: string): Promise<{ ok: boolean; state: string }> {
+  const response = await fetch(`${API_BASE}/projects/${projectId}/findings/${encodeURIComponent(findingId)}/acknowledge`, { method: "POST", credentials: "include" });
+  if (response.status === 401) notifyUnauthenticated();
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({})) as { error?: string };
+    throw new Error(body.error ?? `API error: ${response.status}`);
+  }
+  return response.json() as Promise<{ ok: boolean; state: string }>;
 }
 
 export interface FeatureCallSite {
@@ -351,18 +899,23 @@ export async function deleteCustomProvider(
   if (!res.ok) throw new Error(`API error: ${res.status}`);
 }
 
-export type TimeRange = "mtd" | "7d" | "30d" | "3m" | "6m" | "1y";
+export type TimeRange = "24h" | "mtd" | "7d" | "30d" | "custom" | "3m" | "6m" | "1y";
 
 export async function getTrends(
   projectId: string,
   bucket?: "hour" | "day",
   range?: TimeRange,
   groupBy?: "model",
-): Promise<{ trends: TrendBucket[]; bucket: string; range: string; byModel?: Record<string, Array<{ bucket: string; cost: number }>> }> {
+  options: { from?: string; to?: string; environment?: string | string[] } = {},
+): Promise<{ trends: TrendBucket[]; bucket: string; range: string; byModel?: Record<string, Array<{ bucket: string; cost: number | null; unpriced_count?: number }>> }> {
   const params = new URLSearchParams();
   if (bucket) params.set("bucket", bucket);
   if (range) params.set("range", range);
   if (groupBy) params.set("groupBy", groupBy);
+  if (options.from) params.set("from", options.from);
+  if (options.to) params.set("to", options.to);
+  if (Array.isArray(options.environment)) options.environment.forEach((value) => params.append("environment", value));
+  else if (options.environment) params.set("environment", options.environment);
   const qs = params.toString() ? `?${params}` : "";
   return get(`/projects/${projectId}/trends${qs}`);
 }
@@ -409,4 +962,135 @@ export async function getInsights(projectId: string, range?: TimeRange): Promise
   if (range) params.set("range", range);
   const qs = params.toString() ? `?${params}` : "";
   return get(`/projects/${projectId}/insights${qs}`);
+}
+
+export interface RunGroup {
+  name: string;
+  runs: number;
+  cost: number | null;
+  costPerRun: number | null;
+  partlyPricedRuns: number;
+  calls: number;
+  p50Ms: number | null;
+  p95Ms: number | null;
+  failedRuns: number;
+  avgSteps: number | null;
+  avgTools: number | null;
+  lastRun: string | null;
+}
+
+export interface AgentDetail {
+  agent: RunGroup;
+  runs: Array<{ traceId: string; startedAt: string; cost: number | null; unpriced: number; calls: number; steps: number; tools: number; failed: boolean; durationMs: number | null; userId: string | null }>;
+  tools: Array<{ name: string; calls: number; avgMs: number | null; failed: number; cost: number | null }>;
+  models: Array<{ model: string; provider: string; calls: number; cost: number | null }>;
+  subagents: Array<{ name: string; runs: number }>;
+}
+
+export interface ErrorSummary {
+  totals: { calls: number; failedCalls: number; retries: number; wastedCost: number };
+  failedCalls: Array<{ provider: string; model: string; statusCode: number | null; calls: number; runs: number; cost: number | null; lastSeen: string; sampleTraceId: string | null }>;
+  retries: Array<{ model: string; provider: string; retries: number; cost: number | null; lastSeen: string }>;
+  failedSpans: Array<{ kind: string; name: string; errorType: string | null; failures: number; lastSeen: string; sampleTraceId: string | null }>;
+}
+
+export interface InsightScope {
+  from: string;
+  to: string;
+  environment?: string;
+}
+
+function scopeQuery(scope: InsightScope): string {
+  const params = new URLSearchParams({ from: scope.from, to: scope.to });
+  if (scope.environment && scope.environment !== "all") params.set("environment", scope.environment);
+  return params.toString();
+}
+
+export function getWorkflows(projectId: string, scope: InsightScope): Promise<{ workflows: RunGroup[] }> {
+  return get(`/projects/${encodeURIComponent(projectId)}/workflows?${scopeQuery(scope)}`);
+}
+
+export function getAgents(projectId: string, scope: InsightScope): Promise<{ agents: RunGroup[] }> {
+  return get(`/projects/${encodeURIComponent(projectId)}/agents?${scopeQuery(scope)}`);
+}
+
+export function getAgentDetail(projectId: string, name: string, scope: InsightScope): Promise<AgentDetail> {
+  return get(`/projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(name)}?${scopeQuery(scope)}`);
+}
+
+export function getErrors(projectId: string, scope: InsightScope): Promise<ErrorSummary> {
+  return get(`/projects/${encodeURIComponent(projectId)}/errors?${scopeQuery(scope)}`);
+}
+
+export interface TabModel {
+  model: string;
+  provider: string;
+  calls: number;
+  runs: number;
+  cost: number | null;
+  topOwners: string[];
+}
+
+export function getTabModels(projectId: string, kind: "agent" | "workflow", scope: InsightScope): Promise<{ models: TabModel[] }> {
+  return get(`/projects/${encodeURIComponent(projectId)}/insights/models?kind=${kind}&${scopeQuery(scope)}`);
+}
+
+export interface BudgetPolicy {
+  id: string;
+  name?: string | null;
+  scope?: Record<string, string | string[]>;
+  mode: "monitor" | "enforce";
+  status: "active" | "paused" | "archived";
+  unit: "money" | "calls" | "tokens";
+  allowance: number;
+  currency?: string | null;
+  window: string;
+  usage?: { observed?: number | null } | null;
+}
+
+export function getBudgetPolicies(projectId: string): Promise<{ policies: BudgetPolicy[] }> {
+  return get(`/projects/${encodeURIComponent(projectId)}/budget/policies`);
+}
+
+export interface QualitySummary {
+  totals: { runs: number; failedRuns: number; calls: number; failedCalls: number; retries: number; wastedCost: number; judgedRuns?: number; judgedFailed?: number; p50Ms?: number | null; p95Ms?: number | null };
+  owners: Array<{ name: string; kind: "agent" | "workflow"; runs: number; failedRuns: number; judgedRuns: number; judgedFailed: number; failedCalls: number; retries: number; toolFailures: number; wastedCost: number }>;
+  models: Array<{ model: string; provider: string; calls: number; failedCalls: number; retries: number; p95Ms: number | null; wastedCost: number; statusCodes: number[] }>;
+  failures: Array<{ traceId: string; name: string; kind: "agent" | "workflow"; startedAt: string; cost: number | null; reasons: string[]; detail: string | null }>;
+}
+
+export function getQualitySummary(projectId: string, scope: InsightScope, owner?: string | null): Promise<QualitySummary> {
+  return get(`/projects/${encodeURIComponent(projectId)}/quality/summary?${scopeQuery(scope)}${owner ? `&owner=${encodeURIComponent(owner)}` : ""}`);
+}
+
+export type BoardBucketUnit = "hour" | "day";
+
+export interface OverviewBoardLatency {
+  count: number;
+  p50Ms: number | null;
+  p95Ms: number | null;
+  series: Array<{ bucket: string; count: number; p50Ms: number | null; p95Ms: number | null }>;
+}
+
+export interface OverviewBoardCount { name: string; runs: number; calls: number }
+
+/** The Overview board: runs, scores, model tokens, agent usage, volume and latency for one window and the one before it. */
+export interface OverviewBoard {
+  window: { from: string; to: string; environment: string | null; timezone: string; bucket: BoardBucketUnit };
+  previous: { from: string; to: string };
+  buckets: string[];
+  runs: { current: { runs: number; agentRuns: number }; previous: { runs: number; agentRuns: number } };
+  scores: {
+    current: { avg: number | null; count: number; allCount: number };
+    previous: { avg: number | null; count: number; allCount: number };
+    checks: Array<{ name: string; avg: number | null; count: number; runs: number; unitScale: boolean; series: Array<{ bucket: string; avg: number | null; count: number }> }>;
+  };
+  models: Array<{ provider: string | null; model: string; calls: number; input: number | null; output: number | null; cacheRead: number | null; cacheWrite: number | null; cost: number | null; unpriced: number }>;
+  agents: Array<{ name: string; runs: number; input: number; output: number; cost: number | null; unpriced: number }>;
+  volume: { agents: OverviewBoardCount[]; workflows: OverviewBoardCount[]; tools: OverviewBoardCount[] };
+  latency: { agents: OverviewBoardLatency; workflows: OverviewBoardLatency; tools: OverviewBoardLatency };
+}
+
+export function getOverviewBoard(projectId: string, scope: InsightScope): Promise<OverviewBoard> {
+  return get(`/projects/${encodeURIComponent(projectId)}/insights/board?${scopeQuery(scope)}`);
 }

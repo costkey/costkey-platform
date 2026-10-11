@@ -1,180 +1,333 @@
-import { useState, useEffect } from "react";
-import { BarChart3, Route, FileCode, Activity, Search, AlertCircle, X, ExternalLink } from "lucide-react";
-import AnomalyBanner from "../components/AnomalyBanner";
-import SummaryView from "../components/SummaryView";
-import { getHealth, type HealthHint } from "../api";
-import StatCards from "../components/StatCards";
-import CostTrend from "../components/CostTrend";
-import CallSitesTable from "../components/CallSitesTable";
-import ModelBreakdown from "../components/ModelBreakdown";
-import TracesView from "../components/TracesView";
-import RecentEvents from "../components/RecentEvents";
-import EmptyState from "../components/EmptyState";
-import InsightsView from "../components/InsightsView";
-import { useSummary, useOverview, useCallSites, useEvents, useTrends, useTraces } from "../hooks/useApi";
-import { useAuth } from "../contexts/AuthContext";
-import { analytics } from "../analytics";
+import { useEffect, useState } from "react";
+import type { ReactNode } from "react";
+import { AlertCircle, ArrowRight } from "lucide-react";
+import { Link, useSearchParams } from "react-router-dom";
+import {
+  getCostBreakdown,
+  getForecast,
+  getHealth,
+  getOverview,
+  getOverviewBoard,
+  type Overview,
+  type OverviewBoard,
+  type PipelineHealth,
+  type ForecastResponse,
+} from "../api";
+import { findingTitle } from "../components/findingView";
+import { useAuth } from "../contexts/useAuth";
+import {
+  EmptyPanel,
+  LoadingRows,
+  PageHeader,
+  Panel,
+  StatusLine,
+  type Period,
+  type Tone,
+} from "../components/ConsolePrimitives";
+import { PrototypeIcon } from "../components/PrototypeIcon";
+import { formatDateTime, formatReportedAmount, parsePeriod, periodDates, periodLabel } from "../components/consoleFormatters";
+import { prototypeRole, prototypeState, PrototypeStateNotice, PrototypeStatePanel } from "../components/PrototypeState";
+import { BoardSkeleton, CostByModel, KpiCard, LatencyPanel, RunVolume, ScoresPanel, UsageByAgent } from "../components/OverviewBoard";
+import { compactNumber, formatScore, previousRange } from "../components/overviewBoardModel";
 
-type Tab = "overview" | "insights" | "traces" | "call-sites" | "events";
-type TimeRange = "mtd" | "7d" | "30d" | "3m" | "6m" | "1y";
+interface BudgetPolicySummary {
+  id: string;
+  name: string | null;
+  mode: "monitor" | "enforce" | string;
+  status: "active" | "paused" | "archived" | string;
+  unit: "money" | "calls" | "tokens" | string;
+  allowance: number;
+  currency?: string | null;
+  window: string;
+  scope?: Record<string, string> | null;
+  usage?: { observed?: number | null; settled?: number | null; reserved?: number | null; remaining?: number | null; overage?: number | null } | null;
+}
 
-const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
-  { id: "overview", label: "Overview", icon: <BarChart3 size={14} /> },
-  // { id: "insights", label: "Insights", icon: <Lightbulb size={14} /> }, // TODO: re-enable after polish
-  { id: "events", label: "Events", icon: <Activity size={14} /> },
-  { id: "call-sites", label: "Call Sites", icon: <FileCode size={14} /> },
-  { id: "traces", label: "Traces", icon: <Route size={14} /> },
-];
+interface FindingRow {
+  id: string;
+  family: string;
+  state: string;
+  scope: Record<string, unknown>;
+  observedAt: string;
+  lastSeenAt: string;
+  baseline: Record<string, unknown> | null;
+  evidence: Record<string, unknown>;
+  nextActions: string[];
+}
 
-export default function Dashboard({ demoMode = false }: { demoMode?: boolean }) {
-  const { currentProjectId } = useAuth();
-  const projectId = demoMode ? "proj_demo" : (currentProjectId ?? "proj_demo");
-  const [activeTab, setActiveTab] = useState<Tab>("overview");
-  const [search, setSearch] = useState("");
-  const [timeRange, setTimeRange] = useState<TimeRange>("mtd");
-  const [groupByModel, setGroupByModel] = useState(false);
+interface OverviewData {
+  overview: Overview | null;
+  previousOverview: Overview | null;
+  board: OverviewBoard | null;
+  forecast: ForecastResponse | null;
+  health: PipelineHealth | null;
+  findings: FindingRow[];
+  policies: BudgetPolicySummary[];
+  environments: string[];
+}
 
-  const [hints, setHints] = useState<HealthHint[]>([]);
-  const [dismissedHints, setDismissedHints] = useState<Set<string>>(new Set());
+const EMPTY_DATA: OverviewData = { overview: null, previousOverview: null, board: null, forecast: null, health: null, findings: [], policies: [], environments: [] };
+
+async function getJson<T>(path: string): Promise<T> {
+  const response = await fetch(path, { credentials: "include" });
+  if (!response.ok) throw new Error(`Request failed (${response.status})`);
+  return response.json() as Promise<T>;
+}
+
+function useOverviewData(projectId: string | null, period: Period, timezone?: string | null, scopeOverride?: { from?: string; to?: string } | null, environment?: string) {
+  const requestKey = [projectId ?? "none", period, timezone ?? "", scopeOverride?.from ?? "", scopeOverride?.to ?? "", environment ?? "all"].join("\u0001");
+  const [state, setState] = useState<{ key: string; data: OverviewData; error: string | null }>({ key: "", data: EMPTY_DATA, error: null });
+  const loading = Boolean(projectId) && state.key !== requestKey;
+  const data = state.key === requestKey ? state.data : EMPTY_DATA;
+  const [refreshing, setRefreshing] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
-    getHealth(projectId).then((h) => {
-      if (h.hints?.length) setHints(h.hints);
-    }).catch(() => {});
-  }, [projectId]);
+    if (!projectId) return;
+    let cancelled = false;
+    const dates = periodDates(period, timezone ?? undefined);
+    const from = scopeOverride?.from ?? dates.from;
+    const to = scopeOverride?.to ?? dates.to;
+    const previous = previousRange(from, to);
+    const env = environment && environment !== "all" ? environment : undefined;
+    const load = async () => {
+      const [overview, previousOverview, board, callSites, forecast, health, anomalies, policies] = await Promise.allSettled([
+        getOverview(projectId, from, to, env),
+        getOverview(projectId, previous.from, previous.to, env),
+        getOverviewBoard(projectId, { from, to, environment: env }),
+        // Only for the environments that have data.
+        getCostBreakdown(projectId, { groupBy: "feature", from, to, environment: env }),
+        period === "mtd" ? getForecast(projectId, { from, to, environment: env }) : Promise.resolve(null),
+        getHealth(projectId),
+        getJson<{ findings: FindingRow[] }>(`/api/v1/projects/${projectId}/findings`),
+        getJson<{ policies: BudgetPolicySummary[] }>(`/api/v1/projects/${projectId}/budget/policies`),
+      ]);
+      if (cancelled) return;
+      const forecastResult = period === "mtd" ? forecast : null;
+      const next: OverviewData = {
+        overview: overview.status === "fulfilled" ? overview.value.overview : null,
+        previousOverview: previousOverview.status === "fulfilled" ? previousOverview.value.overview : null,
+        board: board.status === "fulfilled" ? board.value : null,
+        forecast: forecastResult?.status === "fulfilled" ? forecastResult.value?.forecast ?? null : null,
+        health: health.status === "fulfilled" ? health.value : null,
+        findings: anomalies.status === "fulfilled" ? anomalies.value.findings ?? [] : [],
+        policies: policies.status === "fulfilled" ? policies.value.policies ?? [] : [],
+        environments: callSites.status === "fulfilled" ? callSites.value.availableFilters?.environments ?? [] : [],
+      };
+      const firstError = [overview, board, callSites].find((result) => result.status === "rejected");
+      setState({ key: requestKey, data: next, error: firstError?.status === "rejected" ? firstError.reason instanceof Error ? firstError.reason.message : "Could not load overview" : null });
+      setRefreshing(false);
+    };
+    void load().catch((reason: unknown) => {
+      if (cancelled) return;
+      setState({ key: requestKey, data: EMPTY_DATA, error: reason instanceof Error ? reason.message : "Could not load overview" });
+      setRefreshing(false);
+    });
+    return () => { cancelled = true; };
+  }, [projectId, period, timezone, reloadKey, requestKey, scopeOverride?.from, scopeOverride?.to, environment]);
 
-  const summary = useSummary(projectId);
-  const overview = useOverview(projectId);
-  const callSites = useCallSites(projectId);
-  const events = useEvents(projectId, 100);
-  const trends = useTrends(projectId, timeRange, groupByModel);
-  const traces = useTraces(projectId);
+  const error = state.key === requestKey ? state.error : null;
 
-  const showSearch = activeTab !== "overview";
-
-  const selectTab = (tab: Tab) => {
-    setActiveTab(tab);
-    setSearch("");
-    if (!demoMode) analytics.capture("dashboard_tab_viewed", { tab, project_id: projectId });
+  return {
+    data,
+    loading,
+    refreshing,
+    error,
+    refresh: () => { setRefreshing(true); setReloadKey((key) => key + 1); },
   };
+}
 
-  const dismissHint = (hint: HealthHint) => {
-    setDismissedHints((prev) => new Set([...prev, hint.type]));
-    if (!demoMode) analytics.capture("health_hint_dismissed", { hint_type: hint.type, project_id: projectId });
+function normalizeOverview(value: Overview | null): Overview | null {
+  if (!value) return null;
+  return {
+    ...value,
+    total_calls: Number(value.total_calls) || 0,
+    total_cost: Number(value.total_cost) || 0,
+    known_cost: value.known_cost === undefined ? null : value.known_cost == null ? null : Number(value.known_cost) || 0,
+    unpriced_count: Number(value.unpriced_count) || 0,
+    total_input_tokens: Number(value.total_input_tokens) || 0,
+    total_output_tokens: Number(value.total_output_tokens) || 0,
+    avg_duration_ms: Number(value.avg_duration_ms) || 0,
+    avg_ttft: Number(value.avg_ttft) || 0,
+    avg_tps: Number(value.avg_tps) || 0,
   };
+}
+
+/** Tokens on the board: input plus output, as the spend overview counts them. */
+function overviewTokens(value: Overview | null): number | null {
+  if (!value || !(Number(value.observations ?? value.total_calls) > 0)) return null;
+  return value.total_input_tokens + value.total_output_tokens;
+}
+
+/** The active money policy that reads as "the monthly budget" for this project. */
+function monthlyBudget(policies: BudgetPolicySummary[]): BudgetPolicySummary | null {
+  return policies.find((item) => item.status === "active" && item.unit === "money" && item.window === "calendar_month"
+    && Object.keys(item.scope ?? {}).every((key) => key === "project")) ?? null;
+}
+
+function OverviewLoadingState(): ReactNode {
+  return <>
+    <div className="ck-board-kpis">{["Agent runs", "Model cost", "Tokens", "Avg score"].map((label) => <KpiCard key={label} label={label} value="" current={null} previous={null} previousLabel="" higherIsBetter loading />)}</div>
+    <div className="ck-board-row ck-board-row-3"><BoardSkeleton /><BoardSkeleton /><BoardSkeleton /></div>
+    <div className="ck-board-row ck-board-row-2"><BoardSkeleton /><BoardSkeleton /></div>
+  </>;
+}
+
+function daysInMonth(date: Date): number {
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)).getUTCDate();
+}
+
+export default function Dashboard() {
+  const { currentProjectId, projects, org, workspaceSettings, setCurrentProjectId } = useAuth();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const projectId = currentProjectId ?? projects[0]?.id ?? null;
+  const project = projects.find((item) => item.id === projectId);
+  const timezone = workspaceSettings?.timezone ?? org?.timezone;
+  const reportingCurrency = workspaceSettings?.reportingCurrency ?? "USD";
+  const fx = workspaceSettings?.fx;
+  const [period, setPeriod] = useState<Period>(() => parsePeriod(searchParams.get("period")));
+  const [dataVersion, setDataVersion] = useState(0);
+  const requestedProjectId = searchParams.get("project");
+  const requestedFrom = searchParams.get("from");
+  const requestedTo = searchParams.get("to");
+  const environment = searchParams.get("environment") ?? "all";
+  const requestedScope = requestedFrom && requestedTo && !Number.isNaN(new Date(requestedFrom).getTime()) && !Number.isNaN(new Date(requestedTo).getTime()) && new Date(requestedFrom) < new Date(requestedTo) ? { from: requestedFrom, to: requestedTo } : null;
+  const requestedProject = requestedProjectId ? projects.find((item) => item.id === requestedProjectId) : undefined;
+  useEffect(() => {
+    if (requestedProject && requestedProject.id !== currentProjectId) setCurrentProjectId(requestedProject.id);
+  }, [requestedProject, currentProjectId, setCurrentProjectId]);
+  const resource = useOverviewData(projectId, period, timezone, requestedScope, environment);
+  const overview = normalizeOverview(resource.data.overview);
+  const previousOverview = normalizeOverview(resource.data.previousOverview);
+  const board = resource.data.board;
+  const monthToDate = !requestedScope && period === "mtd";
+  const currentCost = overview?.known_cost === undefined ? null : overview.known_cost;
+  const previousCost = previousOverview?.known_cost == null ? null : previousOverview.known_cost;
+  const currentObservations = Number(overview?.observations ?? overview?.total_calls) || 0;
+  const forecastObserved = resource.data.forecast?.observed;
+  const pace = resource.data.forecast?.currentPace;
+  const projected = pace?.available && pace.projectedCost != null ? Number(pace.projectedCost) : null;
+  const now = new Date();
+  const periodDays = pace?.periodDays ?? daysInMonth(now);
+  const dayOfMonth = now.getUTCDate();
+  const unpriced = Number(overview?.unpriced_count ?? forecastObserved?.unpricedObservations) || 0;
+  const explicitState = prototypeState(searchParams);
+  const activeFindings = explicitState === "healthy" ? [] : resource.data.findings.filter((finding) => finding.state !== "no_longer_outside_threshold" && finding.state !== "acknowledged");
+  const budget = monthlyBudget(resource.data.policies);
+  const budgetLimit = budget ? Number(budget.allowance) || null : null;
+  const budgetSpent = budget?.usage?.observed == null ? null : Number(budget.usage.observed);
+  const projectName = (project?.name ?? "This project").replace(/\s+\(synthetic\)$/i, "");
+  const noProject = !projectId;
+  const toolbarPeriod: Period = requestedScope ? "custom" : period;
+  const scopeParams = new URLSearchParams();
+  scopeParams.set("project", projectId ?? "");
+  if (requestedScope) { scopeParams.set("period", "custom"); scopeParams.set("from", requestedScope.from ?? ""); scopeParams.set("to", requestedScope.to ?? ""); }
+  else scopeParams.set("period", period);
+  if (environment !== "all") scopeParams.set("environment", environment);
+  const scopeSearch = `?${scopeParams.toString()}`;
+  const money = (value: number | null | undefined) => formatReportedAmount(value, reportingCurrency, fx);
+  const changePeriod = (next: Period): void => {
+    if (next === "custom") {
+      const dates = periodDates("30d", timezone ?? undefined);
+      setPeriod(next);
+      setSearchParams((current) => { current.set("period", "custom"); current.set("from", dates.from); current.set("to", dates.to); return current; });
+      return;
+    }
+    setPeriod(next);
+    setSearchParams((current) => { current.set("period", next); current.delete("from"); current.delete("to"); return current; });
+  };
+  const environmentOptions = [{ value: "all", label: "All environments" }, ...resource.data.environments.filter((value) => value !== "all").map((value) => ({ value, label: value }))];
+  const onEnvironmentChange = (next: string) => setSearchParams((current) => { if (next === "all") current.delete("environment"); else current.set("environment", next); return current; });
+
+  useEffect(() => {
+    if (dataVersion === 0) return;
+    resource.refresh();
+    // refresh is intentionally explicit; avoid a timer that shifts rows.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dataVersion]);
+
+  const scopeEnvironments = environmentOptions.length > 1 || environment !== "all";
+  const periodBadge = <div className="ck-period-badge">
+    {scopeEnvironments && <span className="ck-pill-select"><select aria-label="Environment" value={environment} onChange={(event) => onEnvironmentChange(event.target.value)}>{environmentOptions.concat(environment !== "all" && !environmentOptions.some((option) => option.value === environment) ? [{ value: environment, label: environment }] : []).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select><PrototypeIcon name="down" size={12} /></span>}
+    <span className="ck-pill-select ck-period-pill"><select aria-label="Period" value={toolbarPeriod === "custom" ? "custom" : period} onChange={(event) => changePeriod(event.target.value as Period)}>
+      <option value="mtd">{now.toLocaleDateString("en-US", { month: "long", timeZone: "UTC" })}</option>
+      <option value="7d">Last 7 days</option>
+      <option value="30d">Last 30 days</option>
+      {toolbarPeriod === "custom" && <option value="custom">Custom range</option>}
+    </select><PrototypeIcon name="down" size={12} /></span>
+    {monthToDate && <span>Day {dayOfMonth} of {periodDays}</span>}
+  </div>;
+
+  if (requestedProject && requestedProject.id !== currentProjectId) {
+    return <div className="ck-main-inner"><PageHeader title="Opening shared overview" /><Panel><LoadingRows count={4} columns={3} /></Panel></div>;
+  }
+
+  if (noProject) {
+    return <div className="ck-main-inner"><PageHeader title="Overview" /><Panel><EmptyPanel illustration="first-light" title="Ready for your first run" body="Connect a project to start." action={<Link className="ck-button ck-button-primary" to="/onboarding">Connect a project <ArrowRight size={14} /></Link>} /></Panel></div>;
+  }
+
+  if (explicitState === "loading") {
+    return <div className="ck-main-inner"><PageHeader title="Overview" actions={periodBadge} /><OverviewLoadingState /></div>;
+  }
+
+  const namedState = ["none", "new"].includes(explicitState)
+    ? PrototypeStatePanel({ state: explicitState, family: "Overview", title: explicitState === "new" ? "Ready for your first run" : "No runs in this period", backHref: "/onboarding", retryHref: window.location.pathname + window.location.search })
+    : null;
+  if (namedState) return namedState;
+
+  if (!resource.loading && !resource.error && overview && currentObservations === 0) {
+    const lastSeen = resource.data.health?.lastEventAt;
+    return <div className="ck-main-inner"><PageHeader title="Overview" actions={periodBadge} /><Panel><EmptyPanel illustration={lastSeen ? "a-closer-look" : "first-light"} title={lastSeen ? "No runs in this period" : "Ready for your first run"} body={lastSeen ? `The last run arrived ${formatDateTime(lastSeen)}. Try a longer period. A quiet project is not necessarily disconnected.` : "Send a request from your app. It shows up here with its cost."} action={<div className="ck-button-row"><Link className="ck-button ck-button-secondary" to={`/traces${scopeSearch}`}>View runs</Link><Link className="ck-button ck-button-primary" to="/onboarding">Check setup</Link></div>} /></Panel></div>;
+  }
+
+  // "Agent runs" counts runs whose root is an agent; a project with no agents counts all runs.
+  const hasAgents = Boolean(board && (board.runs.current.agentRuns > 0 || board.runs.previous.agentRuns > 0));
+  const runsKpi = {
+    label: hasAgents || !board ? "Agent runs" : "Runs",
+    current: board ? hasAgents ? board.runs.current.agentRuns : board.runs.current.runs : 0,
+    previous: board ? hasAgents ? board.runs.previous.agentRuns : board.runs.previous.runs : 0,
+  };
+  const currentTokens = overviewTokens(overview);
+  const previousTokens = overviewTokens(previousOverview);
+  const finding = activeFindings[0];
+  const findingHref = finding ? `/finding?id=${encodeURIComponent(finding.id)}&project=${encodeURIComponent(projectId ?? "")}` : "";
+  const status: { tone: Tone; text: ReactNode; right?: ReactNode } = (() => {
+    if (explicitState === "stale" || resource.data.health?.status === "inactive") {
+      const lastSeen = resource.data.health?.lastEventAt;
+      return { tone: "neutral", text: lastSeen ? `No new runs since ${formatDateTime(lastSeen)}.` : "No recent runs.", right: <Link className="ck-text-link" to="/settings?section=projects">Check connection</Link> };
+    }
+    if (finding) return { tone: "warn", text: <>{findingTitle(finding)}. Worth a look.</>, right: <Link className="ck-text-link" to={findingHref}>Review <ArrowRight size={12} /></Link> };
+    if (unpriced > 0) return { tone: "warn", text: `${unpriced.toLocaleString()} call${unpriced === 1 ? " has" : "s have"} no price yet, so totals are partial.`, right: <Link className="ck-text-link" to="/settings?section=pricing">Set prices <ArrowRight size={12} /></Link> };
+    if (budgetLimit != null && budgetSpent != null && budgetSpent >= budgetLimit) return { tone: "critical", text: `${projectName} is over its ${money(budgetLimit)} budget.`, right: <Link className="ck-text-link" to={`/budgets${scopeSearch}`}>Review budget</Link> };
+    if (budgetLimit != null && projected != null && projected > budgetLimit) return { tone: "warn", text: `At this pace, ${projectName} passes its ${money(budgetLimit)} budget this month.`, right: <Link className="ck-text-link" to={`/forecast${scopeSearch}`}>See estimate</Link> };
+    if (budgetLimit != null) return { tone: "good", text: `${projectName} is within its monthly budget.` };
+    return { tone: "good", text: `No unusual spending in ${projectName} ${monthToDate ? "this month" : `in the ${periodLabel(toolbarPeriod)}`}.`, right: <Link className="ck-text-link" to={`/policy-edit${scopeSearch}`}>Set a budget</Link> };
+  })();
 
   return (
-    <main className="max-w-[1440px] mx-auto px-4 md:px-6 pt-5 pb-6 flex flex-col gap-0 min-h-[calc(100vh-56px)]">
-      <AnomalyBanner projectId={projectId} />
-
-      {/* Setup hints banner */}
-      {hints.filter((h) => !dismissedHints.has(h.type)).map((hint) => (
-        <div key={hint.type} className="bg-amber-muted border border-amber/20 rounded-sm px-4 py-3 flex items-center gap-3 mb-4">
-          <AlertCircle size={16} className="text-amber shrink-0" />
-          <p className="text-sm text-text-primary flex-1">{hint.message}</p>
-          <a
-            href={`https://costkey.dev${hint.link}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-1 text-xs font-medium text-accent hover:text-accent-hover shrink-0"
-          >
-            Setup guide <ExternalLink size={11} />
-          </a>
-          <button
-            onClick={() => dismissHint(hint)}
-            className="text-text-muted hover:text-text-secondary cursor-pointer shrink-0"
-          >
-            <X size={14} />
-          </button>
+    <div className="ck-main-inner ck-overview">
+      <PageHeader title="Overview" actions={periodBadge} />
+      
+      {!["partial", "stale", "error", "healthy"].includes(explicitState) && <PrototypeStateNotice state={explicitState} family="overview" role={prototypeRole(searchParams, "viewer")} />}
+      {(explicitState === "error" || resource.error) && <div className="ck-alert ck-alert-error" role="alert"><AlertCircle size={15} aria-hidden="true" /><div><strong>Couldn’t refresh everything.</strong> Showing the latest numbers we have. <button type="button" className="ck-button ck-button-quiet ck-inline-button" onClick={() => setDataVersion((value) => value + 1)}>Try again</button></div></div>}
+      {!resource.loading && <StatusLine tone={status.tone} right={status.right}>{status.text}</StatusLine>}
+      {resource.loading ? <OverviewLoadingState /> : <>
+        <div className="ck-board-kpis">
+          <KpiCard label={runsKpi.label} value={board ? runsKpi.current.toLocaleString("en-US") : "—"} current={board ? runsKpi.current : null} previous={board ? runsKpi.previous : null} previousLabel={runsKpi.previous.toLocaleString("en-US")} higherIsBetter />
+          <KpiCard label="Model cost" value={money(currentCost)} current={currentCost} previous={previousCost} previousLabel={money(previousCost)} higherIsBetter={false} />
+          <KpiCard label="Tokens" value={compactNumber(currentTokens)} current={currentTokens} previous={previousTokens} previousLabel={compactNumber(previousTokens)} higherIsBetter={false} />
+          <KpiCard label="Avg score" value={formatScore(board?.scores.current.avg)} current={board?.scores.current.avg ?? null} previous={board?.scores.previous.avg ?? null} previousLabel={formatScore(board?.scores.previous.avg)} higherIsBetter />
         </div>
-      ))}
-
-      {/* Tab bar */}
-      <div className="flex items-center gap-0 border-b border-border mb-5 overflow-x-auto">
-        <div className="flex items-center gap-1">
-          {TABS.map((tab) => (
-            <button
-              key={tab.id}
-              onClick={() => selectTab(tab.id)}
-              className={`flex items-center gap-2 px-4 py-3 text-sm font-medium cursor-pointer transition-colors border-b-2 -mb-px whitespace-nowrap ${
-                activeTab === tab.id
-                  ? "text-text-primary border-text-primary"
-                  : "text-text-muted hover:text-text-secondary border-transparent"
-              }`}
-            >
-              {tab.icon}
-              {tab.label}
-            </button>
-          ))}
+        <div className="ck-board-row ck-board-row-3">
+          <CostByModel board={board} totalCost={money(currentCost)} />
+          <UsageByAgent board={board} money={money} />
+          <ScoresPanel board={board} />
         </div>
-
-        {showSearch && (
-          <div className="ml-auto flex items-center gap-2 bg-surface-raised border border-border rounded-sm px-3 py-2">
-            <Search size={14} className="text-text-muted" />
-            <input
-              type="text"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder={`Search ${activeTab.replace("-", " ")}...`}
-              className="bg-transparent text-sm text-text-primary placeholder:text-text-muted outline-none w-56"
-            />
-          </div>
-        )}
-      </div>
-
-      {/* Tab content */}
-      <div className="flex-1">
-        {activeTab === "overview" && (
-          !overview.loading && overview.data?.overview && overview.data.overview.total_calls === 0
-            ? <EmptyState tab="overview" />
-            : (
-              <div className="flex flex-col gap-5">
-                <SummaryView summary={summary.data} loading={summary.loading} />
-                <StatCards overview={overview.data?.overview ?? null} loading={overview.loading} />
-                <div className="grid grid-cols-1 md:grid-cols-[1fr_340px] gap-5">
-                  <CostTrend
-                    trends={trends.data?.trends ?? null}
-                    byModel={trends.data?.byModel}
-                    loading={trends.loading}
-                    timeRange={timeRange}
-                    onTimeRangeChange={(range) => {
-                      setTimeRange(range);
-                      if (!demoMode) analytics.capture("dashboard_time_range_changed", { range, project_id: projectId });
-                    }}
-                    groupByModel={groupByModel}
-                    onGroupByModelChange={(enabled) => {
-                      setGroupByModel(enabled);
-                      if (!demoMode) analytics.capture("dashboard_model_grouping_changed", { enabled, project_id: projectId });
-                    }}
-                  />
-                  <ModelBreakdown models={overview.data?.byModel ?? null} loading={overview.loading} />
-                </div>
-              </div>
-            )
-        )}
-
-        {activeTab === "insights" && (
-          <InsightsView projectId={projectId} />
-        )}
-
-        {activeTab === "traces" && (
-          !traces.loading && traces.data && traces.data.length === 0
-            ? <EmptyState tab="traces" />
-            : <TracesView traces={traces.data} loading={traces.loading} projectId={projectId} search={search} />
-        )}
-
-        {activeTab === "call-sites" && (
-          !callSites.loading && callSites.data && callSites.data.length === 0
-            ? <EmptyState tab="call-sites" />
-            : <CallSitesTable callSites={callSites.data} loading={callSites.loading} search={search} projectId={projectId} />
-        )}
-
-        {activeTab === "events" && (
-          !events.loading && events.data && events.data.length === 0
-            ? <EmptyState tab="events" />
-            : <RecentEvents events={events.data} loading={events.loading} search={search} projectId={projectId} demoMode={demoMode} />
-        )}
-      </div>
-    </main>
+        <div className="ck-board-row ck-board-row-2">
+          <RunVolume board={board} />
+          <LatencyPanel board={board} />
+        </div>
+      </>}
+    </div>
   );
 }

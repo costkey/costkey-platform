@@ -1,0 +1,44 @@
+image:
+  repository: ghcr.io/costkey/costkey
+  # Defaults to the chart's appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# Where people and SDKs reach CostKey. DSNs, invite links and sign-in cookies
+# follow it. With an ingress, set https://your-host. Without one,
+# http://localhost:4100 suits `kubectl port-forward svc/costkey 4100:80`.
+publicUrl: ""
+
+# Secrets are generated on install and kept across upgrades. To manage them
+# yourself, name a Secret with COSTKEY_JWT_SECRET and
+# COSTKEY_NOTIFICATION_ENCRYPTION_KEY (and DATABASE_URL when postgres.enabled
+# is false).
+existingSecret: ""
+
+postgres:
+  # A single Postgres pod for small installs. Set false and pass
+  # externalDatabaseUrl to use a managed database.
+  enabled: true
+  image: postgres:16-alpine
+  storage: 10Gi
+  storageClassName: ""
+  resources: {}
+
+externalDatabaseUrl: ""
+
+# Extra environment, e.g. RESEND_API_KEY for email.
+env: {}
+
+replicaCount: 1
+resources: {}
+
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: false
+  className: ""
+  host: costkey.example.com
+  annotations: {}
+  tls: []

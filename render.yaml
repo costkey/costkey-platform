@@ -1,0 +1,29 @@
+# Render Blueprint: CostKey from the published image, plus Render Postgres.
+# Secrets are generated on first deploy. PUBLIC_URL follows the service's
+# onrender.com address unless you set it (do, once you add a custom domain).
+services:
+  - type: web
+    name: costkey
+    runtime: image
+    image:
+      url: ghcr.io/costkey/costkey:latest
+    plan: starter
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: costkey-db
+          property: connectionString
+      - key: COSTKEY_JWT_SECRET
+        generateValue: true
+      - key: COSTKEY_NOTIFICATION_ENCRYPTION_KEY
+        generateValue: true
+
+databases:
+  - name: costkey-db
+    databaseName: costkey
+    user: costkey
+    plan: basic-256mb
+    postgresMajorVersion: "16"

@@ -218,6 +218,8 @@ export function computeCost(
   provider?: string | null,
   timestamp?: string | null,
   imageOutputTokens?: number | null,
+  /** The part of cacheCreationTokens written with Anthropic's 1-hour TTL (billed at 2x input). */
+  cacheCreation1hTokens?: number | null,
 ): number | null {
   if (!model) return null;
   for (const tokens of [inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, imageOutputTokens]) {
@@ -243,7 +245,10 @@ export function computeCost(
         output: pricing.output * 2, cacheRead: (pricing.cacheRead ?? 0) * 2 };
     }
   }
-  const isDeepSeekDirect = (provider === "deepseek" && lowerModel.includes("deepseek-v4"))
+  // DeepSeek's direct API: prompt_tokens includes cache hits (billed at the
+  // cache-hit rate) and misses (ordinary input). SDK 0.6 reported the misses
+  // as cache creation; they are never a separate charge.
+  const isDeepSeekDirect = provider === "deepseek"
     || (!provider && !lowerModel.includes("/") && lowerModel.includes("deepseek-v4"));
   let cost = 0;
 
@@ -260,15 +265,10 @@ export function computeCost(
       ? (effectivePricing.cacheRead != null ? (cacheReadTokens ?? 0) : 0)
         + (provider === "openrouter" && effectivePricing.cacheWrite != null ? (cacheCreationTokens ?? 0) : 0)
       : isDeepSeekDirect
-        ? (cacheReadTokens ?? 0) + (cacheCreationTokens ?? 0)
+        ? (effectivePricing.cacheRead != null ? (cacheReadTokens ?? 0) : 0)
       : 0;
     const billableInputTokens = Math.max(0, inputTokens - includedCacheTokens);
     cost += (billableInputTokens / 1_000_000) * effectivePricing.input;
-    // DeepSeek calls expose prompt_cache_miss_tokens as a subset of
-    // prompt_tokens. It is regular input, not a cache-write surcharge.
-    if (isDeepSeekDirect && cacheCreationTokens != null) {
-      cost += (cacheCreationTokens / 1_000_000) * effectivePricing.input;
-    }
   }
   if (outputTokens != null) {
     cost += ((outputTokens - (imageOutputTokens ?? 0)) / 1_000_000) * effectivePricing.output;
@@ -277,8 +277,11 @@ export function computeCost(
   if (cacheReadTokens != null && effectivePricing.cacheRead != null) {
     cost += (cacheReadTokens / 1_000_000) * effectivePricing.cacheRead;
   }
-  if (cacheCreationTokens != null && effectivePricing.cacheWrite != null) {
-    cost += (cacheCreationTokens / 1_000_000) * effectivePricing.cacheWrite;
+  if (cacheCreationTokens != null && effectivePricing.cacheWrite != null && !isDeepSeekDirect) {
+    const oneHour = Math.min(Math.max(cacheCreation1hTokens ?? 0, 0), cacheCreationTokens);
+    cost += ((cacheCreationTokens - oneHour) / 1_000_000) * effectivePricing.cacheWrite;
+    // Anthropic's 1-hour cache writes cost twice the base input rate.
+    cost += (oneHour / 1_000_000) * effectivePricing.input * 2;
   }
 
   return Math.round(cost * 1_000_000_000_000) / 1_000_000_000_000;
@@ -343,8 +346,9 @@ export async function backfillCosts(pool: import("pg").Pool): Promise<void> {
 
     const changes: Array<{
       id: string; projectId: string; model: string | null;
-      oldCost: number | null; newCost: number;
-      blFunction: string | null; blFile: string | null; blLine: number | null;
+        oldCost: number | null; newCost: number;
+        blFunction: string | null; blFile: string | null; blLine: number | null;
+        basis: "reported" | "estimated"; source: string;
     }> = [];
     for (const row of result.rows) {
       if (row.reported_cost == null || row.reported_cost === "") continue;
@@ -354,6 +358,7 @@ export async function backfillCosts(pool: import("pg").Pool): Promise<void> {
         id: row.id, projectId: row.project_id, model: row.model,
         oldCost: row.cost_usd, newCost: reported,
         blFunction: row.bl_function, blFile: row.bl_file, blLine: row.bl_line,
+        basis: "reported", source: "provider",
       });
     }
     await applyCostChanges(pool, changes);
@@ -377,8 +382,9 @@ export async function backfillCosts(pool: import("pg").Pool): Promise<void> {
     );
     const changes: Array<{
       id: string; projectId: string; model: string | null;
-      oldCost: number | null; newCost: number;
-      blFunction: string | null; blFile: string | null; blLine: number | null;
+        oldCost: number | null; newCost: number;
+        blFunction: string | null; blFile: string | null; blLine: number | null;
+        basis: "reported" | "estimated"; source: string;
     }> = [];
     for (const row of result.rows) {
       const imageOutputTokens = inferImageOutputTokens(row.model, row.output_tokens);
@@ -393,6 +399,7 @@ export async function backfillCosts(pool: import("pg").Pool): Promise<void> {
         id: row.id, projectId: row.project_id, model: row.model,
         oldCost: row.cost_usd, newCost: cost,
         blFunction: row.bl_function, blFile: row.bl_file, blLine: row.bl_line,
+        basis: "estimated", source: "pricing_table",
       });
     }
     await applyCostChanges(pool, changes);
@@ -400,9 +407,8 @@ export async function backfillCosts(pool: import("pg").Pool): Promise<void> {
   });
 
   await runOnce(pool, "backfill_costs_v1", async () => {
-    try {
-      const result = await pool.query(
-        `SELECT id, provider, model, timestamp, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens
+    const result = await pool.query(
+        `SELECT id, project_id, provider, model, timestamp, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens
          FROM events
          WHERE (cost_usd IS NULL OR cost_usd = 0)
            AND model IS NOT NULL
@@ -429,8 +435,8 @@ export async function backfillCosts(pool: import("pg").Pool): Promise<void> {
         );
         if (cost != null && cost > 0) {
           await pool.query(
-            "UPDATE events SET cost_usd = $1 WHERE id = $2",
-            [cost, row.id],
+            "UPDATE events SET cost_usd = $1, cost_basis = 'estimated', cost_source = 'pricing_table' WHERE project_id = $2 AND id = $3",
+            [cost, row.project_id, row.id],
           );
           updated++;
         }
@@ -459,10 +465,7 @@ export async function backfillCosts(pool: import("pg").Pool): Promise<void> {
         `);
       }
 
-      console.log(`[costkey] Backfilled costs for ${updated} events`);
-    } catch (err) {
-      console.error("[costkey] Cost backfill error:", err);
-    }
+    console.log(`[costkey] Backfilled costs for ${updated} events`);
   });
 
 
@@ -479,6 +482,8 @@ type CostBackfillChange = {
   blFunction: string | null;
   blFile: string | null;
   blLine: number | null;
+  basis?: "reported" | "estimated";
+  source?: string;
 };
 
 async function applyCostChanges(pool: import("pg").Pool, changes: CostBackfillChange[]): Promise<void> {
@@ -486,7 +491,10 @@ async function applyCostChanges(pool: import("pg").Pool, changes: CostBackfillCh
 
   const deltas = new Map<string, { projectId: string; model: string; callSiteKey: string; delta: number }>();
   for (const row of changes) {
-    await pool.query("UPDATE events SET cost_usd = $1 WHERE id = $2", [row.newCost, row.id]);
+    await pool.query(
+      "UPDATE events SET cost_usd = $1, cost_basis = COALESCE($4, cost_basis), cost_source = COALESCE($5, cost_source) WHERE project_id = $2 AND id = $3",
+      [row.newCost, row.projectId, row.id, row.basis ?? "estimated", row.source ?? "pricing_table"],
+    );
     if (!row.blFunction) continue;
     const model = row.model ?? "unknown";
     const callSiteKey = `${row.blFile ?? "unknown"}:${row.blFunction}:${row.blLine ?? 0}`;
@@ -541,9 +549,8 @@ async function backfillFrames(pool: import("pg").Pool): Promise<void> {
   const { runOnce } = await import("./db.js");
 
   await runOnce(pool, "backfill_frames_v3", async () => {
-    try {
-      const result = await pool.query(
-        "SELECT id, call_site_frames FROM events WHERE call_site_frames IS NOT NULL",
+    const result = await pool.query(
+        "SELECT id, project_id, call_site_frames FROM events WHERE call_site_frames IS NOT NULL",
       );
 
       let updated = 0;
@@ -568,17 +575,14 @@ async function backfillFrames(pool: import("pg").Pool): Promise<void> {
         const newJson = JSON.stringify(filtered);
         if (origJson !== newJson) {
           await pool.query(
-            "UPDATE events SET call_site_frames = $1 WHERE id = $2",
-            [newJson, row.id],
+            "UPDATE events SET call_site_frames = $1 WHERE project_id = $2 AND id = $3",
+            [newJson, row.project_id, row.id],
           );
           updated++;
         }
       }
 
-      console.log(`[costkey] Cleaned stack frames for ${updated} events`);
-    } catch (err) {
-      console.error("[costkey] Frame backfill error:", err);
-    }
+    console.log(`[costkey] Cleaned stack frames for ${updated} events`);
   });
 
   // Rebuild call_site_stats (also runs once)
@@ -637,8 +641,8 @@ async function rebuildCallSiteStats(pool: import("pg").Pool): Promise<void> {
     if (best) {
       const fn = (best.functionName ?? "").split("\n")[0].trim() || null;
       await pool.query(
-        "UPDATE events SET bl_function = $1, bl_file = $2, bl_line = $3 WHERE id = $4",
-        [fn, best.fileName ?? null, best.lineNumber ?? null, row.id],
+        "UPDATE events SET bl_function = $1, bl_file = $2, bl_line = $3 WHERE project_id = $4 AND id = $5",
+        [fn, best.fileName ?? null, best.lineNumber ?? null, row.project_id, row.id],
       );
     }
   }
@@ -658,7 +662,8 @@ async function rebuildCallSiteStats(pool: import("pg").Pool): Promise<void> {
   const stats = new Map<string, {
     projectId: string; key: string; fileName: string | null; functionName: string | null;
     lineNumber: number | null; provider: string; model: string;
-    calls: number; cost: number; inputTokens: number; outputTokens: number;
+    calls: number; cost: number; pricedCalls: number; unpricedCalls: number;
+    inputTokens: number; outputTokens: number;
     durations: number[]; ttfts: number[]; tpss: number[];
     firstSeen: string; lastSeen: string;
   }>();
@@ -673,6 +678,8 @@ async function rebuildCallSiteStats(pool: import("pg").Pool): Promise<void> {
     if (existing) {
       existing.calls++;
       existing.cost += row.cost_usd ?? 0;
+      if (row.cost_usd == null) existing.unpricedCalls++;
+      else existing.pricedCalls++;
       existing.inputTokens += row.input_tokens ?? 0;
       existing.outputTokens += row.output_tokens ?? 0;
       existing.durations.push(row.duration_ms ?? 0);
@@ -686,6 +693,8 @@ async function rebuildCallSiteStats(pool: import("pg").Pool): Promise<void> {
         fileName, functionName: fn, lineNumber: lineNum,
         provider: row.provider, model: row.model,
         calls: 1, cost: row.cost_usd ?? 0,
+        pricedCalls: row.cost_usd == null ? 0 : 1,
+        unpricedCalls: row.cost_usd == null ? 1 : 0,
         inputTokens: row.input_tokens ?? 0, outputTokens: row.output_tokens ?? 0,
         durations: [row.duration_ms ?? 0],
         ttfts: row.streaming && row.ttft != null ? [row.ttft] : [],
@@ -703,13 +712,15 @@ async function rebuildCallSiteStats(pool: import("pg").Pool): Promise<void> {
       INSERT INTO call_site_stats (
         project_id, call_site_key, file_name, function_name, line_number,
         provider, model, total_calls, total_cost_usd, total_input_tokens, total_output_tokens,
-        avg_duration_ms, avg_ttft, avg_tps, first_seen, last_seen
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+        avg_duration_ms, avg_ttft, avg_tps, first_seen, last_seen,
+        priced_calls, unpriced_calls
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
       ON CONFLICT (project_id, call_site_key, model) DO NOTHING`,
       [
         s.projectId, s.key, s.fileName, s.functionName, s.lineNumber,
         s.provider, s.model, s.calls, s.cost, s.inputTokens, s.outputTokens,
         avg(s.durations), avg(s.ttfts), avg(s.tpss), s.firstSeen, s.lastSeen,
+        s.pricedCalls, s.unpricedCalls,
       ],
     );
   }

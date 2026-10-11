@@ -1,0 +1,183 @@
+{
+ "_note": "recordLiveKitUsage records from SDK 0.6.1 TypeScript (packages/sdk at 57bf800) for the update in telemetry-units.test.ts. Do not edit by hand.",
+ "records": [
+  {
+   "id": "livekit:room-42:interruption:livekit:unknown:r7",
+   "componentId": "livekit:room-42:interruption:livekit:unknown",
+   "chargeId": "livekit:room-42:interruption:livekit:unknown",
+   "provider": "livekit",
+   "usage": {
+    "numRequests": 3
+   },
+   "billingUnits": {
+    "requests": 3
+   },
+   "unitKind": "requests",
+   "unitValue": 3,
+   "unit": "requests",
+   "aggregation": "cumulative",
+   "revision": 7,
+   "context": {
+    "voiceSessionId": "room-42",
+    "conversationId": "conv-1"
+   },
+   "timestamp": "2025-10-11T09:00:00.000Z",
+   "metadata": {
+    "livekit": {
+     "type": "interruption_usage",
+     "sessionId": "room-42",
+     "revision": 7,
+     "voiceCoverage": {
+      "expectedComponents": [
+       "llm",
+       "stt",
+       "tts"
+      ],
+      "observedComponents": [
+       "interruption",
+       "llm",
+       "stt",
+       "tts"
+      ],
+      "missingComponents": []
+     }
+    }
+   }
+  },
+  {
+   "id": "livekit:room-42:llm:openai:gpt-4o-mini:r7",
+   "componentId": "livekit:room-42:llm:openai:gpt-4o-mini",
+   "chargeId": "livekit:room-42:llm:openai:gpt-4o-mini",
+   "provider": "openai",
+   "model": "gpt-4o-mini",
+   "usage": {
+    "inputCachedTokens": 10,
+    "inputTokens": 150,
+    "outputTokens": 25
+   },
+   "billingUnits": {
+    "cache_read_tokens": 10,
+    "input_tokens": 150,
+    "output_tokens": 25
+   },
+   "aggregation": "cumulative",
+   "revision": 7,
+   "context": {
+    "voiceSessionId": "room-42",
+    "conversationId": "conv-1"
+   },
+   "timestamp": "2025-10-11T09:00:00.000Z",
+   "metadata": {
+    "livekit": {
+     "type": "llm_usage",
+     "sessionId": "room-42",
+     "revision": 7,
+     "voiceCoverage": {
+      "expectedComponents": [
+       "llm",
+       "stt",
+       "tts"
+      ],
+      "observedComponents": [
+       "interruption",
+       "llm",
+       "stt",
+       "tts"
+      ],
+      "missingComponents": []
+     }
+    }
+   }
+  },
+  {
+   "id": "livekit:room-42:stt:deepgram:nova-3:r7",
+   "componentId": "livekit:room-42:stt:deepgram:nova-3",
+   "chargeId": "livekit:room-42:stt:deepgram:nova-3",
+   "provider": "deepgram",
+   "model": "nova-3",
+   "usage": {
+    "audioSeconds": 12
+   },
+   "billingUnits": {
+    "audio_seconds": 12
+   },
+   "unitKind": "audio_seconds",
+   "unitValue": 12,
+   "unit": "audio_seconds",
+   "aggregation": "cumulative",
+   "revision": 7,
+   "context": {
+    "voiceSessionId": "room-42",
+    "conversationId": "conv-1"
+   },
+   "timestamp": "2025-10-11T09:00:00.000Z",
+   "metadata": {
+    "livekit": {
+     "type": "stt_usage",
+     "sessionId": "room-42",
+     "revision": 7,
+     "voiceCoverage": {
+      "expectedComponents": [
+       "llm",
+       "stt",
+       "tts"
+      ],
+      "observedComponents": [
+       "interruption",
+       "llm",
+       "stt",
+       "tts"
+      ],
+      "missingComponents": []
+     }
+    }
+   }
+  },
+  {
+   "id": "livekit:room-42:tts:cartesia:sonic-2:r7",
+   "componentId": "livekit:room-42:tts:cartesia:sonic-2",
+   "chargeId": "livekit:room-42:tts:cartesia:sonic-2",
+   "provider": "cartesia",
+   "model": "sonic-2",
+   "usage": {
+    "audioSeconds": 9,
+    "characters": 300
+   },
+   "billingUnits": {
+    "audio_seconds": 9,
+    "characters": 300
+   },
+   "unitKind": "characters",
+   "unitValue": 300,
+   "unit": "characters",
+   "aggregation": "cumulative",
+   "revision": 7,
+   "context": {
+    "voiceSessionId": "room-42",
+    "conversationId": "conv-1"
+   },
+   "timestamp": "2025-10-11T09:00:00.000Z",
+   "metadata": {
+    "livekit": {
+     "type": "tts_usage",
+     "sessionId": "room-42",
+     "revision": 7,
+     "voiceCoverage": {
+      "expectedComponents": [
+       "llm",
+       "stt",
+       "tts"
+      ],
+      "observedComponents": [
+       "interruption",
+       "llm",
+       "stt",
+       "tts"
+      ],
+      "missingComponents": []
+     }
+    }
+   }
+  }
+ ]
+}

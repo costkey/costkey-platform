@@ -1,158 +1,150 @@
 ---
 sidebar_position: 4
 title: Providers
-description: All 15 AI providers supported by CostKey, with auto-detection details.
+description: Provider endpoint, response-shape, and transport coverage for CostKey.
 ---
 
 # Providers
 
-CostKey auto-detects 15 AI providers by matching the URL hostname of outgoing HTTP requests. No configuration needed — if you call any of these APIs, CostKey captures it.
+CostKey captures calls to the provider hosts below. Both SDKs, TypeScript and
+Python, capture every provider listed. Detection is an exact hostname or
+pattern match; it is not a claim that every API, proxy, WebSocket, or SDK
+transport for a provider is covered. No provider-routing gateway is required.
+
+The SDKs only match the host and send raw telemetry. The server works out the
+provider, model and usage for each call and prices it, so support for a new
+response shape ships with the server.
 
 ## Supported providers
 
-| Provider | Hostname(s) | Auto-detected | Notes |
-|----------|------------|:---:|-------|
-| **OpenAI** | `api.openai.com` | Yes | Includes GPT-4o, o1, o3, DALL-E, Whisper, Embeddings |
-| **Anthropic** | `api.anthropic.com` | Yes | Claude models. Cache tokens tracked (read + creation) |
-| **Google** | `generativelanguage.googleapis.com`, `*-aiplatform.googleapis.com` | Yes | Gemini, PaLM, Vertex AI |
-| **Azure OpenAI** | `*.openai.azure.com` | Yes | Azure-hosted OpenAI models |
-| **Groq** | `api.groq.com` | Yes | Fast inference (Llama, Mixtral, Gemma) |
-| **xAI** | `api.x.ai`, `api.grok.xai.com` | Yes | Grok models |
-| **Mistral** | `api.mistral.ai` | Yes | Mistral, Mixtral, Codestral |
-| **DeepSeek** | `api.deepseek.com` | Yes | DeepSeek-V3, DeepSeek-R1. Reasoning + cache tokens tracked |
-| **Cohere** | `api.cohere.com` | Yes | Command, Embed, Rerank |
-| **Together AI** | `api.together.xyz` | Yes | Open-source model hosting |
-| **Fireworks AI** | `api.fireworks.ai` | Yes | Fast open-source inference |
-| **Perplexity** | `api.perplexity.ai` | Yes | Sonar models |
-| **Cerebras** | `api.cerebras.ai` | Yes | Fastest inference (Llama) |
-| **OpenRouter** | `openrouter.ai` | Yes | Multi-provider router |
-| **AWS Bedrock** | `bedrock-runtime.*.amazonaws.com` | Yes | Claude, Titan, Llama on AWS |
+TypeScript patches `globalThis.fetch`. Python patches `httpx`, `httpx2`
+(used by openai 3.x, anthropic 1.x and mistralai 3.x), `requests` and
+`aiohttp` (which google-genai uses whenever it's installed), plus boto3 for
+Bedrock.
 
-## How auto-detection works
+| Provider | Matched endpoint(s) | What's recorded |
+| --- | --- | --- |
+| OpenAI | `api.openai.com` | Tokens, cached input, reasoning; speech characters; transcription seconds or tokens |
+| Azure OpenAI / AI Foundry | `*.openai.azure.com`, `*.services.ai.azure.com`, `*.cognitiveservices.azure.com` | Same as OpenAI; priced at the Azure rate |
+| Anthropic | `api.anthropic.com` | Tokens, cache reads and writes |
+| Google Gemini | `generativelanguage.googleapis.com` | Tokens, thinking, cached input, tool-use prompt tokens, search and Maps grounding |
+| Google Vertex AI | `aiplatform.googleapis.com`, `*-aiplatform.googleapis.com` | Gemini as above; Claude and other partner models with their own usage |
+| AWS Bedrock | `bedrock-runtime.*.amazonaws.com` | Tokens and cache, including Converse and InvokeModel event streams |
+| OpenRouter, Vercel AI Gateway, Portkey, Helicone | Their gateway hosts | Tokens; provider-reported cost where sent |
+| Mistral, DeepSeek, xAI, Cohere, Groq, Together, Fireworks, Perplexity, Cerebras | Their API hosts | Tokens; Cohere embed tokens and rerank search units |
+| Alibaba Qwen, Moonshot Kimi, Z.ai GLM, MiniMax | DashScope, `api.moonshot.ai`/`.cn`, `api.z.ai`, `open.bigmodel.cn`, `api.minimax.io` | Tokens; MiniMax speech characters |
+| DeepInfra, NVIDIA NIM, SambaNova, Novita, Hyperbolic, Nebius, Hugging Face, Baseten, Lambda, Featherless, Friendli, AI21, Upstage, Cloudflare Workers AI | Their API hosts | Tokens |
+| Ollama | `localhost:11434` | Tokens (set your own rate) |
+| ElevenLabs, Cartesia, Deepgram Aura, Rumik Silk, Sarvam Bulbul | Their API hosts | Characters |
+| Deepgram, AssemblyAI, Sarvam, ElevenLabs Scribe | Their API hosts | Audio seconds |
+| Voyage, Jina | `api.voyageai.com`, `api.jina.ai` | Embedding and rerank tokens |
+| Exa, Tavily, Firecrawl | Their API hosts | Searches and results, credits, pages |
+| TypeSafe | `api.typesafe.ai` | Tokens |
 
-On every `fetch` call (TypeScript) or `httpx`/`requests` call (Python), the SDK checks the request URL's hostname against the provider list. The check is a simple string match — it runs in microseconds and adds zero measurable overhead to non-AI calls.
+WebSocket and realtime APIs (OpenAI Realtime, Deepgram live, Cartesia
+websocket) aren't captured.
+
+Failed calls (4xx/5xx) are recorded without billable units. Audio responses
+are never read or buffered.
+
+### Bedrock with the AWS SDK
+
+boto3 is covered automatically. In Node, the AWS SDK v3 doesn't use `fetch`,
+so instrument the client once:
+
+```typescript
+const bedrock = CostKey.instrumentBedrockClient(new BedrockRuntimeClient({ region: "us-east-1" }))
+```
+
+## How endpoint detection works
+
+On every patched call, the SDK checks the request URL's hostname against the
+capture list. Matching is intentionally narrow. Non-matching calls pass
+through untouched.
 
 When a match is found, the SDK:
 
-1. Captures a stack trace (for call site attribution)
+1. Captures the stack trace (every frame; the server picks the call site)
 2. Records the start time
-3. Passes the request through to the provider unmodified
-4. Reads the response (cloned) to extract token usage
-5. Sends a CostKey event asynchronously
+3. Passes the request to the provider. On streamed Chat Completions calls to
+   hosts that need it, it adds a usage option, and it removes explicit
+   CostKey carrier headers.
+4. Records the request and response as skeletons: keys and numbers are kept,
+   text is replaced by its length. Streams are recorded chunk by chunk as your
+   code reads them.
+5. Sends the event asynchronously
 
-For streaming responses, the SDK wraps the response stream to capture timing metrics (TTFT, tokens/sec) and extracts usage from the final SSE chunk.
+Recording, stack capture and serialization still have a cost; profile your
+application before choosing performance-sensitive settings. Streams over
+WebSocket and other non-HTTP transports aren't covered.
 
-## Server-side cost calculation
+## Cost
 
-The SDK sends raw token counts to the CostKey server. The server calculates costs using a fuzzy model matching system:
+The server extracts usage from the telemetry and prices it from a synced
+catalog. See [Pricing](/pricing) for sources, matching and what to do when a
+model has no price.
 
-- `claude-sonnet-4-5-20250514` matches pricing for `claude-sonnet-4-5`
-- `ft:gpt-4o:my-org:custom:abc` matches pricing for `gpt-4o`
-- `accounts/fireworks/models/llama-v3p1-70b-instruct` matches `llama-3.1-70b`
+## Custom providers
 
-This means you never need to update the SDK when prices change — the server pricing table is updated independently.
+A host that isn't built in, such as an internal gateway or a self-hosted
+model server, is configured on the CostKey server for each project. There is
+no SDK code to write. Owners and admins create one with the projects API,
+authenticated with a sign-in token such as the one `npx costkey setup` saves
+in `~/.costkey/token`:
 
-## Adding a custom provider
-
-If you use an AI provider not in the built-in list, register a custom extractor:
-
-import Tabs from '@theme/Tabs';
-import TabItem from '@theme/TabItem';
-
-<Tabs>
-<TabItem value="python" label="Python">
-
-```python
-import costkey
-from costkey.types import Provider, NormalizedUsage
-
-class MyProviderExtractor:
-    provider = Provider.UNKNOWN
-
-    def match(self, url: str) -> bool:
-        from urllib.parse import urlparse
-        return urlparse(url).hostname == "api.myprovider.com"
-
-    def extract_usage(self, body: dict) -> NormalizedUsage | None:
-        usage = body.get("usage")
-        if not usage:
-            return None
-        return NormalizedUsage(
-            input_tokens=usage.get("prompt_tokens"),
-            output_tokens=usage.get("completion_tokens"),
-            total_tokens=usage.get("total_tokens"),
-        )
-
-    def extract_model(self, request_body, response_body) -> str | None:
-        if isinstance(response_body, dict):
-            return response_body.get("model")
-        if isinstance(request_body, dict):
-            return request_body.get("model")
-        return None
-
-costkey.register_extractor(MyProviderExtractor())
+```bash
+curl -X POST "$COSTKEY_URL/api/v1/projects/$PROJECT_ID/providers" \
+  -H "Authorization: Bearer $(cat ~/.costkey/token)" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "internal-llm",
+    "hostname": "llm.internal.example.com",
+    "usageInputPath": "usage.prompt_tokens",
+    "usageOutputPath": "usage.completion_tokens",
+    "modelPath": "model"
+  }'
 ```
 
-</TabItem>
-<TabItem value="typescript" label="TypeScript">
+| Field | Meaning |
+| --- | --- |
+| `name` | The provider name shown in the console. Required. |
+| `hostname` | The host to capture. `*.example.com` matches any subdomain. Required. |
+| `usageInputPath` | Dot path to the input token count in the response body. Default `usage.prompt_tokens`. |
+| `usageOutputPath` | Dot path to the output token count. Default `usage.completion_tokens`. |
+| `modelPath` | Dot path to the model name in the response or request body. Default `model`. |
 
-```typescript
-import { CostKey, Provider } from 'costkey'
-import type { ProviderExtractor, NormalizedUsage } from 'costkey'
+`GET` lists a project's custom providers, and
+`PATCH` and `DELETE` on `/api/v1/projects/:projectId/providers/:providerId`
+change or remove one (`"enabled": false` turns one off).
 
-CostKey.registerExtractor({
-  provider: Provider.Unknown,
+How it works:
 
-  match(url: URL): boolean {
-    return url.hostname === 'api.myprovider.com'
-  },
-
-  extractUsage(body: unknown): NormalizedUsage | null {
-    const b = body as Record<string, any>
-    const usage = b?.usage
-    if (!usage) return null
-    return {
-      inputTokens: usage.prompt_tokens ?? null,
-      outputTokens: usage.completion_tokens ?? null,
-      totalTokens: usage.total_tokens ?? null,
-      reasoningTokens: null,
-      cacheReadTokens: null,
-      cacheCreationTokens: null,
-    }
-  },
-
-  extractModel(requestBody: unknown, responseBody: unknown): string | null {
-    const resp = responseBody as Record<string, any>
-    if (resp?.model) return resp.model
-    const req = requestBody as Record<string, any>
-    if (req?.model) return req.model
-    return null
-  },
-})
-```
-
-</TabItem>
-</Tabs>
+- SDKs pick up the enabled hostnames from the DSN runtime config, which they
+  refresh every 60 seconds by default, and capture those calls like any other
+  provider.
+- The server applies the paths to the raw telemetry. Built-in providers are
+  matched first, so a custom entry can't take over a known host.
+- The model is read only from a key the skeleton keeps as text, such as
+  `model`. Other strings arrive as lengths.
+- Set a price for the model in **Settings, Prices & credits**.
 
 ## Provider-specific notes
 
 ### OpenAI
 
-CostKey injects `stream_options: { include_usage: true }` into streaming requests so that the final SSE chunk includes token usage. This is done transparently — your code doesn't need to change.
+The TypeScript SDK adds `stream_options: { include_usage: true }` to streamed Chat Completions requests so the final SSE chunk includes token usage. Your code doesn't need to change.
 
 ### Anthropic
 
-Cache tokens are tracked separately:
-- `cacheReadTokens` / `cache_read_tokens` — tokens read from Anthropic's prompt cache
-- `cacheCreationTokens` / `cache_creation_tokens` — tokens written to cache
+Cache reads and cache writes are tracked and priced separately from other input tokens.
 
 ### DeepSeek
 
-Reasoning tokens (from DeepSeek-R1) are captured in the `reasoningTokens` field. Cache hit/miss tokens are also tracked.
+Reasoning tokens and cache hit and miss tokens are tracked.
 
 ### AWS Bedrock
 
-Bedrock URLs follow the pattern `bedrock-runtime.<region>.amazonaws.com`. All regions are auto-detected. The SDK extracts usage from Bedrock's response format, which wraps the underlying model's response.
+Bedrock URLs follow the pattern `bedrock-runtime.<region>.amazonaws.com`. All regions are detected. The server extracts usage from Bedrock's response format, which wraps the underlying model's response, and from its token count headers.
 
 ### Google / Vertex AI
 

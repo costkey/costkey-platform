@@ -10,6 +10,20 @@ export type {
   BeforeSendHook,
   EventContext,
   EventMetadata,
+  CallTelemetry,
+  TelemetryRequest,
+  TelemetryResponse,
+  TelemetryStream,
+  TelemetryStreamFormat,
+  TelemetryError,
+  SkeletonValue,
+  SkeletonMarker,
+  SkeletonString,
+  SkeletonTruncated,
+  SkeletonMore,
+  SkeletonBytes,
+  SkeletonMultipart,
+  SkeletonMultipartPart,
 } from "./types.js";
 
 export { Provider } from "./types.js";

@@ -14,6 +14,7 @@
  * Fires webhooks for matching alert configs.
  */
 import type pg from "pg";
+import { withMigrationLock } from "./db.js";
 
 export interface Anomaly {
   id: string;
@@ -38,7 +39,7 @@ function randomId(): string {
 
 // Ensure anomalies table exists
 export async function initAnomalyTable(pool: pg.Pool): Promise<void> {
-  await pool.query(`
+  await withMigrationLock(pool, (client) => client.query(`
     CREATE TABLE IF NOT EXISTS anomalies (
       id TEXT PRIMARY KEY,
       project_id TEXT NOT NULL,
@@ -65,7 +66,7 @@ export async function initAnomalyTable(pool: pg.Pool): Promise<void> {
     ALTER TABLE anomalies ADD COLUMN IF NOT EXISTS dismissed_at TIMESTAMPTZ;
     -- Backfill first_detected_at for existing rows
     UPDATE anomalies SET first_detected_at = detected_at WHERE first_detected_at IS NULL;
-  `);
+  `));
 }
 
 /**

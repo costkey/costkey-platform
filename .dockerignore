@@ -5,3 +5,12 @@ packages/*/dist
 .costkey-data
 .firebase
 .turbo
+.env
+.env.*
+.claude
+.DS_Store
+*.log
+docs
+docs-site
+design
+!design/console-prototype/data.js

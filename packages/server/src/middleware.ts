@@ -4,6 +4,7 @@
 import type { Request, Response, NextFunction } from "express";
 import type pg from "pg";
 import type { AuthUser } from "./auth.js";
+import { canAccessProject, normalizeRole, redactResponseForDisabledSource, redactResponseForViewer, roleCanManageWorkspace, type AuthPrincipal } from "./permissions.js";
 
 /**
  * Org-scoping middleware for /api/v1/projects/:projectId/* routes.
@@ -18,24 +19,81 @@ export function orgScope(pool: pg.Pool) {
       return;
     }
 
-    const { projectId } = req.params;
+    const projectId = typeof req.params.projectId === "string" ? req.params.projectId : undefined;
     if (!projectId) {
       next();
       return;
     }
 
-    const result = await pool.query(
-      "SELECT id FROM projects WHERE id = $1 AND org_id = $2",
-      [projectId, user.orgId],
-    );
-
-    if (result.rows.length === 0) {
+    if (!await canAccessProject(pool, user, projectId)) {
       res.status(404).json({ error: "Project not found" });
       return;
     }
 
     next();
   };
+}
+
+/**
+ * Guard project mutations mounted before legacy API routes. This keeps role
+ * enforcement server-side even while older routers are being migrated.
+ */
+export function projectMutationGuard() {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const user = (req as Request & { user?: AuthUser }).user;
+    if (!user) {
+      res.status(401).json({ error: "Authentication required" });
+      return;
+    }
+    if (req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS") {
+      next();
+      return;
+    }
+    if (!roleCanManageWorkspace(user.role)) {
+      res.status(403).json({ error: "Only owners and admins can change project settings" });
+      return;
+    }
+    next();
+  };
+}
+
+/**
+ * Apply project-level access and content redaction to every API response.
+ * Route-specific handlers can still add stricter checks, but cannot weaken
+ * the Viewer boundary by forgetting to hide a newly returned content field.
+ */
+export function platformResponseGuards(pool: pg.Pool) {
+  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    const user = (req as Request & { user?: AuthUser }).user;
+    const projectId = typeof req.params.projectId === "string" ? req.params.projectId : undefined;
+    if (user && projectId && !(await canAccessProject(pool, user, projectId))) {
+      res.status(404).json({ error: "Project not found" });
+      return;
+    }
+    let sourceAccessEnabled = false;
+    if (projectId) {
+      try {
+        const result = await pool.query(
+          "SELECT source_access_enabled FROM project_settings WHERE project_id = $1",
+          [projectId],
+        );
+        sourceAccessEnabled = result.rows[0]?.source_access_enabled === true;
+      } catch {
+        // If the policy cannot be read, do not expose source material.
+      }
+    }
+    const continueResponse = (error?: unknown): void => {
+      if (error) { next(error); return; }
+      if (!sourceAccessEnabled) redactResponseForDisabledSource(res, () => redactResponseForViewer(req, res, next));
+      else redactResponseForViewer(req, res, next);
+    };
+    continueResponse();
+  };
+}
+
+export function roleForRequest(req: Request): ReturnType<typeof normalizeRole> | null {
+    const user = (req as Request & { user?: AuthPrincipal }).user;
+  return user ? normalizeRole(user.role) : null;
 }
 
 /**

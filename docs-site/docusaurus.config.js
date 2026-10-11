@@ -1,9 +1,14 @@
 // @ts-check
 
+const { themes } = require('prism-react-renderer');
+
+/** One Dark syntax colours on the Ink code surface from the design language. */
+const inkCodeTheme = { ...themes.oneDark, plain: { ...themes.oneDark.plain, backgroundColor: '#182B45' } };
+
 /** @type {import('@docusaurus/types').Config} */
 const config = {
   title: 'CostKey',
-  tagline: 'Sentry for AI costs',
+  tagline: 'Your AI spend, in sight',
   favicon: 'img/favicon.svg',
 
   url: 'https://costkey.dev',
@@ -47,8 +52,8 @@ const config = {
     /** @type {import('@docusaurus/preset-classic').ThemeConfig} */
     ({
       colorMode: {
-        defaultMode: 'dark',
-        disableSwitch: false,
+        defaultMode: 'light',
+        disableSwitch: true,
         respectPrefersColorScheme: false,
       },
       navbar: {
@@ -70,8 +75,8 @@ const config = {
             position: 'right',
           },
           {
-            href: 'https://app.costkey.dev',
-            label: 'Dashboard',
+            to: '/self-hosting',
+            label: 'Self-host',
             position: 'right',
           },
         ],
@@ -82,9 +87,10 @@ const config = {
           {
             title: 'Docs',
             items: [
-              { label: 'Getting Started', to: '/' },
+              { label: 'Getting started', to: '/' },
               { label: 'Python SDK', to: '/python-sdk' },
               { label: 'TypeScript SDK', to: '/typescript-sdk' },
+              { label: 'Recipes & diagnostics', to: '/recipes' },
             ],
           },
           {
@@ -99,8 +105,8 @@ const config = {
         copyright: `Copyright ${new Date().getFullYear()} CostKey. MIT License.`,
       },
       prism: {
-        theme: require('prism-react-renderer').themes.vsDark,
-        darkTheme: require('prism-react-renderer').themes.vsDark,
+        theme: inkCodeTheme,
+        darkTheme: inkCodeTheme,
         additionalLanguages: ['bash', 'json', 'yaml', 'docker'],
       },
     }),

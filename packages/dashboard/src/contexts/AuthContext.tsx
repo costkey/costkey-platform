@@ -1,50 +1,26 @@
-import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from "react";
+import { setDisplayTimeZone } from "../components/consoleFormatters";
+import { useState, useEffect, useCallback, type ReactNode } from "react";
 import { analytics } from "../analytics";
 import { UNAUTHENTICATED_EVENT } from "../api";
+import { getWorkspaceSettings, type WorkspaceSettings } from "../settingsApi";
+import { AuthContext } from "./auth-state";
+import type { Org, Project, User } from "./auth-state";
 
-interface User {
-  id: string;
-  email: string;
-  name: string;
-  orgId: string;
-  role: string;
+function pseudonymousKey(prefix: string, value: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `${prefix}_${(hash >>> 0).toString(16).padStart(8, "0")}`;
 }
-
-interface Org {
-  id: string;
-  name: string;
-  slug: string;
-}
-
-interface Project {
-  id: string;
-  name: string;
-  authKey: string;
-  createdAt: string;
-}
-
-interface AuthState {
-  user: User | null;
-  org: Org | null;
-  projects: Project[];
-  members: Array<{ id: string; email: string; name: string; role: string }>;
-  loading: boolean;
-  error: string | null;
-  login: (email: string, password: string) => Promise<boolean>;
-  signup: (email: string, password: string, name: string, orgName: string, inviteToken?: string) => Promise<{ dsn: string; projectId: string; joinedViaInvite?: boolean } | null>;
-  logout: () => Promise<void>;
-  refresh: () => Promise<void>;
-  currentProjectId: string | null;
-  setCurrentProjectId: (id: string) => void;
-}
-
-const AuthContext = createContext<AuthState | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [org, setOrg] = useState<Org | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [members, setMembers] = useState<Array<{ id: string; email: string; name: string; role: string }>>([]);
+  const [workspaceSettings, setWorkspaceSettings] = useState<WorkspaceSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
@@ -57,6 +33,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setOrg(null);
         setProjects([]);
         setMembers([]);
+        setWorkspaceSettings(null);
         return;
       }
       const data = await res.json();
@@ -65,23 +42,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setOrg(null);
         setProjects([]);
         setMembers([]);
+        setWorkspaceSettings(null);
         return;
       }
       setUser(data.user);
       setOrg(data.org);
       setProjects(data.projects ?? []);
       setMembers(data.members ?? []);
-      if (!currentProjectId && data.projects?.length > 0) {
-        setCurrentProjectId(data.projects[0].id);
+      const settings = await getWorkspaceSettings().catch(() => null);
+      setDisplayTimeZone(settings?.settings?.timezone ?? data.org?.timezone ?? "UTC");
+      setWorkspaceSettings(settings?.settings ?? null);
+      if (data.projects?.length > 0) {
+        setCurrentProjectId((current) => current ?? data.projects[0].id);
       }
     } catch {
       setUser(null);
+      setWorkspaceSettings(null);
     } finally {
       setLoading(false);
     }
-  }, [currentProjectId]);
+  }, []);
 
-  useEffect(() => { refresh(); }, []);
+  useEffect(() => { void refresh(); }, [refresh]);
 
   useEffect(() => {
     const clearExpiredSession = () => {
@@ -89,6 +71,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setOrg(null);
       setProjects([]);
       setMembers([]);
+      setWorkspaceSettings(null);
       setCurrentProjectId(null);
       setLoading(false);
       analytics.reset();
@@ -100,12 +83,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!user) return;
-    analytics.identify(user.id, {
-      email: user.email,
-      name: user.name,
-      role: user.role,
-    });
-    if (org) analytics.group("organization", org.id, { name: org.name, slug: org.slug });
+    analytics.identify(pseudonymousKey("user", user.analyticsId ?? user.id), { role: user.role });
+    if (org) analytics.group("organization", pseudonymousKey("org", org.analyticsId ?? org.id));
   }, [user, org]);
 
   const login = async (email: string, password: string): Promise<boolean> => {
@@ -130,8 +109,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setOrg(data.org);
         setProjects(data.projects ?? []);
         setMembers(data.members ?? []);
+        const settings = await getWorkspaceSettings().catch(() => null);
+        setWorkspaceSettings(settings?.settings ?? null);
         if (data.projects?.length > 0) {
-          setCurrentProjectId(data.projects[0].id);
+        setCurrentProjectId((current) => current ?? data.projects[0].id);
         }
       }
       analytics.capture("user_logged_in");
@@ -178,22 +159,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setOrg(null);
     setProjects([]);
     setCurrentProjectId(null);
+    setWorkspaceSettings(null);
     analytics.reset();
   };
 
   return (
     <AuthContext.Provider value={{
-      user, org, projects, members, loading, error,
+      user, org, projects, members, workspaceSettings, loading, error,
       login, signup, logout, refresh,
       currentProjectId, setCurrentProjectId,
     }}>
       {children}
     </AuthContext.Provider>
   );
-}
-
-export function useAuth() {
-  const ctx = useContext(AuthContext);
-  if (!ctx) throw new Error("useAuth must be used within AuthProvider");
-  return ctx;
 }

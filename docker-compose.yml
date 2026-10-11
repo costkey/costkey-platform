@@ -1,30 +1,48 @@
-version: "3.8"
-
+# Self-hosted CostKey: Postgres, plus the server and console on one port.
+#
+#   curl -fsSL https://costkey.dev/install.sh | sh
+#
+# or by hand, next to a .env made from .env.example:
+#
+#   docker compose up -d
+#   open http://localhost:4100
+#
+# Build the image from source instead with:
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 services:
-  server:
-    build:
-      context: .
-      dockerfile: Dockerfile.server
-    ports:
-      - "4100:4100"
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
     environment:
-      - NODE_ENV=production
-      - PORT=4100
-      - COSTKEY_JWT_SECRET=${COSTKEY_JWT_SECRET:-change-this-in-production}
-      - COSTKEY_DATA_DIR=/data
+      POSTGRES_USER: costkey
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-costkey}
+      POSTGRES_DB: costkey
     volumes:
-      - costkey-data:/data
-    restart: unless-stopped
+      - costkey-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U costkey -d costkey"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
 
-  dashboard:
-    build:
-      context: .
-      dockerfile: Dockerfile.dashboard
-    ports:
-      - "80:80"
-    depends_on:
-      - server
+  costkey:
+    image: ghcr.io/costkey/costkey:${COSTKEY_VERSION:-latest}
     restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${COSTKEY_PORT:-4100}:4100"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      NODE_ENV: production
+      PORT: "4100"
+      DATABASE_URL: postgresql://costkey:${POSTGRES_PASSWORD:-costkey}@postgres:5432/costkey
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:4100}
+      COSTKEY_JWT_SECRET: ${COSTKEY_JWT_SECRET:?Set COSTKEY_JWT_SECRET in .env (openssl rand -hex 32)}
+      COSTKEY_NOTIFICATION_ENCRYPTION_KEY: ${COSTKEY_NOTIFICATION_ENCRYPTION_KEY:?Set COSTKEY_NOTIFICATION_ENCRYPTION_KEY in .env (openssl rand -hex 32)}
 
 volumes:
-  costkey-data:
+  costkey-postgres:

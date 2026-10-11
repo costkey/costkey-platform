@@ -39,7 +39,7 @@ function arg(name: string): string | undefined {
 }
 
 function getHost(): string {
-  return arg("--host") ?? process.env["COSTKEY_HOST"] ?? "https://app.costkey.dev";
+  return arg("--host") ?? process.env["COSTKEY_HOST"] ?? "http://localhost:4100";
 }
 
 function loadToken(): string | null {
@@ -317,8 +317,8 @@ function ensureEnv(dsn: string | undefined): void {
 function writeGuide(detection: Detection, dsn: string | undefined): void {
   mkdirSync(".costkey", { recursive: true });
   const snippet = detection.language === "py"
-    ? `import costkey\ncostkey.init(dsn="${dsn ?? "https://ck_key@app.costkey.dev/project_id"}")`
-    : `import { CostKey } from "costkey"\nCostKey.init({ dsn: process.env.COSTKEY_DSN ?? "${dsn ?? "https://ck_key@app.costkey.dev/project_id"}" })`;
+    ? `import costkey\ncostkey.init(dsn="${dsn ?? "http://ck_key@localhost:4100/project_id"}")`
+    : `import { CostKey } from "costkey"\nCostKey.init({ dsn: process.env.COSTKEY_DSN ?? "${dsn ?? "http://ck_key@localhost:4100/project_id"}" })`;
   const warning = detection.needsSourcemaps
     ? "\n\nIMPORTANT: This project appears to be bundled/minified. Configure sourcemaps so production stack traces resolve to original source: https://costkey.dev/docs/sourcemaps\n"
     : "";
@@ -340,10 +340,10 @@ function printSnippet(detection: Detection, dsn: string | undefined): void {
   console.log("\nAdd this before your first AI call:\n");
   if (detection.language === "py") {
     console.log("  import costkey");
-    console.log(`  costkey.init(dsn="${dsn ?? "https://ck_key@app.costkey.dev/project_id"}")`);
+    console.log(`  costkey.init(dsn="${dsn ?? "http://ck_key@localhost:4100/project_id"}")`);
   } else {
     console.log('  import { CostKey } from "costkey"');
-    console.log(`  CostKey.init({ dsn: process.env.COSTKEY_DSN ?? "${dsn ?? "https://ck_key@app.costkey.dev/project_id"}" })`);
+    console.log(`  CostKey.init({ dsn: process.env.COSTKEY_DSN ?? "${dsn ?? "http://ck_key@localhost:4100/project_id"}" })`);
   }
   if (detection.needsSourcemaps) {
     console.log("\n\x1b[33mWarning: sourcemaps recommended\x1b[0m");
@@ -473,12 +473,15 @@ if (command === "setup") {
   console.log(`costkey
 
 Usage:
-  costkey setup [--name <project-name>] [--dsn <dsn>]
+  costkey setup [--host <your CostKey URL>] [--name <project-name>] [--dsn <dsn>]
+
+The host defaults to http://localhost:4100, a local self-hosted install.
+Set --host or COSTKEY_HOST for any other address.
 
 Examples:
   npx costkey setup
-  npx costkey setup --name my-app
-  npx costkey setup --dsn https://ck_key@app.costkey.dev/project_id
-  COSTKEY_DSN=https://ck_key@app.costkey.dev/project_id npx costkey setup
+  npx costkey setup --host https://costkey.your-company.com --name my-app
+  npx costkey setup --dsn http://ck_key@localhost:4100/project_id
+  COSTKEY_DSN=http://ck_key@localhost:4100/project_id npx costkey setup
 `);
 }

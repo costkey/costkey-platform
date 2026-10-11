@@ -1,8 +1,11 @@
-/** Format duration: >1s shows seconds, otherwise ms with commas */
+/** Format duration in seconds ("3.7 s") per the prototype; minutes only past an hour-scale */
+/** Durations of zero mean "not recorded" (real calls always take time), so they read as a dash. */
 export function formatDuration(ms: number): string {
-  if (ms >= 60_000) return `${(ms / 60_000).toFixed(1)}m`;
-  if (ms >= 1000) return `${(ms / 1000).toFixed(1)}s`;
-  return `${Math.round(ms).toLocaleString()}ms`;
+  if (!Number.isFinite(ms) || ms <= 0) return "—";
+  if (ms >= 60_000) return `${(ms / 60_000).toFixed(1)} min`;
+  if (ms < 1) return "<1 ms";
+  if (ms < 1000) return `${Math.round(ms)} ms`;
+  return `${(ms / 1000).toFixed(1)} s`;
 }
 
 /** Format token counts with commas and k/M suffixes */
@@ -12,14 +15,17 @@ export function formatTokens(tokens: number): string {
   return tokens.toLocaleString();
 }
 
-/** Format cost — show enough precision to be meaningful */
+/**
+ * Format cost with enough precision to be meaningful and consistent:
+ * amounts under $1 always carry four decimals ("$0.0158") so a column of
+ * per-run costs lines up; larger amounts use cents ("$248.60", "$12,400.00").
+ */
 export function formatCost(cost: number | null | undefined): string {
   if (cost == null || !Number.isFinite(cost)) return "Unpriced";
   if (cost > 0 && cost < 0.0001) return "<$0.0001";
-  if (cost >= 1000) return `$${(cost / 1000).toFixed(1)}k`;
-  if (cost >= 1) return `$${cost.toFixed(2)}`;
-  if (cost >= 0.01) return `$${cost.toFixed(2)}`;
-  return `$${cost.toFixed(4)}`;
+  if (cost === 0) return "$0.00";
+  if (cost < 1) return `$${cost.toFixed(4)}`;
+  return `$${cost.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 /** Strip date suffixes from model names */
@@ -61,13 +67,6 @@ interface FrameLike {
  * - 2 frames → use outermost
  * - 3+ frames → use second-to-last (skip generic entry point)
  */
-const WRAPPER_FN_NAMES = new Set(["retry", "withretry", "withbackoff", "callwithretry", "withretries", "ratelimit", "ratelimitcheck", "withratelimit", "withcache", "cached", "memoized", "wrapasync", "wrapfn", "decorator"]);
-
-function isWrapperFn(f: FrameLike): boolean {
-  const fn = (f.functionName ?? "").split("\n")[0].trim().toLowerCase();
-  return WRAPPER_FN_NAMES.has(fn);
-}
-
 export function findBusinessFrame(frames: FrameLike[]): FrameLike | null {
   const infraPatterns = ["node_modules/", "site-packages/", ".next/", "dist/", "node:", "internal/"];
   const isInfra = (f: { fileName?: string | null }) =>

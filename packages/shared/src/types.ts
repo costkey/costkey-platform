@@ -32,6 +32,8 @@ export interface NormalizedUsage {
   costUsd?: number | null;
   /** Image tokens included in outputTokens; absent means the breakdown is unknown. */
   imageOutputTokens?: number | null;
+  /** Non-token billing units: characters, audioSeconds, searchQueries, credits... */
+  nativeUnits?: Record<string, number> | null;
 }
 
 /** Timing data for streaming responses */
@@ -130,6 +132,8 @@ export interface CostKeyEvent {
   requestBody: unknown | null;
   /** Response body (completion) — captured if captureBody is enabled */
   responseBody: unknown | null;
+  /** Raw call telemetry (SDK 0.7+). When present the server derives the normalized fields from it. */
+  telemetry?: CallTelemetry | null;
 }
 
 /** Provider extractor interface — one per AI provider */
@@ -144,6 +148,114 @@ export interface ProviderExtractor {
   extractModel(requestBody: unknown, responseBody: unknown): string | null;
   /** Optionally modify request body before sending (e.g., inject stream_options) */
   injectStreamOptions?(requestBody: unknown): unknown;
+}
+
+// ── Raw telemetry contract v1 (see packages/shared/RAW_TELEMETRY.md) ──
+
+/** A string replaced by its length in Unicode code points. */
+export interface SkeletonString {
+  $s: number;
+}
+
+/** A subtree cut at depth 12 or by the 64 KB size cap. */
+export interface SkeletonTruncated {
+  $trunc: true;
+}
+
+/** The count of array items dropped after the first 8 (arrays over 32 items). */
+export interface SkeletonMore {
+  $more: number;
+}
+
+/** A binary body (audio, images, octet-stream), by size. */
+export interface SkeletonBytes {
+  $bytes: number;
+}
+
+/** One part of a multipart form body. */
+export interface SkeletonMultipartPart {
+  name: string;
+  /** File parts: the filename as a skeleton string. */
+  filename?: SkeletonString | string;
+  contentType?: string;
+  /** File parts: the size in bytes. */
+  bytes?: number;
+  /** Text parts: the value, following the string rule with `name` as its key. */
+  value?: SkeletonString | string;
+}
+
+/** A multipart form body. */
+export interface SkeletonMultipart {
+  $multipart: SkeletonMultipartPart[];
+}
+
+export type SkeletonMarker = SkeletonString | SkeletonTruncated | SkeletonMore | SkeletonBytes | SkeletonMultipart;
+
+/**
+ * A body with its content removed: object keys kept, numbers, booleans and
+ * null verbatim, strings verbatim only for allowlisted keys.
+ */
+export type SkeletonValue =
+  | null
+  | boolean
+  | number
+  | string
+  | SkeletonMarker
+  | SkeletonValue[]
+  | { [key: string]: SkeletonValue };
+
+export type TelemetryStreamFormat = "sse" | "ndjson" | "json-array" | "aws-eventstream";
+
+export interface TelemetryRequest {
+  method: string;
+  /** Secrets stripped from the query; the rest of the query is kept. */
+  url: string;
+  /** Allowlisted request headers, lowercased keys. */
+  headers?: Record<string, string>;
+  body: SkeletonValue;
+  /** Size of the request body as sent. */
+  bytes?: number | null;
+}
+
+export interface TelemetryResponse {
+  status: number | null;
+  /** Every response header except the credential denylist, lowercased keys. */
+  headers?: Record<string, string>;
+  /** Null when the response was streamed. */
+  body: SkeletonValue;
+  bytes?: number | null;
+}
+
+export interface TelemetryStream {
+  format: TelemetryStreamFormat;
+  /** Every record up to 200; over 200, the first 20 and the last 50. */
+  chunks: SkeletonValue[];
+  /** The real number of records. */
+  chunkCount: number;
+  /** ms from request start to the first chunk. */
+  firstChunkMs: number | null;
+  /** ms from request start to the last chunk. */
+  lastChunkMs: number | null;
+}
+
+/** A transport failure: never the message. */
+export interface TelemetryError {
+  /** The raw exception class or JS error name, such as AbortError or CancelledError. */
+  name: string;
+  code?: string | null;
+}
+
+/** Everything an SDK observed about one provider call; the server derives the rest. */
+export interface CallTelemetry {
+  v: 1;
+  /** Set for calls not observed over HTTP, for example "claude-agent-sdk". */
+  source?: string | null;
+  request: TelemetryRequest | null;
+  response: TelemetryResponse | null;
+  stream: TelemetryStream | null;
+  error: TelemetryError | null;
+  startedAt: string;
+  durationMs: number | null;
 }
 
 /** Hook called before an event is sent — return null to drop the event */

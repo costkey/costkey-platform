@@ -1,0 +1,10 @@
+#cloud-config
+# CostKey on any Linux VPS (DigitalOcean, Hetzner, Linode, Vultr, EC2...).
+# Paste this as the server's user data. When it boots, open
+# http://<server-ip>:4100 and sign up. Logs: /var/log/cloud-init-output.log
+runcmd:
+  - curl -fsSL https://get.docker.com | sh
+  - >-
+    sh -c 'IP=$(hostname -I | cut -d" " -f1);
+    COSTKEY_DIR=/opt/costkey COSTKEY_PUBLIC_URL="http://${IP}:4100"
+    sh -c "$(curl -fsSL https://costkey.dev/install.sh)"'

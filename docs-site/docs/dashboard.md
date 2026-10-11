@@ -1,113 +1,91 @@
 ---
 sidebar_position: 5
 title: Dashboard
-description: What each tab in the CostKey dashboard shows.
+description: What each screen in the CostKey dashboard shows.
 ---
 
 # Dashboard
 
-The CostKey dashboard is a React SPA that gives you full visibility into your AI API usage. It connects to the CostKey server API and displays cost, usage, and performance data.
+The dashboard shows what your AI calls cost, where the spend comes from and where it is heading. Open it at your CostKey address, `http://localhost:4100` by default. See [Self-hosting](./self-hosting).
 
-Access it at [app.costkey.dev](https://app.costkey.dev).
+Runs, Costs and Experiments have a filter bar with a date range (month to date by default) and an environment. It also shows the workspace time zone and reporting currency, and every timestamp uses that time zone. The Overview has its period and environment in the page header.
 
-## Executive Summary
+A call without a price is never counted as $0. It is shown as unpriced, and totals that leave it out say so.
 
-The Executive Summary is a plain-English overview of your AI spend, designed for stakeholders who don't need to dig into individual events. It includes:
+## Overview
 
-- **Total spend** for the selected period with trend vs. the previous period
-- **Top cost drivers** — which models and call sites are responsible for the most spend
-- **Anomalies** — any functions whose cost spiked unexpectedly
-- **Cost per deploy** — if you set the `release` parameter in your SDK init, the summary shows how costs changed across deployments
+The Overview answers "are we on track this month?"
 
-This view is useful for budget meetings, executive updates, and quick health checks.
+- **Month to date**: priced spend so far, with the change against last month
+- **Monthly budget**: the limit, and whether it only alerts or stops new calls
+- **Estimated month-end**: where spend lands at the current daily average
+- **Cumulative spend**: actual spend, the estimate for the rest of the month and the budget line. Switch to daily bars if you prefer.
+- **Budget check**: what is left in this month's budget
+- **Recent runs** and the biggest costs by feature, model or customer
 
-## Cost per Deploy
+When something changes, a "Needs a look" note appears at the top. See [Needs a look](#needs-a-look).
 
-When you pass a `release` string to `costkey.init()`, every event is tagged with that release. The dashboard groups costs by release so you can see:
+## Runs
 
-- **Cost delta** between the current and previous deploy
-- **Which functions** changed in cost after a deploy
-- **Regression detection** — flags deploys that caused a significant cost increase
+A run is one request your app made, such as `POST /api/search` or one nightly job. Every supported provider call inside it is grouped with it. Use `start_trace()` / `startTrace()` or the framework middleware to set run boundaries. Calls outside a boundary still appear on their own.
 
-This answers: "Did that last deploy make things cheaper or more expensive?"
+- **Runs** lists each run with its start time, duration, call count, status and cost
+- **Calls** lists individual provider calls
+- Search, filter, save a view or export the list
+- Tick two runs to compare them side by side
 
-## Overview tab
+Open a run to see its cost, duration, calls and status, plus a timeline of its calls. Select a call to see its cost, tokens, model, the source line that made it, its labels and, if text capture is on for the project, the prompt and response.
 
-The Overview tab shows aggregate metrics over a selected time range:
+## Quality
 
-- **Total cost** — sum of all AI API costs in the period
-- **Total calls** — number of AI API calls
-- **Total tokens** — input + output tokens
-- **Average latency** — mean request duration
-- **Cost over time** — area chart showing cost trend
-- **Cost by provider** — breakdown by AI provider
-- **Cost by model** — breakdown by model
-- **Top call sites** — which functions in your code spend the most
+Quality shows how runs went. The **Checks** view lists your quality checks with each one's pass rate, average score and runs scored. Rule checks such as Run succeeded need no prompt text; LLM judges score runs against a rubric when the project captures text. Each run's results are on its **Checks** tab. See [Quality checks](./quality-checks).
 
-Use the time range selector to view the last hour, day, week, or month.
+## Costs
 
-## Call Sites tab
+Costs shows where the spend went. Split it by feature, function, model or customer to see each one's spend, share, runs and cost per run. Open any row for its daily cost and how cost is spread across its runs.
 
-Call Sites groups events by the business logic function that triggered them. CostKey's stack trace analysis finds the first frame from a different file than the direct API caller, skipping wrapper/utility functions automatically.
+**Feature label rules** label calls by function, provider or model without changing your code. Labels set in your code always take priority.
 
-For each call site you see:
+## Experiments
 
-- **Function name** and file location
-- **Total cost** from that call site
-- **Call count**
-- **Average cost per call**
-- **Average latency**
+Jobs, evals and experiments run in batches. Each batch is recorded with its own cost, item count, settings and status. You can:
 
-This answers the question: "Which part of my code costs the most?"
+- compare two batches
+- see cost by phase, such as generation and scoring
+- set a budget per batch
 
-## Traces tab
+Costs that arrive after a batch finishes are added when they land.
 
-Traces group related AI calls that happen during a single operation. When you use `start_trace()` (or the Express/FastAPI middleware), all AI calls within that scope are grouped under one trace.
+## Forecasts
 
-For each trace:
+Forecasts show where this month is heading at the current pace, compared with your budget. **What would more usage cost?** estimates the cost of a given number of runs or calls from your recent average. Save a scenario to come back to it.
 
-- **Trace name** (e.g., `POST /api/search`)
-- **Total cost** of all calls in the trace
-- **Call count** within the trace
-- **Duration** from first to last call
-- **Timeline** showing the sequence of AI calls
+## Budgets
 
-CostKey also auto-generates trace IDs from stack traces when you don't use `start_trace()` explicitly. Calls made from the same request handler within a 5-second window are grouped automatically.
+Budgets alert you before you overspend. They are **alerts only** by default: you hear at 80% and 100% of the limit, and nothing is blocked.
 
-## Events tab
+Stopping calls is opt-in. A **stop new calls** budget refuses new matching calls once the limit is reached. Calls already running still finish, and their cost still counts.
 
-Events is the raw event log — every individual AI API call. The table shows:
+A budget can cover a whole project or one feature, function, model or customer. Its limit can reset every day or every month, or apply to each run or each batch on its own. Each budget shows what is used, what is reserved for calls in progress and its recent decisions.
 
-- **Timestamp**
-- **Provider** and **model**
-- **Cost** (in USD)
-- **Input/output tokens**
-- **Latency** (ms)
-- **Streaming** (yes/no)
-- **Call site** function name
+## Needs a look
 
-### Event detail panel
+CostKey flags changes worth checking:
 
-Click any event to open the slide-over detail panel showing:
+- cost per run went up for a feature
+- one run cost far more than similar runs
+- fewer calls have a price, or fewer calls are labelled
+- a budget is close to, or has reached, its limit
 
-- **Full request body** (the prompt sent to the AI provider)
-- **Full response body** (the completion received)
-- **Token breakdown** (input, output, reasoning, cache read, cache creation)
-- **Streaming metrics** (TTFT, tokens/sec, chunk count)
-- **Full stack trace** with the business logic frame highlighted
-- **Context** metadata (task, team, custom tags)
+Each note shows the comparison, the amounts and the runs behind it. It doesn't guess at a cause. Mark it as reviewed once you've checked it. Reviewing doesn't stop any work.
 
-Request and response bodies have credentials automatically scrubbed. API keys, bearer tokens, JWTs, and other secrets matching known patterns are replaced with `[REDACTED]`.
+## Settings
 
-## Filtering
+- **Projects**: each project has its own DSN and its own data. Rotate a DSN here.
+- **Team**: invite people as Viewers, Developers or Admins
+- **Notifications**: weekly summaries, flagged changes, budget alerts and refused calls, by email or webhook
+- **Privacy & data**: time zone, reporting currency, text capture, redaction and retention
+- **Prices & credits**: models without a price, custom rates for negotiated or self-hosted models, and provider credits
+- **Billing**: your plan and invoices
 
-All tabs support filtering by:
-
-- **Time range** — last hour, day, week, month, or custom
-- **Provider** — filter to a specific AI provider
-- **Model** — filter to a specific model
-- **Context** — filter by custom context values (task, team, etc.)
-
-## Projects
-
-If you have multiple projects (e.g., staging vs. production, or separate services), each project has its own DSN and isolated data. Switch between projects in the sidebar.
+When body capture is on, known secrets such as API keys, bearer tokens and JWTs are replaced with `[REDACTED]` before they leave your app.

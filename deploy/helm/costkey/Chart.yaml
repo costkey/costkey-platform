@@ -1,0 +1,10 @@
+apiVersion: v2
+name: costkey
+description: Self-hosted CostKey. Cost, latency, failures and quality for AI agents.
+type: application
+version: 0.6.2
+appVersion: "0.6.2"
+home: https://costkey.dev
+sources:
+  - https://github.com/costkey/costkey
+keywords: [ai, llm, observability, cost]

@@ -1,5 +1,9 @@
-import { useState, useEffect } from "react";
-import { useParams, useNavigate, Link } from "react-router-dom";
+import { useEffect, useMemo, useState } from "react";
+import { AlertCircle, ArrowRight, GitBranch, LoaderCircle, Lock, RefreshCw, UserRound } from "lucide-react";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { useAuth } from "../contexts/useAuth";
+import { BrandLockup } from "../components/BrandMark";
+import { AuthBrandPanel, AuthFooter, PrototypeAuthFrame } from "./Login";
 
 type InviteErrorCode =
   | "invite_not_found"
@@ -10,159 +14,283 @@ type InviteErrorCode =
   | "invite_race"
   | "would_orphan_org";
 
+interface InvitePreview {
+  email: string;
+  role: "owner" | "admin" | "developer" | "viewer" | string;
+  expiresAt: string;
+  workspace: { id: string; name: string };
+  inviter: { name: string };
+  projects: Array<{ id: string; name: string }>;
+}
+
+const demoPreview: InvitePreview = {
+  email: "alex@example.com",
+  role: "viewer",
+  expiresAt: "2026-09-27T23:59:59.000Z",
+  workspace: { id: "northstar", name: "Northstar" },
+  inviter: { name: "Jordan Lee" },
+  projects: [{ id: "atlas", name: "Atlas" }],
+};
+
+function formatExpiry(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  // Invitation expiry is a calendar date from the server, not a moment to
+  // reinterpret in the viewer's timezone. UTC keeps 27 Sep from becoming 28
+  // Sep for users east of Greenwich.
+  return new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" }).format(date);
+}
+
+function roleLabel(role: string): string {
+  return role.charAt(0).toUpperCase() + role.slice(1).toLowerCase();
+}
+
+function DetailRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return <div className="auth-detail-row"><span>{label}</span><strong>{children}</strong></div>;
+}
+
+function PrototypeInvite({ state, onSwitch }: { state: string | null; onSwitch: () => void }) {
+  const fatal = state === "expired" || state === "removed" || state === "offline";
+  if (fatal) {
+    const title = state === "expired" ? "This invitation has expired" : state === "removed" ? "Workspace access was removed" : "Couldn’t load this invitation";
+    const copy = state === "expired"
+      ? "Ask the person who invited you to send a new one."
+      : state === "removed"
+        ? "This invitation no longer works. Go back to a workspace you can open."
+        : "Check your connection and try again.";
+    return <PrototypeAuthFrame><div className="ck-proto-auth-empty"><div className="ck-proto-empty-icon"><Lock size={18} aria-hidden="true" /></div><h2>{title}</h2><p>{copy}</p><button className="ck-button ck-button-primary" type="button" onClick={onSwitch}>{state === "offline" ? "Retry" : state === "expired" ? "Request a new invitation" : "Back to sign in"}</button></div></PrototypeAuthFrame>;
+  }
+
+  const mismatch = state === "account-mismatch";
+  const accepted = state === "accepted";
+  return (
+    <PrototypeAuthFrame>
+      <div className="ck-proto-invite-main">
+        <div className="ck-proto-auth-eyebrow">Workspace invitation</div>
+        <h1>{accepted ? "You’re already a member" : "You’re invited to Northstar"}</h1>
+        <p>Jordan Lee invited you to explore Atlas’s spending.</p>
+        <section className="ck-proto-invite-card">
+          <div className="ck-proto-detail-row"><span>Workspace</span><strong>Northstar</strong></div>
+          <div className="ck-proto-detail-row"><span>Project access</span><strong>Atlas</strong></div>
+          <div className="ck-proto-detail-row"><span>Intended role</span><strong>Viewer</strong></div>
+          <p className="ck-proto-invite-copy">You’ll see costs and usage. Prompts and code locations are hidden for Viewers.</p>
+        </section>
+        <div className="ck-proto-invite-notice"><b>Signed in as {mismatch ? "another.account@example.com" : "alex@example.com"}</b><br />{mismatch ? "This differs from the invited account. Switch before accepting." : "Invitation for alex@example.com · Expires 27 Sep 2026"}</div>
+        <div className="ck-proto-invite-actions">
+          <button className="ck-button ck-button-primary" type="button" onClick={onSwitch}>{accepted ? "Open workspace" : mismatch ? "Switch account" : "Accept invitation"}</button>
+          <button className="ck-button ck-button-secondary" type="button" onClick={onSwitch}>Switch account</button>
+        </div>
+        <p className="ck-proto-invite-caption">This link only works for the invited email address.</p>
+      </div>
+    </PrototypeAuthFrame>
+  );
+}
+
 export default function Invite() {
   const { token } = useParams<{ token: string }>();
+  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
-  const [status, setStatus] = useState<"loading" | "signup" | "accepted" | "error">("loading");
-  const [error, setError] = useState("");
+  const { user, loading: authLoading, logout } = useAuth();
+  const requestedState = searchParams.get("state");
+  const design = searchParams.get("design");
+  const forcedState = requestedState && ["account-mismatch", "expired", "accepted", "removed", "offline", "loading", "error"].includes(requestedState)
+    ? requestedState
+    : null;
+  const [status, setStatus] = useState<"loading" | "preview" | "accepting" | "accepted" | "error">(() => token ? "loading" : "error");
+  const [error, setError] = useState(() => token ? "" : "Invalid invitation link.");
   const [errorCode, setErrorCode] = useState<InviteErrorCode | null>(null);
+  const [preview, setPreview] = useState<InvitePreview | null>(null);
+  const [acceptChecked, setAcceptChecked] = useState(false);
+  const [previewLoadError, setPreviewLoadError] = useState(false);
+
+  const signedInEmail = user?.email?.trim().toLowerCase() ?? "";
+  const invitedEmail = preview?.email.trim().toLowerCase() ?? "";
+  const accountMismatch = forcedState === "account-mismatch" || Boolean(user && preview && signedInEmail !== invitedEmail);
+  const alreadyAccepted = forcedState === "accepted" || errorCode === "invite_already_accepted";
+
+  const forcedPreview = useMemo(() => {
+    if (!forcedState || ["expired", "removed", "offline", "loading", "error"].includes(forcedState)) return null;
+    return demoPreview;
+  }, [forcedState]);
 
   useEffect(() => {
-    if (!token) { setStatus("error"); setError("Invalid invite link"); return; }
-
-    // Try to accept the invite — succeeds if the user is already logged in as
-    // the invited email. If 401 (not logged in), fall through to signup.
-    fetch("/api/v1/team/accept-invite", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include",
-      body: JSON.stringify({ token }),
-    })
-      .then(async (res) => {
-        if (res.ok) {
-          setStatus("accepted");
-          // Hard reload so AuthContext picks up the new orgId from the cookie/JWT
-          setTimeout(() => { window.location.href = "/"; }, 1500);
-          return;
-        }
-
-        const data = await res.json().catch(() => ({}));
-        const code = (data.code ?? null) as InviteErrorCode | null;
-
-        // Not authenticated → route to signup with the token pre-filled
-        if (res.status === 401) {
-          setStatus("signup");
-          return;
-        }
-
-        // Invite not found AND user is logged in — either bad link or already
-        // consumed. Show error with a signup fallback.
-        if (code === "invite_not_found" || res.status === 404) {
-          setStatus("error");
-          setError(data.error ?? "This invite is invalid");
-          setErrorCode(code);
-          return;
-        }
-
+    if (forcedState) {
+      if (forcedState === "loading") { setStatus("loading"); return; }
+      if (forcedState === "expired" || forcedState === "removed" || forcedState === "offline" || forcedState === "error") {
         setStatus("error");
-        setError(data.error ?? "Failed to accept invite");
-        setErrorCode(code);
+        setPreview(null);
+        setErrorCode(forcedState === "expired" ? "invite_expired" : forcedState === "removed" ? "invite_revoked" : null);
+        setError(forcedState === "expired" ? "This invitation has expired." : forcedState === "removed" ? "Workspace access was removed." : forcedState === "offline" ? "Couldn’t load the invitation. Check your connection and try again." : "This invitation could not be loaded.");
+        return;
+      }
+      setPreview(forcedPreview);
+      setStatus("preview");
+      setError("");
+      return;
+    }
+    if (!token) return;
+    let alive = true;
+    setStatus("loading");
+    setPreviewLoadError(false);
+    void fetch(`/api/v1/team/invite-preview/${encodeURIComponent(token)}`, { credentials: "include" })
+      .then(async (response) => {
+        const data = await response.json().catch(() => ({}));
+        if (!alive) return;
+        if (response.ok && data.invitation) {
+          setPreview(data.invitation as InvitePreview);
+          setError("");
+          setErrorCode(null);
+          setStatus("preview");
+          return;
+        }
+        setStatus("error");
+        setError(data.error ?? "This invitation is unavailable.");
+        setErrorCode((data.code ?? null) as InviteErrorCode | null);
       })
       .catch(() => {
-        // Network error — let the user try signup as a fallback
-        setStatus("signup");
+        if (!alive) return;
+        setStatus("error");
+        setPreviewLoadError(true);
+        setError("Couldn’t load the invitation. Check your connection and try again.");
       });
-  }, [token, navigate]);
+    return () => { alive = false; };
+  }, [forcedPreview, forcedState, token]);
 
-  const errorActions = () => {
-    switch (errorCode) {
-      case "invite_email_mismatch":
-        return (
-          <div className="flex flex-col gap-2 text-center">
-            <p className="text-xs text-text-muted">
-              You're signed in with a different email than the one the invite was sent to.
-            </p>
-            <Link to="/logout" className="text-sm text-accent">Sign out and try again</Link>
-          </div>
-        );
-      case "would_orphan_org":
-        return (
-          <p className="text-xs text-text-muted text-center">
-            Go to Settings → Team and transfer ownership to another member before joining a new org.
-          </p>
-        );
-      case "invite_expired":
-      case "invite_revoked":
-        return (
-          <p className="text-xs text-text-muted text-center">
-            Ask an admin of the inviting organization to send you a new invite.
-          </p>
-        );
-      case "invite_already_accepted":
-        return (
-          <Link to="/login" className="text-sm text-accent">Sign in</Link>
-        );
-      default:
-        return (
-          <Link to="/signup" className="text-sm text-accent">Create an account instead</Link>
-        );
+  async function acceptInvite(): Promise<void> {
+    if (!token || !preview || !user || !acceptChecked) return;
+    setStatus("accepting");
+    setError("");
+    setErrorCode(null);
+    try {
+      const response = await fetch("/api/v1/team/accept-invite", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ token }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (response.ok) {
+        setStatus("accepted");
+        window.setTimeout(() => { window.location.href = "/"; }, 1500);
+        return;
+      }
+      setStatus("error");
+      setError(data.error ?? "Invitation acceptance failed.");
+      setErrorCode((data.code ?? null) as InviteErrorCode | null);
+    } catch {
+      setStatus("preview");
+      setError("Couldn’t accept the invitation. Try again.");
     }
-  };
+  }
+
+  async function signOutWrongAccount(): Promise<void> {
+    try { await logout(); } finally {
+      navigate(`/login?invite=${encodeURIComponent(token ?? "")}`);
+    }
+  }
+
+  function retry(): void {
+    if (forcedState) { window.location.reload(); return; }
+    window.location.reload();
+  }
+
+  function errorActions() {
+    if (previewLoadError || forcedState === "offline") {
+      return <button type="button" className="ck-button ck-button-secondary" onClick={retry}><RefreshCw size={15} aria-hidden="true" /> Retry invite details</button>;
+    }
+    if (errorCode === "invite_email_mismatch" || accountMismatch) {
+      return <div className="auth-state-actions"><p>You’re signed in with a different account than the invitation.</p><button type="button" className="ck-button ck-button-secondary" onClick={() => void signOutWrongAccount()}>Switch account</button></div>;
+    }
+    if (errorCode === "would_orphan_org") {
+      return <Link className="ck-button ck-button-secondary" to="/settings?section=team#ownership-transfer">Open ownership transfer</Link>;
+    }
+    if (errorCode === "invite_already_accepted") {
+      return <Link className="ck-button ck-button-primary" to="/login">Sign in <ArrowRight size={15} aria-hidden="true" /></Link>;
+    }
+    if (errorCode === "invite_expired" || errorCode === "invite_revoked" || forcedState === "expired" || forcedState === "removed") {
+      return <div className="auth-state-actions"><p>Ask a workspace administrator to send you a new invitation.</p><Link className="ck-button ck-button-primary" to="/login">Back to sign in</Link></div>;
+    }
+    return <Link className="ck-button ck-button-primary" to="/signup">Create an account <ArrowRight size={15} aria-hidden="true" /></Link>;
+  }
+
+  const invite = preview ?? demoPreview;
+  const displaySignedInEmail = user?.email || (forcedState === "account-mismatch" ? "another.account@example.com" : forcedState ? invite.email : "not signed in");
+
+  if (design === "prototype") {
+    return <PrototypeInvite state={requestedState} onSwitch={() => navigate("/login?design=prototype")} />;
+  }
 
   return (
-    <div className="min-h-screen bg-surface flex flex-col items-center justify-center px-4 py-12">
-      <div className="w-full max-w-sm">
-        <div className="flex items-center justify-center gap-2.5 mb-8 mt-4">
-          <img src="/favicon.svg" alt="CostKey" className="w-8 h-8" />
-          <span className="font-mono text-lg font-semibold text-text-primary">CostKey</span>
+    <div className="auth-shell">
+      <AuthBrandPanel />
+      <main className="auth-panel">
+        <div className="auth-mobile-logo">
+          <Link to="/login" aria-label="CostKey home"><BrandLockup className="logo" markClassName="logo-mark" /></Link>
         </div>
 
-        <div className="bg-surface-raised border border-border rounded-sm p-6">
+        <div className="auth-panel-inner">
           {status === "loading" && (
-            <div className="flex flex-col items-center gap-3 py-4">
-              <div className="w-6 h-6 border-2 border-accent border-t-transparent rounded-full animate-spin" />
-              <p className="text-sm text-text-secondary">Accepting invite...</p>
-            </div>
-          )}
-
-          {status === "accepted" && (
-            <div className="flex flex-col items-center gap-3 py-4">
-              <div className="text-3xl">✅</div>
-              <h2 className="text-lg font-semibold text-text-primary">You're in!</h2>
-              <p className="text-sm text-text-secondary text-center">Invite accepted. Redirecting to dashboard...</p>
-            </div>
-          )}
-
-          {status === "signup" && (
-            <div className="flex flex-col gap-4">
-              <h2 className="text-lg font-semibold text-text-primary">You've been invited to CostKey</h2>
-              <p className="text-sm text-text-secondary">Create an account to join the team. Your invite will be automatically accepted.</p>
-              <a
-                href={`/auth/github?invite=${encodeURIComponent(token ?? "")}`}
-                className="w-full flex items-center justify-center gap-2 bg-surface-overlay hover:bg-surface-hover border border-border rounded-sm px-3 py-2.5 text-sm text-text-primary font-medium transition-colors"
-              >
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M12 0C5.374 0 0 5.373 0 12c0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23A11.509 11.509 0 0112 5.803c1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576C20.566 21.797 24 17.3 24 12c0-6.627-5.373-12-12-12z"/>
-                </svg>
-                Continue with GitHub
-              </a>
-              <div className="flex items-center gap-3">
-                <div className="flex-1 h-px bg-border" />
-                <span className="text-[10px] font-mono text-text-muted uppercase tracking-wider">or</span>
-                <div className="flex-1 h-px bg-border" />
-              </div>
-              <Link
-                to={`/signup?invite=${token}`}
-                className="w-full bg-accent hover:bg-accent-hover text-black text-center py-2.5 rounded-sm text-sm font-medium transition-colors"
-              >
-                Create Account with Email
-              </Link>
-              <p className="text-xs text-text-muted text-center">
-                Already have an account? <Link to={`/login?invite=${token}`} className="text-accent">Sign in</Link>
-              </p>
+            <div className="auth-state auth-state-loading" role="status" aria-live="polite" aria-busy="true">
+              <LoaderCircle size={17} className="auth-state-icon auth-spin" aria-hidden="true" />
+              <div><div className="auth-eyebrow">Workspace invitation</div><h1>Loading invitation</h1><p className="auth-lede">One moment.</p></div>
             </div>
           )}
 
           {status === "error" && (
-            <div className="flex flex-col items-center gap-3 py-4">
-              <div className="text-3xl">❌</div>
-              <h2 className="text-lg font-semibold text-text-primary">Invite unavailable</h2>
-              <p className="text-sm text-text-secondary text-center">{error}</p>
-              {errorActions()}
-            </div>
+            <section className="auth-state auth-state-error" role="alert" aria-live="polite">
+              <div className="auth-state-icon auth-state-icon-critical"><AlertCircle size={18} aria-hidden="true" /></div>
+              <div className="auth-eyebrow">Workspace invitation</div>
+              <h1>{forcedState === "expired" || errorCode === "invite_expired" ? "This invitation has expired" : forcedState === "removed" || errorCode === "invite_revoked" ? "Workspace access was removed" : "Couldn’t load this invitation"}</h1>
+              <p className="auth-lede">{error || "The invitation is no longer available."}</p>
+              <div className="auth-actions">{errorActions()}</div>
+            </section>
+          )}
+
+          {(status === "preview" || status === "accepting") && (
+            <section className="auth-invite-content" aria-busy={status === "accepting"}>
+              <div className="auth-eyebrow">Workspace invitation</div>
+              <h1>{alreadyAccepted ? "You’re already a member" : `You’re invited to ${invite.workspace.name}`}</h1>
+              <p className="auth-lede">{invite.inviter.name} invited you to see {invite.projects[0]?.name ?? invite.workspace.name}’s AI spending.</p>
+
+              <div className="auth-context-card">
+                <DetailRow label="Workspace">{invite.workspace.name}</DetailRow>
+                <DetailRow label="Project access">{invite.projects.length ? invite.projects.map((project) => project.name).join(", ") : "No project access assigned"}</DetailRow>
+                <DetailRow label="Intended role"><span className="auth-role-pill"><UserRound size={12} aria-hidden="true" />{roleLabel(invite.role)}</span></DetailRow>
+                <p className="auth-lede auth-context-card-copy">{invite.role === "admin" ? "You’ll be able to manage this workspace, its projects and budgets." : invite.role === "developer" ? "You’ll see costs, prompts and code locations for these projects." : "You’ll see costs and usage. Prompts and code locations are hidden for Viewers."}</p>
+              </div>
+
+              <div className="auth-context-note auth-signed-in-note">
+                <strong>{displaySignedInEmail === "not signed in" ? "You’re not signed in" : `Signed in as ${displaySignedInEmail}`}</strong><br />
+                Invitation for {invite.email} · Expires {formatExpiry(invite.expiresAt)}
+              </div>
+
+              {error && <div className="auth-error" role="alert">{error}</div>}
+
+              {authLoading ? (
+                <div className="auth-state auth-state-loading" role="status"><LoaderCircle size={15} className="auth-spin" aria-hidden="true" /> Checking the signed-in account…</div>
+              ) : alreadyAccepted ? (
+                <div className="auth-actions"><Link className="ck-button ck-button-primary auth-submit" to="/">Open workspace <ArrowRight size={15} aria-hidden="true" /></Link></div>
+              ) : accountMismatch ? (
+                <div className="auth-mismatch-box"><p>This invitation is for <strong>{invite.email}</strong>, but you are signed in as <strong>{user?.email}</strong>.</p><button type="button" className="ck-button ck-button-secondary" onClick={() => void signOutWrongAccount()}>Switch account</button></div>
+              ) : user ? (
+                <div className="auth-accept-block">
+                  <label className="auth-check"><input type="checkbox" checked={acceptChecked} onChange={(event) => setAcceptChecked(event.target.checked)} /><span>I understand this will add me to <strong>{invite.workspace.name}</strong> as a <strong>{roleLabel(invite.role)}</strong> with only the project scope listed above.</span></label>
+                  <button type="button" className="ck-button ck-button-primary auth-submit" onClick={() => void acceptInvite()} disabled={!acceptChecked || status === "accepting"}>{status === "accepting" ? <><LoaderCircle size={15} className="auth-spin" /> Accepting invitation…</> : <>Accept invitation <ArrowRight size={15} aria-hidden="true" /></>}</button>
+                </div>
+              ) : (
+                <div className="auth-actions">
+                  <a className="ck-button ck-button-secondary auth-provider" href={`/auth/github?invite=${encodeURIComponent(token ?? "")}`}><GitBranch size={16} aria-hidden="true" /> Continue with GitHub</a>
+                  <Link className="ck-button ck-button-primary" to={`/signup?invite=${encodeURIComponent(token ?? "")}`}>Create account <ArrowRight size={15} aria-hidden="true" /></Link>
+                  <p className="auth-switch-copy">Already have an account? <Link to={`/login?invite=${encodeURIComponent(token ?? "")}`}>Sign in</Link></p>
+                </div>
+              )}
+              <p className="auth-caption">This link only works for the invited email address.</p>
+            </section>
           )}
         </div>
-      </div>
+
+        <AuthFooter />
+      </main>
     </div>
   );
 }

@@ -1735,7 +1735,7 @@ describe("large request ingestion", () => {
     }
   });
 
-  it("uses a provider-reported cost when a router supplies one", async () => {
+  it("does not promote a DSN-supplied cost to provider-reported evidence", async () => {
     let insertParams: unknown[] | undefined;
     const client = {
       async query(sql: string, params?: unknown[]) {
@@ -1774,7 +1774,9 @@ describe("large request ingestion", () => {
     });
 
     assert.ok(insertParams);
-    assert.equal(insertParams[14], 0.0672);
+    assert.equal(insertParams[14], 0.068186);
+    assert.equal(insertParams[54], "estimated");
+    assert.equal(insertParams[55], "pricing_table");
     assert.equal(insertParams[34], 1_120);
   });
 

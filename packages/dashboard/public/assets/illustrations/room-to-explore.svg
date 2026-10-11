@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="library-art-3" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 320" width="480" height="320" role="img" aria-label="Room to explore"><title>Room to explore</title><desc>An open star atlas and a yellow pencil, ready for a new experiment. Quiet, inviting, and without a failure symbol.</desc><g stroke-linecap="round" stroke-linejoin="round">
+<path d="M66 230C63 128 139 76 236 94C340 72 410 143 416 230Z" fill="#DCE8EE"/>
+<ellipse cx="241" cy="275" rx="167" ry="15" fill="#DFE6E5"/>
+<path d="M102 154L237 170L357 143L379 267L241 292L84 272Z" fill="#344F70" stroke="#182B45" stroke-width="2.5"/>
+<path d="M105 142Q176 137 236 162L359 134L371 255L243 280Q172 257 92 261Z" fill="#FFFDF8" stroke="#182B45" stroke-width="2.5"/>
+<path d="M236 162L359 134L371 255L243 280Z" fill="#E9EFEF"/>
+<path d="M236 163L243 277" fill="none" stroke="#182B45" stroke-width="2" />
+<path d="M117 156Q174 153 221 173M108 246Q180 243 229 263M254 177L342 157M261 255L352 235" fill="none" stroke="#CBD5DA" stroke-width="2" />
+<path d="M130 217L157 180L183 220L208 194" fill="none" stroke="#6E93AE" stroke-width="2" stroke-dasharray="4 5"/>
+<circle cx="130" cy="217" r="4" fill="#344F70"/><circle cx="157" cy="180" r="4" fill="#344F70"/><path d="M183 212 Q184 219 191 220 Q184 221 183 228 Q182 221 175 220 Q182 219 183 212Z" fill="#F5CC68"/><circle cx="208" cy="194" r="3" fill="#344F70"/>
+<ellipse cx="302" cy="207" rx="30" ry="21" transform="rotate(-14 302 207)" fill="none" stroke="#6E93AE" stroke-width="1.5"/>
+<path d="M281 187L324 224M322 182L285 230" fill="none" stroke="#6E93AE" stroke-width="1.5" />
+<circle cx="302" cy="207" r="5" fill="#F5CC68" stroke="#182B45" stroke-width="1.5"/>
+<g transform="translate(366 210) rotate(19)"><path d="M-6 -77H6V32L0 47L-6 32Z" fill="#F5CC68" stroke="#182B45" stroke-width="2"/><path d="M-6 32H6L0 47Z" fill="#E5DFD0" stroke="#182B45" stroke-width="2"/><path d="M0 -68V29" fill="none" stroke="#885719" stroke-width="1" /><path d="M-2 42L0 47L2 42Z" fill="#182B45"/></g>
+<path d="M113 92 Q114 98 120 99 Q114 100 113 106 Q112 100 106 99 Q112 98 113 92Z" fill="#6E93AE"/><path d="M307 62 Q308 69 315 70 Q308 71 307 78 Q306 71 299 70 Q306 69 307 62Z" fill="#F5CC68"/><circle cx="207" cy="93" r="2" fill="#6E93AE"/>
+</g></svg>

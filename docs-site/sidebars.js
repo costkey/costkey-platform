@@ -4,10 +4,16 @@ const sidebars = {
     'index',
     'python-sdk',
     'typescript-sdk',
+    'agents',
+    'pricing',
+    'recipes',
     'providers',
     'dashboard',
+    'quality-checks',
 
     'sourcemaps',
+    'self-hosting',
+    'deploy',
     'privacy-security',
   ],
 };

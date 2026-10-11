@@ -1,4 +1,4 @@
-import type { CostKeyEvent, TransportPayload } from "./types.js";
+import type { CostKeyTelemetryEvent, TransportPayload } from "./types.js";
 import { SDK_VERSION } from "./version.js";
 
 export interface TransportOptions {
@@ -22,7 +22,7 @@ export interface TransportOptions {
  * Never throws into user code. Never blocks the event loop.
  */
 export class Transport {
-  private queue: CostKeyEvent[] = [];
+  private queue: CostKeyTelemetryEvent[] = [];
   private timer: ReturnType<typeof setInterval> | null = null;
   private readonly maxQueueSize = 500;
   private hasConfirmedConnection = false;
@@ -50,7 +50,7 @@ export class Transport {
   }
 
   /** Enqueue an event for sending. Never throws. */
-  enqueue(event: CostKeyEvent): void {
+  enqueue(event: CostKeyTelemetryEvent): void {
     if (this.queue.length >= this.maxQueueSize) {
       // Drop oldest to prevent OOM
       this.queue.shift();
@@ -87,7 +87,7 @@ export class Transport {
       const timeout = setTimeout(() => controller.abort(), 15_000);
 
       try {
-        const response = await fetch(this.options.endpoint, {
+        const response = await withoutOtelTracing(() => fetch(this.options.endpoint, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -96,7 +96,7 @@ export class Transport {
           },
           body: JSON.stringify(payload),
           signal: controller.signal,
-        });
+        }));
 
         if (response.status === 429) {
           // Rate limited — put events back and let the interval retry
@@ -110,7 +110,7 @@ export class Transport {
         if (response.status === 401 || response.status === 403) {
           // Auth failures always log — developer needs to know their DSN is wrong
           console.warn(
-            `[costkey] Authentication failed (${response.status}). Check your DSN at https://app.costkey.dev/settings`,
+            `[costkey] Authentication failed (${response.status}). Check the DSN under Settings, Projects in your CostKey console`,
           );
           return;
         }
@@ -137,5 +137,26 @@ export class Transport {
         console.warn("[costkey] Failed to send events:", err);
       }
     }
+  }
+}
+
+const OTEL_API = Symbol.for("opentelemetry.js.api.1");
+const OTEL_SUPPRESS_TRACING = Symbol.for("OpenTelemetry SDK Context Key SUPPRESS_TRACING");
+
+/**
+ * Deliver telemetry with OpenTelemetry tracing suppressed, so HTTP
+ * instrumentation doesn't trace CostKey's own ingest requests (which the
+ * OTel bridge would then send back as spans). No-op without OTel.
+ */
+function withoutOtelTracing<T>(fn: () => Promise<T>): Promise<T> {
+  try {
+    const api = (globalThis as Record<symbol, unknown>)[OTEL_API] as
+      | { context?: { active(): { setValue(key: symbol, value: unknown): unknown }; with<R>(context: unknown, fn: () => R): R } }
+      | undefined;
+    const context = api?.context;
+    if (!context || typeof context.with !== "function") return fn();
+    return context.with(context.active().setValue(OTEL_SUPPRESS_TRACING, true), fn);
+  } catch {
+    return fn();
   }
 }

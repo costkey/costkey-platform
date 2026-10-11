@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="library-art-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 320" width="480" height="320" role="img" aria-label="A closer look"><title>A closer look</title><desc>A blue magnifying lens brings one warm star into focus on an observation sheet. For run inspection, never for an active incident.</desc><g stroke-linecap="round" stroke-linejoin="round">
+<path d="M65 230C59 133 130 70 236 81C341 71 410 133 416 231Z" fill="#DCE8EE"/>
+<ellipse cx="249" cy="278" rx="151" ry="13" fill="#DFE6E5"/>
+<path d="M113 123L285 110L304 261L100 271Z" fill="#FFFDF8" stroke="#182B45" stroke-width="2.5"/>
+<path d="M113 123L285 110L287 139L110 151Z" fill="#ABC6D6"/>
+<path d="M124 162L162 165L180 204L206 181L256 203" fill="none" stroke="#6E93AE" stroke-width="2" stroke-dasharray="4 5"/>
+<circle cx="124" cy="162" r="3" fill="#344F70"/><circle cx="162" cy="165" r="3" fill="#344F70"/><circle cx="180" cy="204" r="3" fill="#344F70"/>
+<path d="M122 239L165 236M122 250L189 246" fill="none" stroke="#CBD5DA" stroke-width="3" />
+<path d="M299 194L354 243Q365 254 354 265Q344 275 333 265L282 209Z" fill="#344F70" stroke="#182B45" stroke-width="3"/>
+<path d="M296 197L311 210L295 227L282 214Z" fill="#F5CC68" stroke="#182B45" stroke-width="2"/>
+<circle cx="255" cy="153" r="75" fill="#6E93AE" stroke="#182B45" stroke-width="3"/>
+<circle cx="255" cy="153" r="62" fill="#F7F5EF" stroke="#182B45" stroke-width="2"/>
+<path d="M213 179L237 141L266 162L291 123" fill="none" stroke="#6E93AE" stroke-width="2.5"/>
+<circle cx="213" cy="179" r="4" fill="#344F70"/><circle cx="237" cy="141" r="4" fill="#344F70"/><path d="M266 150 Q267 161 278 162 Q267 163 266 174 Q265 163 254 162 Q265 161 266 150Z" fill="#F5CC68"/><circle cx="291" cy="123" r="4" fill="#344F70"/>
+<path d="M207 127Q219 107 238 104" fill="none" stroke="#FFFFFF" stroke-width="4" />
+<path d="M366 88 Q367 94 373 95 Q367 96 366 102 Q365 96 359 95 Q365 94 366 88Z" fill="#6E93AE"/><circle cx="134" cy="84" r="3" fill="#6E93AE"/>
+</g></svg>

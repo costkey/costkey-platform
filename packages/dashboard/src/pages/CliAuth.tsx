@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
-import { useAuth } from "../contexts/AuthContext";
+import { useAuth } from "../contexts/useAuth";
+import { BrandMark } from "../components/BrandMark";
 import { Check, Loader2, X } from "lucide-react";
 
 /**
@@ -25,7 +26,7 @@ export default function CliAuth() {
 
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
-          setError((data as Record<string, string>).error ?? "Failed to generate CLI token");
+          setError((data as Record<string, string>).error ?? "Couldn’t connect the CLI");
           setStatus("error");
           return;
         }
@@ -34,8 +35,15 @@ export default function CliAuth() {
           token: string; port: string; state: string;
         };
 
-        // Send the token to the CLI's localhost server
-        const callbackRes = await fetch(`http://localhost:${port}/callback`, {
+        // Rebuild the URL from a numeric port so a malformed server response
+        // cannot turn the loopback callback into a remote token exfiltration.
+        if (!/^\d{1,5}$/.test(port) || Number(port) < 1 || Number(port) > 65535) {
+          throw new Error("Invalid CLI callback port");
+        }
+        const callbackUrl = new URL("http://localhost/");
+        callbackUrl.port = String(Number(port));
+        callbackUrl.pathname = "/callback";
+        const callbackRes = await fetch(callbackUrl, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ token, state }),
@@ -44,11 +52,11 @@ export default function CliAuth() {
         if (callbackRes.ok) {
           setStatus("success");
         } else {
-          setError("Could not reach the CLI. Make sure costkey is still running in your terminal.");
+          setError("Couldn’t reach the CLI. Make sure costkey is still running in your terminal, then try again.");
           setStatus("error");
         }
       } catch {
-        setError("Could not reach the CLI. Make sure costkey is still running in your terminal.");
+        setError("Couldn’t reach the CLI. Make sure costkey is still running in your terminal, then try again.");
         setStatus("error");
       }
     };
@@ -60,7 +68,7 @@ export default function CliAuth() {
     <div className="min-h-screen bg-surface flex items-center justify-center px-4">
       <div className="w-full max-w-sm text-center">
         <div className="flex items-center justify-center gap-2.5 mb-8">
-          <img src="/favicon.svg" alt="CostKey" className="w-8 h-8" />
+          <BrandMark className="auth-lockup-mark" aria-label="CostKey" />
           <span className="font-mono text-lg font-semibold text-text-primary">CostKey</span>
         </div>
 
@@ -68,8 +76,8 @@ export default function CliAuth() {
           {status === "sending" && (
             <>
               <Loader2 size={32} className="text-accent animate-spin mx-auto mb-4" />
-              <h1 className="text-lg font-semibold text-text-primary mb-2">Connecting to CLI...</h1>
-              <p className="text-sm text-text-secondary">Sending your credentials to the terminal.</p>
+              <h1 className="text-lg font-semibold text-text-primary mb-2">Connecting to your terminal…</h1>
+              <p className="text-sm text-text-secondary">One moment.</p>
             </>
           )}
 

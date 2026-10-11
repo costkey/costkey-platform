@@ -15,6 +15,7 @@ import {
   normalizeRole,
   roleCanManageWorkspace,
 } from "./permissions.js";
+import { projectDsn, secureCookies } from "./public-url.js";
 
 async function sendWelcomeEmail(to: string, name: string, projectId: string): Promise<void> {
   if (!process.env["RESEND_API_KEY"]
@@ -83,7 +84,7 @@ function slugify(name: string): string {
 function setTokenCookie(res: Response, token: string): void {
   res.cookie("ck_token", token, {
     httpOnly: true,
-    secure: process.env["NODE_ENV"] === "production",
+    secure: secureCookies(),
     sameSite: "lax",
     maxAge: 7 * 24 * 60 * 60 * 1000,
   });
@@ -245,7 +246,7 @@ function oauthCookieOptions() {
     maxAge: OAUTH_COOKIE_MAX_AGE,
     httpOnly: true,
     sameSite: "lax" as const,
-    secure: process.env["NODE_ENV"] === "production",
+    secure: secureCookies(),
     path: "/",
   };
 }
@@ -455,7 +456,7 @@ export function createAuthRouter(pool?: pg.Pool): Router {
       const token = jwt.sign({ userId, orgId, role: finalRole }, JWT_SECRET, { expiresIn: JWT_EXPIRES });
       setTokenCookie(res, token);
 
-      const dsnUrl = authKey ? `https://${authKey}@app.costkey.dev/${projectId}` : null;
+      const dsnUrl = authKey && projectId ? projectDsn(authKey, projectId) : null;
 
       res.status(201).json({
         user: { id: userId, email, name, orgId, role: finalRole },
@@ -913,10 +914,10 @@ export function createAuthRouter(pool?: pg.Pool): Router {
     }
     // Store CLI callback info in a short-lived cookie so we can redirect after login
     res.cookie("ck_cli_port", String(port), {
-      maxAge: 10 * 60 * 1000, httpOnly: true, sameSite: "lax", secure: process.env["NODE_ENV"] === "production",
+      maxAge: 10 * 60 * 1000, httpOnly: true, sameSite: "lax", secure: secureCookies(),
     });
     res.cookie("ck_cli_state", state, {
-      maxAge: 10 * 60 * 1000, httpOnly: true, sameSite: "lax", secure: process.env["NODE_ENV"] === "production",
+      maxAge: 10 * 60 * 1000, httpOnly: true, sameSite: "lax", secure: secureCookies(),
     });
     res.redirect("/login?cli=1");
   });

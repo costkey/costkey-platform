@@ -9,6 +9,7 @@ import {
   roleCanManageWorkspace,
 } from "./permissions.js";
 import { chargesCte, scopeClauses, type ChargeScope } from "./charge-cohort.js";
+import { projectDsn } from "./public-url.js";
 
 function randomId(prefix: string): string {
   const bytes = new Uint8Array(12);
@@ -414,7 +415,7 @@ function publicProject(row: Record<string, unknown>, includeAuthKey: boolean): R
     event_count: Number(row.event_count ?? 0),
     total_cost: row.total_cost,
     authKey: includeAuthKey ? row.auth_key : null,
-    dsn: includeAuthKey && row.auth_key ? `https://${row.auth_key}@app.costkey.dev/${row.id}` : null,
+    dsn: includeAuthKey && row.auth_key ? projectDsn(String(row.auth_key), String(row.id)) : null,
     captureMode: row.capture_mode ?? "metadata",
     bodyCaptureEnabled: row.body_capture_enabled ?? false,
     sourceAccessEnabled: row.source_access_enabled ?? false,
@@ -541,7 +542,7 @@ export function createPlatformRouter(pool: pg.Pool): Router {
       } finally {
         client.release();
       }
-      const dsn = `https://${authKey}@app.costkey.dev/${id}`;
+      const dsn = projectDsn(authKey, id);
       res.status(201).json({ id, name, description, authKey, dsn, captureMode: "metadata", bodyCaptureEnabled: false });
     } catch (error) {
       console.error("[costkey] Project create error:", error);

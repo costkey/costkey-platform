@@ -11,6 +11,7 @@ const sidebars = {
     'dashboard',
 
     'sourcemaps',
+    'self-hosting',
     'privacy-security',
   ],
 };

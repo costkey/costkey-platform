@@ -5,3 +5,11 @@ packages/*/dist
 .costkey-data
 .firebase
 .turbo
+.env
+.env.*
+.claude
+.DS_Store
+*.log
+docs
+docs-site
+design

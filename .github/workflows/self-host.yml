@@ -1,0 +1,61 @@
+name: Self-host image
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+    paths:
+      - Dockerfile.selfhost
+      - docker-compose.yml
+      - .dockerignore
+      - scripts/install-linux-native.mjs
+      - package-lock.json
+      - packages/server/**
+      - packages/dashboard/**
+      - packages/shared/**
+      - .github/workflows/self-host.yml
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start with Docker Compose
+        env:
+          COSTKEY_JWT_SECRET: ci-self-host-jwt-secret
+          COSTKEY_NOTIFICATION_ENCRYPTION_KEY: ci-self-host-notification-key
+        run: docker compose up -d --build
+
+      - name: Smoke test
+        run: |
+          for i in $(seq 1 60); do curl -fsS http://localhost:4100/health && break; sleep 2; done
+          curl -fsS http://localhost:4100/health
+          curl -fsS http://localhost:4100/login | grep -q 'id="root"'
+          signup=$(curl -fsS -c cookies.txt -X POST http://localhost:4100/auth/signup \
+            -H 'content-type: application/json' \
+            -d '{"email":"ci@example.com","password":"ci-password-1","name":"CI","orgName":"CI"}')
+          echo "$signup" | grep -q '"dsn":"http://ck_[a-z0-9]*@localhost:4100/'
+          curl -fsS -b cookies.txt http://localhost:4100/auth/me | grep -q 'ci@example.com'
+
+      - name: Server logs
+        if: always()
+        run: docker compose logs costkey --tail 200
+
+      - name: Publish to GitHub Container Registry
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          image=ghcr.io/${{ github.repository }}
+          docker tag "$(docker compose images costkey -q)" "$image:latest"
+          docker push "$image:latest"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            docker tag "$image:latest" "$image:${GITHUB_REF_NAME#v}"
+            docker push "$image:${GITHUB_REF_NAME#v}"
+          fi

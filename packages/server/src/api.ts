@@ -12,6 +12,7 @@ import { createInsightsRouter } from "./insights-api.js";
 import { createQualityRouter } from "./quality-api.js";
 import { createFeatureMappingsRouter } from "./feature-mappings.js";
 import { listAccessibleProjects, roleCanManageWorkspace } from "./permissions.js";
+import { projectDsn } from "./public-url.js";
 
 let resend: Resend | null = null;
 
@@ -824,7 +825,7 @@ export function createApiRouter(pool: pg.Pool): Router {
         [id, name, user.orgId, authKey],
       );
 
-      res.status(201).json({ id, name, authKey, dsn: `https://${authKey}@app.costkey.dev/${id}` });
+      res.status(201).json({ id, name, authKey, dsn: projectDsn(authKey, id) });
     } catch (err) {
       console.error("[costkey] API error:", err);
       res.status(500).json({ error: "Internal server error" });
@@ -900,7 +901,7 @@ export function createApiRouter(pool: pg.Pool): Router {
 
       res.json({
         authKey: newKey,
-        dsn: `https://${newKey}@app.costkey.dev/${projectId}`,
+        dsn: projectDsn(newKey, projectId),
       });
     } catch (err) {
       console.error("[costkey] API error:", err);

@@ -11,3 +11,4 @@ coverage/
 *.db-wal
 .gstack/
 .firebase/
+!.env.example

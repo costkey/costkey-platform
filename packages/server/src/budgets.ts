@@ -23,6 +23,7 @@ import { requireAuth } from "./auth.js";
 import { createPostgresObservedUsageSource, DEFAULT_PROVIDER_CAPABILITY_REGISTRY, isIdentityWindow, normalizeScopeValue, normalizeSpendingPolicy, perCallUsageSummary, POLICY_SCOPE_KEYS, POLICY_SCOPE_MAX_VALUE_LENGTH, POLICY_SCOPE_MAX_VALUES, policyScopeClauses, policyWindowKey, scopeValues, type AdmissionRequest, type PolicyCurrency, type PolicyMode, type PolicyScope, type PolicyUnit, type PolicyWindow, type SpendingPolicy } from "./admission.js";
 import { PostgresReservationStore } from "./reservation.js";
 import { dispatchEnforcementNotification, dispatchFindingNotification, dispatchPolicyWarning, dispatchWebhook, isSafeWebhookUrl } from "./notifications.js";
+import { publicOrigin } from "./public-url.js";
 export { ensurePolicySchema } from "./policy-storage.js";
 
 // F06/DX09 pre-call enforcement is exposed from its own module so platform
@@ -1432,7 +1433,7 @@ async function checkRule(pool: pg.Pool, rule: BudgetRow, projectName: string): P
       const body =
         `Project ${projectName}\nRule: ${ruleLabel} (${scopeDesc})\n\n` +
         `Spent $${c.spent.toFixed(2)} of $${c.limit.toFixed(2)} ${c.scope} budget (${Math.round(pct * 100)}%).\n` +
-        `Threshold crossed: ${pctInt}%.\n\nDashboard: https://app.costkey.dev\n`;
+        `Threshold crossed: ${pctInt}%.\n\nDashboard: ${publicOrigin()}\n`;
 
       if (rule.alert_webhook_url) {
         try {

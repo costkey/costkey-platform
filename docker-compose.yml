@@ -1,30 +1,46 @@
-version: "3.8"
-
+# Self-hosted CostKey: Postgres, plus the server and console on one port.
+#
+#   cp .env.example .env      # then fill in the two secrets
+#   docker compose up -d
+#   open http://localhost:4100
+#
+# Optional settings (email, GitHub sign-in) go in .env too.
 services:
-  server:
-    build:
-      context: .
-      dockerfile: Dockerfile.server
-    ports:
-      - "4100:4100"
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
     environment:
-      - NODE_ENV=production
-      - PORT=4100
-      - COSTKEY_JWT_SECRET=${COSTKEY_JWT_SECRET:?COSTKEY_JWT_SECRET must be set}
-      - COSTKEY_DATA_DIR=/data
+      POSTGRES_USER: costkey
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-costkey}
+      POSTGRES_DB: costkey
     volumes:
-      - costkey-data:/data
-    restart: unless-stopped
+      - costkey-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U costkey -d costkey"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
 
-  dashboard:
+  costkey:
     build:
       context: .
-      dockerfile: Dockerfile.dashboard
-    ports:
-      - "80:80"
-    depends_on:
-      - server
+      dockerfile: Dockerfile.selfhost
     restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${COSTKEY_PORT:-4100}:4100"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      NODE_ENV: production
+      PORT: "4100"
+      DATABASE_URL: postgresql://costkey:${POSTGRES_PASSWORD:-costkey}@postgres:5432/costkey
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:4100}
+      COSTKEY_JWT_SECRET: ${COSTKEY_JWT_SECRET:?Set COSTKEY_JWT_SECRET in .env (openssl rand -hex 32)}
+      COSTKEY_NOTIFICATION_ENCRYPTION_KEY: ${COSTKEY_NOTIFICATION_ENCRYPTION_KEY:?Set COSTKEY_NOTIFICATION_ENCRYPTION_KEY in .env (openssl rand -hex 32)}
 
 volumes:
-  costkey-data:
+  costkey-postgres:

@@ -218,6 +218,8 @@ export function computeCost(
   provider?: string | null,
   timestamp?: string | null,
   imageOutputTokens?: number | null,
+  /** The part of cacheCreationTokens written with Anthropic's 1-hour TTL (billed at 2x input). */
+  cacheCreation1hTokens?: number | null,
 ): number | null {
   if (!model) return null;
   for (const tokens of [inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, imageOutputTokens]) {
@@ -243,7 +245,10 @@ export function computeCost(
         output: pricing.output * 2, cacheRead: (pricing.cacheRead ?? 0) * 2 };
     }
   }
-  const isDeepSeekDirect = (provider === "deepseek" && lowerModel.includes("deepseek-v4"))
+  // DeepSeek's direct API: prompt_tokens includes cache hits (billed at the
+  // cache-hit rate) and misses (ordinary input). SDK 0.6 reported the misses
+  // as cache creation; they are never a separate charge.
+  const isDeepSeekDirect = provider === "deepseek"
     || (!provider && !lowerModel.includes("/") && lowerModel.includes("deepseek-v4"));
   let cost = 0;
 
@@ -260,15 +265,10 @@ export function computeCost(
       ? (effectivePricing.cacheRead != null ? (cacheReadTokens ?? 0) : 0)
         + (provider === "openrouter" && effectivePricing.cacheWrite != null ? (cacheCreationTokens ?? 0) : 0)
       : isDeepSeekDirect
-        ? (cacheReadTokens ?? 0) + (cacheCreationTokens ?? 0)
+        ? (effectivePricing.cacheRead != null ? (cacheReadTokens ?? 0) : 0)
       : 0;
     const billableInputTokens = Math.max(0, inputTokens - includedCacheTokens);
     cost += (billableInputTokens / 1_000_000) * effectivePricing.input;
-    // DeepSeek calls expose prompt_cache_miss_tokens as a subset of
-    // prompt_tokens. It is regular input, not a cache-write surcharge.
-    if (isDeepSeekDirect && cacheCreationTokens != null) {
-      cost += (cacheCreationTokens / 1_000_000) * effectivePricing.input;
-    }
   }
   if (outputTokens != null) {
     cost += ((outputTokens - (imageOutputTokens ?? 0)) / 1_000_000) * effectivePricing.output;
@@ -277,8 +277,11 @@ export function computeCost(
   if (cacheReadTokens != null && effectivePricing.cacheRead != null) {
     cost += (cacheReadTokens / 1_000_000) * effectivePricing.cacheRead;
   }
-  if (cacheCreationTokens != null && effectivePricing.cacheWrite != null) {
-    cost += (cacheCreationTokens / 1_000_000) * effectivePricing.cacheWrite;
+  if (cacheCreationTokens != null && effectivePricing.cacheWrite != null && !isDeepSeekDirect) {
+    const oneHour = Math.min(Math.max(cacheCreation1hTokens ?? 0, 0), cacheCreationTokens);
+    cost += ((cacheCreationTokens - oneHour) / 1_000_000) * effectivePricing.cacheWrite;
+    // Anthropic's 1-hour cache writes cost twice the base input rate.
+    cost += (oneHour / 1_000_000) * effectivePricing.input * 2;
   }
 
   return Math.round(cost * 1_000_000_000_000) / 1_000_000_000_000;

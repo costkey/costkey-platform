@@ -5,14 +5,14 @@ import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import type pg from "pg";
-import { getPool, initDatabase } from "./db.js";
+import { ensureQualityCheckSchema, getPool, initDatabase } from "./db.js";
 import { createIngestRouter, loadCallGraphCache } from "./ingest.js";
 import { createAuthRouter, authMiddleware } from "./auth.js";
 import { createInvitePreviewRouter, createTeamsRouter } from "./teams.js";
 import { createAlertsRouter, checkAlerts } from "./alerts.js";
 import { projectMutationGuard, platformResponseGuards, rateLimit } from "./middleware.js";
 import { initAnomalyTable, detectAnomalies } from "./anomaly.js";
-import { seedIfEmpty } from "./seed.js";
+import { seedDemoAgentRuns, seedIfEmpty } from "./seed.js";
 import { backfillCosts } from "./pricing.js";
 import { initPriceCatalog, refreshPriceCatalogIfChanged } from "./price-catalog/sync.js";
 import { createSourcemapsRouter } from "./sourcemaps.js";
@@ -30,6 +30,8 @@ import { createNotificationsRouter, runWeeklyDigests } from "./notifications.js"
 import { createSubscriptionRouter } from "./subscription.js";
 import { refreshAllFindings } from "./findings.js";
 import { reconcileDailyCostAggregates } from "./accounting.js";
+import { startQualityCheckWorker } from "./quality-checks/worker.js";
+import { seedDemoQualityChecks } from "./quality-checks/seed.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const dashboardDist = path.resolve(__dirname, "../../dashboard/dist");
@@ -251,6 +253,7 @@ export function createApp(options: AppOptions = {}): Express & AppRuntime {
       if (!options.pool) await initDatabase();
       await ensurePlatformSchema(pool);
       await ensurePolicySchema(pool);
+      await ensureQualityCheckSchema(pool);
       console.log("[costkey] Database ready");
       await loadCallGraphCache(pool);
       // Demo data is opt-in and never runs in production. Existing customer
@@ -258,9 +261,11 @@ export function createApp(options: AppOptions = {}): Express & AppRuntime {
       // real signup creates its first workspace/project.
       if (process.env["NODE_ENV"] !== "production" && process.env["COSTKEY_SEED_DEMO"] === "true") {
         await seedIfEmpty(pool);
+        await seedDemoAgentRuns(pool);
         // seedIfEmpty may create the first legacy/demo project after the
         // initial additive DDL; backfill its settings without changing rows.
         await ensurePlatformSchema(pool);
+        await seedDemoQualityChecks(pool);
       }
       await initSourceMaps();
       await backfillCosts(pool);
@@ -300,6 +305,7 @@ export function createApp(options: AppOptions = {}): Express & AppRuntime {
         dailyRetention.unref();
         hourlyNotifications.unref();
         schedulerHandles.push(periodic, dailyRetention, hourlyNotifications);
+        schedulerHandles.push(startQualityCheckWorker(pool));
         // Generate findings even when nobody opens the console. Ingest also
         // schedules a one-second project-local refresh; this startup pass
         // covers existing activity and the interval handles quiet projects.

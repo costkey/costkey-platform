@@ -17,7 +17,7 @@ const nonNegative = (value: number | null | undefined): number => (typeof value 
 /** Units in `nativeUnits` that the catalog can price. */
 export const PRICEABLE_NATIVE_UNITS = new Set([
   "characters", "audioSeconds", "searchQueries", "groundingRequests", "mapsGroundingRequests",
-  "credits", "pages", "images", "requests",
+  "credits", "pages", "images", "requests", "webSearchRequests",
 ]);
 
 /**
@@ -46,12 +46,15 @@ export function costFromRates(rates: PriceRates, usage: PricedUsage, provider: s
     if (active.output === undefined && output - imageOutput > 0) return null;
     const cacheReadRate = active.cacheRead ?? active.input ?? 0;
     const cacheWriteRate = active.cacheWrite ?? active.input ?? 0;
+    // Anthropic's 1-hour cache writes (a part of cacheCreationTokens) have their own rate.
+    const cacheWrite1h = Math.min(nonNegative(units["cacheCreation1hTokens"]), cacheWrite);
+    const cacheWrite1hRate = rates.cacheWrite1h ?? cacheWriteRate;
     // Where the input count includes cache tokens, they're carved out of it
     // (DeepSeek's cache misses land on the input rate this way).
     const billableInput = included ? Math.max(0, input - cacheRead - cacheWrite) : input;
     cost += billableInput * (active.input ?? 0);
     cost += cacheRead * cacheReadRate;
-    cost += cacheWrite * cacheWriteRate;
+    cost += (cacheWrite - cacheWrite1h) * cacheWriteRate + cacheWrite1h * cacheWrite1hRate;
     cost += (output - imageOutput) * (active.output ?? 0);
     if (imageOutput > 0) {
       const imageRate = active.outputImage ?? active.output;
@@ -95,6 +98,8 @@ export function costFromRates(rates: PriceRates, usage: PricedUsage, provider: s
         unitRate = rates.searchPerQuery;
         break;
       case "mapsGroundingRequests": unitRate = rates.mapsPerQuery; break;
+      // Anthropic server-side web search, billed per search.
+      case "webSearchRequests": unitRate = rates.searchPerQuery ?? rates.perQuery; break;
     }
     if (unitRate === undefined) return null;
     cost += value * unitRate;

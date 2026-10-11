@@ -1,0 +1,139 @@
+/* Quality checks: list, editor drawer and per-run results. Tokens only. */
+
+.qc-table .primary-cell {
+  min-width: 190px;
+}
+.qc-table .qc-hint {
+  max-width: 260px;
+  white-space: normal;
+}
+.qc-actions-head {
+  width: 1%;
+}
+.qc-actions {
+  white-space: nowrap;
+  text-align: right;
+}
+.qc-actions .ck-button {
+  min-height: 28px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+.qc-drawer {
+  display: flex;
+  flex-direction: column;
+}
+.qc-form {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 16px;
+}
+.qc-kind {
+  display: grid;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--ck-border);
+  border-radius: var(--ck-control-radius);
+  background: var(--ck-soft);
+}
+.qc-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.qc-rubric {
+  min-height: 180px;
+  font-family: inherit;
+  line-height: 1.55;
+  resize: vertical;
+}
+.qc-field-hint {
+  color: var(--ck-slate);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.qc-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ck-ink);
+  font-size: 13px;
+}
+.qc-footer {
+  margin-top: 20px;
+}
+.qc-delete {
+  margin-right: auto;
+}
+
+.qc-run-list {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.qc-run-item {
+  padding: 12px;
+  border: 1px solid var(--ck-border);
+  border-radius: var(--ck-control-radius);
+  background: var(--ck-raised);
+}
+.qc-run-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.qc-run-name {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--ck-ink);
+  font-size: 13px;
+  font-weight: 500;
+}
+.qc-run-name small {
+  color: var(--ck-slate);
+  font-size: 11px;
+  font-weight: 400;
+}
+.qc-run-verdict {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+}
+.qc-run-score {
+  color: var(--ck-ink);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.qc-run-label {
+  margin-top: 6px;
+  color: var(--ck-slate);
+  font-size: 12px;
+}
+.qc-run-reason {
+  margin: 8px 0 0;
+  color: var(--ck-ink);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.qc-run-detail {
+  margin: 6px 0 0;
+  color: var(--ck-slate);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+@media (max-width: 640px) {
+  .qc-row {
+    grid-template-columns: 1fr;
+  }
+  .qc-actions {
+    white-space: normal;
+  }
+}

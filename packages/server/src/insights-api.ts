@@ -2,6 +2,7 @@ import { Router, type Request, type Response } from "express";
 import type pg from "pg";
 import { requireAuth } from "./auth.js";
 import { orgScope } from "./middleware.js";
+import { workspaceTimezone } from "./quality-api.js";
 
 /**
  * Workflows, Agents and Errors: runs grouped the way people think about
@@ -41,7 +42,8 @@ function windowFrom(req: Request): Window {
 export const RUNS_CTE = `
   calls AS (
     SELECT e.id, e.trace_id, e.trace_name, e.cost_usd, e.duration_ms, e.status_code, e.timestamp, e.parent_event_id,
-           e.model, e.provider, e.span_id, e.context, e.group_kind, e.group_name
+           e.model, e.provider, e.span_id, e.context, e.group_kind, e.group_name,
+           e.input_tokens, e.output_tokens
     FROM events e
     WHERE e.project_id = $1 AND COALESCE(e.event_type, 'call') = 'call' AND e.trace_id IS NOT NULL
       AND e.timestamp >= $2 AND e.timestamp < $3
@@ -116,6 +118,203 @@ function groupRow(row: Record<string, unknown>): Record<string, unknown> {
     avgSteps: number(row.avg_steps),
     avgTools: number(row.avg_tools),
     lastRun: row.last_run,
+  };
+}
+
+/** The window of equal length that ends where this one starts. */
+export function previousWindow(from: string, to: string): { from: string; to: string } {
+  const start = Date.parse(from);
+  const end = Date.parse(to);
+  const length = Math.max(0, end - start);
+  return { from: new Date(start - length).toISOString(), to: new Date(start).toISOString() };
+}
+
+/** Hourly buckets for short windows, daily otherwise. */
+export function boardBucket(from: string, to: string): "hour" | "day" {
+  return Date.parse(to) - Date.parse(from) <= 2 * DAY_MS + 5 * 60_000 ? "hour" : "day";
+}
+
+/** Run name for a non-agent run: workflow root span, batch/eval group, trace name. */
+const WORKFLOW_NAME = "COALESCE(CASE WHEN root_kind = 'workflow' THEN root_name END, NULLIF(group_name, ''), NULLIF(trace_name, ''), root_name, 'Unnamed')";
+
+/**
+ * Scores on runs in the window. A score sent with only a span id takes that
+ * span's trace. `checks.unit_scale` marks checks scored on 0..1, the only ones
+ * that go into the overall average. Follows RUNS_CTE.
+ */
+const SCORED_CTE = `
+  scored AS (
+    SELECT sc.name, sc.value, r.trace_id, r.started_at
+    FROM scores sc
+    LEFT JOIN spans owner ON sc.trace_id IS NULL AND owner.project_id = sc.project_id AND owner.id = sc.span_id
+    JOIN run_rows r ON r.trace_id = COALESCE(sc.trace_id, owner.trace_id)
+    WHERE sc.project_id = $1
+  ),
+  checks AS (
+    SELECT name, AVG(value) AS avg, COUNT(*)::int AS count, COUNT(DISTINCT trace_id)::int AS runs,
+           (MIN(value) >= 0 AND MAX(value) <= 1) AS unit_scale
+    FROM scored GROUP BY name
+  )`;
+
+/** Local bucket label for a timestamp. Params: $5 bucket unit, $6 timezone. */
+const BUCKET = (column: string) => `to_char(date_trunc($5::text, ${column} AT TIME ZONE $6::text), 'YYYY-MM-DD"T"HH24:MI')`;
+
+export interface BoardWindow { from: string; to: string; environment: string | null }
+
+/** Everything the Overview board needs beyond spend totals, for one window and the one before it. */
+export async function loadOverviewBoard(pool: pg.Pool, projectId: string, window: BoardWindow, timezone: string) {
+  const previous = previousWindow(window.from, window.to);
+  const bucket = boardBucket(window.from, window.to);
+  const params = [projectId, window.from, window.to, window.environment];
+  const previousParams = [projectId, previous.from, previous.to, window.environment];
+  const bucketParams = [...params, bucket, timezone];
+  const runCounts = `WITH ${RUNS_CTE}
+    SELECT COUNT(*)::int AS runs, COUNT(*) FILTER (WHERE root_kind = 'agent')::int AS agent_runs FROM run_rows`;
+  const scoreTotals = `WITH ${RUNS_CTE}, ${SCORED_CTE}
+    SELECT AVG(s.value) FILTER (WHERE c.unit_scale) AS avg,
+           COUNT(*) FILTER (WHERE c.unit_scale)::int AS count,
+           COUNT(*)::int AS all_count
+    FROM scored s JOIN checks c ON c.name = s.name`;
+  const [runsNow, runsBefore, scoresNow, scoresBefore, checks, scoreSeries, buckets, models, agents, volume, tools, latency] = await Promise.all([
+    pool.query(runCounts, params),
+    pool.query(runCounts, previousParams),
+    pool.query(scoreTotals, params),
+    pool.query(scoreTotals, previousParams),
+    pool.query(`WITH ${RUNS_CTE}, ${SCORED_CTE} SELECT * FROM checks ORDER BY count DESC, name LIMIT 20`, params),
+    pool.query(
+      `WITH ${RUNS_CTE}, ${SCORED_CTE}
+       SELECT name, ${BUCKET("started_at")} AS bucket, AVG(value) AS avg, COUNT(*)::int AS count
+       FROM scored GROUP BY 1, 2 ORDER BY 1, 2`,
+      bucketParams,
+    ),
+    pool.query(
+      `SELECT to_char(b, 'YYYY-MM-DD"T"HH24:MI') AS bucket
+       FROM generate_series(
+         date_trunc($1::text, $2::timestamptz AT TIME ZONE $4::text),
+         date_trunc($1::text, LEAST($3::timestamptz - INTERVAL '1 millisecond', NOW()) AT TIME ZONE $4::text),
+         ('1 ' || $1::text)::interval) b
+       LIMIT 2000`,
+      [bucket, window.from, window.to, timezone],
+    ),
+    pool.query(
+      `SELECT e.provider, COALESCE(e.model, e.request_model, 'unknown') AS model, COUNT(*)::int AS calls,
+              SUM(e.input_tokens)::bigint AS input, SUM(e.output_tokens)::bigint AS output,
+              SUM(e.cache_read_tokens)::bigint AS cache_read, SUM(e.cache_creation_tokens)::bigint AS cache_write,
+              SUM(e.cost_usd) AS cost, COUNT(*) FILTER (WHERE e.cost_usd IS NULL)::int AS unpriced
+       FROM events e
+       WHERE e.project_id = $1 AND COALESCE(e.event_type, 'call') = 'call'
+         AND e.timestamp >= $2 AND e.timestamp < $3
+         AND ($4::text IS NULL OR COALESCE(NULLIF(e.context->>'environment', ''), '(unassigned)') = $4)
+       GROUP BY 1, 2
+       ORDER BY SUM(e.cost_usd) DESC NULLS LAST, COUNT(*) DESC
+       LIMIT 20`,
+      params,
+    ),
+    pool.query(
+      `WITH ${RUNS_CTE}
+       SELECT r.root_name AS name, COUNT(DISTINCT r.trace_id)::int AS runs,
+              COALESCE(SUM(c.input_tokens), 0)::bigint AS input, COALESCE(SUM(c.output_tokens), 0)::bigint AS output,
+              SUM(c.cost_usd) AS cost, COUNT(*) FILTER (WHERE c.cost_usd IS NULL)::int AS unpriced
+       FROM run_rows r JOIN calls c ON c.trace_id = r.trace_id
+       WHERE r.root_kind = 'agent'
+       GROUP BY r.root_name
+       ORDER BY SUM(c.cost_usd) DESC NULLS LAST, COUNT(*) DESC
+       LIMIT 20`,
+      params,
+    ),
+    pool.query(
+      `WITH ${RUNS_CTE},
+       owned AS (
+         SELECT CASE WHEN root_kind = 'agent' THEN 'agents' ELSE 'workflows' END AS kind,
+                CASE WHEN root_kind = 'agent' THEN root_name ELSE ${WORKFLOW_NAME} END AS name, calls
+         FROM run_rows
+       ),
+       grouped AS (
+         SELECT kind, name, COUNT(*)::int AS runs, SUM(calls)::int AS calls,
+                ROW_NUMBER() OVER (PARTITION BY kind ORDER BY COUNT(*) DESC, name) AS rank
+         FROM owned GROUP BY kind, name
+       )
+       SELECT kind, name, runs, calls FROM grouped WHERE rank <= 20 ORDER BY kind, rank`,
+      params,
+    ),
+    pool.query(
+      `WITH ${RUNS_CTE}
+       SELECT s.name, COUNT(*)::int AS calls, COUNT(DISTINCT s.trace_id)::int AS runs
+       FROM spans s
+       WHERE s.project_id = $1 AND s.kind = 'tool' AND s.trace_id IN (SELECT trace_id FROM runs)
+       GROUP BY s.name ORDER BY COUNT(*) DESC, s.name LIMIT 20`,
+      params,
+    ),
+    pool.query(
+      `WITH ${RUNS_CTE},
+       samples AS (
+         SELECT CASE WHEN root_kind = 'agent' THEN 'agents' ELSE 'workflows' END AS kind, ${BUCKET("started_at")} AS bucket, duration_ms
+         FROM run_rows WHERE duration_ms IS NOT NULL
+         UNION ALL
+         SELECT 'tools', ${BUCKET("s.started_at")}, EXTRACT(EPOCH FROM (s.ended_at - s.started_at)) * 1000
+         FROM spans s
+         WHERE s.project_id = $1 AND s.kind = 'tool' AND s.started_at IS NOT NULL AND s.ended_at IS NOT NULL
+           AND s.trace_id IN (SELECT trace_id FROM runs)
+       )
+       SELECT kind, bucket, COUNT(*)::int AS count,
+              percentile_cont(0.5) WITHIN GROUP (ORDER BY duration_ms) AS p50,
+              percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms) AS p95
+       FROM samples
+       GROUP BY GROUPING SETS ((kind, bucket), (kind))
+       ORDER BY kind, bucket NULLS FIRST`,
+      bucketParams,
+    ),
+  ]);
+
+  const counts = (row: Record<string, unknown> | undefined) => ({ runs: number(row?.runs) ?? 0, agentRuns: number(row?.agent_runs) ?? 0 });
+  const scoreTotal = (row: Record<string, unknown> | undefined) => ({ avg: number(row?.avg), count: number(row?.count) ?? 0, allCount: number(row?.all_count) ?? 0 });
+  const series = new Map<string, Array<{ bucket: string; avg: number | null; count: number }>>();
+  for (const row of scoreSeries.rows as Array<Record<string, unknown>>) {
+    const name = String(row.name);
+    series.set(name, [...(series.get(name) ?? []), { bucket: String(row.bucket), avg: number(row.avg), count: number(row.count) ?? 0 }]);
+  }
+  const latencyKind = (kind: string) => {
+    const rows = (latency.rows as Array<Record<string, unknown>>).filter((row) => row.kind === kind);
+    const total = rows.find((row) => row.bucket == null);
+    return {
+      count: number(total?.count) ?? 0,
+      p50Ms: number(total?.p50),
+      p95Ms: number(total?.p95),
+      series: rows.filter((row) => row.bucket != null).map((row) => ({ bucket: String(row.bucket), count: number(row.count) ?? 0, p50Ms: number(row.p50), p95Ms: number(row.p95) })),
+    };
+  };
+  const volumeKind = (kind: string) => (volume.rows as Array<Record<string, unknown>>)
+    .filter((row) => row.kind === kind)
+    .map((row) => ({ name: String(row.name), runs: number(row.runs) ?? 0, calls: number(row.calls) ?? 0 }));
+
+  return {
+    window: { from: window.from, to: window.to, environment: window.environment, timezone, bucket },
+    previous,
+    buckets: (buckets.rows as Array<{ bucket: string }>).map((row) => row.bucket),
+    runs: { current: counts(runsNow.rows[0]), previous: counts(runsBefore.rows[0]) },
+    scores: {
+      current: scoreTotal(scoresNow.rows[0]),
+      previous: scoreTotal(scoresBefore.rows[0]),
+      checks: (checks.rows as Array<Record<string, unknown>>).map((row) => ({
+        name: String(row.name), avg: number(row.avg), count: number(row.count) ?? 0, runs: number(row.runs) ?? 0,
+        unitScale: Boolean(row.unit_scale), series: series.get(String(row.name)) ?? [],
+      })),
+    },
+    models: (models.rows as Array<Record<string, unknown>>).map((row) => ({
+      provider: row.provider == null ? null : String(row.provider), model: String(row.model), calls: number(row.calls) ?? 0,
+      input: number(row.input), output: number(row.output), cacheRead: number(row.cache_read), cacheWrite: number(row.cache_write),
+      cost: number(row.cost), unpriced: number(row.unpriced) ?? 0,
+    })),
+    agents: (agents.rows as Array<Record<string, unknown>>).map((row) => ({
+      name: String(row.name), runs: number(row.runs) ?? 0, input: number(row.input) ?? 0, output: number(row.output) ?? 0,
+      cost: number(row.cost), unpriced: number(row.unpriced) ?? 0,
+    })),
+    volume: {
+      agents: volumeKind("agents"),
+      workflows: volumeKind("workflows"),
+      tools: (tools.rows as Array<Record<string, unknown>>).map((row) => ({ name: String(row.name), runs: number(row.runs) ?? 0, calls: number(row.calls) ?? 0 })),
+    },
+    latency: { agents: latencyKind("agents"), workflows: latencyKind("workflows"), tools: latencyKind("tools") },
   };
 }
 
@@ -439,6 +638,19 @@ export function createInsightsRouter(pool: pg.Pool): Router {
         failedSpans: failedSpans.rows.map((row) => ({ kind: row.kind, name: row.name, errorType: row.error_type, failures: row.failures, lastSeen: row.last_seen, sampleTraceId: row.sample_trace_id })),
       });
     } catch (error) { fail(res, "Errors", error); }
+  });
+
+  /** The Overview board: runs, scores, model tokens, agent usage, volume and latency for one window. */
+  router.get("/api/v1/projects/:projectId/insights/board", async (req: Request, res: Response) => {
+    const window = windowFrom(req);
+    if (Date.parse(window.from) >= Date.parse(window.to)) {
+      res.status(400).json({ error: "from must be before to" });
+      return;
+    }
+    try {
+      const projectId = req.params["projectId"] as string;
+      res.json(await loadOverviewBoard(pool, projectId, window, await workspaceTimezone(pool, projectId)));
+    } catch (error) { fail(res, "Overview board", error); }
   });
 
   return router;

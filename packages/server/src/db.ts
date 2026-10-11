@@ -924,6 +924,15 @@ export async function initDatabase(): Promise<void> {
     ALTER TABLE migrations ALTER COLUMN ran_at SET NOT NULL;
   `));
 
+  // ── Raw SDK telemetry (SDK 0.7+) ──
+  // The raw call envelope a provider call arrived with, kept for reprocessing
+  // when extractors improve. It follows metadata's privacy treatment: stored
+  // only for projects with body capture, redacted, cleared with captured
+  // content and by body retention.
+  await withMigrationLock(p, (client) => client.query(`
+    ALTER TABLE events ADD COLUMN IF NOT EXISTS raw_telemetry JSONB;
+  `));
+
   console.log("[costkey] Database schema initialized");
 }
 
@@ -961,4 +970,66 @@ export async function runOnce(
 
 export async function shutdownDatabase(): Promise<void> {
   if (pool) await pool.end();
+}
+
+// ── Quality checks (server-side evaluation) ───────────────────────────────
+// Per-project check configuration and a durable job queue. The worker in
+// quality-checks/worker.ts writes one score per check per run into `scores`.
+// Every statement is idempotent; callers may run this on every startup.
+export async function ensureQualityCheckSchema(p: pg.Pool | pg.PoolClient): Promise<void> {
+  await p.query(`
+    CREATE TABLE IF NOT EXISTS quality_checks (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      template TEXT,
+      rule TEXT,
+      target DOUBLE PRECISION,
+      rubric TEXT,
+      judge_provider TEXT,
+      judge_model TEXT,
+      judge_key_encrypted TEXT,
+      judge_key_hint TEXT,
+      applies_to TEXT NOT NULL DEFAULT 'all',
+      applies_to_names TEXT[] NOT NULL DEFAULT '{}',
+      sample_rate DOUBLE PRECISION NOT NULL DEFAULT 100,
+      enabled BOOLEAN NOT NULL DEFAULT TRUE,
+      created_by TEXT,
+      updated_by TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_quality_checks_project_name ON quality_checks(project_id, name);
+
+    CREATE TABLE IF NOT EXISTS quality_check_jobs (
+      id BIGSERIAL PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      check_id TEXT NOT NULL REFERENCES quality_checks(id) ON DELETE CASCADE,
+      trace_id TEXT NOT NULL,
+      origin TEXT NOT NULL DEFAULT 'auto',
+      status TEXT NOT NULL DEFAULT 'pending',
+      attempts INTEGER NOT NULL DEFAULT 0,
+      next_run_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      locked_at TIMESTAMPTZ,
+      skip_reason TEXT,
+      last_error TEXT,
+      score_id TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      completed_at TIMESTAMPTZ
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_quality_check_jobs_check_trace ON quality_check_jobs(check_id, trace_id);
+    CREATE INDEX IF NOT EXISTS idx_quality_check_jobs_due ON quality_check_jobs(next_run_at) WHERE status IN ('pending', 'running');
+    CREATE INDEX IF NOT EXISTS idx_quality_check_jobs_trace ON quality_check_jobs(project_id, trace_id);
+
+    -- How far the worker has scanned each project's traces for finished runs.
+    CREATE TABLE IF NOT EXISTS quality_check_cursors (
+      project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+      scanned_at TIMESTAMPTZ NOT NULL,
+      scanned_trace_id TEXT NOT NULL DEFAULT '',
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_traces_project_updated ON traces(project_id, updated_at);
+  `);
 }

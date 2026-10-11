@@ -5,12 +5,14 @@ import { formatDateTime, formatReportedAmount, type ReportingFx } from "../compo
 import { formatDuration } from "../utils";
 import { useInsightScope, useScopedLoad } from "./useInsightScope";
 import { ProviderLabel } from "../components/ProviderLogo";
+import { QualityChecksPanel } from "../components/QualityChecks";
 
-type View = "runs" | "models" | "failures";
+type View = "runs" | "models" | "failures" | "checks";
 const VIEWS: Array<{ id: View; label: string }> = [
   { id: "runs", label: "Agents & workflows" },
   { id: "models", label: "Models" },
   { id: "failures", label: "Failed runs" },
+  { id: "checks", label: "Checks" },
 ];
 
 function rate(part: number, whole: number): string {
@@ -89,12 +91,12 @@ export default function Quality() {
       <MetricCard icon="cost" label="Wasted" value={formatReportedAmount(totals?.wastedCost ?? 0, currency, fx)} loading={loading && !data} />
     </div>
     <div className="ck-tabs ck-page-tabs" role="tablist" aria-label="Quality views">{VIEWS.map((item) => <button key={item.id} className={`ck-tab ${view === item.id ? "active" : ""}`} role="tab" aria-selected={view === item.id} type="button" onClick={() => setView(item.id)}>{item.label}</button>)}</div>
-    <Panel key={`${view}|${owner ?? ""}`} className="ck-view" title={view === "failures" && owner ? owner : undefined} actions={view === "failures" && owner ? <button className="ck-button ck-button-quiet" type="button" onClick={() => setView("failures")}>All runs</button> : undefined}>
+    {view === "checks" ? (projectId ? <QualityChecksPanel projectId={projectId} scope={scope} scopeKey={scopeKey} /> : null) : <Panel key={`${view}|${owner ?? ""}`} className="ck-view" title={view === "failures" && owner ? owner : undefined} actions={view === "failures" && owner ? <button className="ck-button ck-button-quiet" type="button" onClick={() => setView("failures")}>All runs</button> : undefined}>
       {error && !data ? <EmptyPanel title="Couldn’t load quality" body={error} />
         : loading && !data ? <LoadingRows count={6} columns={6} />
           : view === "runs" ? <Owners data={data!} currency={currency} fx={fx} onOpen={(name) => setView("failures", name)} />
             : view === "models" ? <Models data={data!} currency={currency} fx={fx} />
               : <Failures data={data!} currency={currency} fx={fx} />}
-    </Panel>
+    </Panel>}
   </div>;
 }

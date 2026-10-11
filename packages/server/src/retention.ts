@@ -51,13 +51,14 @@ async function oldRowKinds(
   projectId: string,
   bodyCutoff: Date,
   metadataCutoff: Date,
+  rawTelemetryPresent = "",
 ): Promise<{ body: boolean; detail: boolean }> {
   const result = await client.query(
     `SELECT
        EXISTS (
-         SELECT 1 FROM events
+         SELECT 1 FROM events e
          WHERE project_id = $1 AND timestamp < $2
-           AND (request_body IS NOT NULL OR response_body IS NOT NULL OR system_prompt IS NOT NULL
+           AND (request_body IS NOT NULL OR response_body IS NOT NULL OR system_prompt IS NOT NULL ${rawTelemetryPresent}
              OR metadata IS NOT NULL OR context IS NOT NULL OR configuration IS NOT NULL OR usage_event IS NOT NULL)
          UNION ALL
          SELECT 1 FROM usage_components
@@ -108,6 +109,15 @@ export async function runRetention(pool: pg.Pool, now = new Date(), orgId?: stri
          WHERE table_schema = current_schema() AND table_name = 'events' AND column_name = 'content_status'
        ) AS available`,
     );
+    // Raw SDK telemetry (SDK 0.7 schema) is purged with bodies, like metadata.
+    const rawTelemetryColumn = await client.query(
+      `SELECT EXISTS (
+         SELECT 1 FROM information_schema.columns
+         WHERE table_schema = current_schema() AND table_name = 'events' AND column_name = 'raw_telemetry'
+       ) AS available`,
+    );
+    const rawTelemetrySet = rawTelemetryColumn.rows[0]?.available ? "raw_telemetry = NULL," : "";
+    const rawTelemetryPresent = rawTelemetryColumn.rows[0]?.available ? "OR e.raw_telemetry IS NOT NULL" : "";
     const aggregateAvailable = Boolean(aggregateTable.rows[0]?.table_name);
     const checkpointAvailable = Boolean(checkpointTable.rows[0]?.table_name);
     const contentStatusAvailable = Boolean(contentStatusColumn.rows[0]?.available);
@@ -142,7 +152,7 @@ export async function runRetention(pool: pg.Pool, now = new Date(), orgId?: stri
       const metadataCutoff = new Date(now.getTime() - Number(project.metadata_retention_days) * 86_400_000);
       const bodyCutoff = new Date(now.getTime() - Number(project.body_retention_days) * 86_400_000);
       const aggregateCutoff = new Date(now.getTime() - Number(project.aggregate_retention_days) * 86_400_000);
-      const kinds = await oldRowKinds(client, project.id, bodyCutoff, metadataCutoff);
+      const kinds = await oldRowKinds(client, project.id, bodyCutoff, metadataCutoff, rawTelemetryPresent);
       const aggregateOld = aggregateAvailable
         && Boolean((await client.query("SELECT EXISTS (SELECT 1 FROM daily_cost_aggregates WHERE project_id = $1 AND day < $2::date) AS found", [project.id, aggregateCutoff])).rows[0]?.found);
       if (!kinds.body && !kinds.detail && !aggregateOld) {
@@ -178,6 +188,7 @@ export async function runRetention(pool: pg.Pool, now = new Date(), orgId?: stri
          SET request_body = NULL,
              response_body = NULL,
              system_prompt = NULL,
+             ${rawTelemetrySet}
              metadata = CASE WHEN e.metadata IS NULL THEN NULL ELSE '{}'::jsonb END,
              configuration = NULL,
              context = ${scrubJsonExpression("e.context")}${expiredStatusSet}
@@ -185,6 +196,7 @@ export async function runRetention(pool: pg.Pool, now = new Date(), orgId?: stri
            AND e.timestamp < $2
            AND e.created_at < $3
            AND (e.request_body IS NOT NULL OR e.response_body IS NOT NULL OR e.system_prompt IS NOT NULL
+             ${rawTelemetryPresent}
              OR e.metadata IS NOT NULL OR e.configuration IS NOT NULL OR e.context IS NOT NULL)`,
         [project.id, bodyCutoff, sourceFence],
       ) : { rowCount: 0 };

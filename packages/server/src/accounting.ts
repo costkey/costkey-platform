@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import type pg from "pg";
 import { chargesCte } from "./charge-cohort.js";
+import { classifyError } from "./telemetry/errors.js";
+import { mapOtelSpan, otelSpanAttributes, otelSpanInput } from "./telemetry/otel.js";
 
 /**
  * Small server-side normalizer for the additive accounting envelope.
@@ -210,9 +212,15 @@ export function normalizeAccountingEvent(event: AccountingEvent): NormalizedAcco
       ?? context["group"],
   );
   const groupKind = normalizeKind(event["groupKind"] ?? event["group_kind"] ?? context["groupKind"] ?? context["group_kind"]);
-  const lifecycle = normaliseLifecycle(
+  // SDK 0.7 sends the raw error class or JS error name (`errorName`); the
+  // server decides whether it means failed or cancelled.
+  const rawError = rawErrorOutcome(event, nestedLifecycle);
+  const declaredLifecycle = normaliseLifecycle(
     typeof event["lifecycle"] === "string" ? event["lifecycle"] : nestedLifecycle["state"],
   );
+  const lifecycle = rawError && declaredLifecycle !== "started" && (eventType === "lifecycle" || declaredLifecycle !== null)
+    ? rawError.outcome
+    : declaredLifecycle ?? (eventType === "lifecycle" && isEndedState(event, nestedLifecycle) ? "completed" : null);
   const timestamp = isoOrNow(event["timestamp"], new Date().toISOString());
   const lifecycleAt = isoOrNow(
     event["lifecycleAt"] ?? event["lifecycle_at"] ?? nestedLifecycle["at"] ?? event["timestamp"],
@@ -266,6 +274,7 @@ export function normalizeAccountingEvent(event: AccountingEvent): NormalizedAcco
     ?? (eventType === "usage" ? componentId : optionalString(event["id"]));
 
   const configuration = objectValue(event["configuration"]);
+  const span = eventType === "span" ? spanFields(event) : null;
   const normalized: NormalizedAccountingEvent = {
     eventType,
     source,
@@ -282,7 +291,9 @@ export function normalizeAccountingEvent(event: AccountingEvent): NormalizedAcco
     lifecycleAt,
     startedAt: startedAt ? isoOrNow(startedAt, timestamp) : null,
     endedAt: endedAt ? isoOrNow(endedAt, timestamp) : null,
-    errorType: optionalString(event["errorType"] ?? event["error_type"] ?? nestedLifecycle["errorType"]),
+    errorType: rawError && (lifecycle === rawError.outcome || eventType === "span")
+      ? rawError.errorType
+      : optionalString(event["errorType"] ?? event["error_type"] ?? nestedLifecycle["errorType"]),
     expectedItems: optionalInteger(event["expectedItems"] ?? event["expected_items"] ?? nestedLifecycle["expectedItems"]),
     completedItems: optionalInteger(event["completedItems"] ?? event["completed_items"] ?? nestedLifecycle["completedItems"]),
     failedItems: optionalInteger(event["failedItems"] ?? event["failed_items"] ?? nestedLifecycle["failedItems"]),
@@ -313,13 +324,11 @@ export function normalizeAccountingEvent(event: AccountingEvent): NormalizedAcco
     spanId: eventType === "span"
       ? optionalString(event["id"])
       : optionalString(event["spanId"] ?? event["span_id"] ?? context["spanId"] ?? context["span_id"]),
-    parentSpanId: eventType === "span"
-      ? optionalString(event["parentSpanId"] ?? event["parent_span_id"])
-      : null,
-    spanKind: eventType === "span" ? normalizeSpanKind(event["kind"] ?? event["spanKind"] ?? event["span_kind"]) : null,
-    spanName: eventType === "span" ? optionalString(event["name"] ?? event["spanName"] ?? event["span_name"]) : null,
-    spanStatus: eventType === "span" ? normalizeSpanStatus(event["status"]) : null,
-    spanAttributes: eventType === "span" ? spanAttributes(event["attributes"]) : null,
+    parentSpanId: span?.parentSpanId ?? null,
+    spanKind: span?.kind ?? null,
+    spanName: span?.name ?? null,
+    spanStatus: eventType === "span" ? spanStatusWithError(normalizeSpanStatus(event["status"]), event["status"], rawError) : null,
+    spanAttributes: span?.attributes ?? null,
     score: eventType === "score" ? normalizeScore(event) : null,
   };
   if (!optionalString(event["id"])) {
@@ -372,6 +381,41 @@ export function normalizeAccountingEvent(event: AccountingEvent): NormalizedAcco
   return normalized;
 }
 
+/** The raw `errorName` (SDK 0.7) of a lifecycle event or span, classified. */
+function rawErrorOutcome(
+  event: AccountingEvent,
+  nestedLifecycle: Record<string, unknown>,
+): { outcome: "failed" | "cancelled"; errorType: string | null } | null {
+  const error = objectValue(event["error"]);
+  const name = optionalString(event["errorName"] ?? event["error_name"] ?? nestedLifecycle["errorName"] ?? error["name"]);
+  if (!name) return null;
+  const code = optionalString(event["errorCode"] ?? event["error_code"] ?? nestedLifecycle["errorCode"] ?? error["code"]);
+  return classifyError(name, code);
+}
+
+/** A raw lifecycle end without a declared state ("ended", "end", "finished"). */
+function isEndedState(event: AccountingEvent, nestedLifecycle: Record<string, unknown>): boolean {
+  const raw = optionalString(typeof event["lifecycle"] === "string" ? event["lifecycle"] : nestedLifecycle["state"])?.toLowerCase();
+  return raw === "ended" || raw === "end" || raw === "finished";
+}
+
+/**
+ * A span that ended with a raw error name is cancelled or errored by the
+ * server's classification; a still-running span or an explicit ok stays.
+ */
+function spanStatusWithError(
+  status: SpanStatus,
+  rawStatus: unknown,
+  rawError: { outcome: "failed" | "cancelled" } | null,
+): SpanStatus {
+  if (!rawError) return status;
+  const declared = optionalString(rawStatus)?.toLowerCase();
+  if (status === "ok" || (status === "running" && (declared === undefined || declared === "running" || declared === "started"))) {
+    return status;
+  }
+  return rawError.outcome === "cancelled" ? "cancelled" : "error";
+}
+
 /** Validate a score body; the envelope `source` doubles as the score's origin. */
 function normalizeScore(event: AccountingEvent): NormalizedScore {
   const name = optionalString(event["name"] ?? event["scoreName"] ?? event["score_name"]);
@@ -398,6 +442,37 @@ function normalizeScore(event: AccountingEvent): NormalizedScore {
   };
 }
 
+/**
+ * Kind, name, parent and attributes of a span event. OTel bridge spans
+ * (contract detail 9) arrive as `custom` with the raw OTel attributes; the
+ * GenAI conventions decide their kind and display name. Usage and cost are
+ * never derived from them: the transport patch already recorded the calls.
+ */
+function spanFields(event: AccountingEvent): {
+  parentSpanId: string | null;
+  kind: string;
+  name: string | null;
+  attributes: Record<string, unknown> | null;
+} {
+  const declaredKind = normalizeSpanKind(event["kind"] ?? event["spanKind"] ?? event["span_kind"]);
+  const declaredName = optionalString(event["name"] ?? event["spanName"] ?? event["span_name"]);
+  const parentSpanId = optionalString(event["parentSpanId"] ?? event["parent_span_id"]);
+  const otel = otelSpanInput(event);
+  if (!otel) return { parentSpanId, kind: declaredKind, name: declaredName, attributes: spanAttributes(event["attributes"]) };
+  const mapping = mapOtelSpan(otel);
+  const sent = objectValue(event["attributes"]);
+  const otelParent = optionalString(sent["otelParentSpanId"] ?? sent["otel_parent_span_id"]
+    ?? event["otelParentSpanId"] ?? event["otel_parent_span_id"]);
+  return {
+    // The SDK's own span ids link the hierarchy; the OTel parent id is a fallback.
+    parentSpanId: parentSpanId ?? otelParent,
+    // An SDK that already chose a kind keeps it; `custom` is the bridge default.
+    kind: declaredKind !== "custom" ? declaredKind : mapping.kind,
+    name: mapping.name ?? declaredName,
+    attributes: spanAttributes(otelSpanAttributes(sent, otel, mapping)),
+  };
+}
+
 const SPAN_KINDS = new Set(["agent", "step", "tool", "workflow", "task", "judge", "retrieval", "handoff", "guardrail", "chain", "custom"]);
 
 function normalizeSpanKind(value: unknown): string {
@@ -414,6 +489,7 @@ function normalizeSpanStatus(value: unknown): SpanStatus {
 }
 
 const MAX_SPAN_ATTRIBUTES_BYTES = 8_192;
+const MAX_OTEL_ATTRIBUTE_BYTES = 4_608;
 
 /** Keep span attributes small and flat enough to store on every span. */
 function spanAttributes(value: unknown): Record<string, unknown> | null {
@@ -425,10 +501,12 @@ function spanAttributes(value: unknown): Record<string, unknown> | null {
   for (const [key, item] of entries) {
     const encoded = JSON.stringify(item ?? null);
     if (encoded === undefined) continue;
-    const clipped = encoded.length > 2_048 && typeof item === "string" ? item.slice(0, 2_000) : item;
-    const length = key.length + Math.min(encoded.length, 2_048) + 4;
+    // Raw OTel attributes arrive already capped (capOtelAttributes) and get a larger share.
+    const itemLimit = key === "otel" ? MAX_OTEL_ATTRIBUTE_BYTES : 2_048;
+    const clipped = encoded.length > itemLimit && typeof item === "string" ? item.slice(0, 2_000) : item;
+    const length = key.length + Math.min(encoded.length, itemLimit) + 4;
     if (size + length > MAX_SPAN_ATTRIBUTES_BYTES) break;
-    if (encoded.length > 2_048 && typeof item !== "string") continue;
+    if (encoded.length > itemLimit && typeof item !== "string") continue;
     result[key] = clipped;
     size += length;
   }

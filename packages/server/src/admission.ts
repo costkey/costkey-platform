@@ -4,6 +4,7 @@ import { Router as createRouter } from "express";
 import type pg from "pg";
 import { chargesCte } from "./charge-cohort.js";
 import { dispatchEnforcementNotification } from "./notifications.js";
+import { admissionIdentity, estimateUsageBounds, isTelemetryRequest } from "./telemetry/admission.js";
 import {
   InMemoryReservationStore,
   PostgresReservationStore,
@@ -1943,14 +1944,43 @@ async function notifyPolicyRefusal(
   }
 }
 
+/**
+ * SDK 0.7 sends the request skeleton (`request`, or `telemetry.request`)
+ * instead of estimating: the server derives provider, model and usage bounds
+ * from it. Legacy `usageBounds` (and a bounds-shaped `request`) still work.
+ */
+export function admissionRequestFields(body: Record<string, unknown>): {
+  telemetryRequest: Record<string, unknown> | null;
+  usageBounds: Record<string, unknown>;
+  provider: string | null;
+  model: string | null;
+} {
+  const requestValue = aliasValue(body, "request");
+  const telemetryRequest = isTelemetryRequest(requestValue)
+    ? asRecord(requestValue)
+    : isTelemetryRequest(asRecord(body.telemetry).request) ? asRecord(asRecord(body.telemetry).request) : null;
+  const legacy = parseJsonObject(aliasValue(body, "usageBounds", "usage_bounds")
+    ?? (telemetryRequest ? undefined : requestValue));
+  if (!telemetryRequest) return { telemetryRequest: null, usageBounds: legacy, provider: null, model: null };
+  const estimated = estimateUsageBounds(telemetryRequest);
+  const identity = admissionIdentity(telemetryRequest);
+  return {
+    telemetryRequest,
+    usageBounds: estimated ? { ...estimated } : legacy,
+    provider: identity.provider,
+    model: identity.model,
+  };
+}
+
 function bodyAsAdmission(projectId: string, body: Record<string, unknown>): AdmissionRequest {
   const integration = asRecord(aliasValue(body, "integration", "capability"));
+  const fromRequest = admissionRequestFields(body);
   return {
     projectId,
     admissionId: String(body.admissionId ?? body.admission_id ?? ""),
     requestId: nonEmptyString(aliasValue(body, "requestId", "request_id")),
-    provider: String(body.provider ?? ""),
-    model: nonEmptyString(body.model),
+    provider: String(fromRequest.provider ?? body.provider ?? ""),
+    model: fromRequest.model ?? nonEmptyString(body.model),
     traceId: nonEmptyString(aliasValue(body, "traceId", "trace_id")),
     executionId: nonEmptyString(aliasValue(body, "executionId", "execution_id")),
     scope: parseJsonObject(body.scope) as PolicyScope,
@@ -1961,7 +1991,7 @@ function bodyAsAdmission(projectId: string, body: Record<string, unknown>): Admi
       capabilityVersion: nonEmptyString(aliasValue(integration, "capabilityVersion", "capability_version")) ?? undefined,
       verified: integration.verified === true,
     },
-    usageBounds: parseJsonObject(aliasValue(body, "usageBounds", "usage_bounds", "request")) as ProviderUsageBounds,
+    usageBounds: fromRequest.usageBounds as ProviderUsageBounds,
     claimedCostUsd: finiteNonNegative(aliasValue(body, "claimedCostUsd", "claimed_cost_usd", "costUpperBoundUsd")),
     providerRequest: body.providerRequest ?? body.provider_request,
   };

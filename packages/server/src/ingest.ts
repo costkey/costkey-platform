@@ -15,6 +15,12 @@ import {
 import { enrichFeatureContext } from "./feature-mappings.js";
 import { scheduleFindingsRefresh } from "./findings.js";
 import { redactCapturedContent, stripIngestEventPrivacy } from "./privacy.js";
+import { applyCallTelemetry, hasCallTelemetry, type AppliedTelemetry } from "./telemetry/event.js";
+import { expandLiveKitEvent, isLiveKitTelemetry, LiveKitPayloadError } from "./telemetry/livekit.js";
+import { projectCustomExtractors } from "./telemetry/custom-providers.js";
+import { callGraphFromUpload } from "./telemetry/callgraph.js";
+import { stripOtelContent } from "./telemetry/otel.js";
+import type { ServerExtractor } from "./telemetry/types.js";
 
 function textFromContent(content: unknown): string | null {
   if (typeof content === "string") return content;
@@ -213,6 +219,9 @@ const INTERNAL_FILE_PATTERNS = [
   "site-packages/requests/",
   "site-packages/urllib3/",
   "site-packages/aiohttp/",
+  // AWS transport under boto3 (the Python SDK dropped these client-side)
+  "site-packages/botocore/",
+  "site-packages/aiobotocore/",
   // Python runtime / stdlib — see special handling in filterFrames
   // "/lib/python" is checked separately to exclude site-packages paths
   "threading.py",
@@ -226,6 +235,13 @@ const INTERNAL_FILE_PATTERNS = [
   "node_modules/@google/generative-ai/",
   "node_modules/@google/genai/",
   "node_modules/cohere-ai/",
+  // Provider SDKs the TypeScript SDK 0.6 dropped client-side
+  "node_modules/@aws-sdk/",
+  "node_modules/@smithy/",
+  "node_modules/@ai-sdk/",
+  "node_modules/@elevenlabs/",
+  "node_modules/exa-js/",
+  "node_modules/@mendable/firecrawl-js/",
   // Node.js HTTP / runtime
   "node_modules/undici/",
   "node_modules/node-fetch/",
@@ -295,17 +311,20 @@ const INTERNAL_FN_PATTERNS = [
   "__ck_",
 ];
 
+/** Whether a frame is SDK, library, framework or runtime code rather than the application's. */
+export function isInternalFrame(frame: StackFrame): boolean {
+  const file = frame.fileName ?? "";
+  const fn = frame.functionName ?? "";
+  if (!file && !fn) return true;
+  if (INTERNAL_FILE_PATTERNS.some((p) => file.includes(p))) return true;
+  if (INTERNAL_FN_PATTERNS.some((p) => fn.includes(p))) return true;
+  // Python stdlib: /lib/pythonX.Y/foo.py but NOT /lib/pythonX.Y/site-packages/
+  if (file.includes("/lib/python") && !file.includes("site-packages")) return true;
+  return false;
+}
+
 export function filterFrames(frames: StackFrame[]): StackFrame[] {
-  const filtered = frames.filter((frame) => {
-    const file = frame.fileName ?? "";
-    const fn = frame.functionName ?? "";
-    if (!file && !fn) return false;
-    if (INTERNAL_FILE_PATTERNS.some((p) => file.includes(p))) return false;
-    if (INTERNAL_FN_PATTERNS.some((p) => fn.includes(p))) return false;
-    // Python stdlib: /lib/pythonX.Y/foo.py but NOT /lib/pythonX.Y/site-packages/
-    if (file.includes("/lib/python") && !file.includes("site-packages")) return false;
-    return true;
-  });
+  const filtered = frames.filter((frame) => !isInternalFrame(frame));
   // Intentional: when every frame is internal (SDK/framework/runtime), return
   // an empty array instead of falling back to the raw stack. Downstream
   // findBusinessLogicFrame → undefined → bl_function stays null.
@@ -751,8 +770,11 @@ const SPAN_CONTENT_KEYS = ["input", "output", "args", "arguments", "result", "pr
 
 /** Metadata-only projects keep span structure and timing but never tool or agent payloads. */
 export function stripSpanContent(event: Record<string, unknown>): void {
+  // Raw OTel attributes (contract detail 9) nest their content under `otel`.
+  stripOtelContent(event);
   const attributes = event["attributes"];
   if (!attributes || typeof attributes !== "object" || Array.isArray(attributes)) return;
+  stripOtelContent(attributes as Record<string, unknown>);
   for (const key of Object.keys(attributes)) {
     const leaf = key.split(".").pop() ?? key;
     if (SPAN_CONTENT_KEYS.includes(leaf.toLowerCase())) delete (attributes as Record<string, unknown>)[key];
@@ -818,6 +840,28 @@ export function createIngestRouter(pool: pg.Pool): Router {
 
       const sdkVersion = typeof payload.sdkVersion === "string" ? payload.sdkVersion.slice(0, 40) : null;
       const legacyCallTimestamps = callTimestampIsEnd(sdkVersion);
+
+      // Raw LiveKit rows (SDK 0.7) expand into one cumulative usage event per
+      // component; `index` keeps rejections pointing at the sent event.
+      const batch: Array<{ index: number; event: CostKeyEvent; expansionError?: Error }> = [];
+      for (const [index, event] of payload.events.entries()) {
+        const raw = event as unknown as Record<string, unknown>;
+        if (!raw || typeof raw !== "object" || !isLiveKitTelemetry(raw)) {
+          batch.push({ index, event });
+          continue;
+        }
+        try {
+          const expanded = expandLiveKitEvent(raw);
+          for (const item of expanded) batch.push({ index, event: item as unknown as CostKeyEvent });
+        } catch (error) {
+          batch.push({ index, event, expansionError: error instanceof Error ? error : new LiveKitPayloadError(String(error)) });
+        }
+      }
+      // Custom provider extractors are server config, read once per batch.
+      const customExtractors: ServerExtractor[] = batch.some(({ event }) => event && typeof event === "object"
+        && hasCallTelemetry(event as unknown as Record<string, unknown>))
+        ? await projectCustomExtractors(pool, projectId).catch(() => [])
+        : [];
       let acceptedCount = 0;
       const rejected: Array<{ index: number; id: string | null; code: string; error: string }> = [];
 
@@ -831,9 +875,18 @@ export function createIngestRouter(pool: pg.Pool): Router {
         await client.query("BEGIN");
         await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [accountingLockKey(projectId)]);
 
-        for (const [index, event] of payload.events.entries()) {
+        for (const { index, event, expansionError } of batch) {
           const handleEvent = async (): Promise<void> => {
+              if (expansionError) throw expansionError;
               const rawEvent = event as unknown as Record<string, unknown>;
+              // The OpenAI Agents SDK posts its own traces to api.openai.com.
+              // Those posts are not model calls; drop them (0.6 SDKs captured them).
+              if (isAgentsTraceExport(rawEvent)) return;
+              // SDK 0.7 sends raw telemetry: derive every normalized call field
+              // from it (telemetry wins). Without it the legacy fields stand.
+              const telemetry: AppliedTelemetry | null = rawEvent && typeof rawEvent === "object"
+                ? applyCallTelemetry(rawEvent, { customExtractors, isInternalFrame })
+                : null;
               // The DSN clock is useful for near-real-time ordering, but must not
               // select an arbitrary historical/future effective price interval.
               rawEvent.timestamp = trustedEventTimestamp(rawEvent.timestamp);
@@ -841,7 +894,7 @@ export function createIngestRouter(pool: pg.Pool): Router {
               // call at its start so traces, waterfalls and pricing agree.
               const rawType = rawEvent["eventType"] ?? rawEvent["event_type"];
               const durationMs = typeof rawEvent["durationMs"] === "number" ? rawEvent["durationMs"] : null;
-              if (legacyCallTimestamps && (rawType === undefined || rawType === "call") && durationMs !== null && durationMs > 0) {
+              if (!telemetry && legacyCallTimestamps && (rawType === undefined || rawType === "call") && durationMs !== null && durationMs > 0) {
                 rawEvent.timestamp = new Date(Date.parse(String(rawEvent.timestamp)) - durationMs).toISOString();
               }
               // Release filters read context.release; carry the batch release there.
@@ -994,6 +1047,24 @@ export function createIngestRouter(pool: pg.Pool): Router {
                 }
               }
 
+              // A raw call that failed or was cancelled (AbortError, CancelledError,
+              // non-2xx) records that outcome on the call row only; trace
+              // lifecycle still comes from explicit lifecycle events.
+              if (telemetry?.derived.outcome && accounting.eventType === "call") {
+                accounting.lifecycle = telemetry.derived.outcome.lifecycle;
+                accounting.errorType = telemetry.derived.outcome.errorType;
+                const end = Date.parse(String(event.timestamp)) + (telemetry.derived.durationMs ?? 0);
+                if (Number.isFinite(end)) accounting.lifecycleAt = new Date(end).toISOString();
+              }
+              // The raw envelope is kept for reprocessing with the same privacy
+              // treatment as metadata: only where body capture is allowed, and
+              // through the same credential redaction.
+              const storedTelemetry = telemetry?.stored && allowBody
+                ? JSON.stringify(projectSettings.redaction_enabled !== false
+                  ? redactCapturedContent(telemetry.stored)
+                  : telemetry.stored)
+                : null;
+
               const inserted = await client.query(
                 `INSERT INTO events (
                   id, timestamp, project_id, provider, model, url, method, status_code,
@@ -1011,8 +1082,8 @@ export function createIngestRouter(pool: pg.Pool): Router {
                   cost_basis, cost_source, cost_currency, unit_kind, unit_value,
                   unit, aggregation, revision, entity_type, entity_id, pricing_id, pricing_date, sequence,
                   content_status, feature_source, feature_mapping_id, feature_mapping_action_id, feature_original,
-                  span_id, sdk_version, native_units
-                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,$51,$52,$53,$54,$55,$56,$57,$58,$59,$60,$61,$62,$63,$64,$65,$66,$67,$68,$69,$70,$71,$72,$73,$74,$75)
+                  span_id, sdk_version, native_units, raw_telemetry
+                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,$51,$52,$53,$54,$55,$56,$57,$58,$59,$60,$61,$62,$63,$64,$65,$66,$67,$68,$69,$70,$71,$72,$73,$74,$75,$76)
                 ON CONFLICT (project_id, id) DO NOTHING`,
                 [
                   event.id, event.timestamp, projectId,
@@ -1081,6 +1152,7 @@ export function createIngestRouter(pool: pg.Pool): Router {
                   accounting.spanId,
                   sdkVersion,
                   nativeUnitsJson(event.usage),
+                  storedTelemetry,
                 ],
               );
 
@@ -1223,11 +1295,18 @@ export function createIngestRouter(pool: pg.Pool): Router {
         return;
       }
 
-      const { functions, sdk_version } = req.body as { functions?: Record<string, unknown>; sdk_version?: string };
-      if (!functions || typeof functions !== "object") {
+      const body = (req.body ?? {}) as { functions?: Record<string, unknown>; sdkVersion?: unknown; sdk_version?: unknown };
+      const functions = body.functions;
+      if (!functions || typeof functions !== "object" || Array.isArray(functions)) {
         res.status(400).json({ error: "Invalid payload: missing functions object" });
         return;
       }
+      // Python sends `sdkVersion`; accept the snake_case spelling too.
+      const versionValue = body.sdkVersion ?? body.sdk_version;
+      const sdkVersion = typeof versionValue === "string" ? versionValue.slice(0, 40) : null;
+      // SDK 0.7 uploads the raw graph and the server scores it; older SDKs
+      // upload scores, kept as sent.
+      const graph = callGraphFromUpload(functions);
 
       // Upsert into call_graphs table
       await pool.query(
@@ -1237,13 +1316,13 @@ export function createIngestRouter(pool: pg.Pool): Router {
            graph_data = EXCLUDED.graph_data,
            sdk_version = EXCLUDED.sdk_version,
            uploaded_at = NOW()`,
-        [projectId, JSON.stringify(functions), sdk_version ?? null],
+        [projectId, JSON.stringify(graph), sdkVersion],
       );
 
       // Update in-memory cache
-      callGraphCache.set(projectId, functions as Record<string, { score: number; fan_in: number; calls_ai: boolean; line: number }>);
+      callGraphCache.set(projectId, graph);
 
-      res.status(200).json({ accepted: Object.keys(functions).length });
+      res.status(200).json({ accepted: Object.keys(graph).length });
     } catch (err) {
       console.error("[costkey] Call graph upload error:", err);
       res.status(500).json({ error: "Internal server error" });
@@ -1322,4 +1401,21 @@ export function createIngestRouter(pool: pg.Pool): Router {
   });
 
   return router;
+}
+
+/** An OpenAI Agents SDK trace export captured as if it were a model call. */
+export function isAgentsTraceExport(event: Record<string, unknown> | null | undefined): boolean {
+  if (!event || typeof event !== "object") return false;
+  const telemetry = event["telemetry"] as Record<string, unknown> | undefined;
+  const request = telemetry && typeof telemetry === "object" ? telemetry["request"] as Record<string, unknown> | undefined : undefined;
+  const candidates = [request?.["url"], event["url"]];
+  return candidates.some((value) => {
+    if (typeof value !== "string") return false;
+    try {
+      const url = new URL(value);
+      return url.hostname === "api.openai.com" && url.pathname.startsWith("/v1/traces/");
+    } catch {
+      return false;
+    }
+  });
 }

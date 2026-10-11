@@ -4,10 +4,16 @@ import type pg from "pg";
 import { orgScope } from "./middleware.js";
 import { requireAuth } from "./auth.js";
 import { chargesCte } from "./charge-cohort.js";
+import { roleCanManageWorkspace, roleCanReadContent } from "./permissions.js";
+import { DEFAULT_JUDGE_MODELS, JUDGE_PROVIDERS, JUDGE_TEMPLATES, RULES } from "./quality-checks/templates.js";
+import { CheckInputError, createCheck, deleteCheck, getCheck, parseCheckInput, publicCheck, updateCheck } from "./quality-checks/store.js";
+import { BackfillBusyError, MAX_BACKFILL_RUNS, backfillCheck } from "./quality-checks/worker.js";
+import { loadChecksWithStats, loadRunCheckResults } from "./quality-checks/results.js";
 
 /**
  * Quality: judge/eval scores on runs, and latency & reliability of the calls
- * underneath them. Read-only; every query is scoped to one project and period.
+ * underneath them. Every query is scoped to one project and period. Quality
+ * check configuration (server-side judges and rules) is managed here too.
  */
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -73,7 +79,7 @@ function ratio(part: number, whole: number): number | null {
   return whole > 0 ? part / whole : null;
 }
 
-async function workspaceTimezone(pool: pg.Pool, projectId: string): Promise<string> {
+export async function workspaceTimezone(pool: pg.Pool, projectId: string): Promise<string> {
   try {
     const result = await pool.query(
       `SELECT COALESCE(ws.timezone, 'UTC') AS timezone
@@ -446,6 +452,107 @@ export function createQualityRouter(pool: pg.Pool): Router {
       res.json({ from: scope.from, to: scope.to, currency: "USD", ...reliability });
     } catch (error) {
       fail(res, error, "Quality reliability");
+    }
+  });
+
+  // ── Quality checks: server-side judges and rules ───────────────────────
+  const userOf = (req: Request) => (req as Request & { user?: { id?: string; role?: string } }).user;
+  const canManageChecks = (req: Request, res: Response): boolean => {
+    if (roleCanManageWorkspace(userOf(req)?.role)) return true;
+    res.status(403).json({ error: "Only owners and admins can manage quality checks" });
+    return false;
+  };
+  const checkFail = (res: Response, error: unknown, label: string) => {
+    if (error instanceof CheckInputError) { res.status(400).json({ error: error.message }); return; }
+    if (error instanceof BackfillBusyError) { res.status(409).json({ error: error.message }); return; }
+    fail(res, error, label);
+  };
+
+  router.get("/api/v1/projects/:projectId/quality/checks", async (req, res) => {
+    try {
+      const projectId = req.params["projectId"] as string;
+      const scope = readQualityScope(req.query);
+      const { checks, textCapture } = await loadChecksWithStats(pool, projectId, scope.from, scope.to);
+      res.json({
+        from: scope.from,
+        to: scope.to,
+        canManage: roleCanManageWorkspace(userOf(req)?.role),
+        textCapture,
+        maxBackfillRuns: MAX_BACKFILL_RUNS,
+        checks,
+        templates: JUDGE_TEMPLATES,
+        rules: RULES,
+        providers: JUDGE_PROVIDERS.map((id) => ({ id, defaultModel: DEFAULT_JUDGE_MODELS[id] })),
+      });
+    } catch (error) {
+      checkFail(res, error, "Quality checks");
+    }
+  });
+
+  router.post("/api/v1/projects/:projectId/quality/checks", async (req, res) => {
+    if (!canManageChecks(req, res)) return;
+    try {
+      const projectId = req.params["projectId"] as string;
+      const input = parseCheckInput(req.body);
+      const check = await createCheck(pool, projectId, input, userOf(req)?.id ?? null);
+      res.status(201).json({ check: publicCheck(check) });
+    } catch (error) {
+      checkFail(res, error, "Create quality check");
+    }
+  });
+
+  router.patch("/api/v1/projects/:projectId/quality/checks/:checkId", async (req, res) => {
+    if (!canManageChecks(req, res)) return;
+    try {
+      const projectId = req.params["projectId"] as string;
+      const existing = await getCheck(pool, projectId, req.params["checkId"] as string);
+      if (!existing) { res.status(404).json({ error: "Check not found" }); return; }
+      const input = parseCheckInput(req.body, existing);
+      const check = await updateCheck(pool, existing, input, userOf(req)?.id ?? null);
+      res.json({ check: publicCheck(check) });
+    } catch (error) {
+      checkFail(res, error, "Update quality check");
+    }
+  });
+
+  router.delete("/api/v1/projects/:projectId/quality/checks/:checkId", async (req, res) => {
+    if (!canManageChecks(req, res)) return;
+    try {
+      const removed = await deleteCheck(pool, req.params["projectId"] as string, req.params["checkId"] as string);
+      if (!removed) { res.status(404).json({ error: "Check not found" }); return; }
+      res.status(204).end();
+    } catch (error) {
+      checkFail(res, error, "Delete quality check");
+    }
+  });
+
+  router.post("/api/v1/projects/:projectId/quality/checks/:checkId/backfill", async (req, res) => {
+    if (!canManageChecks(req, res)) return;
+    try {
+      const check = await getCheck(pool, req.params["projectId"] as string, req.params["checkId"] as string);
+      if (!check) { res.status(404).json({ error: "Check not found" }); return; }
+      if (!check.enabled) { res.status(400).json({ error: "Turn the check on before running it" }); return; }
+      const rawLimit = (req.body as Record<string, unknown> | undefined)?.["limit"];
+      const limit = rawLimit === undefined ? MAX_BACKFILL_RUNS : Number(rawLimit);
+      if (!Number.isFinite(limit) || limit < 1) { res.status(400).json({ error: `limit must be between 1 and ${MAX_BACKFILL_RUNS}` }); return; }
+      const result = await backfillCheck(pool, check, limit);
+      res.status(202).json(result);
+    } catch (error) {
+      checkFail(res, error, "Quality check backfill");
+    }
+  });
+
+  router.get("/api/v1/projects/:projectId/quality/runs/:traceId/checks", async (req, res) => {
+    try {
+      const results = await loadRunCheckResults(
+        pool,
+        req.params["projectId"] as string,
+        req.params["traceId"] as string,
+        roleCanReadContent(userOf(req)?.role),
+      );
+      res.json({ traceId: req.params["traceId"], results });
+    } catch (error) {
+      checkFail(res, error, "Run quality checks");
     }
   });
 

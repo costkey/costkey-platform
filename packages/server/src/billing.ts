@@ -282,7 +282,12 @@ export interface ServerPrice {
  * Price a call from server-owned prices, most specific first: a price the
  * project set, the synced catalog, then the built-in table.
  */
-export async function priceCall(pool: pg.Pool | pg.PoolClient, projectId: string, input: CallPricingInput): Promise<ServerPrice | null> {
+export async function priceCall(pool: pg.Pool | pg.PoolClient, projectId: string, rawInput: CallPricingInput): Promise<ServerPrice | null> {
+  // DeepSeek reports no cache writes: SDK 0.6 rows carry its cache-miss
+  // tokens (ordinary input, already in inputTokens) as cache creation.
+  const input: CallPricingInput = rawInput.provider === "deepseek" && rawInput.usage.cacheCreationTokens != null
+    ? { ...rawInput, usage: { ...rawInput.usage, cacheCreationTokens: null } }
+    : rawInput;
   const at = input.timestamp ? new Date(input.timestamp).getTime() : Date.now();
   const usageProvider = providerChain(input.provider, input.url)[0] ?? input.provider;
   const model = input.model ?? input.requestModel ?? null;
@@ -314,7 +319,7 @@ export async function priceCall(pool: pg.Pool | pg.PoolClient, projectId: string
     const estimate = computeCost(
       name, input.usage.inputTokens ?? null, input.usage.outputTokens ?? null,
       input.usage.cacheReadTokens, input.usage.cacheCreationTokens, input.provider,
-      input.timestamp, input.usage.imageOutputTokens,
+      input.timestamp, input.usage.imageOutputTokens, input.usage.nativeUnits?.["cacheCreation1hTokens"] ?? null,
     );
     if (estimate !== null) return { cost: estimate, source: "pricing_table", pricingId: null, pricingDate: null };
   }

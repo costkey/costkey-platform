@@ -459,15 +459,23 @@ export function createPrivacyRouter(pool: pg.Pool): Router {
                OR metadata IS DISTINCT FROM ${scrubAccountingMetadata("metadata")}
                OR usage_event IS DISTINCT FROM ${scrubUsageMetadata("usage_event")} THEN 'redacted' ELSE content_status END`
         : "";
+      // Raw SDK telemetry follows metadata (the column exists from SDK 0.7 schema on).
+      const rawTelemetryColumn = await pool.query(
+        `SELECT EXISTS (
+           SELECT 1 FROM information_schema.columns
+           WHERE table_schema = current_schema() AND table_name = 'events' AND column_name = 'raw_telemetry'
+         ) AS available`,
+      );
+      const rawTelemetryAvailable = Boolean(rawTelemetryColumn.rows[0]?.available);
       const result = await pool.query(
         `UPDATE events
-         SET request_body = NULL, response_body = NULL, system_prompt = NULL,
+         SET request_body = NULL, response_body = NULL, system_prompt = NULL,${rawTelemetryAvailable ? "\n             raw_telemetry = NULL," : ""}
              metadata = ${scrubAccountingMetadata("metadata")},
              usage_event = ${scrubUsageMetadata("usage_event")},
              configuration = NULL,
              context = ${scrubAccountingContext("context")}${statusSet}
          WHERE project_id = $1
-           AND (request_body IS NOT NULL OR response_body IS NOT NULL OR system_prompt IS NOT NULL
+           AND (request_body IS NOT NULL OR response_body IS NOT NULL OR system_prompt IS NOT NULL${rawTelemetryAvailable ? " OR raw_telemetry IS NOT NULL" : ""}
              OR metadata IS NOT NULL OR usage_event IS NOT NULL OR configuration IS NOT NULL OR context IS NOT NULL)`,
         [projectId],
       );

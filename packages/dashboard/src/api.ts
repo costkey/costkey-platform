@@ -1062,3 +1062,35 @@ export interface QualitySummary {
 export function getQualitySummary(projectId: string, scope: InsightScope, owner?: string | null): Promise<QualitySummary> {
   return get(`/projects/${encodeURIComponent(projectId)}/quality/summary?${scopeQuery(scope)}${owner ? `&owner=${encodeURIComponent(owner)}` : ""}`);
 }
+
+export type BoardBucketUnit = "hour" | "day";
+
+export interface OverviewBoardLatency {
+  count: number;
+  p50Ms: number | null;
+  p95Ms: number | null;
+  series: Array<{ bucket: string; count: number; p50Ms: number | null; p95Ms: number | null }>;
+}
+
+export interface OverviewBoardCount { name: string; runs: number; calls: number }
+
+/** The Overview board: runs, scores, model tokens, agent usage, volume and latency for one window and the one before it. */
+export interface OverviewBoard {
+  window: { from: string; to: string; environment: string | null; timezone: string; bucket: BoardBucketUnit };
+  previous: { from: string; to: string };
+  buckets: string[];
+  runs: { current: { runs: number; agentRuns: number }; previous: { runs: number; agentRuns: number } };
+  scores: {
+    current: { avg: number | null; count: number; allCount: number };
+    previous: { avg: number | null; count: number; allCount: number };
+    checks: Array<{ name: string; avg: number | null; count: number; runs: number; unitScale: boolean; series: Array<{ bucket: string; avg: number | null; count: number }> }>;
+  };
+  models: Array<{ provider: string | null; model: string; calls: number; input: number | null; output: number | null; cacheRead: number | null; cacheWrite: number | null; cost: number | null; unpriced: number }>;
+  agents: Array<{ name: string; runs: number; input: number; output: number; cost: number | null; unpriced: number }>;
+  volume: { agents: OverviewBoardCount[]; workflows: OverviewBoardCount[]; tools: OverviewBoardCount[] };
+  latency: { agents: OverviewBoardLatency; workflows: OverviewBoardLatency; tools: OverviewBoardLatency };
+}
+
+export function getOverviewBoard(projectId: string, scope: InsightScope): Promise<OverviewBoard> {
+  return get(`/projects/${encodeURIComponent(projectId)}/insights/board?${scopeQuery(scope)}`);
+}

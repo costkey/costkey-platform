@@ -31,12 +31,14 @@ COPY packages/server/package.json packages/server/
 COPY packages/dashboard/package.json packages/dashboard/
 COPY packages/sdk/package.json packages/sdk/
 COPY packages/cli/package.json packages/cli/
-RUN npm ci --omit=dev --workspace=packages/server
+RUN npm ci --omit=dev --workspace=packages/server && mkdir -p packages/server/node_modules
 
 FROM node:20-bookworm-slim
 WORKDIR /app
 ENV NODE_ENV=production PORT=4100
 COPY --from=deps /app/node_modules node_modules
+# npm keeps some server dependencies beside the package rather than at the root.
+COPY --from=deps /app/packages/server/node_modules packages/server/node_modules
 COPY --from=deps /app/package.json ./
 COPY --from=build /app/packages/shared/package.json packages/shared/
 COPY --from=build /app/packages/shared/dist packages/shared/dist

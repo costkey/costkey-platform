@@ -36,6 +36,9 @@ case "$INGRESS" in
   *) echo "COSTKEY_INGRESS must be internal, internal-and-cloud-load-balancing or all" >&2; exit 1 ;;
 esac
 gc() { gcloud --project "$PROJECT" --quiet "$@"; }
+# Cloud SQL creates and resizes can outlast gcloud's 10 minute wait, so start
+# them async and wait for the operation as long as it takes.
+sql_wait() { gc sql operations wait "$1" --timeout=unlimited >/dev/null; }
 
 echo "Enabling services"
 gc services enable run.googleapis.com sqladmin.googleapis.com artifactregistry.googleapis.com \
@@ -72,15 +75,22 @@ if ! gc artifacts repositories describe ghcr --location "$REGION" >/dev/null 2>&
 fi
 IMAGE="${REGION}-docker.pkg.dev/${PROJECT}/ghcr/costkey/costkey:${VERSION}"
 
+for op in $(gc sql operations list --instance="$INSTANCE" --filter='status!=DONE' --format='value(name)' 2>/dev/null); do
+  echo "Waiting for an earlier Cloud SQL operation to finish"
+  sql_wait "$op"
+done
 if ! gc sql instances describe "$INSTANCE" >/dev/null 2>&1; then
   echo "Creating Cloud SQL for Postgres on a private IP (a few minutes)"
-  gc sql instances create "$INSTANCE" --database-version=POSTGRES_16 --edition=enterprise \
+  op="$(gc sql instances create "$INSTANCE" --database-version=POSTGRES_16 --edition=enterprise \
     --tier="$DB_TIER" --region="$REGION" \
-    --network="projects/${PROJECT}/global/networks/${NETWORK}" --no-assign-ip
+    --network="projects/${PROJECT}/global/networks/${NETWORK}" --no-assign-ip \
+    --async --format='value(name)')"
+  sql_wait "$op"
 fi
 if [ "$(gc sql instances describe "$INSTANCE" --format='value(settings.tier)')" != "$DB_TIER" ]; then
   echo "Resizing ${INSTANCE} to ${DB_TIER}"
-  gc sql instances patch "$INSTANCE" --tier="$DB_TIER"
+  op="$(gc sql instances patch "$INSTANCE" --tier="$DB_TIER" --async --format='value(name)')"
+  sql_wait "$op"
 fi
 gc sql databases describe costkey --instance "$INSTANCE" >/dev/null 2>&1 || gc sql databases create costkey --instance "$INSTANCE"
 DB_HOST="$(gc sql instances describe "$INSTANCE" --format=json \
@@ -90,7 +100,9 @@ DB_HOST="$(gc sql instances describe "$INSTANCE" --format=json \
 secret() {
   local name="$1" value="$2"
   if ! gc secrets describe "$name" >/dev/null 2>&1; then
-    printf '%s' "$value" | gc secrets create "$name" --data-file=- --replication-policy=automatic
+    # Stored in REGION, not replicated globally, so org location policies allow it.
+    printf '%s' "$value" | gc secrets create "$name" --data-file=- \
+      --replication-policy=user-managed --locations="$REGION"
   else
     printf '%s' "$value" | gc secrets versions add "$name" --data-file=- >/dev/null
   fi

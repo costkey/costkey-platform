@@ -1,0 +1,13 @@
+CostKey is starting.
+
+{{- if .Values.ingress.enabled }}
+Open {{ include "costkey.publicUrl" . }} and sign up to create your workspace.
+{{- else }}
+Reach it with:
+
+  kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "costkey.fullname" . }} 4100:{{ .Values.service.port }}
+
+then open http://localhost:4100 and sign up to create your workspace.
+{{- end }}
+
+Copy your project's DSN into your app. It points at {{ include "costkey.publicUrl" . }}.

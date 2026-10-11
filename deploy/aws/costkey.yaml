@@ -1,0 +1,68 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Self-hosted CostKey on one EC2 instance: Postgres plus the CostKey server and
+  console, run with Docker. Open the URL in the outputs and sign up.
+
+Parameters:
+  InstanceType:
+    Type: String
+    Default: t3.small
+    AllowedValues: [t3.small, t3.medium, t3.large, t3.xlarge]
+    Description: t3.small suits a team; move up for heavy traffic.
+  AllowedCidr:
+    Type: String
+    Default: 0.0.0.0/0
+    Description: Who can reach CostKey on port 4100. Narrow this to your office or VPN.
+  DiskGiB:
+    Type: Number
+    Default: 30
+    MinValue: 20
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+
+Resources:
+  CostKeySecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: CostKey console and SDK traffic
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 4100
+          ToPort: 4100
+          CidrIp: !Ref AllowedCidr
+
+  CostKeyInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: !Ref InstanceType
+      SecurityGroupIds: [!GetAtt CostKeySecurityGroup.GroupId]
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: !Ref DiskGiB
+            VolumeType: gp3
+            Encrypted: true
+      Tags:
+        - Key: Name
+          Value: costkey
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          set -euxo pipefail
+          dnf install -y docker
+          systemctl enable --now docker
+          mkdir -p /usr/local/lib/docker/cli-plugins
+          curl -fsSL "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-$(uname -m)" \
+            -o /usr/local/lib/docker/cli-plugins/docker-compose
+          chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+          TOKEN=$(curl -fsS -X PUT http://169.254.169.254/latest/api/token -H "X-aws-ec2-metadata-token-ttl-seconds: 60")
+          HOST=$(curl -fsS -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/public-hostname)
+          export COSTKEY_DIR=/opt/costkey COSTKEY_PUBLIC_URL="http://${HOST}:4100"
+          curl -fsSL https://costkey.dev/install.sh | sh
+
+Outputs:
+  CostKeyUrl:
+    Description: Open this, sign up, and copy your project's DSN into your app. It can take three minutes to start.
+    Value: !Sub "http://${CostKeyInstance.PublicDnsName}:4100"

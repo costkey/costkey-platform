@@ -1,0 +1,36 @@
+# CostKey on Fly.io, from the published image.
+#
+#   fly launch --copy-config --no-deploy --name <your-app>
+#   fly postgres create --name <your-app>-db
+#   fly postgres attach <your-app>-db          # sets DATABASE_URL
+#   fly secrets set COSTKEY_JWT_SECRET=$(openssl rand -hex 32) COSTKEY_NOTIFICATION_ENCRYPTION_KEY=$(openssl rand -hex 32)
+#   fly deploy
+#
+# DSNs use https://<your-app>.fly.dev unless you set PUBLIC_URL.
+app = "costkey"
+primary_region = "iad"
+
+[build]
+  image = "ghcr.io/costkey/costkey:latest"
+
+[env]
+  NODE_ENV = "production"
+  PORT = "4100"
+
+[http_service]
+  internal_port = 4100
+  force_https = true
+  # Price sync, alerts and summaries run in the background; keep one machine up.
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    method = "GET"
+    path = "/health"
+    interval = "15s"
+    timeout = "5s"
+    grace_period = "30s"
+
+[[vm]]
+  memory = "1gb"

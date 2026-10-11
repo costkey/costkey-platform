@@ -14,6 +14,7 @@ on:
       - packages/server/**
       - packages/dashboard/**
       - packages/shared/**
+      - deploy/**
       - .github/workflows/self-host.yml
   pull_request:
   workflow_dispatch:
@@ -55,8 +56,43 @@ jobs:
           docker compose ps -a
           docker compose logs costkey --tail 200
 
+  kubernetes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - name: Lint the chart
+        run: helm lint deploy/helm/costkey
+      - uses: helm/kind-action@v1
+      - name: Build the image into the cluster
+        run: |
+          docker build -f Dockerfile.selfhost -t costkey:ci .
+          kind load docker-image costkey:ci --name chart-testing
+      - name: Install the chart
+        run: |
+          helm install costkey deploy/helm/costkey --set image.repository=costkey --set image.tag=ci \
+            --set image.pullPolicy=Never --set postgres.storage=1Gi --wait --timeout 8m
+      - name: Smoke test
+        run: |
+          kubectl port-forward svc/costkey 4100:80 >/dev/null 2>&1 &
+          for i in $(seq 1 30); do curl -fsS http://localhost:4100/health && break; sleep 2; done
+          signup=$(curl -fsS -X POST http://localhost:4100/auth/signup -H 'content-type: application/json' \
+            -d '{"email":"ci@example.com","password":"ci-password-1","name":"CI","orgName":"CI"}')
+          echo "$signup" | grep -q '"dsn":"http://ck_[a-z0-9]*@localhost:4100/'
+      - name: Upgrades keep the generated secrets
+        run: |
+          before=$(kubectl get secret costkey -o jsonpath='{.data.COSTKEY_JWT_SECRET}')
+          helm upgrade costkey deploy/helm/costkey --reuse-values --wait --timeout 5m
+          after=$(kubectl get secret costkey -o jsonpath='{.data.COSTKEY_JWT_SECRET}')
+          test -n "$before" && test "$before" = "$after"
+      - name: Cluster state
+        if: always()
+        run: |
+          kubectl get pods -o wide
+          kubectl logs deploy/costkey --tail 100 || true
+
   publish:
-    needs: smoke
+    needs: [smoke, kubernetes]
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-latest
     steps:
@@ -90,3 +126,12 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - uses: azure/setup-helm@v4
+        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Publish the Helm chart
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          helm package deploy/helm/costkey --version "$version" --app-version "$version"
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+          helm push "costkey-${version}.tgz" oci://ghcr.io/costkey/charts

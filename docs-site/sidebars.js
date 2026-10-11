@@ -12,6 +12,7 @@ const sidebars = {
 
     'sourcemaps',
     'self-hosting',
+    'deploy',
     'privacy-security',
   ],
 };

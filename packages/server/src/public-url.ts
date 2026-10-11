@@ -1,20 +1,30 @@
 /**
- * Where people and SDKs reach this server: PUBLIC_URL, or this machine on
- * its own port when that is unset.
+ * Where people and SDKs reach this server: PUBLIC_URL; else the address a
+ * hosting platform gives the service (Render, Railway, Fly.io); else this
+ * machine on its own port.
  */
-function localUrl(): URL {
-  return new URL(`http://localhost:${process.env["PORT"] || 4100}`);
+function platformUrl(): string | undefined {
+  const env = process.env;
+  if (env["RENDER_EXTERNAL_URL"]) return env["RENDER_EXTERNAL_URL"];
+  if (env["RAILWAY_PUBLIC_DOMAIN"]) return `https://${env["RAILWAY_PUBLIC_DOMAIN"]}`;
+  if (env["FLY_APP_NAME"]) return `https://${env["FLY_APP_NAME"]}.fly.dev`;
+  return undefined;
+}
+
+function parse(value: string | undefined): URL | null {
+  if (!value?.trim()) return null;
+  try {
+    const url = new URL(value.trim());
+    return url.protocol === "http:" || url.protocol === "https:" ? url : null;
+  } catch {
+    return null;
+  }
 }
 
 export function publicUrl(): URL {
-  const configured = process.env["PUBLIC_URL"]?.trim();
-  if (configured) {
-    try {
-      const url = new URL(configured);
-      if (url.protocol === "http:" || url.protocol === "https:") return url;
-    } catch { /* fall back to this machine */ }
-  }
-  return localUrl();
+  return parse(process.env["PUBLIC_URL"])
+    ?? parse(platformUrl())
+    ?? new URL(`http://localhost:${process.env["PORT"] || 4100}`);
 }
 
 /** The origin with no trailing slash, for building links. */

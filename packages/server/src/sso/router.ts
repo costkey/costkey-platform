@@ -196,7 +196,8 @@ export function createSsoRouter(pool: pg.Pool): Router {
   });
 
   // ── OIDC ──
-  router.use("/auth/oidc", rateLimit({ windowMs: 15 * 60 * 1000, max: 60 }));
+  // Generous: without trust proxy every user behind a load balancer shares one key.
+  router.use("/auth/oidc", rateLimit({ windowMs: 15 * 60 * 1000, max: 300 }));
 
   router.get("/auth/oidc/start", async (req: Request, res: Response) => {
     const settings = authSettings();

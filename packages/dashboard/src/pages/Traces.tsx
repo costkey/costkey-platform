@@ -1,3 +1,4 @@
+import { appUrl, currentRouterPath } from "../basePath";
 import { type ReactNode, useEffect, useState, type FormEvent } from "react";
 import { ArrowLeft, ArrowRight, Check, CircleAlert, Copy, Download, ExternalLink, GitCompare, Info, Pin, RefreshCw, Route, Search, Share, SlidersHorizontal } from "lucide-react";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
@@ -271,7 +272,7 @@ function TraceRows({ traces, selected, onToggle, onToggleAll, onSort, sort, curr
       ? [(trace.step_count ?? 0) > 0 ? `${trace.step_count} step${trace.step_count === 1 ? "" : "s"}` : null, (trace.tool_count ?? 0) > 0 ? `${trace.tool_count} tool call${trace.tool_count === 1 ? "" : "s"}` : null].filter(Boolean).join(", ")
       : null;
     const labels = [trace.feature, trace.environment, agentShape].filter(Boolean).join(" · ");
-    return <tr key={trace.trace_id}><td><input type="checkbox" checked={selected.has(trace.trace_id)} onChange={() => onToggle(trace.trace_id)} aria-label={`Select ${traceLabel(trace)}`} /></td><td className="primary-cell"><Link className="ck-table-link" to={`/traces/${encodeURIComponent(trace.trace_id)}`} state={{ returnTo: `${window.location.pathname}${window.location.search}` }}>{traceLabel(trace)}</Link>{status.tone !== "good" && <> <StatusPill tone={status.tone}>{status.label}</StatusPill></>}{labels && <div className="muted">{labels}</div>}<span className="ck-trace-mobile-line muted">{formatDateTime(trace.started_at)}</span></td><td className="ck-trace-hide-mobile">{formatDateTime(trace.started_at)}</td><td className="numeric ck-trace-hide-mobile">{traceDuration(trace)}</td><td className="numeric ck-trace-hide-mobile">{trace.call_count.toLocaleString()}</td><td className="numeric ck-cost-cell">{cost == null ? <span title="Calls without a price are not counted as free">Unpriced</span> : formatTraceTableCost(cost, currency, fx)}</td></tr>;
+    return <tr key={trace.trace_id}><td><input type="checkbox" checked={selected.has(trace.trace_id)} onChange={() => onToggle(trace.trace_id)} aria-label={`Select ${traceLabel(trace)}`} /></td><td className="primary-cell"><Link className="ck-table-link" to={`/traces/${encodeURIComponent(trace.trace_id)}`} state={{ returnTo: currentRouterPath() }}>{traceLabel(trace)}</Link>{status.tone !== "good" && <> <StatusPill tone={status.tone}>{status.label}</StatusPill></>}{labels && <div className="muted">{labels}</div>}<span className="ck-trace-mobile-line muted">{formatDateTime(trace.started_at)}</span></td><td className="ck-trace-hide-mobile">{formatDateTime(trace.started_at)}</td><td className="numeric ck-trace-hide-mobile">{traceDuration(trace)}</td><td className="numeric ck-trace-hide-mobile">{trace.call_count.toLocaleString()}</td><td className="numeric ck-cost-cell">{cost == null ? <span title="Calls without a price are not counted as free">Unpriced</span> : formatTraceTableCost(cost, currency, fx)}</td></tr>;
   })}</tbody></table></div>;
 }
 
@@ -376,11 +377,11 @@ function TraceList({ projectId, period, setPeriod, contextKey, contextValue, sco
   const reportingCurrency = workspaceSettings?.reportingCurrency ?? "USD";
   const fx = workspaceSettings?.fx;
   const currencyNote = reportingCurrencyNote(reportingCurrency, fx);
-  const returnTo = `${window.location.pathname}${window.location.search}`;
+  const returnTo = currentRouterPath();
 
   useEffect(() => {
     let cancelled = false;
-    fetch(`/api/v1/saved-views?projectId=${encodeURIComponent(projectId)}&kind=view`, { credentials: "include" }).then(async (response) => {
+    fetch(appUrl(`/api/v1/saved-views?projectId=${encodeURIComponent(projectId)}&kind=view`), { credentials: "include" }).then(async (response) => {
       if (!response.ok) return;
       const result = await response.json() as { views?: SavedView[] };
       if (!cancelled) setSavedViews(result.views ?? []);
@@ -436,7 +437,7 @@ function TraceList({ projectId, period, setPeriod, contextKey, contextValue, sco
     if (!name?.trim()) return;
     setSavingView(true);
     try {
-      const response = await fetch("/api/v1/saved-views", { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: name.trim(), projectId, kind: "view", visibility: user?.role === "owner" || user?.role === "admin" ? "workspace" : "private", definition: serializeTraceView({ tab: view, query: committedQuery, period: scopeOverride ? "custom" : period, from: overrideFrom, to: overrideTo, sort, filters: Object.fromEntries(TRACE_FILTER_KEYS.map((key) => [key, filters[key]])) }) }) });
+      const response = await fetch(appUrl("/api/v1/saved-views"), { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: name.trim(), projectId, kind: "view", visibility: user?.role === "owner" || user?.role === "admin" ? "workspace" : "private", definition: serializeTraceView({ tab: view, query: committedQuery, period: scopeOverride ? "custom" : period, from: overrideFrom, to: overrideTo, sort, filters: Object.fromEntries(TRACE_FILTER_KEYS.map((key) => [key, filters[key]])) }) }) });
       if (!response.ok) throw new Error("Unable to save view");
       const result = await response.json() as { view?: SavedView };
       if (result.view) setSavedViews((current) => [result.view!, ...current]);
@@ -463,7 +464,7 @@ function TraceList({ projectId, period, setPeriod, contextKey, contextValue, sco
   if (sort !== "newest") exportParams.set("sort", sort);
   (Object.entries(filters) as Array<[keyof TraceFiltersState, string[]]>).forEach(([key, values]) => values.forEach((value: string) => exportParams.append(key, value)));
   if (contextKey && contextValue && contextValue.length > 0) { exportParams.set("groupBy", "context"); exportParams.set("contextKey", contextKey); contextValue.forEach((value) => exportParams.append("contextValue", value)); }
-  const exportHref = `/api/v1/projects/${projectId}/export?${exportParams.toString()}`;
+  const exportHref = appUrl(`/api/v1/projects/${projectId}/export?${exportParams.toString()}`);
   const compareIds = params.get("compare")?.split(",").filter(Boolean).slice(0, 2) ?? [];
   function compareSelected(): void {
     if (selected.size !== 2) return;

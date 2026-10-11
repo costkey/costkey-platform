@@ -1,3 +1,4 @@
+import { appUrl } from "../basePath";
 import { providerName } from "./consoleFormatters";
 
 /** Providers with a logo in /public/providers, by the id the SDKs record. */
@@ -21,7 +22,7 @@ export function ProviderLogo({ provider, size = 16 }: { provider: string | null 
   const id = providerId(provider);
   if (!id) return null;
   if (LOGOS.has(id)) {
-    return <img className="ck-provider-logo" src={`/providers/${id}.svg`} alt="" width={size} height={size} loading="lazy" />;
+    return <img className="ck-provider-logo" src={appUrl(`/providers/${id}.svg`)} alt="" width={size} height={size} loading="lazy" />;
   }
   return <span className="ck-provider-logo ck-provider-letter" style={{ width: size, height: size, fontSize: Math.round(size * 0.6) }} aria-hidden="true">{providerName(id).charAt(0)}</span>;
 }

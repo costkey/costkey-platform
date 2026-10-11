@@ -8,10 +8,9 @@ import {
   normalizeRole,
   roleCanManageWorkspace,
 } from "./permissions.js";
-import { publicOrigin } from "./public-url.js";
+import { publicAppUrl } from "./public-url.js";
 
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
-const APP_URL = publicOrigin();
 
 function inviteEmailEnabled(): boolean {
   return Boolean(process.env["RESEND_API_KEY"])
@@ -477,7 +476,7 @@ export function createTeamsRouter(pool: pg.Pool): Router {
         [id, user.orgId, email, memberRole, assignedProjectIds, user.id, token, expiresAt],
       );
 
-      const inviteUrl = `${APP_URL}/invite/${token}`;
+      const inviteUrl = `${publicAppUrl()}/invite/${token}`;
 
       const orgResult = await pool.query("SELECT name FROM orgs WHERE id = $1", [user.orgId]);
       const orgName = orgResult.rows[0]?.name ?? "your team";
@@ -637,7 +636,7 @@ export function createTeamsRouter(pool: pg.Pool): Router {
         [newToken, newExpiresAt, inv.id],
       );
 
-      const inviteUrl = `${APP_URL}/invite/${newToken}`;
+      const inviteUrl = `${publicAppUrl()}/invite/${newToken}`;
       const orgResult = await pool.query("SELECT name FROM orgs WHERE id = $1", [user.orgId]);
       const orgName = orgResult.rows[0]?.name ?? "your team";
 

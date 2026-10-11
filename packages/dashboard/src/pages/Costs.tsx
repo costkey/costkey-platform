@@ -1,3 +1,4 @@
+import { appUrl } from "../basePath";
 import { useEffect, useState } from "react";
 import { ArrowRight, ChevronLeft, ChevronRight, CircleAlert, Download, Layers3, Users } from "lucide-react";
 import { Link, useSearchParams } from "react-router-dom";
@@ -210,20 +211,20 @@ function FeatureMappingManager({ projectId, period, timezone, environment, curre
   const [saving, setSaving] = useState(false);
   useEffect(() => {
     let cancelled = false;
-    fetch(`/api/v1/projects/${projectId}/feature-mappings`, { credentials: "include" }).then(async (response) => { if (!response.ok) return; const result = await response.json() as { mappings?: FeatureMapping[] }; if (!cancelled) setMappings(result.mappings ?? []); }).catch(() => {});
+    fetch(appUrl(`/api/v1/projects/${projectId}/feature-mappings`), { credentials: "include" }).then(async (response) => { if (!response.ok) return; const result = await response.json() as { mappings?: FeatureMapping[] }; if (!cancelled) setMappings(result.mappings ?? []); }).catch(() => {});
     return () => { cancelled = true; };
   }, [projectId]);
   async function create(): Promise<void> {
     if (!feature.trim() || (!functionPattern.trim() && !provider.trim() && !model.trim())) { setMessage("Add a feature name and at least one thing to match on."); return; }
     setSaving(true); setMessage(null);
     try {
-      const response = await fetch(`/api/v1/projects/${projectId}/feature-mappings`, { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ feature: feature.trim(), match: { function: functionPattern.trim() || undefined, provider: provider.trim() || undefined, model: model.trim() || undefined } }) });
+      const response = await fetch(appUrl(`/api/v1/projects/${projectId}/feature-mappings`), { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ feature: feature.trim(), match: { function: functionPattern.trim() || undefined, provider: provider.trim() || undefined, model: model.trim() || undefined } }) });
       const result = await response.json() as FeatureMapping & { error?: string };
       if (!response.ok) throw new Error(result.error ?? "Couldn’t save this rule");
       const mapping: FeatureMapping = { id: result.id, feature: result.feature ?? feature.trim(), match: result.match ?? {}, enabled: true };
       setMappings((current) => [...current, mapping]);
       const dates = periodDates(period, timezone ?? undefined);
-      const previewResponse = await fetch(`/api/v1/projects/${projectId}/feature-mappings/${encodeURIComponent(mapping.id)}/preview?from=${encodeURIComponent(dates.from)}&to=${encodeURIComponent(dates.to)}${environment && environment !== "all" ? `&environment=${encodeURIComponent(environment)}` : ""}`, { credentials: "include" });
+      const previewResponse = await fetch(appUrl(`/api/v1/projects/${projectId}/feature-mappings/${encodeURIComponent(mapping.id)}/preview?from=${encodeURIComponent(dates.from)}&to=${encodeURIComponent(dates.to)}${environment && environment !== "all" ? `&environment=${encodeURIComponent(environment)}` : ""}`), { credentials: "include" });
       if (previewResponse.ok) { const previewData = await previewResponse.json() as { preview?: { matchedCount: number; knownCost: number | null; unpricedCount: number } }; if (previewData.preview) setPreview({ mappingId: mapping.id, ...previewData.preview }); }
       setFeature(""); setFunctionPattern(""); setProvider(""); setModel("");
     } catch (reason) { setMessage(reason instanceof Error ? reason.message : "Couldn’t save this rule"); } finally { setSaving(false); }
@@ -233,14 +234,14 @@ function FeatureMappingManager({ projectId, period, timezone, environment, curre
     setSaving(true); setMessage(null);
     try {
       const dates = periodDates(period, timezone ?? undefined);
-      const response = await fetch(`/api/v1/projects/${projectId}/feature-mappings/${encodeURIComponent(preview.mappingId)}/apply`, { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirm: true, from: dates.from, to: dates.to, environment: environment && environment !== "all" ? environment : undefined }) });
+      const response = await fetch(appUrl(`/api/v1/projects/${projectId}/feature-mappings/${encodeURIComponent(preview.mappingId)}/apply`), { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirm: true, from: dates.from, to: dates.to, environment: environment && environment !== "all" ? environment : undefined }) });
       const result = await response.json() as { matchedCount?: number; error?: string };
       if (!response.ok) throw new Error(result.error ?? "Couldn’t label past calls");
       setMessage(`${(result.matchedCount ?? preview.matchedCount).toLocaleString()} past calls labelled. Totals are unchanged.`); setPreview(null);
     } catch (reason) { setMessage(reason instanceof Error ? reason.message : "Couldn’t label past calls"); } finally { setSaving(false); }
   }
   async function toggle(mapping: FeatureMapping): Promise<void> {
-    const response = await fetch(`/api/v1/projects/${projectId}/feature-mappings/${encodeURIComponent(mapping.id)}`, { method: "PATCH", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: !mapping.enabled }) });
+    const response = await fetch(appUrl(`/api/v1/projects/${projectId}/feature-mappings/${encodeURIComponent(mapping.id)}`), { method: "PATCH", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: !mapping.enabled }) });
     if (response.ok) setMappings((current) => current.map((item) => item.id === mapping.id ? { ...item, enabled: !item.enabled } : item));
   }
   return <div className="ck-feature-labels"><Panel title="Feature label rules" actions={canEdit ? <button className="ck-button ck-button-secondary sm" type="button" onClick={() => setOpen((value) => !value)}>{open ? "Cancel" : "Add a rule"}</button> : <span className="ck-table-note" style={{ border: 0, padding: 0 }}>View only</span>}>
@@ -306,7 +307,7 @@ export default function Costs({ defaultGroup = "feature", title = "Costs" }: { d
   else scopeLinkParams.set("period", period);
   if (environment !== "all") scopeLinkParams.set("environment", environment);
   const scopeLink = `?${scopeLinkParams.toString()}`;
-  return <div className="ck-main-inner prototype-costs-route"><PageHeader title={title} actions={<><ScopeToolbar period={toolbarPeriod} onPeriodChange={changePeriod} customFrom={scopeOverride?.from} customTo={scopeOverride?.to} onCustomRangeChange={changeCustomRange} environment={environment} onEnvironmentChange={(next) => setSearchParams((current) => { if (next === "all") current.delete("environment"); else current.set("environment", next); current.delete("offset"); return current; })} environmentOptions={environmentOptions} currency={reportingCurrency} currencyNote={currencyNote} timezone={timezone ?? undefined} /><a className="ck-button ck-button-secondary" href={`/api/v1/projects/${encodeURIComponent(projectId)}/export?format=csv&includeContent=false`}><Download size={14} aria-hidden="true" /> Export CSV</a></>} />
+  return <div className="ck-main-inner prototype-costs-route"><PageHeader title={title} actions={<><ScopeToolbar period={toolbarPeriod} onPeriodChange={changePeriod} customFrom={scopeOverride?.from} customTo={scopeOverride?.to} onCustomRangeChange={changeCustomRange} environment={environment} onEnvironmentChange={(next) => setSearchParams((current) => { if (next === "all") current.delete("environment"); else current.set("environment", next); current.delete("offset"); return current; })} environmentOptions={environmentOptions} currency={reportingCurrency} currencyNote={currencyNote} timezone={timezone ?? undefined} /><a className="ck-button ck-button-secondary" href={appUrl(`/api/v1/projects/${encodeURIComponent(projectId)}/export?format=csv&includeContent=false`)}><Download size={14} aria-hidden="true" /> Export CSV</a></>} />
     <div className="ck-cost-group-row"><span className="ck-cost-group-label">Split by</span><GroupSelector value={groupBy} onChange={(next) => { setSearchParams((current) => { current.set("groupBy", next); if (next !== "context") { current.delete("groupValue"); current.delete("contextKey"); } current.delete("offset"); return current; }); setSelected(null); }} available={availableDimensions} />{groupBy === "context" && <ContextKeySelector value={contextKey} onChange={(next) => { setSelected(null); setSearchParams((current) => { if (next) current.set("contextKey", next); else current.delete("contextKey"); current.delete("offset"); return current; }); }} contextKeys={resource.contextKeys} />}</div>
     <PrototypeStateNotice state={explicitState} family="cost breakdown" role={effectiveRole} onRetry={() => setReload((value) => value + 1)} />
     {resource.error && <div className="ck-alert" style={{ marginBottom: 18 }}><CircleAlert size={15} aria-hidden="true" /><div><strong>Couldn’t load this breakdown.</strong> {resource.error}</div></div>}

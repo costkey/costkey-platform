@@ -1,3 +1,4 @@
+import { appUrl } from "../basePath";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowRight, CircleAlert, Pin, Share } from "lucide-react";
 import { Link, useSearchParams } from "react-router-dom";
@@ -203,7 +204,7 @@ export default function Forecast() {
   useEffect(() => {
     if (!projectId) return;
     let cancelled = false;
-    fetch(`/api/v1/projects/${projectId}/budget/policies`, { credentials: "include" })
+    fetch(appUrl(`/api/v1/projects/${projectId}/budget/policies`), { credentials: "include" })
       .then(async (response) => response.ok ? response.json() as Promise<{ policies?: Array<{ status: string; unit: string; window: string; allowance: number; scope?: Record<string, string> | null }> }> : { policies: [] })
       .then((result) => {
         if (cancelled) return;

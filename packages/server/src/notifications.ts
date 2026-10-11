@@ -15,7 +15,7 @@ import {
   normalizeRole,
   roleCanManageWorkspace,
 } from "./permissions.js";
-import { publicOrigin, publicUrl } from "./public-url.js";
+import { appPath, basePath, publicOrigin, publicUrl } from "./public-url.js";
 
 export type NotificationEventType =
   | "weekly_summary"
@@ -257,7 +257,14 @@ function safeDeepLink(value: unknown): string | undefined {
   if (typeof value !== "string" || !value.trim()) return undefined;
   try {
     const base = publicAppOrigin();
-    const link = new URL(value, base);
+    // A root-relative link ("/traces") is an app path, so it goes under the
+    // base path unless it is already there.
+    const prefix = basePath();
+    const target = prefix && value.startsWith("/") && !value.startsWith("//")
+      && value !== prefix && !value.startsWith(`${prefix}/`) && !value.startsWith(`${prefix}?`)
+      ? `${prefix}${value}`
+      : value;
+    const link = new URL(target, base);
     if (link.origin !== base.origin || link.username || link.password || link.protocol !== base.protocol) return undefined;
     for (const key of link.searchParams.keys()) {
       if (/(^|_)(token|secret|password|credential|authorization|auth|code|key)(_|$)/i.test(key)) return undefined;
@@ -270,7 +277,7 @@ function safeDeepLink(value: unknown): string | undefined {
 }
 
 function appLink(pathname: string, params: Record<string, string | null | undefined> = {}): string {
-  const url = new URL(pathname, publicAppOrigin());
+  const url = new URL(appPath(pathname), publicAppOrigin());
   for (const [key, value] of Object.entries(params)) {
     if (value !== null && value !== undefined) url.searchParams.set(key, value);
   }

@@ -15,14 +15,14 @@ import {
   normalizeRole,
   roleCanManageWorkspace,
 } from "./permissions.js";
-import { projectDsn, publicOrigin, secureCookies } from "./public-url.js";
+import { appPath, cookiePath, projectDsn, publicAppUrl, secureCookies } from "./public-url.js";
 
 async function sendWelcomeEmail(to: string, name: string, projectId: string): Promise<void> {
   if (!process.env["RESEND_API_KEY"]
     || process.env["NODE_ENV"] === "test"
     || process.env["COSTKEY_NOTIFICATION_SINK"] === "memory"
     || (process.env["NODE_ENV"] !== "production" && process.env["COSTKEY_ALLOW_EXTERNAL_NOTIFICATIONS"] !== "true")) return;
-  const setupUrl = `${publicOrigin()}/onboarding?project=${encodeURIComponent(projectId)}`;
+  const setupUrl = `${publicAppUrl()}/onboarding?project=${encodeURIComponent(projectId)}`;
   try {
     const resend = new Resend(process.env["RESEND_API_KEY"]!);
     await resend.emails.send({
@@ -87,6 +87,7 @@ function setTokenCookie(res: Response, token: string): void {
     secure: secureCookies(),
     sameSite: "lax",
     maxAge: 7 * 24 * 60 * 60 * 1000,
+    path: cookiePath(),
   });
 }
 
@@ -247,7 +248,7 @@ function oauthCookieOptions() {
     httpOnly: true,
     sameSite: "lax" as const,
     secure: secureCookies(),
-    path: "/",
+    path: cookiePath(),
   };
 }
 
@@ -522,7 +523,7 @@ export function createAuthRouter(pool?: pg.Pool): Router {
 
   // POST /auth/logout
   router.post("/auth/logout", (_req: Request, res: Response) => {
-    res.clearCookie("ck_token");
+    res.clearCookie("ck_token", { path: cookiePath() });
     res.json({ ok: true });
   });
 
@@ -670,7 +671,7 @@ export function createAuthRouter(pool?: pg.Pool): Router {
       client_id: GITHUB_CLIENT_ID,
       scope: "user:email",
       state,
-      redirect_uri: `${publicOrigin()}/auth/github/callback`,
+      redirect_uri: `${publicAppUrl()}/auth/github/callback`,
     });
     res.redirect(`https://github.com/login/oauth/authorize?${params}`);
   });
@@ -685,13 +686,13 @@ export function createAuthRouter(pool?: pg.Pool): Router {
     const statePayload = consumeOAuthStatePayload(expectedState, actualState);
     clearOAuthCookies(res);
     if (!statePayload) {
-      res.redirect("/login?error=github_state");
+      res.redirect(appPath("/login?error=github_state"));
       return;
     }
     const returnTo = statePayload.returnTo;
     try {
       const code = typeof req.query["code"] === "string" ? req.query["code"] : "";
-      if (!code) { res.redirect("/login?error=github_denied"); return; }
+      if (!code) { res.redirect(appPath("/login?error=github_denied")); return; }
 
       // Exchange code for access token
       const tokenRes = await fetch("https://github.com/login/oauth/access_token", {
@@ -706,7 +707,7 @@ export function createAuthRouter(pool?: pg.Pool): Router {
       const tokenData = await tokenRes.json() as { access_token?: string; error?: string };
       if (!tokenData.access_token) {
         console.error("[costkey] GitHub OAuth error:", tokenData);
-        res.redirect("/login?error=github_failed");
+        res.redirect(appPath("/login?error=github_failed"));
         return;
       }
 
@@ -715,7 +716,7 @@ export function createAuthRouter(pool?: pg.Pool): Router {
         headers: { Authorization: `Bearer ${tokenData.access_token}`, "User-Agent": "CostKey" },
       });
       if (!ghUserRes.ok) {
-        res.redirect("/login?error=github_failed");
+        res.redirect(appPath("/login?error=github_failed"));
         return;
       }
       const ghUser = await ghUserRes.json() as { id: number; login: string; name: string | null; email: string | null; avatar_url: string };
@@ -726,14 +727,14 @@ export function createAuthRouter(pool?: pg.Pool): Router {
         headers: { Authorization: `Bearer ${tokenData.access_token}`, "User-Agent": "CostKey" },
       });
       if (!emailsRes.ok) {
-        res.redirect("/login?error=github_no_email");
+        res.redirect(appPath("/login?error=github_no_email"));
         return;
       }
       const emails = await emailsRes.json() as Array<{ email: string; primary: boolean; verified: boolean }>;
       const emailRaw = verifiedGithubEmail(ghUser.email, emails);
 
       if (!emailRaw) {
-        res.redirect("/login?error=github_no_email");
+        res.redirect(appPath("/login?error=github_no_email"));
         return;
       }
 
@@ -874,7 +875,7 @@ export function createAuthRouter(pool?: pg.Pool): Router {
         const onboardingPath = returnTo === "/"
           ? "/onboarding"
           : `/onboarding?returnTo=${encodeURIComponent(returnTo)}`;
-        res.redirect(validInvite ? returnTo : onboardingPath);
+        res.redirect(appPath(validInvite ? returnTo : onboardingPath));
         return;
       }
 
@@ -889,13 +890,13 @@ export function createAuthRouter(pool?: pg.Pool): Router {
       setTokenCookie(res, token);
       if (inviteToken) {
         const invitePath = `/invite/${encodeURIComponent(inviteToken)}`;
-        res.redirect(returnTo === "/" ? invitePath : `${invitePath}?returnTo=${encodeURIComponent(returnTo)}`);
+        res.redirect(appPath(returnTo === "/" ? invitePath : `${invitePath}?returnTo=${encodeURIComponent(returnTo)}`));
       } else {
-        res.redirect(returnTo);
+        res.redirect(appPath(returnTo));
       }
     } catch (err) {
       console.error("[costkey] GitHub OAuth callback error:", err);
-      res.redirect("/login?error=github_failed");
+      res.redirect(appPath("/login?error=github_failed"));
     }
   });
 
@@ -914,12 +915,12 @@ export function createAuthRouter(pool?: pg.Pool): Router {
     }
     // Store CLI callback info in a short-lived cookie so we can redirect after login
     res.cookie("ck_cli_port", String(port), {
-      maxAge: 10 * 60 * 1000, httpOnly: true, sameSite: "lax", secure: secureCookies(),
+      maxAge: 10 * 60 * 1000, httpOnly: true, sameSite: "lax", secure: secureCookies(), path: cookiePath(),
     });
     res.cookie("ck_cli_state", state, {
-      maxAge: 10 * 60 * 1000, httpOnly: true, sameSite: "lax", secure: secureCookies(),
+      maxAge: 10 * 60 * 1000, httpOnly: true, sameSite: "lax", secure: secureCookies(), path: cookiePath(),
     });
-    res.redirect("/login?cli=1");
+    res.redirect(appPath("/login?cli=1"));
   });
 
   // POST /auth/cli-token — generate a long-lived CLI token for an authenticated user
@@ -947,8 +948,8 @@ export function createAuthRouter(pool?: pg.Pool): Router {
     );
 
     // Clear the CLI cookies
-    res.clearCookie("ck_cli_port");
-    res.clearCookie("ck_cli_state");
+    res.clearCookie("ck_cli_port", { path: cookiePath() });
+    res.clearCookie("ck_cli_state", { path: cookiePath() });
 
     res.json({ token: cliToken, port: String(port), state });
   });

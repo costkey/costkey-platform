@@ -1,3 +1,4 @@
+import { projectDsn } from "../basePath";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import {
@@ -436,7 +437,7 @@ function ProjectsConnections({ projects, role, refresh, currentProjectId }: { pr
     {(actionMessage || actionError) && <div className={`settings-status-line ${actionError ? "error" : "success"}`} role={actionError ? "alert" : "status"}>{actionError ?? actionMessage}</div>}
     {error && <div className="ck-alert"><AlertTriangle size={15} /><span>{error}</span></div>}
     {loading ? <div className="settings-card-body"><LoadingRows count={4} columns={3} /></div> : projects.length === 0 ? <div className="settings-card-body"><EmptyPanel title="No project yet" body={canManage(role) ? "Create a project, then add its DSN to your app. New projects record cost and usage only." : "You don’t have a project yet. Ask an Owner or Admin to add you to one."} icon={<Server size={18} />} /></div> : <div className="settings-project-list">{projects.map((project) => {
-      const detail = details[project.id]; const pipeline = health[project.id]; const authKey = typeof project.authKey === "string" ? project.authKey : null; const dsn = authKey ? `${window.location.protocol}//${authKey}@${window.location.host}/${project.id}` : null;
+      const detail = details[project.id]; const pipeline = health[project.id]; const authKey = typeof project.authKey === "string" ? project.authKey : null; const dsn = authKey ? projectDsn(authKey, project.id) : null;
       const pricingHint = pipeline?.hints?.find((hint) => hint.type === "unpriced_calls");
       const receivingLabel = pipeline?.status === "active" ? "Receiving runs" : healthLabel(pipeline);
       const projectDescription = project.id === "proj_preview" ? "Production, Development · search-api, document-worker, voice-service" : (detail?.description ?? project.description ?? "");

@@ -1,3 +1,4 @@
+import { appUrl, routerPath } from "./basePath";
 /*
  * The console prototype is the visual source of truth for the local design
  * preview.  This adapter deliberately lives at the browser boundary: the
@@ -553,7 +554,8 @@ function contributorDetail(url: URL, dimension: string, value: string): Record<s
 }
 
 function forecast(url: URL): Record<string, unknown> {
-  const dashboardRequest = window.location.pathname === "/" || window.location.pathname === "/overview";
+  const pagePath = routerPath(window.location.pathname);
+  const dashboardRequest = pagePath === "/" || pagePath === "/overview";
   const dimension = url.searchParams.get("groupBy") ?? (url.searchParams.has("feature") ? "feature" : dashboardRequest ? null : "feature");
   const value = url.searchParams.get("groupValue") ?? url.searchParams.get("feature") ?? (dashboardRequest ? null : "Search");
   const scoped = new URL(url.toString());
@@ -604,7 +606,7 @@ function readBody(init?: RequestInit): Promise<unknown> {
 async function previewResponse(input: RequestInfo | URL, init?: RequestInit): Promise<Response | null> {
   const requestUrl = new URL(input instanceof Request ? input.url : String(input), window.location.origin);
   const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
-  const pathname = requestUrl.pathname;
+  const pathname = routerPath(requestUrl.pathname);
 
   if (pathname === "/auth/me") {
     return jsonResponse({ authenticated: true, user: { id: "user_preview", email: "alex@example.com", name: "Alex Morgan", orgId: PROTOTYPE_ORG_ID, role: "owner", analyticsId: null }, org: { id: PROTOTYPE_ORG_ID, name: PROTOTYPE_ORG_NAME, slug: "northstar", timezone: PROTOTYPE_TIMEZONE, analyticsId: null }, projects: [{ id: PROTOTYPE_PROJECT_ID, name: PROTOTYPE_PROJECT_NAME, authKey: "ck_preview_dsn", createdAt: "2026-09-01T00:00:00.000Z" }], members: [{ id: "user_preview", email: "alex@example.com", name: "Alex Morgan", role: "owner" }, { id: "user_jordan", email: "jordan@example.com", name: "Jordan Lee", role: "admin" }, { id: "user_riley", email: "riley@example.com", name: "Riley Chen", role: "developer" }, { id: "user_taylor", email: "taylor@example.com", name: "Taylor Park", role: "viewer" }] });
@@ -713,7 +715,7 @@ export async function installPrototypePreview(): Promise<void> {
   globals.__costkeyPrototypePreviewEnabled = true;
   if (globals.__costkeyPrototypeFetchInstalled) return;
   const nativeFetch = window.fetch.bind(window);
-  const fixtureResponse = await nativeFetch("/__costkey/prototype-data.js");
+  const fixtureResponse = await nativeFetch(appUrl("/__costkey/prototype-data.js"));
   if (!fixtureResponse.ok) throw new Error(`CostKey design fixture unavailable (${fixtureResponse.status})`);
   TRACE_DATA = parsePrototypeSource(await fixtureResponse.text());
   globals.__costkeyPrototypeFetchInstalled = true;

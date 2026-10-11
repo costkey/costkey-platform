@@ -216,7 +216,8 @@ test("dashboard static assets fail closed without auth or SPA fallback", async (
   const assetsRoot = path.join(dashboardDist, "assets");
   const builtIndex = await readFile(path.join(dashboardDist, "index.html"), "utf8");
   const scriptHref = builtIndex.match(/<script[^>]+src="([^"]+\.js)"/)?.[1];
-  assert.ok(scriptHref?.startsWith("/assets/"), "dashboard HTML must reference an assets entrypoint");
+  // The build uses relative asset URLs; the server anchors them when serving.
+  assert.ok(scriptHref?.startsWith("./assets/") || scriptHref?.startsWith("/assets/"), "dashboard HTML must reference an assets entrypoint");
   const script = path.basename(new URL(scriptHref, "http://localhost").pathname);
   assert.ok(script.endsWith(".js") && !script.includes("/"), "dashboard entrypoint must be a local hashed JS asset");
   assert.ok(await readFile(path.join(assetsRoot, script), "utf8"), "dashboard HTML entrypoint must exist on disk");
@@ -263,11 +264,11 @@ test("health stays unhealthy while startup is pending or failed", async () => {
     const base = `http://127.0.0.1:${address.port}`;
     const pending = await fetch(`${base}/health`);
     assert.equal(pending.status, 503);
-    assert.deepEqual(await pending.json(), { status: "starting", version: "0.1.0" });
+    assert.deepEqual(await pending.json(), { status: "starting", version: process.env["COSTKEY_VERSION"] || "dev" });
     await assert.rejects(app.initialize());
     const failed = await fetch(`${base}/ready`);
     assert.equal(failed.status, 503);
-    assert.deepEqual(await failed.json(), { status: "error", version: "0.1.0" });
+    assert.deepEqual(await failed.json(), { status: "error", version: process.env["COSTKEY_VERSION"] || "dev" });
   } finally {
     app.stopSchedulers();
     server.closeIdleConnections?.();

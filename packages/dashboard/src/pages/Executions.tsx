@@ -1,3 +1,4 @@
+import { appUrl } from "../basePath";
 import { useEffect, useState } from "react";
 import { ArrowLeft, ArrowRight, CircleAlert, GitCompare, Route, ShieldCheck } from "lucide-react";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
@@ -43,13 +44,13 @@ async function getExecutions(projectId: string, options: { from?: string; to?: s
   if (options.to) params.set("to", options.to);
   if (options.environment) params.set("environment", options.environment);
   if (options.groupId) params.set("groupId", options.groupId);
-  const response = await fetch(`/api/v1/projects/${projectId}/executions?${params.toString()}`, { credentials: "include" });
+  const response = await fetch(appUrl(`/api/v1/projects/${projectId}/executions?${params.toString()}`), { credentials: "include" });
   if (!response.ok) throw new Error(`Grouped work request failed (${response.status})`);
   return response.json() as Promise<{ executions: Execution[]; total: number }>;
 }
 
 async function getExecution(projectId: string, executionId: string): Promise<ExecutionDetail> {
-  const response = await fetch(`/api/v1/projects/${projectId}/executions/${encodeURIComponent(executionId)}`, { credentials: "include" });
+  const response = await fetch(appUrl(`/api/v1/projects/${projectId}/executions/${encodeURIComponent(executionId)}`), { credentials: "include" });
   if (!response.ok) throw new Error(`Execution request failed (${response.status})`);
   return response.json() as Promise<ExecutionDetail>;
 }

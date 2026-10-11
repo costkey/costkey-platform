@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { projectDsn, publicOrigin, secureCookies } from "../public-url.js";
+import { appPath, basePath, cookiePath, projectDsn, publicAppUrl, publicOrigin, secureCookies } from "../public-url.js";
 
 function withEnv(values: Record<string, string | undefined>, run: () => void): void {
   const previous = Object.fromEntries(Object.keys(values).map((key) => [key, process.env[key]]));
@@ -39,4 +39,46 @@ test("session cookies are Secure only when the console is served over HTTPS", ()
   withEnv({ PUBLIC_URL: "https://costkey.example.com", COSTKEY_COOKIE_SECURE: undefined, NODE_ENV: "production" }, () => assert.equal(secureCookies(), true));
   withEnv({ PUBLIC_URL: "http://localhost:4100", COSTKEY_COOKIE_SECURE: undefined, NODE_ENV: "production" }, () => assert.equal(secureCookies(), false));
   withEnv({ PUBLIC_URL: "http://localhost:4100", COSTKEY_COOKIE_SECURE: "true", NODE_ENV: "production" }, () => assert.equal(secureCookies(), true));
+});
+
+test("the base path is PUBLIC_URL's path, or COSTKEY_BASE_PATH", () => {
+  const none = { PUBLIC_URL: undefined, COSTKEY_BASE_PATH: undefined, RENDER_EXTERNAL_URL: undefined, RAILWAY_PUBLIC_DOMAIN: undefined, FLY_APP_NAME: undefined, PORT: undefined };
+  withEnv(none, () => {
+    assert.equal(basePath(), "", "unset means the root");
+    assert.equal(cookiePath(), "/");
+    assert.equal(appPath("/login"), "/login");
+  });
+  withEnv({ ...none, PUBLIC_URL: "https://costkey.example.com" }, () => assert.equal(basePath(), ""));
+  withEnv({ ...none, PUBLIC_URL: "https://costkey.example.com/" }, () => assert.equal(basePath(), ""));
+  withEnv({ ...none, PUBLIC_URL: "https://portal.example.com/costkey" }, () => {
+    assert.equal(basePath(), "/costkey");
+    assert.equal(cookiePath(), "/costkey");
+    assert.equal(appPath("/login?error=github_state"), "/costkey/login?error=github_state");
+    assert.equal(appPath("/"), "/costkey/");
+    assert.equal(publicOrigin(), "https://portal.example.com", "the origin has no path");
+    assert.equal(publicAppUrl(), "https://portal.example.com/costkey");
+  });
+  withEnv({ ...none, PUBLIC_URL: "https://portal.example.com/costkey/" }, () => assert.equal(basePath(), "/costkey", "trailing slash removed"));
+  withEnv({ ...none, PUBLIC_URL: "https://x.example.com/tools/costkey//" }, () => assert.equal(basePath(), "/tools/costkey"));
+  withEnv({ ...none, PUBLIC_URL: "https://x.example.com/costkey", COSTKEY_BASE_PATH: "/ck" }, () => {
+    assert.equal(basePath(), "/ck", "COSTKEY_BASE_PATH wins");
+    assert.equal(publicAppUrl(), "https://x.example.com/ck");
+  });
+  withEnv({ ...none, PUBLIC_URL: "https://x.example.com/costkey", COSTKEY_BASE_PATH: "/" }, () => assert.equal(basePath(), "", "an explicit root"));
+  withEnv({ ...none, COSTKEY_BASE_PATH: "costkey/" }, () => assert.equal(basePath(), "/costkey", "a leading slash is added"));
+  withEnv({ ...none, COSTKEY_BASE_PATH: "//evil.example.com/x" }, () => assert.equal(basePath(), "/evil.example.com/x", "never a host"));
+  withEnv({ ...none, COSTKEY_BASE_PATH: '/a"b<c>' }, () => assert.equal(basePath(), "/a%22b%3Cc%3E", "unsafe characters are encoded"));
+});
+
+test("DSNs include the base path", () => {
+  const none = { PUBLIC_URL: undefined, COSTKEY_BASE_PATH: undefined };
+  withEnv({ ...none, PUBLIC_URL: "https://portal.example.com/costkey" }, () => {
+    assert.equal(projectDsn("ck_key", "proj_1"), "https://ck_key@portal.example.com/costkey/proj_1");
+  });
+  withEnv({ ...none, PUBLIC_URL: "http://localhost:4300/costkey/" }, () => {
+    assert.equal(projectDsn("ck_key", "proj_1"), "http://ck_key@localhost:4300/costkey/proj_1");
+  });
+  withEnv({ ...none, PUBLIC_URL: "http://localhost:4301" }, () => {
+    assert.equal(projectDsn("ck_key", "proj_1"), "http://ck_key@localhost:4301/proj_1", "no base path at the root");
+  });
 });

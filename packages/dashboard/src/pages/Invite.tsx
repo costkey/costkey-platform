@@ -1,3 +1,4 @@
+import { appUrl } from "../basePath";
 import { useEffect, useMemo, useState } from "react";
 import { AlertCircle, ArrowRight, GitBranch, LoaderCircle, Lock, RefreshCw, UserRound } from "lucide-react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
@@ -132,7 +133,7 @@ export default function Invite() {
     let alive = true;
     setStatus("loading");
     setPreviewLoadError(false);
-    void fetch(`/api/v1/team/invite-preview/${encodeURIComponent(token)}`, { credentials: "include" })
+    void fetch(appUrl(`/api/v1/team/invite-preview/${encodeURIComponent(token)}`), { credentials: "include" })
       .then(async (response) => {
         const data = await response.json().catch(() => ({}));
         if (!alive) return;
@@ -162,7 +163,7 @@ export default function Invite() {
     setError("");
     setErrorCode(null);
     try {
-      const response = await fetch("/api/v1/team/accept-invite", {
+      const response = await fetch(appUrl("/api/v1/team/accept-invite"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -171,7 +172,7 @@ export default function Invite() {
       const data = await response.json().catch(() => ({}));
       if (response.ok) {
         setStatus("accepted");
-        window.setTimeout(() => { window.location.href = "/"; }, 1500);
+        window.setTimeout(() => { window.location.href = appUrl("/"); }, 1500);
         return;
       }
       setStatus("error");
@@ -279,7 +280,7 @@ export default function Invite() {
                 </div>
               ) : (
                 <div className="auth-actions">
-                  <a className="ck-button ck-button-secondary auth-provider" href={`/auth/github?invite=${encodeURIComponent(token ?? "")}`}><GitBranch size={16} aria-hidden="true" /> Continue with GitHub</a>
+                  <a className="ck-button ck-button-secondary auth-provider" href={appUrl(`/auth/github?invite=${encodeURIComponent(token ?? "")}`)}><GitBranch size={16} aria-hidden="true" /> Continue with GitHub</a>
                   <Link className="ck-button ck-button-primary" to={`/signup?invite=${encodeURIComponent(token ?? "")}`}>Create account <ArrowRight size={15} aria-hidden="true" /></Link>
                   <p className="auth-switch-copy">Already have an account? <Link to={`/login?invite=${encodeURIComponent(token ?? "")}`}>Sign in</Link></p>
                 </div>

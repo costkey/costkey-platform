@@ -1,3 +1,4 @@
+import { appUrl, currentRouterPath } from "../basePath";
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { AlertCircle, ArrowRight } from "lucide-react";
@@ -69,7 +70,7 @@ interface OverviewData {
 const EMPTY_DATA: OverviewData = { overview: null, previousOverview: null, board: null, forecast: null, health: null, findings: [], policies: [], environments: [] };
 
 async function getJson<T>(path: string): Promise<T> {
-  const response = await fetch(path, { credentials: "include" });
+  const response = await fetch(appUrl(path), { credentials: "include" });
   if (!response.ok) throw new Error(`Request failed (${response.status})`);
   return response.json() as Promise<T>;
 }
@@ -271,7 +272,7 @@ export default function Dashboard() {
   }
 
   const namedState = ["none", "new"].includes(explicitState)
-    ? PrototypeStatePanel({ state: explicitState, family: "Overview", title: explicitState === "new" ? "Ready for your first run" : "No runs in this period", backHref: "/onboarding", retryHref: window.location.pathname + window.location.search })
+    ? PrototypeStatePanel({ state: explicitState, family: "Overview", title: explicitState === "new" ? "Ready for your first run" : "No runs in this period", backHref: "/onboarding", retryHref: currentRouterPath() })
     : null;
   if (namedState) return namedState;
 

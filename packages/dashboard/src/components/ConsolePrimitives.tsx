@@ -1,3 +1,4 @@
+import { appUrl } from "../basePath";
 import type { ReactNode } from "react";
 import { ArrowDown, ArrowUp, Minus, RefreshCw } from "lucide-react";
 import { PrototypeIcon, type PrototypeIconName } from "./PrototypeIcon";
@@ -9,7 +10,7 @@ export type IllustrationName = "first-light" | "a-little-ahead" | "room-to-explo
 
 /** Spot art for onboarding, summaries and empty states. Never placed over live data. */
 export function Illustration({ name, width = 200, className = "" }: { name: IllustrationName; width?: number; className?: string }) {
-  return <img className={`ck-illustration ${className}`} src={`/assets/illustrations/${name}.svg`} width={width} height={Math.round(width * 2 / 3)} alt="" aria-hidden="true" draggable={false} />;
+  return <img className={`ck-illustration ${className}`} src={appUrl(`/assets/illustrations/${name}.svg`)} width={width} height={Math.round(width * 2 / 3)} alt="" aria-hidden="true" draggable={false} />;
 }
 
 const STATUS_ICON: Record<Tone, PrototypeIconName> = { good: "check", warn: "alert", critical: "pause", info: "info", neutral: "info" };

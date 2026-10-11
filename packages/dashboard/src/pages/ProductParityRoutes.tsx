@@ -1,3 +1,4 @@
+import { appUrl } from "../basePath";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, Check, CircleAlert, Clock, Save, ShieldCheck, X } from "lucide-react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
@@ -166,12 +167,12 @@ function FindingDrawerPage() {
       try {
         let id = requestedId;
         if (!id) {
-          const response = await fetch(`/api/v1/projects/${projectId}/findings`, { credentials: "include" });
+          const response = await fetch(appUrl(`/api/v1/projects/${projectId}/findings`), { credentials: "include" });
           const data = await response.json() as { findings?: FindingResponse[] };
           id = data.findings?.[0]?.id ?? null;
         }
         if (!id) throw new Error("Nothing needs a look right now.");
-        const response = await fetch(`/api/v1/projects/${projectId}/findings/${encodeURIComponent(id)}`, { credentials: "include" });
+        const response = await fetch(appUrl(`/api/v1/projects/${projectId}/findings/${encodeURIComponent(id)}`), { credentials: "include" });
         if (!response.ok) throw new Error("Couldn’t open this change. It may have been removed.");
         const data = await response.json() as { finding?: FindingResponse };
         if (!data.finding) throw new Error("Couldn’t open this change.");
@@ -384,7 +385,7 @@ function PolicyDetailPage() {
     if (!projectId || !policy) return;
     setStatusSaving(true); setStatusError(null);
     try {
-      const response = await fetch(`/api/v1/projects/${projectId}/budget/policies/${encodeURIComponent(policy.id)}`, { method: "PATCH", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: next }) });
+      const response = await fetch(appUrl(`/api/v1/projects/${projectId}/budget/policies/${encodeURIComponent(policy.id)}`), { method: "PATCH", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: next }) });
       if (!response.ok) throw new Error(next === "paused" ? "Couldn’t pause this budget." : "Couldn’t resume this budget.");
       const data = await response.json() as { policy?: PolicyRecord };
       setPolicy((current) => data.policy ? { ...current, ...data.policy } : current ? { ...current, status: next } : current);
@@ -401,8 +402,8 @@ function PolicyDetailPage() {
       await Promise.resolve();
       try {
         const [policyResponse, decisionsResponse] = await Promise.all([
-          fetch(`/api/v1/projects/${projectId}/budget/policies/${encodeURIComponent(policyId)}`, { credentials: "include" }),
-          fetch(`/api/v1/projects/${projectId}/budget/policies/${encodeURIComponent(policyId)}/decisions`, { credentials: "include" }),
+          fetch(appUrl(`/api/v1/projects/${projectId}/budget/policies/${encodeURIComponent(policyId)}`), { credentials: "include" }),
+          fetch(appUrl(`/api/v1/projects/${projectId}/budget/policies/${encodeURIComponent(policyId)}/decisions`), { credentials: "include" }),
         ]);
         if (!policyResponse.ok) throw new Error("It may have been archived, or you don’t have access.");
         const policyData = await policyResponse.json() as { policy?: PolicyRecord };
@@ -529,7 +530,7 @@ function PolicyEditPage() {
     let cancelled = false;
     const load = async () => {
       await Promise.resolve();
-      const response = await fetch(`/api/v1/projects/${projectId}/budget/policies/${encodeURIComponent(policyId)}`, { credentials: "include" });
+      const response = await fetch(appUrl(`/api/v1/projects/${projectId}/budget/policies/${encodeURIComponent(policyId)}`), { credentials: "include" });
       if (!response.ok) return;
       const data = await response.json() as { policy?: PolicyRecord };
       if (!cancelled && data.policy) { setName(data.policy.name ?? "Monthly budget"); setAllowance(String(data.policy.allowance)); setUnit(data.policy.unit); setPolicyCurrency(data.policy.currency === "INR" ? "INR" : "USD"); setWindowKind(data.policy.window); setMode(data.policy.mode); const [dimension, value] = Object.entries(data.policy.scope ?? {})[0] ?? []; if (dimension) setScopeDimension(dimension); setScopeValue(Array.isArray(value) ? value.join(", ") : value ?? ""); }
@@ -562,7 +563,7 @@ function PolicyEditPage() {
     setSaving(true); setError(null);
     try {
       const payload = { name, scope: scopeDimension !== "project" && scopeValues.length > 0 ? { [scopeDimension]: scopeValues.length === 1 ? scopeValues[0] : scopeValues } : { project: projectId }, unit, allowance: Number(allowance), currency: unit === "money" ? policyCurrency : undefined, window: windowKind, timezone, mode, ...(policyId ? {} : { status: "active" }) };
-      const response = await fetch(`/api/v1/projects/${projectId}/budget/policies${policyId ? `/${encodeURIComponent(policyId)}` : ""}`, { method: policyId ? "PATCH" : "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      const response = await fetch(appUrl(`/api/v1/projects/${projectId}/budget/policies${policyId ? `/${encodeURIComponent(policyId)}` : ""}`), { method: policyId ? "PATCH" : "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
       if (!response.ok) throw new Error(response.status === 403 ? "Only Owners and Admins can save budgets." : "Couldn’t save this budget. Try again.");
       setReviewed(true);
       if (isPrototypePreview()) {

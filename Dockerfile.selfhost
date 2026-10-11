@@ -35,7 +35,8 @@ RUN npm ci --omit=dev --workspace=packages/server && mkdir -p packages/server/no
 
 FROM node:20-bookworm-slim
 WORKDIR /app
-ENV NODE_ENV=production PORT=4100
+ARG COSTKEY_VERSION=dev
+ENV NODE_ENV=production PORT=4100 COSTKEY_VERSION=$COSTKEY_VERSION
 COPY --from=deps /app/node_modules node_modules
 # npm keeps some server dependencies beside the package rather than at the root.
 COPY --from=deps /app/packages/server/node_modules packages/server/node_modules

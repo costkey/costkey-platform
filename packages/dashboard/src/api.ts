@@ -1,4 +1,5 @@
-const API_BASE = "/api/v1";
+import { appUrl } from "./basePath";
+const API_BASE = appUrl("/api/v1");
 
 export const UNAUTHENTICATED_EVENT = "costkey:unauthenticated";
 

@@ -1,3 +1,4 @@
+import { appUrl } from "../basePath";
 import { useState, type ReactNode } from "react";
 import { GitBranch, ArrowRight, LoaderCircle } from "lucide-react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
@@ -39,7 +40,7 @@ export function PrototypeAuthFrame({ children }: { children: ReactNode }) {
         <BrandLockup className="ck-proto-auth-lockup" markClassName="ck-proto-auth-mark" aria-label="CostKey" />
         <h1>A little<br /><em>light on.</em></h1>
         <img
-          src="/assets/console/hero.png"
+          src={appUrl("/assets/console/hero.png")}
           className="ck-proto-auth-hero"
           alt="The observatory illustration from the supplied CostKey design language"
         />
@@ -139,7 +140,7 @@ export default function Login() {
 
           <div className="auth-form-card">
             <a
-              href={githubQuery.toString() ? `/auth/github?${githubQuery.toString()}` : "/auth/github"}
+              href={appUrl(githubQuery.toString() ? `/auth/github?${githubQuery.toString()}` : "/auth/github")}
               className="ck-button ck-button-secondary auth-provider"
               aria-disabled={isLoadingPreview || submitting ? "true" : undefined}
             >

@@ -1,3 +1,4 @@
+import { appUrl } from "../basePath";
 import { useEffect, useState } from "react";
 import { ArrowRight, CircleAlert, Gauge, Plus, ShieldCheck } from "lucide-react";
 import { Link, Navigate, useParams, useSearchParams } from "react-router-dom";
@@ -163,7 +164,7 @@ export default function Budgets() {
     void Promise.resolve().then(() => {
       if (cancelled) return null;
       setLoading(true); setError(null);
-      return fetch(`/api/v1/projects/${projectId}/budget/policies`, { credentials: "include" });
+      return fetch(appUrl(`/api/v1/projects/${projectId}/budget/policies`), { credentials: "include" });
     })
       .then(async (response) => {
         if (!response) return;
@@ -195,7 +196,7 @@ export default function Budgets() {
   const changeTab = (next: PolicyTab): void => setSearchParams((current) => { current.set("tab", next); current.delete("policy"); return current; });
   const archive = async (policy: Policy): Promise<void> => {
     if (!window.confirm(`Archive ${policy.name || "this budget"}? It stops checking new calls. Its history is kept.`)) return;
-    const response = await fetch(`/api/v1/projects/${projectId}/budget/policies/${encodeURIComponent(policy.id)}`, { method: "DELETE", credentials: "include" });
+    const response = await fetch(appUrl(`/api/v1/projects/${projectId}/budget/policies/${encodeURIComponent(policy.id)}`), { method: "DELETE", credentials: "include" });
     if (!response.ok) { setError("Couldn’t archive this budget. Try again."); return; }
     setReload((value) => value + 1);
   };

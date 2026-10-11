@@ -1,3 +1,4 @@
+import { appUrl } from "../basePath";
 import { useState } from "react";
 import { ArrowRight, GitBranch, LoaderCircle } from "lucide-react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
@@ -29,15 +30,15 @@ export default function Signup() {
   };
 
   const githubHref = inviteToken
-    ? `/auth/github?invite=${encodeURIComponent(inviteToken)}`
-    : "/auth/github";
+    ? appUrl(`/auth/github?invite=${encodeURIComponent(inviteToken)}`)
+    : appUrl("/auth/github");
 
   return (
     <div className="auth-shell">
       <AuthBrandPanel />
       <main className="auth-panel">
         <div className="auth-mobile-logo">
-          <a href="/login" aria-label="CostKey home"><BrandLockup className="logo" markClassName="logo-mark" /></a>
+          <a href={appUrl("/login")} aria-label="CostKey home"><BrandLockup className="logo" markClassName="logo-mark" /></a>
         </div>
 
         <div className="auth-panel-inner">

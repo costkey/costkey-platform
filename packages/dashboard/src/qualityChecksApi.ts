@@ -1,3 +1,4 @@
+import { appUrl } from "./basePath";
 import { UNAUTHENTICATED_EVENT, type InsightScope } from "./api";
 
 /** Client for server-side quality checks (judges and rules). */
@@ -105,7 +106,7 @@ export class QualityChecksApiError extends Error {
 }
 
 async function request<T>(path: string, init: { method?: string; body?: unknown } = {}): Promise<T> {
-  const response = await fetch(`/api/v1/projects/${path}`, {
+  const response = await fetch(appUrl(`/api/v1/projects/${path}`), {
     method: init.method ?? "GET",
     credentials: "include",
     headers: init.body === undefined ? undefined : { "Content-Type": "application/json" },

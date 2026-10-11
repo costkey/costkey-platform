@@ -1,3 +1,4 @@
+import { appUrl, projectDsn as dsnFor } from "../basePath";
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { ArrowLeft, ArrowRight, CheckCircle2, ChevronDown, CircleAlert, Clock3, Copy, LoaderCircle, Lock, LogOut, Mail, Menu, RefreshCw, X } from "lucide-react";
 import { Link, Navigate, useNavigate, useSearchParams } from "react-router-dom";
@@ -113,7 +114,7 @@ function SetupStateBadge({ state, received }: { state: SetupState; received: boo
 /** The DSN points at this CostKey host; the SDK posts to <host>/api/v1/events. */
 function projectDsn(authKey: string | null | undefined, projectId: string): string {
   if (!authKey) return "";
-  return `${window.location.protocol}//${authKey}@${window.location.host}/${projectId}`;
+  return dsnFor(authKey, projectId);
 }
 
 export default function Onboarding() {
@@ -151,7 +152,7 @@ export default function Onboarding() {
     let interval = 0;
     const poll = async () => {
       try {
-        const response = await fetch(`/api/v1/projects/${encodeURIComponent(projectId)}/overview`, { credentials: "include" });
+        const response = await fetch(appUrl(`/api/v1/projects/${encodeURIComponent(projectId)}/overview`), { credentials: "include" });
         if (!response.ok || !alive) return;
         const data = await response.json() as { overview?: { observations?: number; total_calls?: number; known_cost?: number | null } };
         const count = Number(data.overview?.observations ?? data.overview?.total_calls ?? 0) || 0;
@@ -162,7 +163,7 @@ export default function Onboarding() {
         setChecking(false);
         if (count === 0) return;
         window.clearInterval(interval);
-        const tracesResponse = await fetch(`/api/v1/projects/${encodeURIComponent(projectId)}/traces?limit=1&offset=0`, { credentials: "include" });
+        const tracesResponse = await fetch(appUrl(`/api/v1/projects/${encodeURIComponent(projectId)}/traces?limit=1&offset=0`), { credentials: "include" });
         if (tracesResponse.ok) {
           const traceData = await tracesResponse.json() as { traces?: Array<{ trace_id?: string | null }> };
           const traceId = traceData.traces?.[0]?.trace_id;
@@ -248,7 +249,7 @@ export default function Onboarding() {
     : <>import &#123; CostKey &#125; from <span className="warm">"costkey"</span>;{"\n\n"}CostKey.init(&#123; dsn: process.env.COSTKEY_DSN &#125;);{"\n\n"}<span className="comment">// Calls to supported providers are now tracked.</span></>;
   const statusTitle = state === "rejected" ? "Runs are being rejected." : state === "error" ? "Something needs a look." : received ? (activity?.firstSeen || previewReceived ? "Your first run is here." : "Runs are arriving.") : "Ready for your first run.";
   const statusCopy = state === "ungrouped" ? "This call arrived on its own, not as part of a run. You can still inspect it." : state === "unpriced" ? "Usage is arriving, but this model has no price yet." : state === "partial" ? "Runs are arriving. A few calls don’t have a price yet." : state === "missing-source" ? "Costs are tracked. Upload a source map to see file and function names." : state === "rejected" ? "The DSN in your app doesn’t match this project. Copy it again below." : state === "error" ? "We couldn’t check this project. Try again in a moment." : received ? "Now you have something to explore." : "Add the DSN to your app and send a request. This page updates on its own.";
-  const setupLink = `${window.location.origin}/onboarding?project=${encodeURIComponent(project.id)}`;
+  const setupLink = `${window.location.origin}${appUrl("/onboarding")}?project=${encodeURIComponent(project.id)}`;
 
   return <SetupShell {...shellProps}><SetupHeader title="Connect your app" onBack={() => navigate("/")} /><SetupStepper step="connect" /><div className="ck-setup-layout"><div className="setup-guide-column"><section className="ck-panel setup-guide"><div className="ck-panel-header"><div><h2 className="ck-panel-title">Set up {projectName}</h2></div></div><div className="setup-guide-body"><div className="setup-language-tabs" role="tablist" aria-label="SDK language"><button className={language === "Python" ? "active" : ""} type="button" role="tab" aria-selected={language === "Python"} aria-controls="setup-snippet" onClick={() => { setLanguage("Python"); navigate(`/onboarding?project=${encodeURIComponent(project.id)}&language=Python`); }}>Python</button><button className={language === "TypeScript" ? "active" : ""} type="button" role="tab" aria-selected={language === "TypeScript"} aria-controls="setup-snippet" onClick={() => { setLanguage("TypeScript"); navigate(`/onboarding?project=${encodeURIComponent(project.id)}&language=TypeScript`); }}>TypeScript</button></div>
     <div className="setup-guide-section"><div className="setup-section-heading"><h3>1. Install</h3><button className="ck-button ck-button-quiet sm" type="button" onClick={() => void copyText(install, "handoff")}><Copy size={14} aria-hidden="true" />Copy</button></div><pre className="setup-code setup-code-short"><code>{install}</code></pre></div>

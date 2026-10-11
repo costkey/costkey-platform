@@ -33,4 +33,13 @@ describe("DSN Parsing", () => {
     expect(() => parseDSN("https://key@costkey.dev/")).toThrow("Settings, Projects");
     expect(() => parseDSN("https://key@costkey.dev")).toThrow("missing project ID");
   });
+
+  it("keeps the path CostKey is served under", () => {
+    const parsed = parseDSN("https://ck_abc@portal-dev.example.com/costkey/proj_123");
+    expect(parsed.projectId).toBe("proj_123");
+    expect(parsed.endpoint).toBe("https://portal-dev.example.com/costkey/api/v1/events");
+    const nested = parseDSN("http://k@localhost:4300/tools/costkey/proj_9/");
+    expect(nested.projectId).toBe("proj_9");
+    expect(nested.endpoint).toBe("http://localhost:4300/tools/costkey/api/v1/events");
+  });
 });

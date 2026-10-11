@@ -1,3 +1,4 @@
+import { appUrl, BASE_PATH } from "./basePath";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowRight,
@@ -199,7 +200,7 @@ function FeedbackLink() {
     if (!message.trim()) return;
     setStatus("sending");
     try {
-      const response = await fetch("/api/v1/feedback", {
+      const response = await fetch(appUrl("/api/v1/feedback"), {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
@@ -390,7 +391,7 @@ function AppShell() {
 
 export default function App() {
   return (
-    <BrowserRouter>
+    <BrowserRouter basename={BASE_PATH || undefined}>
       <AuthProvider>
         <Suspense fallback={<RouteLoading />}>
           <Routes>

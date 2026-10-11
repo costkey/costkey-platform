@@ -1,5 +1,6 @@
 import type pg from "pg";
 import bcrypt from "bcryptjs";
+import { projectDsn } from "./public-url.js";
 
 export async function seedIfEmpty(pool: pg.Pool): Promise<void> {
   const result = await pool.query("SELECT COUNT(*)::int as count FROM projects");
@@ -133,7 +134,7 @@ export async function seedIfEmpty(pool: pg.Pool): Promise<void> {
 
     await client.query("COMMIT");
     console.log(`[costkey] Seeded ${eventCount} events for ACME Corp (demo@costkey.dev / demo1234)`);
-    console.log(`[costkey] Demo DSN: https://${authKey}@localhost:4100/${projectId}`);
+    console.log(`[costkey] Demo DSN: ${projectDsn(authKey, projectId)}`);
   } catch (err) {
     await client.query("ROLLBACK");
     throw err;

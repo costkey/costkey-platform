@@ -4,6 +4,8 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../contexts/useAuth";
 import { BrandLockup } from "../components/BrandMark";
 import { AuthScene } from "../components/AuthScene";
+import { SsoSignIn } from "../components/SsoSignIn";
+import { useAuthConfig } from "../authConfig";
 
 /** Brand panel for the signed-out pages: a glimpse of what the console shows. */
 export function AuthBrandPanel() {
@@ -91,8 +93,24 @@ export default function Login() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const authConfig = useAuthConfig();
 
   if (design === "prototype") return <PrototypeSignIn state={state} />;
+
+  // Single sign-on servers (and the moment before the config loads) never
+  // show password forms. See components/SsoSignIn.tsx.
+  if (authConfig?.mode !== "password") {
+    return (
+      <div className="auth-shell">
+        <AuthBrandPanel />
+        <main className="auth-panel">
+          <div className="auth-mobile-logo"><BrandLockup className="logo" markClassName="logo-mark" aria-label="CostKey" /></div>
+          <div className="auth-panel-inner"><SsoSignIn config={authConfig} /></div>
+          <AuthFooter />
+        </main>
+      </div>
+    );
+  }
 
   const githubQuery = new URLSearchParams();
   if (inviteToken) githubQuery.set("invite", inviteToken);

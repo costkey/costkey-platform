@@ -24,13 +24,13 @@ permissions:
 jobs:
   image:
     runs-on: ubuntu-latest
+    env:
+      COSTKEY_JWT_SECRET: ci-self-host-jwt-secret
+      COSTKEY_NOTIFICATION_ENCRYPTION_KEY: ci-self-host-notification-key
     steps:
       - uses: actions/checkout@v4
 
       - name: Start with Docker Compose
-        env:
-          COSTKEY_JWT_SECRET: ci-self-host-jwt-secret
-          COSTKEY_NOTIFICATION_ENCRYPTION_KEY: ci-self-host-notification-key
         run: docker compose up -d --build
 
       - name: Smoke test
@@ -46,7 +46,9 @@ jobs:
 
       - name: Server logs
         if: always()
-        run: docker compose logs costkey --tail 200
+        run: |
+          docker compose ps -a
+          docker compose logs costkey --tail 200
 
       - name: Publish to GitHub Container Registry
         if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))

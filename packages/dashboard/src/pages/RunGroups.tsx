@@ -2,10 +2,11 @@ import { ArrowLeft } from "lucide-react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { getAgentDetail, getAgents, getBudgetPolicies, getTabModels, getWorkflows, type BudgetPolicy, type InsightScope, type RunGroup } from "../api";
 import { EmptyPanel, LoadingRows, MetricCard, PageHeader, Panel, StatusPill } from "../components/ConsolePrimitives";
-import { formatDateTime, formatProviders, formatReportedAmount, periodDates, type ReportingFx } from "../components/consoleFormatters";
+import { formatDateTime, formatReportedAmount, periodDates, type ReportingFx } from "../components/consoleFormatters";
 import { useAuth } from "../contexts/useAuth";
 import { formatDuration } from "../utils";
 import { useInsightScope, useScopedLoad } from "./useInsightScope";
+import { ProviderLabel } from "../components/ProviderLogo";
 
 function money(value: number | null | undefined, currency: string, fx?: ReportingFx | null): string {
   return value == null ? "Unpriced" : formatReportedAmount(value, currency, fx);
@@ -100,7 +101,7 @@ function ModelsView({ kind, projectId, scope, scopeKey, currency, fx }: { kind: 
   return <div className="ck-table-wrap"><table className="ck-table">
     <thead><tr><th>Model</th><th className="numeric">Spend</th><th className="numeric">Share</th><th className="numeric">Calls</th><th className="numeric hide-mobile">Per call</th><th className="hide-mobile">{kind === "agent" ? "Agents" : "Workflows"}</th></tr></thead>
     <tbody>{models.map((model) => <tr key={`${model.provider}/${model.model}`}>
-      <td className="primary-cell">{model.model}<small className="ck-table-sub">{formatProviders(model.provider)}</small></td>
+      <td className="primary-cell">{model.model}<small className="ck-table-sub"><ProviderLabel provider={model.provider} size={12} /></small></td>
       <td className="numeric">{money(model.cost, currency, fx)}</td>
       <td className="numeric">{model.cost != null && total > 0 ? `${Math.round(model.cost / total * 100)}%` : "—"}</td>
       <td className="numeric">{model.calls.toLocaleString()}</td>
@@ -217,7 +218,7 @@ export function AgentDetailPage() {
         </table></div>}</Panel>
         <Panel title="Models">{(data?.models.length ?? 0) === 0 ? <EmptyPanel title="No model calls" /> : <div className="ck-table-wrap"><table className="ck-table">
           <thead><tr><th>Model</th><th className="numeric">Calls</th><th className="numeric">Spend</th></tr></thead>
-          <tbody>{data!.models.map((model) => <tr key={`${model.provider}/${model.model}`}><td className="primary-cell">{model.model}<small className="ck-table-sub">{model.provider}</small></td><td className="numeric">{model.calls}</td><td className="numeric">{money(model.cost, currency, fx)}</td></tr>)}</tbody>
+          <tbody>{data!.models.map((model) => <tr key={`${model.provider}/${model.model}`}><td className="primary-cell">{model.model}<small className="ck-table-sub"><ProviderLabel provider={model.provider} size={12} /></small></td><td className="numeric">{model.calls}</td><td className="numeric">{money(model.cost, currency, fx)}</td></tr>)}</tbody>
         </table></div>}{(data?.subagents.length ?? 0) > 0 && <p className="ck-table-note">Hands off to {data!.subagents.map((agent) => `${agent.name} (${agent.runs})`).join(", ")}</p>}</Panel>
       </div>
     </>}

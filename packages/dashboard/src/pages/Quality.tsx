@@ -1,9 +1,10 @@
 import { Link, useSearchParams } from "react-router-dom";
 import { getQualitySummary, type QualitySummary } from "../api";
 import { EmptyPanel, LoadingRows, MetricCard, PageHeader, Panel, StatusPill } from "../components/ConsolePrimitives";
-import { formatDateTime, formatProviders, formatReportedAmount, type ReportingFx } from "../components/consoleFormatters";
+import { formatDateTime, formatReportedAmount, type ReportingFx } from "../components/consoleFormatters";
 import { formatDuration } from "../utils";
 import { useInsightScope, useScopedLoad } from "./useInsightScope";
+import { ProviderLabel } from "../components/ProviderLogo";
 
 type View = "runs" | "models" | "failures";
 const VIEWS: Array<{ id: View; label: string }> = [
@@ -44,7 +45,7 @@ function Models({ data, currency, fx }: { data: QualitySummary; currency: string
   return <div className="ck-table-wrap"><table className="ck-table">
     <thead><tr><th>Model</th><th className="numeric">Calls</th><th className="numeric">Failed</th><th className="hide-mobile">Errors</th><th className="numeric hide-mobile">Retries</th><th className="numeric hide-mobile">p95</th><th className="numeric">Wasted</th></tr></thead>
     <tbody>{data.models.map((row) => <tr key={`${row.provider}/${row.model}`}>
-      <td className="primary-cell">{row.model}<small className="ck-table-sub">{formatProviders(row.provider)}</small></td>
+      <td className="primary-cell">{row.model}<small className="ck-table-sub"><ProviderLabel provider={row.provider} size={12} /></small></td>
       <td className="numeric">{row.calls.toLocaleString()}</td>
       <td className="numeric"><RatePill part={row.failedCalls} whole={row.calls} /></td>
       <td className="hide-mobile">{row.statusCodes.length ? row.statusCodes.join(", ") : "—"}</td>

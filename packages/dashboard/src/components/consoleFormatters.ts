@@ -164,11 +164,27 @@ export function formatPercent(value: number | null | undefined): string {
   return `${Number(value).toFixed(1)}%`;
 }
 
-const PROVIDER_NAMES: Record<string, string> = { openai: "OpenAI", anthropic: "Anthropic", google: "Google", gemini: "Google", openrouter: "OpenRouter", azure: "Azure OpenAI", bedrock: "AWS Bedrock", mistral: "Mistral", cohere: "Cohere", groq: "Groq", deepseek: "DeepSeek", xai: "xAI", livekit: "LiveKit", deepgram: "Deepgram", elevenlabs: "ElevenLabs" };
+const PROVIDER_NAMES: Record<string, string> = {
+  openai: "OpenAI", anthropic: "Anthropic", google: "Google", gemini: "Google", vertex: "Vertex AI", openrouter: "OpenRouter",
+  azure: "Azure OpenAI", bedrock: "AWS Bedrock", mistral: "Mistral", cohere: "Cohere", groq: "Groq", deepseek: "DeepSeek",
+  xai: "xAI", together: "Together AI", fireworks: "Fireworks", perplexity: "Perplexity", cerebras: "Cerebras", ai21: "AI21",
+  upstage: "Upstage", sarvam: "Sarvam", typesafe: "Typesafe", deepinfra: "DeepInfra", nvidia: "NVIDIA", sambanova: "SambaNova",
+  novita: "Novita", hyperbolic: "Hyperbolic", nebius: "Nebius", alibaba: "Alibaba Cloud", qwen: "Qwen", moonshot: "Moonshot",
+  zai: "Z.ai", minimax: "MiniMax", huggingface: "Hugging Face", baseten: "Baseten", lambda: "Lambda", featherless: "Featherless",
+  friendli: "Friendli", cloudflare: "Cloudflare", vercel: "Vercel", ollama: "Ollama", livekit: "LiveKit", deepgram: "Deepgram",
+  elevenlabs: "ElevenLabs", assemblyai: "AssemblyAI", cartesia: "Cartesia", rumik: "Rumik", voyage: "Voyage AI", jina: "Jina AI",
+  tavily: "Tavily", exa: "Exa", firecrawl: "Firecrawl",
+};
+
+/** "deepgram" -> "Deepgram" */
+export function providerName(value: string): string {
+  const id = value.trim().toLowerCase();
+  return PROVIDER_NAMES[id] ?? (id ? id.charAt(0).toUpperCase() + id.slice(1) : "—");
+}
 
 /** "anthropic,openai" -> "Anthropic, OpenAI" */
 export function formatProviders(value: string | null | undefined): string {
   const names = String(value ?? "").split(",").map((item) => item.trim()).filter(Boolean);
   if (names.length === 0) return "—";
-  return names.map((name) => PROVIDER_NAMES[name.toLowerCase()] ?? name.charAt(0).toUpperCase() + name.slice(1)).join(", ");
+  return names.map(providerName).join(", ");
 }

@@ -1,9 +1,10 @@
 import { ChevronDown, ChevronRight } from "lucide-react";
 import type { TraceEvent } from "../api";
 import { formatDuration } from "../utils";
-import { formatDateTime, formatProviders, formatReportedAmount, type ReportingFx } from "./consoleFormatters";
+import { formatDateTime, formatReportedAmount, type ReportingFx } from "./consoleFormatters";
 import { Panel, StatusPill } from "./ConsolePrimitives";
 import { SPAN_KIND_LABEL, spanTitle, type RunTreeNode, type RunTreeSpanNode } from "./runTreeModel";
+import { ProviderLabel } from "./ProviderLogo";
 
 const BAR_TONE: Record<string, string> = {
   agent: "var(--ck-ink)",
@@ -76,7 +77,7 @@ export function RunTree({
             <span className="ck-step-rail" aria-hidden="true" />
             <span className="ck-step-body">
               <span className="ck-step-name">{callName(node.event)}</span>
-              <span className="ck-step-meta"><span>{formatProviders(node.event.provider)} · {node.event.model || "Model not recorded"}</span>{node.event.parent_event_id && <span>Retry</span>}</span>
+              <span className="ck-step-meta"><span><ProviderLabel provider={node.event.provider} size={13} /> · {node.event.model || "Model not recorded"}</span>{node.event.parent_event_id && <span>Retry</span>}</span>
               {bar(node.startMs, node.endMs, "var(--ck-blue)")}
             </span>
             <span className="ck-step-cost">{node.event.cost_usd == null ? "Unpriced" : formatReportedAmount(Number(node.event.cost_usd), currency, fx)}<small>{formatDuration(Number(node.event.duration_ms) || 0)}</small></span>

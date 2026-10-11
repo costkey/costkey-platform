@@ -1,47 +1,26 @@
 import type { CallSite, StackFrame } from "./types.js";
 
-/** Frames from these packages are internal and should be stripped */
-const INTERNAL_PATTERNS = [
-  // CostKey
-  "/costkey/packages/sdk/",
-  "/node_modules/costkey/",
-  // Node internals
-  "node:internal/",
-  "node:async_hooks",
-  // AI SDKs (internal transport)
-  "/node_modules/openai/",
-  "/node_modules/@anthropic-ai/",
-  "/node_modules/@google/generative-ai/",
-  "/node_modules/cohere-ai/",
-  "/node_modules/@aws-sdk/",
-  "/node_modules/@smithy/",
-  "/node_modules/@ai-sdk/",
-  "/node_modules/@elevenlabs/",
-  "/node_modules/exa-js/",
-  "/node_modules/@mendable/firecrawl-js/",
-  // HTTP clients
-  "/node_modules/node-fetch/",
-  "/node_modules/undici/",
-];
+const MIN_STACK_FRAMES = 50;
 
 /**
- * Capture a stack trace at the current call site, stripping CostKey internals.
- * Returns null if stack traces are unavailable.
+ * Capture the stack at the current call site. Every frame is sent, CostKey's
+ * own and Node's included, along with the raw stack text: the server decides
+ * which frame is the application's call site. Returns null only when the
+ * runtime has no stack traces.
  */
 export function captureCallSite(): CallSite | null {
-  const err = new Error();
-  const raw = err.stack;
+  // CostKey and HTTP-client frames take slots too, so capture deeper than
+  // V8's default of 10 for this one stack.
+  const limit = Error.stackTraceLimit;
+  let raw: string | undefined;
+  try {
+    if (typeof limit === "number" && limit < MIN_STACK_FRAMES) Error.stackTraceLimit = MIN_STACK_FRAMES;
+    raw = new Error().stack;
+  } finally {
+    Error.stackTraceLimit = limit;
+  }
   if (!raw) return null;
-
-  const frames = parseStack(raw).filter(
-    (frame) =>
-      frame.fileName != null &&
-      !INTERNAL_PATTERNS.some((p) => frame.fileName!.includes(p)),
-  );
-
-  if (frames.length === 0) return null;
-
-  return { raw, frames };
+  return { raw, frames: parseStack(raw) };
 }
 
 /**
@@ -93,5 +72,10 @@ function parseFrame(frame: string): StackFrame | null {
     };
   }
 
-  return null;
+  // Frames without a position: `new Promise (<anonymous>)`, `Array.map (native)`, `<anonymous>`.
+  const bareMatch = cleaned.match(/^(.+?)\s+\((.+)\)$/);
+  if (bareMatch) {
+    return { functionName: bareMatch[1] || null, fileName: bareMatch[2] || null, lineNumber: null, columnNumber: null };
+  }
+  return { functionName: null, fileName: cleaned || null, lineNumber: null, columnNumber: null };
 }

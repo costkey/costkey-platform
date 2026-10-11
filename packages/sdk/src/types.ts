@@ -1,4 +1,11 @@
-/** Supported AI providers */
+import type { CallTelemetry } from "./telemetry.js";
+
+export type { CallTelemetry } from "./telemetry.js";
+
+/**
+ * Provider labels. Deprecated in 0.7.0: the SDK no longer labels calls; the
+ * server derives the provider from `telemetry.request.url`.
+ */
 export enum Provider {
   OpenAI = "openai",
   Anthropic = "anthropic",
@@ -52,7 +59,10 @@ export enum Provider {
   Unknown = "unknown",
 }
 
-/** Normalized usage extracted from any provider's response */
+/**
+ * Normalized usage shape still accepted from callers of `recordUsage`. The
+ * SDK never derives it from provider payloads.
+ */
 export interface NormalizedUsage {
   inputTokens: number | null;
   outputTokens: number | null;
@@ -75,23 +85,11 @@ export interface NormalizedUsage {
   nativeUnits?: Record<string, number>;
 }
 
-/** Timing data for streaming responses */
-export interface StreamTiming {
-  /** Time to first byte/token in ms */
-  ttft: number | null;
-  /** Tokens per second (output) */
-  tps: number | null;
-  /** Total stream duration in ms */
-  streamDuration: number | null;
-  /** Number of chunks received */
-  chunkCount: number;
-}
-
 /** Captured call site from stack trace */
 export interface CallSite {
   /** Raw stack trace string */
   raw: string;
-  /** Parsed frames (outermost first) */
+  /** Every parsed frame, innermost first, unfiltered (the server picks the call site). */
   frames: StackFrame[];
 }
 
@@ -226,6 +224,9 @@ export interface CostKeySpanEvent {
   startedAt: string;
   endedAt?: string;
   durationMs?: number;
+  /** Raw JS error name (contract detail 7). */
+  errorName?: string;
+  /** Legacy alias of errorName, same raw value. */
   errorType?: string;
   attributes?: Record<string, unknown>;
   context: EventContext;
@@ -290,6 +291,9 @@ interface LifecycleEventBase {
   startedAt?: string;
   endedAt?: string;
   durationMs?: number;
+  /** Raw JS error name (contract detail 7). */
+  errorName?: string;
+  /** Legacy alias of errorName, same raw value. */
   errorType?: string;
   expectedItems?: number;
   completedItems?: number;
@@ -304,10 +308,7 @@ interface LifecycleEventBase {
   usage?: NormalizedUsage | UsageUnits | null;
   costUsd?: number | null;
   streaming?: boolean;
-  streamTiming?: StreamTiming | null;
   callSite?: CallSite | null;
-  metadata?: EventMetadata | null;
-  systemPrompt?: string | null;
   requestBody?: unknown | null;
   responseBody?: unknown | null;
 }
@@ -342,31 +343,20 @@ export interface PolicyIntegrationProof {
   verified: boolean;
 }
 
-export interface PolicyUsageBounds {
-  maxInputTokens?: number | null;
-  maxOutputTokens?: number | null;
-  maxCacheReadTokens?: number | null;
-  maxCacheCreationTokens?: number | null;
-  maxImageOutputTokens?: number | null;
-  maxAudioSeconds?: number | null;
-  maxCharacters?: number | null;
-  maxImages?: number | null;
-}
-
 export interface PolicyAdmissionRequest {
   projectId: string;
   admissionId: string;
   requestId?: string | null;
-  provider: string;
-  model?: string | null;
   traceId?: string | null;
   executionId?: string | null;
   scope?: Record<string, string>;
   context?: EventContext;
   integration?: PolicyIntegrationProof;
-  usageBounds?: PolicyUsageBounds;
-  claimedCostUsd?: number | null;
-  providerRequest?: unknown;
+  /**
+   * The request as it is about to be sent (skeleton, no content). The server
+   * identifies the provider and estimates usage bounds from it.
+   */
+  telemetry?: { v: 1; request: CallTelemetry["request"] };
 }
 
 export interface PolicyAdmissionResult {
@@ -391,8 +381,6 @@ export interface PolicySettlementRequest {
   reservationId: string;
   settlementId: string;
   outcome: "success" | "failed" | "cancelled" | "unknown";
-  actualCostUsd?: number | null;
-  actualUsage?: Record<string, number | null>;
   providerAttempted?: boolean;
 }
 
@@ -403,7 +391,10 @@ export type PolicyAdmissionHandler = (
 export interface PolicyOptions {
   /** Monitor makes no blocking decision; enforce fails closed. */
   mode?: PolicyMode;
-  /** Optional custom handler. Without it, the DSN-authenticated endpoint is used. */
+  /**
+   * Optional custom handler (your code decides). Without it, the
+   * DSN-authenticated endpoint decides.
+   */
   admission?: PolicyAdmissionHandler;
   /** Override the DSN-derived endpoint for a trusted compatible server. */
   endpoint?: string;
@@ -411,8 +402,6 @@ export interface PolicyOptions {
   timeout?: number;
   integration?: PolicyIntegrationProof;
   scope?: Record<string, string>;
-  usageBounds?: PolicyUsageBounds;
-  claimedCostUsd?: number | null;
 }
 
 export interface RuntimeCaptureConfig {
@@ -475,6 +464,15 @@ export interface RecordUsageEvent {
   traceId?: string;
   executionId?: string;
   metadata?: Record<string, unknown>;
+  /** Raw telemetry an adapter observed (LiveKit rows); sent as given. */
+  telemetry?: UsageTelemetry;
+}
+
+/** Raw telemetry on an explicit usage event, e.g. a LiveKit session snapshot. */
+export interface UsageTelemetry {
+  v: 1;
+  source: string;
+  [key: string]: unknown;
 }
 
 export interface CostKeyUsageEvent {
@@ -520,62 +518,24 @@ export interface CostKeyUsageEvent {
   statusCode?: number | null;
   durationMs?: number;
   streaming?: boolean;
-  streamTiming?: StreamTiming | null;
   callSite?: CallSite | null;
   requestBody?: unknown | null;
   responseBody?: unknown | null;
-}
-
-/** Who produced a score: an LLM judge, a person, or deterministic code. */
-export type ScoreSource = "judge" | "human" | "code";
-
-/** A judge/eval score on a run, sent with `CostKey.score()`. */
-export interface ScoreOptions {
-  /** What was scored, e.g. `faithfulness` (at most 120 characters). */
-  name: string;
-  /** The score itself; any finite number (0..1 scores get a 0.5 pass line). */
-  value: number;
-  /** Short verdict such as `pass` or `fail` (at most 60 characters). */
-  label?: string;
-  /** Grader's reasoning. Content: only sent when body capture is enabled. */
-  comment?: string;
-  source?: ScoreSource;
-  /** Run to score. Defaults to the current trace. */
-  traceId?: string;
-  /** Span to score. Defaults to the current span when no traceId is given. */
-  spanId?: string;
-  /** Stable id: sending the same id again replaces the earlier score. */
-  id?: string;
-  timestamp?: string | Date;
-}
-
-export interface CostKeyScoreEvent {
-  id: string;
-  timestamp: string;
-  projectId: string;
-  eventType: "score";
-  name: string;
-  value: number;
-  label?: string;
-  comment?: string;
-  source?: ScoreSource;
-  traceId?: string;
-  spanId?: string;
+  /** Raw telemetry for integration-reported usage (LiveKit rows). */
+  telemetry?: UsageTelemetry;
 }
 
 export type CostKeyTelemetryEvent =
   | CostKeyEvent
   | CostKeyLifecycleEvent
   | CostKeyUsageEvent
-  | CostKeySpanEvent
-  | CostKeyScoreEvent;
+  | CostKeySpanEvent;
 
 /** Explicit (non-call) events that pass through `beforeSendEvent`. */
 export type CostKeyAdditiveEvent =
   | CostKeyLifecycleEvent
   | CostKeyUsageEvent
-  | CostKeySpanEvent
-  | CostKeyScoreEvent;
+  | CostKeySpanEvent;
 
 export type BeforeSendEventHook = (
   event: CostKeyAdditiveEvent,
@@ -584,150 +544,53 @@ export type BeforeSendEventHook = (
   | null
   | Promise<CostKeyAdditiveEvent | null>;
 
-/** Provider-normalized prompt/tool/agent details captured from request/response payloads */
-export interface EventMetadata {
-  prompts?: Array<{ role: string; content: unknown }>;
-  toolDefinitions?: unknown[];
-  toolChoice?: unknown;
-  toolCalls?: unknown[];
-  toolResults?: unknown[];
-  webSearches?: unknown[];
-  citations?: unknown[];
-  agent?: Record<string, unknown>;
-  raw?: Record<string, unknown>;
-}
-
-/** The core event that the SDK ships to costkey.dev */
+/**
+ * A captured provider call. The SDK sends only what it observed: `telemetry`
+ * (request/response/stream skeletons, headers, timing) carries everything the
+ * server needs to identify the provider and model and to count usage.
+ */
 export interface CostKeyEvent {
-  /** Unique event ID */
+  /** Unique event ID (also the policy admission ID). */
   id: string;
-  /** Event discriminator; omitted by older SDK-created call records. */
-  eventType?: "call";
-  source?: "auto" | "explicit";
-  /** Provider request identity when the response exposes one. */
-  providerRequestId?: string | null;
-  /** Stable charge identity for explicit adapter reconciliation when known. */
-  chargeId?: string | null;
-  /** Stable attempt identity; generated per observed request unless supplied explicitly. */
+  eventType: "call";
+  source: "auto";
+  /** ISO timestamp of the request start. */
+  timestamp: string;
+  /** Project identifier from DSN */
+  projectId: string;
+  /** Request URL without userinfo, query or fragment (legacy; see telemetry.request.url). */
+  url: string;
+  /** HTTP method */
+  method: string;
+  /** HTTP status code of the response; null when no response arrived. */
+  statusCode: number | null;
+  /** Total request duration in ms (to the end of the body or stream). */
+  durationMs: number;
+  /** Whether the response was read as a stream (telemetry.stream is set). */
+  streaming: boolean;
+  /** Call site captured from stack trace (every frame). */
+  callSite: CallSite | null;
+  /** User-provided context */
+  context: EventContext;
+  /** Caller-supplied attempt label, or the event ID. */
   attemptId?: string | null;
-  /** Known parent attempt/event for a retry or fallback; never inferred by the SDK. */
   /** The span this call ran inside. */
   spanId?: string | null;
+  /** Known parent attempt/event for a retry or fallback; never inferred by the SDK. */
   parentEventId?: string | null;
-  entityType?: "trace" | "execution" | null;
-  entityId?: string | null;
-  lifecycle?: TraceLifecycle | null;
-  startedAt?: string | null;
-  endedAt?: string | null;
-  errorType?: string | null;
-  expectedItems?: number | null;
-  completedItems?: number | null;
-  failedItems?: number | null;
-  componentId?: string | null;
-  /** Legacy inbound alias; SDK usage records use id as caller identity. */
-  callerId?: string | null;
-  revision?: number | null;
-  aggregation?: UsageAggregation | null;
-  nativeUsage?: UsageUnits | null;
-  amount?: UsageAmount | null;
-  pricingId?: string | null;
-  unit?: string | null;
-  usageEvent?: Record<string, unknown> | null;
-  requestModel?: string | null;
   groupId?: string | null;
   groupName?: string | null;
   groupKind?: string | null;
   executionId?: string | null;
   phase?: string | null;
-  configuration?: Record<string, unknown> | null;
   datasetRevision?: string | null;
   caseId?: string | null;
-  contextSnapshot?: Record<string, unknown> | null;
-  /** ISO timestamp */
-  timestamp: string;
-  /** Project identifier from DSN */
-  projectId: string;
-
-  /** Provider that served this request */
-  provider: Provider;
-  /** Model name as returned by the provider */
-  model: string | null;
-  /** The full request URL */
-  url: string;
-  /** HTTP method */
-  method: string;
-  /** HTTP status code of the response */
-  statusCode: number | null;
-
-  /** Normalized token usage */
-  usage: NormalizedUsage | null;
-  /** Estimated cost in USD */
-  costUsd: number | null;
-
-  /** Total request duration in ms */
-  durationMs: number;
-  /** Whether this was a streaming request */
-  streaming: boolean;
-  /** Streaming timing metrics */
-  streamTiming: StreamTiming | null;
-
-  /** Call site captured from stack trace */
-  callSite: CallSite | null;
-  /** User-provided context */
-  context: EventContext;
-
-  /** Normalized provider metadata for prompts, tools, sources, and agent traces */
-  metadata?: EventMetadata | null;
-  /** Normalized system/developer instruction prompt extracted from the request */
-  systemPrompt?: string | null;
-  /** Request body (prompt) — captured if captureBody is enabled */
+  /** Request body content, only when body capture is enabled (scrubbed, bounded). */
   requestBody: unknown | null;
-  /** Response body (completion) — captured if captureBody is enabled */
+  /** Response body content, only when body capture is enabled (scrubbed, bounded). */
   responseBody: unknown | null;
-}
-
-/**
- * Request and response facts beyond the JSON body. Providers that bill by
- * request size (TTS characters, search result counts) or report usage in
- * headers read it from here.
- */
-export interface ExtractorCall {
-  url: URL;
-  method: string;
-  /** Parsed JSON request body (or string fields of a FormData body). */
-  requestBody: unknown;
-  /** HTTP status; null before a response exists. */
-  statusCode: number | null;
-  /** Response headers; null before a response exists. */
-  responseHeaders: Headers | null;
-}
-
-/** Provider extractor interface — one per AI provider */
-export interface ProviderExtractor {
-  /** Provider identifier */
-  provider: Provider;
-  /** Check if a URL belongs to this provider */
-  match(url: URL): boolean;
-  /**
-   * Extract normalized usage from the response body. The body is null when
-   * it was not read (audio/binary responses); `call` is absent for callers
-   * that only have a body.
-   */
-  extractUsage(body: unknown, call?: ExtractorCall): NormalizedUsage | null;
-  /** Extract the model name from request or response body */
-  extractModel(requestBody: unknown, responseBody: unknown, call?: ExtractorCall): string | null;
-  /** Optionally modify request body before sending (e.g., inject stream_options) */
-  injectStreamOptions?(requestBody: unknown): unknown;
-  /**
-   * Return false when the response body must not be read (audio or other
-   * binary output). By default JSON and text bodies are read.
-   */
-  readResponseBody?(call: ExtractorCall): boolean;
-  /**
-   * Units computed over a whole stream rather than merged chunk by chunk,
-   * such as distinct search queries across Gemini chunks.
-   */
-  extractStreamUnits?(records: unknown[]): Record<string, number> | null;
+  /** Raw telemetry (contract v1): always present, never content. */
+  telemetry: CallTelemetry;
 }
 
 /** Hook called before an event is sent — return null to drop the event */

@@ -1,18 +1,33 @@
-import type { EventContext, ExtractorCall, NormalizedUsage, StreamTiming } from "./types.js";
-import { bedrockExtractor } from "./providers/bedrock.js";
-import { StreamUsage, isCaptureActive, recordObservedCall } from "./fetch-patch.js";
+import type { EventContext } from "./types.js";
+import { isCaptureActive, recordObservedCall } from "./fetch-patch.js";
 import { captureCallSite } from "./stack.js";
-import { getCurrentContext, withContext } from "./context.js";
+import { getCallContext, withContext } from "./context.js";
+import {
+  StreamRecorder,
+  TELEMETRY_VERSION,
+  decodeBytesField,
+  requestBodySkeleton,
+  round,
+  sanitizeTelemetryUrl,
+  skeleton,
+  telemetryError,
+  telemetryRequestHeaders,
+  telemetryResponseHeaders,
+  type CallTelemetry,
+  type TelemetryRequest,
+  type TelemetryResponse,
+} from "./telemetry.js";
 
 /**
  * AWS SDK v3 (`@aws-sdk/client-bedrock-runtime`) sends requests through
  * Node's http module, not fetch, so the fetch patch never sees them. This
- * helper adds middleware to a BedrockRuntimeClient instead: Converse and
- * InvokeModel usage is read from the deserialized output (or the
- * x-amzn-bedrock-*-token-count headers), and ConverseStream /
- * InvokeModelWithResponseStream output streams are wrapped so usage is
- * recorded when the caller finishes reading them. No AWS SDK import is
- * needed; the client is duck-typed.
+ * helper adds middleware to a BedrockRuntimeClient instead and records the
+ * same raw telemetry as the fetch path: the serialized request, the response
+ * status and headers (including x-amzn-bedrock-*-token-count), and the
+ * deserialized output as a skeleton. ConverseStream /
+ * InvokeModelWithResponseStream event streams are passed through and their
+ * events recorded as chunks. No AWS SDK import is needed; the client is
+ * duck-typed.
  */
 
 type Handler = (args: Record<string, unknown>) => Promise<Record<string, unknown>>;
@@ -41,10 +56,9 @@ const COMMAND_OPERATIONS: Record<string, Operation> = {
   InvokeModelWithResponseStreamCommand: "invoke-with-response-stream",
 };
 const instrumented = new WeakSet<object>();
-const utf8 = new TextDecoder();
 
 /**
- * Record usage for every Converse, ConverseStream, InvokeModel and
+ * Record every Converse, ConverseStream, InvokeModel and
  * InvokeModelWithResponseStream call a BedrockRuntimeClient makes. Returns
  * the same client; calling it twice is a no-op.
  */
@@ -79,7 +93,7 @@ export function instrumentBedrockClient<T>(client: T): T {
 const captureCaller: Middleware = (next, handlerContext) => (args) => {
   try {
     if (isCaptureActive()) {
-      handlerContext[CALLER] = { callSite: captureCallSite(), context: getCurrentContext() } satisfies CallerState;
+      handlerContext[CALLER] = { callSite: captureCallSite(), context: getCallContext() } satisfies CallerState;
     }
   } catch {
     // Call-site capture is best effort.
@@ -96,42 +110,45 @@ const recordBedrockCall: Middleware = (next, handlerContext) => async (args) => 
   } catch {
     operation = null;
   }
-  const context = caller?.context ?? getCurrentContext();
+  const context = caller?.context ?? getCallContext();
   if (!operation || !isCaptureActive() || isManualCapture(context)) return next(args);
 
   const startTime = performance.now();
   const startedAt = new Date().toISOString();
-  let call: ExtractorCall;
+  let url: URL;
+  let request: TelemetryRequest;
   try {
-    const input = asRecord(args["input"]);
-    call = {
-      url: requestUrl(args["request"], input, operation),
-      method: "POST",
-      requestBody: requestBodyOf(input, operation),
-      statusCode: null,
-      responseHeaders: null,
+    const http = asRecord(args["request"]);
+    url = requestUrl(http, asRecord(args["input"]), operation);
+    const body = requestBodySkeleton(http?.["body"] ?? null);
+    request = {
+      method: typeof http?.["method"] === "string" ? (http["method"] as string).toUpperCase() : "POST",
+      url: sanitizeTelemetryUrl(url),
+      headers: telemetryRequestHeaders(http?.["headers"]),
+      body: body.body,
+      bytes: body.bytes,
     };
   } catch {
     return next(args);
   }
   const report = (
-    observed: Pick<ExtractorCall, "statusCode" | "responseHeaders">,
-    responseBody: unknown,
-    usage: NormalizedUsage | null,
-    streamTiming: StreamTiming | null = null,
+    response: TelemetryResponse | null,
+    stream: CallTelemetry["stream"],
+    error: unknown,
   ): void => {
-    const finalCall = { ...call, ...observed };
+    const durationMs = round(performance.now() - startTime);
     recordObservedCall({
-      extractor: bedrockExtractor,
-      call: finalCall,
-      responseBody,
-      usage,
-      model: bedrockExtractor.extractModel(call.requestBody, responseBody, finalCall),
-      providerRequestId: finalCall.responseHeaders?.get("x-amzn-requestid") ?? null,
-      startedAt,
-      durationMs: performance.now() - startTime,
-      streaming: operation === "converse-stream" || operation === "invoke-with-response-stream",
-      streamTiming,
+      telemetry: {
+        v: TELEMETRY_VERSION,
+        request,
+        response,
+        stream,
+        error: telemetryError(error),
+        startedAt,
+        durationMs,
+      },
+      url,
+      method: request.method,
       callSite: caller?.callSite ?? null,
       context,
     });
@@ -144,7 +161,14 @@ const recordBedrockCall: Middleware = (next, handlerContext) => async (args) => 
     result = await withContext({ costkeyCapture: "manual" }, () => next(args));
   } catch (error) {
     try {
-      report({ statusCode: errorStatus(error), responseHeaders: null }, null, null);
+      const status = errorStatus(error);
+      report(
+        status === null && !errorHeaders(error)
+          ? null
+          : { status, headers: telemetryResponseHeaders(errorHeaders(error)), body: null, bytes: null },
+        null,
+        error,
+      );
     } catch {
       // Recording never replaces the provider error.
     }
@@ -154,10 +178,10 @@ const recordBedrockCall: Middleware = (next, handlerContext) => async (args) => 
   try {
     const response = asRecord(result["response"]);
     const output = asRecord(result["output"]);
-    const observed = {
-      statusCode: asNumber(response?.["statusCode"])
+    const responseBase = {
+      status: asNumber(response?.["statusCode"])
         ?? asNumber(asRecord(output?.["$metadata"])?.["httpStatusCode"]),
-      responseHeaders: toHeaders(response?.["headers"]),
+      headers: telemetryResponseHeaders(response?.["headers"]),
     };
     const streamKey = operation === "converse-stream" ? "stream"
       : operation === "invoke-with-response-stream" ? "body"
@@ -166,28 +190,15 @@ const recordBedrockCall: Middleware = (next, handlerContext) => async (args) => 
     if (streamKey) {
       const source = output?.[streamKey];
       if (output && isAsyncIterable(source)) {
-        const streamUsage = new StreamUsage(bedrockExtractor, { ...call, ...observed });
-        output[streamKey] = observeStream(source, streamUsage, (firstEventAt, events) => {
-          const endTime = performance.now();
-          const usage = streamUsage.finish();
-          report(observed, null, usage, {
-            ttft: firstEventAt != null ? firstEventAt - startTime : null,
-            tps: usage?.outputTokens && firstEventAt != null && endTime > firstEventAt
-              ? usage.outputTokens / ((endTime - firstEventAt) / 1000)
-              : null,
-            streamDuration: endTime - startTime,
-            chunkCount: events,
-          });
+        const recorder = new StreamRecorder("aws-eventstream", startTime);
+        output[streamKey] = observeStream(source, recorder, (error) => {
+          report({ ...responseBase, body: null, bytes: null }, recorder.telemetry(), error);
         });
       } else {
-        report(observed, null, null);
+        report({ ...responseBase, body: null, bytes: null }, null, null);
       }
     } else {
-      const responseBody = operation === "invoke"
-        ? parseJsonBytes(output?.["body"])
-        : jsonSafe(withoutMetadata(output));
-      const usage = bedrockExtractor.extractUsage(responseBody, { ...call, ...observed });
-      report(observed, responseBody, usage);
+      report({ ...responseBase, body: outputSkeleton(output), bytes: null }, null, null);
     }
   } catch {
     // The caller always gets the SDK's result.
@@ -196,30 +207,46 @@ const recordBedrockCall: Middleware = (next, handlerContext) => async (args) => 
 };
 
 /**
- * Pass every stream event through unchanged; record once when the caller
- * finishes, stops early or the stream fails.
+ * The deserialized output without `$metadata`. InvokeModel's `body` is the
+ * model's own JSON as bytes; it is decoded (framing) before the skeleton.
+ */
+function outputSkeleton(output: Record<string, unknown> | null): unknown {
+  if (!output) return null;
+  const { $metadata: _metadata, ...rest } = output;
+  const body = rest["body"];
+  if (body instanceof Uint8Array) {
+    const decoded = decodeBytesField({ bytes: body }) as Record<string, unknown>;
+    if (!(decoded["bytes"] instanceof Uint8Array)) return skeleton({ ...rest, body: decoded["bytes"] });
+  }
+  return skeleton(rest);
+}
+
+/**
+ * Pass every stream event through unchanged and record it as a chunk; report
+ * once when the caller finishes, stops early or the stream fails.
  */
 async function* observeStream(
   source: AsyncIterable<unknown>,
-  usage: StreamUsage,
-  onEnd: (firstEventAt: number | null, events: number) => void,
+  recorder: StreamRecorder,
+  onEnd: (error: unknown) => void,
 ): AsyncGenerator<unknown, void, undefined> {
-  let firstEventAt: number | null = null;
-  let events = 0;
+  let failure: unknown = null;
   try {
     for await (const event of source) {
-      events++;
-      firstEventAt ??= performance.now();
       try {
-        usage.add(streamEventRecord(event));
+        recorder.arrived();
+        recorder.record(streamEventChunk(event));
       } catch {
-        // Skip an event whose payload can't be read.
+        // Skip an event that can't be read.
       }
       yield event;
     }
+  } catch (error) {
+    failure = error;
+    throw error;
   } finally {
     try {
-      onEnd(firstEventAt, events);
+      onEnd(failure);
     } catch {
       // Never surface a recording failure to the caller.
     }
@@ -227,20 +254,16 @@ async function* observeStream(
 }
 
 /**
- * ConverseStream events are `{ metadata: { usage, metrics } }` among others;
- * InvokeModelWithResponseStream events are `{ chunk: { bytes } }` holding the
- * model's own JSON chunk.
+ * SDK stream events are already keyed by event type (`{ contentBlockDelta }`,
+ * `{ metadata }`, `{ chunk: { bytes } }`), the same `{"<event-type>": payload}`
+ * shape as the fetch path. A `bytes` payload is decoded to its JSON.
  */
-function streamEventRecord(event: unknown): unknown {
+function streamEventChunk(event: unknown): unknown {
   const record = asRecord(event);
-  const metadata = asRecord(record?.["metadata"]);
-  if (metadata) return metadata;
-  const chunk = asRecord(record?.["chunk"]);
-  if (!chunk) return null;
-  const bytes = chunk["bytes"];
-  if (bytes instanceof Uint8Array) return JSON.parse(utf8.decode(bytes)) as unknown;
-  if (typeof bytes === "string") return JSON.parse(Buffer.from(bytes, "base64").toString("utf8")) as unknown;
-  return null;
+  if (!record) return event;
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(record)) result[key] = decodeBytesField(value);
+  return result;
 }
 
 function bedrockOperation(request: unknown, commandName: unknown): Operation | null {
@@ -252,15 +275,22 @@ function bedrockOperation(request: unknown, commandName: unknown): Operation | n
   return typeof commandName === "string" ? COMMAND_OPERATIONS[commandName] ?? null : null;
 }
 
-function requestUrl(request: unknown, input: Record<string, unknown> | null, operation: Operation): URL {
-  const http = asRecord(request);
+function requestUrl(http: Record<string, unknown> | null, input: Record<string, unknown> | null, operation: Operation): URL {
   if (http && typeof http["hostname"] === "string" && typeof http["path"] === "string") {
     const protocol = typeof http["protocol"] === "string" && http["protocol"]
       ? http["protocol"].replace(/:?$/, ":")
       : "https:";
     const port = typeof http["port"] === "number" ? `:${http["port"]}` : "";
     try {
-      return new URL(`${protocol}//${http["hostname"]}${port}${http["path"]}`);
+      const url = new URL(`${protocol}//${http["hostname"]}${port}${http["path"]}`);
+      const query = asRecord(http["query"]);
+      if (query) {
+        for (const [name, value] of Object.entries(query)) {
+          if (typeof value === "string") url.searchParams.append(name, value);
+          else if (Array.isArray(value)) for (const item of value) url.searchParams.append(name, String(item));
+        }
+      }
+      return url;
     } catch {
       // Fall through to a synthetic Bedrock URL.
     }
@@ -269,79 +299,14 @@ function requestUrl(request: unknown, input: Record<string, unknown> | null, ope
   return new URL(`https://bedrock-runtime.amazonaws.com/model/${encodeURIComponent(modelId)}/${operation}`);
 }
 
-/** Converse input is the request; InvokeModel's request is its JSON `body`. */
-function requestBodyOf(input: Record<string, unknown> | null, operation: Operation): unknown {
-  if (!input) return null;
-  if (operation === "converse" || operation === "converse-stream") return jsonSafe(input);
-  const body = input["body"];
-  const parsed = asRecord(typeof body === "string" ? parseJson(body) : parseJsonBytes(body)) ?? {};
-  return typeof input["modelId"] === "string" ? { ...parsed, modelId: input["modelId"] } : parsed;
+function errorHeaders(error: unknown): unknown {
+  return asRecord(asRecord(error)?.["$response"])?.["headers"] ?? null;
 }
 
 function errorStatus(error: unknown): number | null {
   const record = asRecord(error);
   return asNumber(asRecord(record?.["$metadata"])?.["httpStatusCode"])
     ?? asNumber(asRecord(record?.["$response"])?.["statusCode"]);
-}
-
-function toHeaders(value: unknown): Headers | null {
-  const record = asRecord(value);
-  if (!record) return null;
-  const headers = new Headers();
-  for (const [name, raw] of Object.entries(record)) {
-    if (typeof raw === "string") {
-      try {
-        headers.set(name, raw);
-      } catch {
-        // Skip a header value fetch's Headers rejects.
-      }
-    }
-  }
-  return headers;
-}
-
-function withoutMetadata(output: Record<string, unknown> | null): Record<string, unknown> | null {
-  if (!output) return null;
-  const { $metadata: _metadata, ...rest } = output;
-  return rest;
-}
-
-function parseJson(text: string): unknown {
-  try {
-    return JSON.parse(text) as unknown;
-  } catch {
-    return null;
-  }
-}
-
-function parseJsonBytes(value: unknown): unknown {
-  return value instanceof Uint8Array ? parseJson(utf8.decode(value)) : null;
-}
-
-/**
- * Command input and output can hold raw bytes (images, documents); keep the
- * shape for telemetry but never the bytes.
- */
-function jsonSafe(value: unknown, depth = 0): unknown {
-  if (value == null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-    return value;
-  }
-  if (depth > 32) return null;
-  if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) {
-    return `[binary data omitted: ${value.byteLength} bytes]`;
-  }
-  if (value instanceof Date) return value.toISOString();
-  if (Array.isArray(value)) return value.map((item) => jsonSafe(item, depth + 1));
-  if (typeof value === "object") {
-    if (isAsyncIterable(value)) return null;
-    const result: Record<string, unknown> = {};
-    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
-      if (typeof entry === "function") continue;
-      result[key] = jsonSafe(entry, depth + 1);
-    }
-    return result;
-  }
-  return null;
 }
 
 function isManualCapture(context: EventContext): boolean {

@@ -6,7 +6,6 @@ import type {
   PolicyMode,
   PolicyOptions,
   PolicySettlementRequest,
-  PolicyUsageBounds,
 } from "./types.js";
 
 export interface PolicyAdmissionClient {
@@ -78,8 +77,6 @@ export class CostKeyPolicyClient implements PolicyAdmissionClient {
   private readonly handler: PolicyAdmissionHandler | null;
   private readonly integration?: PolicyIntegrationProof;
   private readonly scope?: Record<string, string>;
-  private readonly usageBounds?: PolicyUsageBounds;
-  private readonly claimedCostUsd?: number | null;
 
   constructor(options: {
     endpoint: string;
@@ -101,19 +98,18 @@ export class CostKeyPolicyClient implements PolicyAdmissionClient {
     this.handler = policy.admission ?? null;
     this.integration = policy.integration;
     this.scope = policy.scope;
-    this.usageBounds = policy.usageBounds;
-    this.claimedCostUsd = policy.claimedCostUsd;
   }
 
+  /**
+   * Ask for an allow/deny decision. The request carries the provider request
+   * skeleton; the server (or your admission callback) estimates usage bounds.
+   * The SDK only enforces the answer.
+   */
   async admit(request: PolicyAdmissionRequest): Promise<PolicyAdmissionResult> {
     const payload: PolicyAdmissionRequest = {
       ...request,
       ...(this.integration ? { integration: this.integration } : {}),
       ...(this.scope ? { scope: this.scope } : {}),
-      ...(this.usageBounds || request.usageBounds
-        ? { usageBounds: { ...(request.usageBounds ?? {}), ...definedBounds(this.usageBounds) } }
-        : {}),
-      ...(this.claimedCostUsd !== undefined ? { claimedCostUsd: this.claimedCostUsd } : {}),
     };
 
     if (this.handler) {
@@ -245,10 +241,4 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
-}
-
-/** Static bounds from init() override the per-call estimate field by field. */
-function definedBounds(bounds: PolicyUsageBounds | undefined): PolicyUsageBounds {
-  if (!bounds) return {};
-  return Object.fromEntries(Object.entries(bounds).filter(([, value]) => value !== undefined && value !== null)) as PolicyUsageBounds;
 }

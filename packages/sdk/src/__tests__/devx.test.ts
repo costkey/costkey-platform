@@ -3,12 +3,9 @@ import { createServer, type Server } from "node:http";
 import {
   CostKey,
   CostKeyPolicyRefused,
-  Provider,
-  UsageConflictError,
   recordLiveKitUsage,
 } from "../index.js";
-import { registerExtractor } from "../providers/registry.js";
-import type { ProviderExtractor } from "../types.js";
+import { addCaptureTarget } from "../providers/registry.js";
 
 interface CapturedPayload {
   events: Array<Record<string, unknown>>;
@@ -41,38 +38,12 @@ async function settleRuntimeConfig(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 2));
 }
 
-const fakeProvider: ProviderExtractor = {
-  provider: Provider.Unknown,
-  match(url) {
-    return url.hostname === "127.0.0.1" && url.pathname === "/fake-provider";
-  },
-  extractUsage(body) {
-    if (!body || typeof body !== "object") return null;
-    const usage = (body as Record<string, unknown>)["usage"];
-    if (!usage || typeof usage !== "object") return null;
-    const values = usage as Record<string, unknown>;
-    const inputTokens = typeof values["input_tokens"] === "number" ? values["input_tokens"] : null;
-    const outputTokens = typeof values["output_tokens"] === "number" ? values["output_tokens"] : null;
-    return {
-      inputTokens,
-      outputTokens,
-      totalTokens: inputTokens != null && outputTokens != null ? inputTokens + outputTokens : null,
-      reasoningTokens: null,
-      cacheReadTokens: null,
-      cacheCreationTokens: null,
-    };
-  },
-  extractModel(requestBody, responseBody) {
-    for (const body of [responseBody, requestBody]) {
-      if (!body || typeof body !== "object") continue;
-      const model = (body as Record<string, unknown>)["model"];
-      if (typeof model === "string") return model;
-    }
-    return null;
-  },
-};
-
-registerExtractor(fakeProvider);
+// A real local HTTP endpoint added to the capture filter (the SDK no longer
+// has per-provider extractors; capture is host matching only).
+addCaptureTarget({
+  label: "fake",
+  match: (url) => url.hostname === "127.0.0.1" && url.pathname === "/fake-provider",
+});
 
 describe("CostKey developer experience", () => {
   let originalFetch: typeof globalThis.fetch;
@@ -138,7 +109,19 @@ describe("CostKey developer experience", () => {
     expect(lifecycle.map((event) => event["lifecycle"])).toEqual(["started", "completed"]);
     expect(lifecycle.map((event) => event["sequence"])).toEqual([0, 1]);
     expect(calls).toHaveLength(1);
-    expect(calls[0]?.["providerRequestId"]).toBe("fake-provider-request-1");
+    const telemetry = calls[0]?.["telemetry"] as Record<string, any>;
+    expect(telemetry["v"]).toBe(1);
+    // Raw response skeleton: ids and models are allowlisted, numbers are kept.
+    expect(telemetry["response"]["body"]).toEqual({
+      id: "fake-provider-request-1",
+      model: "fake-model",
+      usage: { input_tokens: 3, output_tokens: 2 },
+    });
+    expect(telemetry["request"]["body"]).toEqual({ model: "fake-model" });
+    expect(calls[0]).not.toHaveProperty("usage");
+    expect(calls[0]).not.toHaveProperty("model");
+    expect(calls[0]).not.toHaveProperty("provider");
+    expect(calls[0]).not.toHaveProperty("costUsd");
     expect((calls[0]?.["context"] as Record<string, unknown>)["traceId"]).toBe(
       (lifecycle[0]?.["context"] as Record<string, unknown>)["traceId"],
     );
@@ -174,6 +157,7 @@ describe("CostKey developer experience", () => {
     const events = payloads.flatMap((payload) => payload.events);
     const call = events.find((event) => event["eventType"] === "call");
     expect(String(call?.["url"])).toBe(providerUrl);
+    expect((call?.["telemetry"] as Record<string, any>)["request"]["url"]).toBe(providerUrl);
     expect(JSON.stringify(call)).not.toContain("provider-secret");
     expect(JSON.stringify(call)).not.toContain("provider-password");
   });
@@ -200,15 +184,18 @@ describe("CostKey developer experience", () => {
       .find((event) => event["eventType"] === "call");
     expect(call?.["requestBody"]).toBeNull();
     expect(call?.["responseBody"]).toBeNull();
-    expect(call?.["systemPrompt"]).toBeNull();
+    expect(call).not.toHaveProperty("systemPrompt");
+    expect(call).not.toHaveProperty("metadata");
     const wire = JSON.stringify(call);
     expect(wire).not.toContain("system-secret-that-must-not-leave-the-process");
     expect(wire).not.toContain("prompt-secret-that-must-not-leave-the-process");
     expect(wire).not.toContain("tool-secret");
-    expect((call?.["metadata"] as Record<string, unknown>)?.["raw"]).toEqual({
-      promptCount: 1,
-      promptRoles: ["user"],
-      toolDefinitionCount: 1,
+    // The skeleton keeps structure and lengths, never text.
+    expect((call?.["telemetry"] as Record<string, any>)["request"]["body"]).toEqual({
+      model: "fake-model",
+      system: { $s: 45 },
+      messages: [{ role: { $s: 4 }, content: { $s: 45 } }],
+      tools: [{ type: "function", function: { description: { $s: 11 } } }],
     });
   });
 
@@ -630,15 +617,31 @@ describe("CostKey developer experience", () => {
 
     expect(admissions).toHaveLength(1);
     expect(admissions[0]?.["admissionId"]).toBe(admissions[0]?.["requestId"]);
-    expect(admissions[0]?.["provider"]).toBe("unknown");
+    expect(admissions[0]).not.toHaveProperty("provider");
+    expect(admissions[0]).not.toHaveProperty("usageBounds");
+    expect(admissions[0]).not.toHaveProperty("claimedCostUsd");
     expect(admissions[0]).not.toHaveProperty("requestBody");
+    // The request skeleton goes to /admit; the server estimates the bounds.
+    expect(admissions[0]?.["telemetry"]).toEqual({
+      v: 1,
+      request: {
+        method: "POST",
+        url: providerUrl,
+        headers: {},
+        body: { model: "fake-model" },
+        bytes: 22,
+      },
+    });
     expect(admissions[0]).not.toHaveProperty("providerRequest");
     expect((admissions[0]?.["context"] as Record<string, unknown>)["policySecret"]).toBeUndefined();
     expect((admissions[0]?.["integration"] as Record<string, unknown>)["verified"]).toBe(true);
     expect(settlements).toHaveLength(2);
     expect(settlements[0]?.["outcome"]).toBe("success");
     expect(settlements[1]?.["outcome"]).toBe("unknown");
-    expect((settlements[0]?.["actualUsage"] as Record<string, unknown>)["totalTokens"]).toBe(5);
+    expect(settlements[0]).not.toHaveProperty("actualUsage");
+    expect(settlements[0]).not.toHaveProperty("actualCostUsd");
+    const call = payloads.flatMap((payload) => payload.events).find((event) => event["eventType"] === "call");
+    expect(settlements[0]?.["settlementId"]).toBe(`${String(call?.["id"])}:settlement`);
   });
 
   it("turns an explicit enforced refusal into a typed error before the provider runs", async () => {
@@ -725,7 +728,7 @@ describe("CostKey developer experience", () => {
     });
   });
 
-  it("deduplicates explicit revisions and preserves cumulative versus delta semantics", async () => {
+  it("sends every recordUsage event as passed: no client dedup, revision fence or derived fields", async () => {
     const additive: Array<Record<string, unknown>> = [];
     CostKey.init({
       dsn: "https://ck_test@costkey.dev/usage-test",
@@ -744,104 +747,69 @@ describe("CostKey developer experience", () => {
       revision: 1,
       aggregation: "cumulative" as const,
       provider: "voice-provider",
+      unit: "seconds",
       usage: { seconds: 2 },
       amount: { value: 0.1, currency: "USD" },
     };
     await CostKey.recordUsage(usage);
     await CostKey.recordUsage({ ...usage });
-    await CostKey.recordUsage({
-      ...usage,
-      id: "voice-revision-2",
-      revision: 2,
-      usage: { seconds: 5 },
-    });
-    await CostKey.recordUsage({
-      ...usage,
-      id: "voice-stale-revision-0",
-      revision: 0,
-      usage: { seconds: 1 },
-    });
-
-    await CostKey.recordUsage({
-      id: "meter-delta-2",
-      componentId: "meter-component",
-      chargeId: "meter-charge",
-      revision: 2,
-      aggregation: "delta",
-      provider: "meter-provider",
-      usage: { requests: 2 },
-    });
+    await CostKey.recordUsage({ ...usage, id: "voice-stale-revision-0", revision: 0, usage: { seconds: 1 } });
+    await CostKey.recordUsage({ ...usage, id: "voice-conflict", revision: 1, usage: { seconds: 9 } });
     await CostKey.recordUsage({
       id: "meter-delta-1",
       componentId: "meter-component",
-      chargeId: "meter-charge",
       revision: 1,
       aggregation: "delta",
       provider: "meter-provider",
       usage: { requests: 1 },
+      costUsd: 0.25,
     });
-
-    expect(() => CostKey.recordUsage({
-      ...usage,
-      id: "voice-conflict",
-      revision: 2,
-      usage: { seconds: 9 },
-    })).toThrow(UsageConflictError);
 
     await CostKey.flush();
     const usageEvents = additive.filter((event) => event["eventType"] === "usage");
-    expect(usageEvents).toHaveLength(4);
-    expect(usageEvents.map((event) => event["revision"])).toEqual([1, 2, 2, 1]);
+    // Duplicates, stale revisions and conflicts all go to the server, which dedupes.
+    expect(usageEvents.map((event) => event["revision"])).toEqual([1, 1, 0, 1, 1]);
     expect(usageEvents[0]?.["amount"]).toEqual({ value: 0.1, currency: "USD" });
     expect(usageEvents[0]?.["nativeUsage"]).toEqual({ seconds: 2 });
-    expect(usageEvents[2]).not.toHaveProperty("amount");
+    // No unitValue inference and no costUsd derived from the amount.
+    expect(usageEvents[0]?.["unitValue"]).toBeUndefined();
+    expect(usageEvents[0]?.["costUsd"]).toBeNull();
+    // A caller-passed costUsd is sent as is, without becoming an amount.
+    expect(usageEvents[4]?.["costUsd"]).toBe(0.25);
+    expect(usageEvents[4]).not.toHaveProperty("amount");
   });
 
-  it("maps LiveKit modelUsage cumulative rows to native components without auto double capture", async () => {
+  it("sends LiveKit rows raw (skeleton): no classification, summing or unit conversion", async () => {
+    const additive: Array<Record<string, unknown>> = [];
     CostKey.init({
       dsn: "https://ck_test@costkey.dev/livekit-test",
       captureBody: false,
       maxBatchSize: 100,
+      beforeSendEvent(event) {
+        additive.push(event as unknown as Record<string, unknown>);
+        return event;
+      },
     });
     const update = {
       type: "session_usage_updated" as const,
       createdAt: 1_757_745_600_000,
       usage: {
         modelUsage: [
-          {
-            type: "llm_usage",
-            provider: "openai",
-            model: "gpt-4o",
-            inputTokens: 10,
-            outputTokens: 5,
-          },
-          {
-            type: "stt_usage",
-            provider: "deepgram",
-            model: "nova-3",
-            inputTokens: 20,
-            outputTokens: 4,
-            audioDurationMs: 1_250,
-          },
-          {
-            type: "tts_usage",
-            provider: "elevenlabs",
-            model: "turbo",
-            charactersCount: 30,
-            audioDurationMs: 2_000,
-          },
+          { type: "llm_usage", provider: "openai", model: "gpt-4o", inputTokens: 10, outputTokens: 5 },
+          { type: "llm_usage", provider: "openai", model: "gpt-4o", inputTokens: 4, outputTokens: 1 },
+          { type: "stt_usage", provider: "deepgram", model: "nova-3", audioDurationMs: 1_250 },
+          { type: "tts_usage", provider: "elevenlabs", model: "turbo", charactersCount: 30, audioDurationMs: 2_000 },
         ],
       },
     };
-    const usageOptions = {
+    const ids = await recordLiveKitUsage(update, {
       sessionId: "voice-session-1",
       executionId: "voice-execution-1",
       revision: 7,
       expectedComponents: ["stt", "llm", "tts"],
-    };
-    const firstIds = await recordLiveKitUsage(update, usageOptions);
-    const duplicateIds = await recordLiveKitUsage(update, usageOptions);
-    expect(duplicateIds).toEqual(firstIds);
+      excludeComponents: ["llm"],
+    });
+    expect(ids).toEqual(["livekit:voice-session-1:r7"]);
     await CostKey.withContext({ costkeyCapture: "manual" }, async () => {
       await fetch(providerUrl, { method: "POST", body: "{}" });
     });
@@ -849,116 +817,39 @@ describe("CostKey developer experience", () => {
 
     const events = payloads.flatMap((payload) => payload.events);
     const usageEvents = events.filter((event) => event["eventType"] === "usage");
-    expect(usageEvents).toHaveLength(3);
-    const llm = usageEvents.find((event) => event["componentId"] === "livekit:voice-session-1:llm:openai:gpt-4o");
-    const stt = usageEvents.find((event) => event["componentId"] === "livekit:voice-session-1:stt:deepgram:nova-3");
-    const tts = usageEvents.find((event) => event["componentId"] === "livekit:voice-session-1:tts:elevenlabs:turbo");
-    expect((stt?.["usage"] as Record<string, unknown>)["audioSeconds"]).toBe(1.25);
-    expect((tts?.["usage"] as Record<string, unknown>)["audioSeconds"]).toBe(2);
-    expect((tts?.["usage"] as Record<string, unknown>)["characters"]).toBe(30);
-    expect(stt?.["unitKind"]).toBe("audio_seconds");
-    expect(stt?.["unitValue"]).toBe(1.25);
-    expect(tts?.["unitKind"]).toBe("characters");
-    expect(tts?.["unitValue"]).toBe(30);
-    expect(llm?.["unitKind"]).toBeUndefined();
-    expect((llm?.["billingUnits"] as Record<string, unknown>)["input_tokens"]).toBe(10);
-    expect((llm?.["billingUnits"] as Record<string, unknown>)["output_tokens"]).toBe(5);
-    expect((stt?.["billingUnits"] as Record<string, unknown>)["audio_seconds"]).toBe(1.25);
-    expect((tts?.["billingUnits"] as Record<string, unknown>)["characters"]).toBe(30);
-    for (const event of usageEvents) {
-      expect(((event["metadata"] as Record<string, unknown>)["livekit"] as Record<string, unknown>)["voiceCoverage"])
-        .toMatchObject({ expectedComponents: ["llm", "stt", "tts"], missingComponents: [] });
-    }
-    expect(events.filter((event) => event["eventType"] === "call")).toHaveLength(0);
-  });
-
-  it("keeps LiveKit coverage complete and charge IDs stable when rows reorder or duplicate", async () => {
-    const additive: Array<Record<string, unknown>> = [];
-    CostKey.init({
-      dsn: "https://ck_test@costkey.dev/livekit-order-test",
-      captureBody: false,
-      maxBatchSize: 100,
-      beforeSendEvent(event) {
-        additive.push(event as unknown as Record<string, unknown>);
-        return event;
-      },
-    });
-    const rows = [
-      { type: "tts_usage", provider: "voice", model: "synth", charactersCount: 5, audioDurationMs: 100 },
-      { type: "llm_usage", provider: "voice", model: "brain", inputTokens: 2, outputTokens: 3 },
-      { type: "stt_usage", provider: "voice", model: "listen", audioDurationMs: 200 },
-    ];
-    const first = await recordLiveKitUsage(
-      { usage: { modelUsage: rows } },
-      { sessionId: "order-session", revision: 1, expectedComponents: ["stt", "llm", "tts"] },
-    );
-    const reordered = await recordLiveKitUsage(
-      { usage: { modelUsage: [...rows].reverse() } },
-      { sessionId: "order-session", revision: 1, expectedComponents: ["stt", "llm", "tts"] },
-    );
-    expect(reordered).toEqual(first);
-
-    const duplicateRows = [
-      { type: "llm_usage", provider: "voice", model: "brain", inputTokens: 2, outputTokens: 3 },
-      { type: "llm_usage", provider: "voice", model: "brain", inputTokens: 4, outputTokens: 1 },
-    ];
-    const duplicateIds = await recordLiveKitUsage(
-      { usage: { modelUsage: duplicateRows } },
-      { sessionId: "duplicate-session", revision: 2, expectedComponents: ["llm"] },
-    );
-    const duplicateReorderedIds = await recordLiveKitUsage(
-      { usage: { modelUsage: [...duplicateRows].reverse() } },
-      { sessionId: "duplicate-session", revision: 2, expectedComponents: ["llm"] },
-    );
-    expect(duplicateReorderedIds).toEqual(duplicateIds);
-    await CostKey.flush();
-
-    const usageEvents = additive.filter((event) => event["eventType"] === "usage");
-    expect(usageEvents.filter((event) => String(event["componentId"]).startsWith("livekit:order-session:"))).toHaveLength(3);
-    const merged = usageEvents.find((event) => String(event["componentId"]).startsWith("livekit:duplicate-session:llm:"));
-    expect((merged?.["usage"] as Record<string, unknown>)["inputTokens"]).toBe(6);
-    expect((merged?.["usage"] as Record<string, unknown>)["outputTokens"]).toBe(4);
-    expect(((merged?.["metadata"] as Record<string, unknown>)["livekit"] as Record<string, unknown>)["voiceCoverage"])
-      .toMatchObject({ expectedComponents: ["llm"], observedComponents: ["llm"], missingComponents: [] });
-  });
-
-  it("allows an explicit session component selection to avoid double-counting auto LLM calls", async () => {
-    const additive: Array<Record<string, unknown>> = [];
-    CostKey.init({
-      dsn: "https://ck_test@costkey.dev/livekit-selection-test",
-      captureBody: false,
-      maxBatchSize: 100,
-      beforeSendEvent(event) {
-        additive.push(event as unknown as Record<string, unknown>);
-        return event;
-      },
-    });
-    await fetch(providerUrl, { method: "POST", body: JSON.stringify({ model: "fake-model" }) });
-    await recordLiveKitUsage(
-      {
-        usage: {
-          modelUsage: [
-            { type: "llm_usage", provider: "openai", model: "gpt-4o", inputTokens: 10, outputTokens: 5 },
-            { type: "stt_usage", provider: "deepgram", model: "nova-3", audioDurationMs: 500 },
-            { type: "tts_usage", provider: "elevenlabs", model: "turbo", charactersCount: 12 },
-          ],
-        },
-      },
-      {
-        sessionId: "selection-session",
-        revision: 1,
+    expect(usageEvents).toHaveLength(1);
+    const event = usageEvents[0]!;
+    expect(event["componentId"]).toBe("livekit:voice-session-1");
+    expect(event["aggregation"]).toBe("cumulative");
+    expect(event["revision"]).toBe(7);
+    expect(event["usage"]).toBeNull();
+    expect((event["context"] as Record<string, unknown>)["executionId"]).toBe("voice-execution-1");
+    // Every row as sent by LiveKit: duplicates unsummed, milliseconds unconverted,
+    // and the options as passed (component selection applied on the server).
+    expect(event["telemetry"]).toEqual({
+      v: 1,
+      source: "livekit",
+      livekit: {
+        sessionId: "voice-session-1",
+        revision: 7,
+        executionId: "voice-execution-1",
         expectedComponents: ["stt", "llm", "tts"],
         excludeComponents: ["llm"],
+        update: {
+          type: "session_usage_updated",
+          createdAt: 1_757_745_600_000,
+          usage: {
+            modelUsage: [
+              { type: "llm_usage", provider: "openai", model: "gpt-4o", inputTokens: 10, outputTokens: 5 },
+              { type: "llm_usage", provider: "openai", model: "gpt-4o", inputTokens: 4, outputTokens: 1 },
+              { type: "stt_usage", provider: "deepgram", model: "nova-3", audioDurationMs: 1_250 },
+              { type: "tts_usage", provider: "elevenlabs", model: "turbo", charactersCount: 30, audioDurationMs: 2_000 },
+            ],
+          },
+        },
       },
-    );
-    await CostKey.flush();
-    const events = payloads.flatMap((payload) => payload.events);
-    expect(events.filter((event) => event["eventType"] === "call")).toHaveLength(1);
-    const usageEvents = events.filter((event) => event["eventType"] === "usage");
-    expect(usageEvents).toHaveLength(2);
-    expect(usageEvents.every((event) => !String(event["componentId"]).includes(":llm:"))).toBe(true);
-    expect(((usageEvents[0]?.["metadata"] as Record<string, unknown>)["livekit"] as Record<string, unknown>)["voiceCoverage"])
-      .toMatchObject({ expectedComponents: ["stt", "tts"], excludedComponents: ["llm"], missingComponents: [] });
+    });
+    expect(events.filter((candidate) => candidate["eventType"] === "call")).toHaveLength(0);
   });
 
   it("reports a failed trace without changing the application's thrown error", async () => {
@@ -977,7 +868,7 @@ describe("CostKey developer experience", () => {
     await CostKey.flush();
     const lifecycle = additive.filter((event) => event["eventType"] === "lifecycle");
     expect(lifecycle.map((event) => event["lifecycle"])).toEqual(["started", "failed"]);
-    expect(lifecycle[1]?.["errorType"]).toBe("Error");
+    expect(lifecycle[1]?.["errorName"]).toBe("Error");
   });
 
   it("advances lifecycle sequence when an execution is resumed with the same ID", async () => {
@@ -1012,7 +903,7 @@ describe("CostKey developer experience", () => {
     ]);
   });
 
-  it("marks AbortError boundaries cancelled without leaking the error message", async () => {
+  it("sends the raw AbortError name (the server maps cancellation) without leaking the message", async () => {
     const additive: Array<Record<string, unknown>> = [];
     CostKey.init({
       dsn: "https://ck_test@costkey.dev/cancel-test",
@@ -1026,8 +917,8 @@ describe("CostKey developer experience", () => {
     expect(() => CostKey.startTrace({ name: "cancelled" }, () => { throw cancelled; })).toThrow(cancelled);
     await CostKey.flush();
     const lifecycle = additive.filter((event) => event["eventType"] === "lifecycle");
-    expect(lifecycle.map((event) => event["lifecycle"])).toEqual(["started", "cancelled"]);
-    expect(lifecycle[1]).not.toHaveProperty("errorType");
+    expect(lifecycle.map((event) => event["lifecycle"])).toEqual(["started", "failed"]);
+    expect(lifecycle[1]?.["errorName"]).toBe("AbortError");
     expect(JSON.stringify(lifecycle[1])).not.toContain("private cancellation detail");
   });
 

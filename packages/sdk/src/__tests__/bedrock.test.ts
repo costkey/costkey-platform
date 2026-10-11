@@ -2,8 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CostKey, instrumentBedrockClient } from "../index.js";
 import { withContext } from "../context.js";
 import { flushPendingCaptures, patchFetch, unpatchFetch } from "../fetch-patch.js";
-import { bedrockExtractor, bedrockModelId } from "../providers/bedrock.js";
-import { bedrockStreamRecord, decodeEventStream, EventStreamDecoder } from "../eventstream.js";
+import { eventStreamChunk, decodeEventStream, EventStreamDecoder } from "../eventstream.js";
 import type { Transport } from "../transport.js";
 
 type Event = Record<string, unknown>;
@@ -95,7 +94,7 @@ describe("AWS event-stream decoding", () => {
     expect(messages.map((message) => message.headers[":event-type"])).toEqual(["messageStart", "metadata"]);
     expect(messages[0]?.headers[":retryable"]).toBe(true);
     expect(messages[0]?.headers["n"]).toBe(256);
-    expect(bedrockStreamRecord(messages[1]!)).toEqual({ usage: { inputTokens: 3 } });
+    expect(eventStreamChunk(messages[1]!)).toEqual({ metadata: { usage: { inputTokens: 3 } } });
   });
 
   it("stops at a malformed frame instead of throwing", () => {
@@ -104,51 +103,12 @@ describe("AWS event-stream decoding", () => {
     expect(decodeEventStream(bad)).toEqual([]);
   });
 
-  it("ignores exception messages and unwraps invoke chunks", () => {
+  it("keys exceptions by type and decodes base64 invoke chunks (framing only)", () => {
     const [exception] = decodeEventStream(frame({ ":message-type": "exception", ":exception-type": "throttlingException" }, { message: "slow" }));
-    expect(bedrockStreamRecord(exception!)).toBeNull();
+    expect(eventStreamChunk(exception!)).toEqual({ throttlingException: { message: "slow" } });
     const [wrapped] = decodeEventStream(chunk({ type: "message_delta", usage: { output_tokens: 9 } }));
-    expect(bedrockStreamRecord(wrapped!)).toEqual({ type: "message_delta", usage: { output_tokens: 9 } });
-  });
-});
-
-describe("Bedrock extractor", () => {
-  it("names the model from the URL, including encoded ARNs", () => {
-    const url = (id: string) => ({
-      url: new URL(`https://bedrock-runtime.us-east-1.amazonaws.com/model/${encodeURIComponent(id)}/converse`),
-      method: "POST",
-      requestBody: {},
-      statusCode: 200,
-      responseHeaders: null,
-    });
-    expect(bedrockExtractor.extractModel({}, null, url("anthropic.claude-3-5-sonnet-20240620-v1:0"))).toBe("anthropic.claude-3-5-sonnet-20240620-v1:0");
-    expect(bedrockExtractor.extractModel({}, null, url("arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.anthropic.claude-sonnet-4-20250514-v1:0")))
-      .toBe("us.anthropic.claude-sonnet-4-20250514-v1:0");
-    expect(bedrockModelId("arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-pro-v1:0")).toBe("amazon.nova-pro-v1:0");
-  });
-
-  it("reads Converse cache tokens and fills InvokeModel usage from headers", () => {
-    expect(bedrockExtractor.extractUsage({
-      usage: { inputTokens: 10, outputTokens: 4, totalTokens: 514, cacheReadInputTokens: 500, cacheWriteInputTokens: 0 },
-    })).toMatchObject({ inputTokens: 10, outputTokens: 4, totalTokens: 514, cacheReadTokens: 500, cacheCreationTokens: 0 });
-
-    const headers = new Headers({
-      "x-amzn-bedrock-input-token-count": "21",
-      "x-amzn-bedrock-output-token-count": "7",
-    });
-    const call = {
-      url: new URL("https://bedrock-runtime.us-east-1.amazonaws.com/model/meta.llama3-70b-instruct-v1%3A0/invoke"),
-      method: "POST",
-      requestBody: {},
-      statusCode: 200,
-      responseHeaders: headers,
-    };
-    expect(bedrockExtractor.extractUsage({ generation: "hi", stop_reason: "stop" }, call)).toMatchObject({
-      inputTokens: 21, outputTokens: 7, totalTokens: 28,
-    });
-    // Anthropic-on-Bedrock InvokeModel bodies use snake_case usage.
-    expect(bedrockExtractor.extractUsage({ usage: { input_tokens: 30, output_tokens: 5, cache_read_input_tokens: 2 } })).toMatchObject({
-      inputTokens: 30, outputTokens: 5, cacheReadTokens: 2,
+    expect(eventStreamChunk(wrapped!)).toEqual({
+      chunk: { bytes: { type: "message_delta", usage: { output_tokens: 9 } }, p: "abcdefgh" },
     });
   });
 });
@@ -197,13 +157,28 @@ describe("Bedrock event streams through fetch", () => {
     await flushPendingCaptures();
 
     expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({
-      provider: "bedrock",
-      model: modelId,
-      streaming: true,
-      usage: { inputTokens: 120, outputTokens: 33, totalTokens: 1153, cacheReadTokens: 1000 },
+    expect(events[0]).not.toHaveProperty("model");
+    expect(events[0]).not.toHaveProperty("usage");
+    const telemetry = events[0]?.["telemetry"] as Record<string, any>;
+    expect(events[0]?.["streaming"]).toBe(true);
+    expect(telemetry["request"]["url"]).toBe(
+      `https://bedrock-runtime.us-east-1.amazonaws.com/model/${encodeURIComponent(modelId)}/converse-stream`,
+    );
+    expect(telemetry["response"]).toMatchObject({ status: 200, body: null, headers: { "x-amzn-requestid": "req-1" } });
+    expect(telemetry["stream"]).toMatchObject({
+      format: "aws-eventstream",
+      chunkCount: 4,
+      chunks: [
+        { messageStart: { role: { $s: 9 } } },
+        { contentBlockDelta: { contentBlockIndex: 0, delta: { text: { $s: 5 } } } },
+        { messageStop: { stopReason: { $s: 8 } } },
+        { metadata: {
+          usage: { inputTokens: 120, outputTokens: 33, totalTokens: 1153, cacheReadInputTokens: 1000 },
+          metrics: { latencyMs: 640 },
+        } },
+      ],
     });
-    expect((events[0]?.["streamTiming"] as Event)["chunkCount"]).toBeGreaterThan(1);
+    expect(telemetry["stream"]["firstChunkMs"]).toBeGreaterThanOrEqual(0);
   });
 
   it("records invoke-with-response-stream usage from Anthropic chunks and invocation metrics", async () => {
@@ -225,10 +200,23 @@ describe("Bedrock event streams through fetch", () => {
     await response.arrayBuffer();
     await flushPendingCaptures();
 
-    expect(events[0]).toMatchObject({
-      provider: "bedrock",
-      model: "anthropic.claude-3-haiku-20240307-v1:0",
-      usage: { inputTokens: 55, outputTokens: 18, totalTokens: 73, cacheCreationTokens: 9 },
+    const stream = (events[0]?.["telemetry"] as Record<string, any>)["stream"];
+    expect(stream["chunkCount"]).toBe(4);
+    // The base64 `bytes` payload is decoded to the model's JSON before the skeleton.
+    expect(stream["chunks"][0]).toEqual({
+      chunk: {
+        bytes: { type: "message_start", message: { id: "msg_bdrk_1", model: "claude", usage: { input_tokens: 55, output_tokens: 1, cache_creation_input_tokens: 9 } } },
+        p: { $s: 8 },
+      },
+    });
+    expect(stream["chunks"][3]).toEqual({
+      chunk: {
+        bytes: {
+          type: "message_stop",
+          "amazon-bedrock-invocationMetrics": { inputTokenCount: 55, outputTokenCount: 18, invocationLatency: 900, firstByteLatency: 200 },
+        },
+        p: { $s: 8 },
+      },
     });
   });
 
@@ -241,7 +229,7 @@ describe("Bedrock event streams through fetch", () => {
     );
     expect(new Uint8Array(await response.arrayBuffer())).toEqual(garbage);
     await flushPendingCaptures();
-    expect(events[0]).toMatchObject({ provider: "bedrock", model: "x", usage: null });
+    expect((events[0]?.["telemetry"] as Record<string, any>)["stream"]).toMatchObject({ chunkCount: 0, chunks: [] });
   });
 });
 
@@ -270,9 +258,18 @@ function fakeBedrockClient(respond: (args: Event, commandName: string) => Promis
       const handlerContext: Record<string | symbol, unknown> = { clientName: "BedrockRuntimeClient", commandName: command.commandName };
       let handler = (args: Event) => respond(args, command.commandName);
       for (const entry of ordered.reverse()) handler = entry.middleware(handler, handlerContext);
+      const { modelId: _modelId, ...rest } = command.input;
       const result = await handler({
         input: command.input,
-        request: { protocol: "https:", hostname: "bedrock-runtime.us-east-1.amazonaws.com", path: command.path, method: "POST", headers: {} },
+        request: {
+          protocol: "https:",
+          hostname: "bedrock-runtime.us-east-1.amazonaws.com",
+          path: command.path,
+          method: "POST",
+          headers: { "content-type": "application/json", authorization: "AWS4-HMAC-SHA256 secret" },
+          // The serialized wire body, as the AWS SDK builds it.
+          body: typeof rest["body"] === "string" ? rest["body"] : JSON.stringify(rest),
+        },
       });
       return result["output"] as Event;
     },
@@ -334,17 +331,24 @@ describe("CostKey.instrumentBedrockClient", () => {
 
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({
-      provider: "bedrock",
-      model: "amazon.nova-pro-v1:0",
       statusCode: 200,
       streaming: false,
-      providerRequestId: "aws-req-1",
       url: "https://bedrock-runtime.us-east-1.amazonaws.com/model/amazon.nova-pro-v1%3A0/converse",
       context: { task: "summarize", service: "api" },
-      usage: { inputTokens: 12, outputTokens: 6, totalTokens: 18, cacheReadTokens: 4 },
     });
-    // Image bytes in the command input are never shipped.
-    expect(JSON.stringify(events[0])).toContain("[binary data omitted: 4096 bytes]");
+    expect(events[0]).not.toHaveProperty("usage");
+    const telemetry = events[0]?.["telemetry"] as Record<string, any>;
+    expect(telemetry["request"]["headers"]).toEqual({ "content-type": "application/json" });
+    expect(telemetry["response"]).toEqual({
+      status: 200,
+      headers: { "x-amzn-requestid": "aws-req-1", "content-type": "application/json" },
+      body: {
+        output: { message: { role: { $s: 9 }, content: [{ text: { $s: 2 } }] } },
+        stopReason: { $s: 8 },
+        usage: { inputTokens: 12, outputTokens: 6, totalTokens: 18, cacheReadInputTokens: 4 },
+      },
+      bytes: null,
+    });
   });
 
   it("reads InvokeModel usage from the body or token-count headers", async () => {
@@ -365,9 +369,16 @@ describe("CostKey.instrumentBedrockClient", () => {
       input: { modelId: "meta.llama3-1-70b-instruct-v1:0", body: JSON.stringify({ prompt: "hi", max_gen_len: 64 }) },
     });
     await flushPendingCaptures();
-    expect(events[0]).toMatchObject({
-      model: "meta.llama3-1-70b-instruct-v1:0",
-      usage: { inputTokens: 40, outputTokens: 11, totalTokens: 51 },
+    const telemetry = events[0]?.["telemetry"] as Record<string, any>;
+    expect(telemetry["request"]["body"]).toEqual({ prompt: { $s: 2 }, max_gen_len: 64 });
+    // Token-count headers are forwarded raw; the body's bytes are decoded (framing).
+    expect(telemetry["response"]["headers"]).toEqual({
+      "x-amzn-bedrock-input-token-count": "40",
+      "x-amzn-bedrock-output-token-count": "11",
+    });
+    expect(telemetry["response"]["body"]).toEqual({
+      contentType: { $s: 16 },
+      body: { generation: { $s: 2 }, stop_reason: "stop" },
     });
   });
 
@@ -397,12 +408,12 @@ describe("CostKey.instrumentBedrockClient", () => {
     await flushPendingCaptures();
 
     expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({
-      model: "anthropic.claude-3-5-haiku-20241022-v1:0",
-      streaming: true,
-      responseBody: null,
-      usage: { inputTokens: 90, outputTokens: 2, totalTokens: 92 },
-      streamTiming: { chunkCount: 5 },
+    expect(events[0]).toMatchObject({ streaming: true, responseBody: null });
+    const stream = (events[0]?.["telemetry"] as Record<string, any>)["stream"];
+    expect(stream["format"]).toBe("aws-eventstream");
+    expect(stream["chunkCount"]).toBe(5);
+    expect(stream["chunks"][4]).toEqual({
+      metadata: { usage: { inputTokens: 90, outputTokens: 2, totalTokens: 92 }, metrics: { latencyMs: 300 } },
     });
   });
 
@@ -427,7 +438,11 @@ describe("CostKey.instrumentBedrockClient", () => {
     for await (const _ of output["body"] as AsyncIterable<unknown>) break;
     await flushPendingCaptures();
     expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({ streaming: true, usage: { inputTokens: 70, outputTokens: 1 } });
+    const stream = (events[0]?.["telemetry"] as Record<string, any>)["stream"];
+    expect(stream["chunkCount"]).toBe(1);
+    expect(stream["chunks"]).toEqual([
+      { chunk: { bytes: { type: "message_start", message: { usage: { input_tokens: 70, output_tokens: 1 } } } } },
+    ]);
   });
 
   it("records a failed call and rethrows the provider error", async () => {
@@ -444,7 +459,10 @@ describe("CostKey.instrumentBedrockClient", () => {
       input: { modelId: "amazon.nova-lite-v1:0", messages: [] },
     })).rejects.toBe(throttled);
     await flushPendingCaptures();
-    expect(events[0]).toMatchObject({ model: "amazon.nova-lite-v1:0", statusCode: 429, usage: null });
+    expect(events[0]).toMatchObject({ statusCode: 429 });
+    // The raw exception class, never the message.
+    expect((events[0]?.["telemetry"] as Record<string, any>)["error"]).toEqual({ name: "ThrottlingException" });
+    expect(JSON.stringify(events[0])).not.toContain("Too many requests");
   });
 
   it("does not double-record when the client sends through fetch", async () => {

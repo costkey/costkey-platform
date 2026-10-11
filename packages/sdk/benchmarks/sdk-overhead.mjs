@@ -17,7 +17,8 @@
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { versions } from "node:process";
-import { CostKey, Provider } from "../dist/index.js";
+import { CostKey } from "../dist/index.js";
+import { addCaptureTarget } from "../dist/providers/registry.js";
 
 const args = parseArgs(process.argv.slice(2));
 const iterations = positiveInteger(args.iterations, 500);
@@ -110,30 +111,11 @@ try {
   };
   globalThis.fetch = safeFetch;
 
-  const extractor = {
-    provider: Provider.Unknown,
-    match(url) {
-      return url.hostname === "127.0.0.1" && url.pathname === "/benchmark-provider";
-    },
-    extractUsage(body) {
-      const usage = body && typeof body === "object" ? body.usage : null;
-      if (!usage || typeof usage !== "object") return null;
-      return {
-        inputTokens: numberOrNull(usage.input_tokens),
-        outputTokens: numberOrNull(usage.completion_tokens),
-        totalTokens: numberOrNull(usage.total_tokens),
-        reasoningTokens: null,
-        cacheReadTokens: null,
-        cacheCreationTokens: null,
-      };
-    },
-    extractModel(requestBody, responseBody) {
-      const responseModel = responseBody && typeof responseBody === "object" ? responseBody.model : null;
-      const requestModel = requestBody && typeof requestBody === "object" ? requestBody.model : null;
-      return typeof responseModel === "string" ? responseModel : typeof requestModel === "string" ? requestModel : null;
-    },
-  };
-  CostKey.registerExtractor(extractor);
+  // The loopback provider joins the capture filter (the SDK only matches hosts).
+  addCaptureTarget({
+    label: "benchmark",
+    match: (url) => url.hostname === "127.0.0.1" && url.pathname === "/benchmark-provider",
+  });
 
   const unpatched = await sampleMode(
     "unpatched fetch",
@@ -279,9 +261,6 @@ function nonNegativeInteger(value, fallback) {
   return parsed;
 }
 
-function numberOrNull(value) {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
 
 function writeJson(response, status, body) {
   response.writeHead(status, { "content-type": "application/json" });

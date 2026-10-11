@@ -1,37 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createServer, type Server } from "node:http";
-import { CostKey, Provider } from "../index.js";
-import { registerExtractor } from "../providers/registry.js";
-import { openaiExtractor } from "../providers/openai.js";
-import { anthropicExtractor } from "../providers/anthropic.js";
-import { googleExtractor } from "../providers/google.js";
-import { estimateUsageBounds, extractUsageFromSSE, isStreamingRequest } from "../fetch-patch.js";
-import type { ProviderExtractor } from "../types.js";
+import { CostKey } from "../index.js";
+import { addCaptureTarget } from "../providers/registry.js";
+import { isStreamingRequest } from "../fetch-patch.js";
 
 type Event = Record<string, unknown>;
 
-const spanProvider: ProviderExtractor = {
-  provider: Provider.Unknown,
-  match(url) {
-    return url.hostname === "127.0.0.1" && url.pathname === "/span-provider";
-  },
-  extractUsage(body) {
-    const usage = body && typeof body === "object" ? (body as Event)["usage"] as Event | undefined : undefined;
-    if (!usage) return null;
-    return {
-      inputTokens: usage["input_tokens"] as number,
-      outputTokens: usage["output_tokens"] as number,
-      totalTokens: (usage["input_tokens"] as number) + (usage["output_tokens"] as number),
-      reasoningTokens: null,
-      cacheReadTokens: null,
-      cacheCreationTokens: null,
-    };
-  },
-  extractModel() {
-    return "span-model";
-  },
-};
-registerExtractor(spanProvider);
+addCaptureTarget({
+  label: "span-provider",
+  match: (url) => url.hostname === "127.0.0.1" && url.pathname === "/span-provider",
+});
 
 describe("agent spans", () => {
   let originalFetch: typeof globalThis.fetch;
@@ -132,7 +110,7 @@ describe("agent spans", () => {
     expect(Date.parse(String(call?.["timestamp"])) - before).toBeLessThan(30);
     expect(Number(call?.["durationMs"])).toBeGreaterThanOrEqual(35);
     const failed = events.find((event) => event["eventType"] === "span" && event["status"] === "error");
-    expect(failed?.["errorType"]).toBe("TypeError");
+    expect(failed?.["errorName"]).toBe("TypeError");
   });
 
   it("wraps framework tools and only sends tool payloads when capture is on", async () => {
@@ -169,53 +147,11 @@ describe("agent spans", () => {
   });
 });
 
-describe("streaming usage across providers", () => {
-  const sse = (...events: unknown[]) => events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("");
-
-  it("reads Responses API usage from response.completed", () => {
-    const text = sse(
-      { type: "response.created", response: { id: "resp_1", model: "gpt-6-sol" } },
-      { type: "response.output_text.delta", delta: "Hi" },
-      { type: "response.completed", response: { usage: { input_tokens: 120, output_tokens: 30, input_tokens_details: { cached_tokens: 100 }, output_tokens_details: { reasoning_tokens: 12 } } } },
-    );
-    expect(extractUsageFromSSE(text, openaiExtractor)).toMatchObject({
-      inputTokens: 120, outputTokens: 30, totalTokens: 150, reasoningTokens: 12, cacheReadTokens: 100,
-    });
-  });
-
-  it("combines Anthropic input from message_start with output from message_delta", () => {
-    const text = sse(
-      { type: "message_start", message: { usage: { input_tokens: 900, output_tokens: 1, cache_read_input_tokens: 800 } } },
-      { type: "content_block_delta", delta: { text: "ok" } },
-      { type: "message_delta", usage: { output_tokens: 75 } },
-    );
-    expect(extractUsageFromSSE(text, anthropicExtractor)).toMatchObject({
-      inputTokens: 900, outputTokens: 75, totalTokens: 975, cacheReadTokens: 800,
-    });
-  });
-
-  it("keeps the final cumulative Gemini counts, including thinking tokens", () => {
-    const text = sse(
-      { usageMetadata: { promptTokenCount: 50, candidatesTokenCount: 5, totalTokenCount: 55 } },
-      { usageMetadata: { promptTokenCount: 50, candidatesTokenCount: 40, thoughtsTokenCount: 20, totalTokenCount: 110 } },
-    );
-    expect(extractUsageFromSSE(text, googleExtractor)).toMatchObject({ inputTokens: 50, reasoningTokens: 20 });
-  });
-
-  it("detects streaming declared in the URL", () => {
+describe("stream read mode", () => {
+  it("detects streaming declared in the body or the URL (it only picks how the body is read)", () => {
     expect(isStreamingRequest(new URL("https://aiplatform.googleapis.com/v1/models/gemini:streamGenerateContent?alt=sse"), {})).toBe(true);
     expect(isStreamingRequest(new URL("https://bedrock-runtime.us-east-1.amazonaws.com/model/x/converse-stream"), {})).toBe(true);
     expect(isStreamingRequest(new URL("https://api.openai.com/v1/responses"), { stream: true })).toBe(true);
     expect(isStreamingRequest(new URL("https://api.openai.com/v1/responses"), {})).toBe(false);
-  });
-});
-
-describe("per-call budget bounds", () => {
-  it("bounds input by request size and output by the request's own limit", () => {
-    const body = { model: "gpt-6-sol", input: "hello", max_output_tokens: 512 };
-    const raw = JSON.stringify(body);
-    expect(estimateUsageBounds(body, raw)).toEqual({ maxInputTokens: Buffer.byteLength(raw), maxOutputTokens: 512 });
-    expect(estimateUsageBounds({ generationConfig: { maxOutputTokens: 64 } }, null)?.maxOutputTokens).toBe(64);
-    expect(estimateUsageBounds(null, null)).toBeUndefined();
   });
 });

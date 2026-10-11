@@ -4,10 +4,12 @@
  *
  *   [total_len u32][headers_len u32][prelude_crc u32][headers][payload][message_crc u32]
  *
- * The SDK reads a tee'd copy only to find usage, so CRCs are not verified;
+ * The SDK reads the frames as they pass through, so CRCs are not verified;
  * lengths are bounds-checked and a malformed frame stops decoding without
  * touching the caller's stream.
  */
+
+import { decodeBytesField } from "./telemetry.js";
 
 export type EventStreamHeaderValue = string | number | boolean | Uint8Array;
 
@@ -137,22 +139,29 @@ function decodeHeaders(bytes: Uint8Array): Record<string, EventStreamHeaderValue
 }
 
 /**
- * The usage-bearing JSON of one Bedrock stream event, or null. converse-stream
- * reports usage on its `metadata` event; invoke-with-response-stream wraps the
- * model's own JSON chunk as base64 in `{"bytes": ...}`, where Anthropic models
- * put usage on message_start/message_delta and Bedrock adds
- * `amazon-bedrock-invocationMetrics` to the last chunk.
+ * One event-stream message as a telemetry chunk: `{"<event-type>": payload}`
+ * (contract detail 4). The payload is the message's JSON; a base64 `bytes`
+ * field (invoke-with-response-stream) is decoded to the model's own JSON.
+ * Exceptions are keyed by their exception type. This is framing only.
  */
-export function bedrockStreamRecord(message: EventStreamMessage): unknown {
+export function eventStreamChunk(message: EventStreamMessage): unknown {
   const messageType = message.headers[":message-type"];
-  if (messageType !== undefined && messageType !== "event") return null;
-  const eventType = message.headers[":event-type"];
-  if (eventType !== "metadata" && eventType !== "chunk") return null;
-  const payload = JSON.parse(utf8.decode(message.payload)) as unknown;
-  if (eventType === "metadata") return payload;
-  const bytes = payload && typeof payload === "object"
-    ? (payload as Record<string, unknown>)["bytes"]
-    : undefined;
-  if (typeof bytes !== "string") return null;
-  return JSON.parse(Buffer.from(bytes, "base64").toString("utf8")) as unknown;
+  const name = messageType === "exception"
+    ? message.headers[":exception-type"]
+    : messageType === "error"
+      ? message.headers[":error-code"]
+      : message.headers[":event-type"];
+  const key = typeof name === "string" && name ? name : String(messageType ?? "event");
+  const text = utf8.decode(message.payload);
+  let payload: unknown;
+  if (text.length === 0) {
+    payload = null;
+  } else {
+    try {
+      payload = decodeBytesField(JSON.parse(text) as unknown);
+    } catch {
+      payload = text;
+    }
+  }
+  return { [key]: payload };
 }

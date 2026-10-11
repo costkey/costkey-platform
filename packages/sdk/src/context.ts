@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { rawErrorName } from "./telemetry.js";
 import type {
   ContextCarrier,
   EventContext,
@@ -15,6 +16,10 @@ import type {
 } from "./types.js";
 
 const storage = new AsyncLocalStorage<EventContext>();
+// Start order of the innermost CostKey span in this async context; compared
+// with framework spans (see registerContextResolver) to find the innermost.
+const spanSeqStorage = new AsyncLocalStorage<number>();
+let spanSeqCounter = 0;
 // A boundary owns a fresh identity by default. Explicit IDs (or an imported
 // carrier outside a boundary) are the only way to join an existing identity.
 const traceScopeOwned = new AsyncLocalStorage<boolean>();
@@ -35,7 +40,8 @@ export interface LifecycleRecord {
   startedAt: string;
   endedAt?: string;
   durationMs?: number;
-  errorType?: string;
+  /** Raw JS error name (contract detail 7); the server maps it to failed or cancelled. */
+  errorName?: string;
   expectedItems?: number;
   completedItems?: number;
   failedItems?: number;
@@ -58,8 +64,14 @@ export interface SpanRecord {
   startedAt: string;
   endedAt?: string;
   durationMs?: number;
-  errorType?: string;
-  attributes: Record<string, SpanAttributeValue>;
+  /** Raw JS error name (contract detail 7). */
+  errorName?: string;
+  attributes: Record<string, unknown>;
+  /**
+   * Raw framework payload for integration spans, sent as `attributes[namespace]`:
+   * verbatim when body capture is on, as a skeleton otherwise.
+   */
+  raw?: { namespace: string; value: unknown };
   input?: unknown;
   output?: unknown;
   context: EventContext;
@@ -114,7 +126,7 @@ export function startTrace<T>(
   options: TraceOptions = {},
   fn: () => T | Promise<T>,
 ): T | Promise<T> {
-  const parent = storage.getStore() ?? {};
+  const parent = getCallContext();
   const optionContext = options.context ? normalizeContextInput(options.context) : {};
   const requestedTraceId = nonEmpty(options.traceId) ?? nonEmpty(optionContext.traceId);
   const ownsTrace = traceScopeOwned.getStore() === true;
@@ -168,7 +180,7 @@ export function startTrace<T>(
         startedAt,
         endedAt,
         durationMs: Math.max(0, Date.now() - startedMs),
-        errorType: lifecycle === "failed" ? errorType(error) : undefined,
+        errorName: lifecycle === "failed" ? rawErrorName(error) : undefined,
         context,
       });
     },
@@ -209,7 +221,7 @@ export function startExecution<T>(
     }
   }
 
-  const parent = storage.getStore() ?? {};
+  const parent = getCallContext();
   const ownsExecution = executionScopeOwned.getStore() === true;
   const explicitExecutionId =
     nonEmpty(options.executionId) ?? nonEmpty(optionContext.executionId);
@@ -276,7 +288,7 @@ export function startExecution<T>(
         startedAt,
         endedAt,
         durationMs: Math.max(0, Date.now() - startedMs),
-        errorType: lifecycle === "failed" ? errorType(error) : undefined,
+        errorName: lifecycle === "failed" ? rawErrorName(error) : undefined,
         expectedItems: options.expectedItems,
         completedItems: options.completedItems,
         failedItems: options.failedItems,
@@ -303,7 +315,7 @@ export function startSpan<T>(
   if (!name) throw new TypeError("CostKey span requires a non-empty name");
   const kind: SpanKind = options.kind && SPAN_KINDS.includes(options.kind) ? options.kind : "custom";
 
-  const parent = storage.getStore() ?? {};
+  const parent = getCallContext();
   if (!parent.traceId) {
     return startTrace({ name }, () => startSpan(options, fn));
   }
@@ -344,17 +356,18 @@ export function startSpan<T>(
   };
   emitSpan({ ...base, status: "running", attributes: { ...attributes }, input: options.input });
 
-  return runBoundary(context, () => fn(handle), (lifecycle, error) => {
+  const seq = nextSpanSeq();
+  return spanSeqStorage.run(seq, () => runBoundary(context, () => fn(handle), (lifecycle, error) => {
     emitSpan({
       ...base,
-      status: lifecycle === "completed" ? "ok" : lifecycle === "cancelled" ? "cancelled" : "error",
+      status: lifecycle === "completed" ? "ok" : "error",
       endedAt: new Date().toISOString(),
       durationMs: Math.max(0, Date.now() - startedMs),
-      errorType: lifecycle === "failed" ? errorType(error) : undefined,
+      errorName: lifecycle === "failed" ? rawErrorName(error) : undefined,
       attributes: { ...attributes },
       output,
     });
-  });
+  }));
 }
 
 /** An agent run: model calls, tool calls and sub-agents inside are attributed to it. */
@@ -418,14 +431,130 @@ export function instrumentTools<T extends Record<string, unknown>>(tools: T): T 
   return wrapped as T;
 }
 
-/** Get the current context (from the nearest withContext scope). */
+/**
+ * Get the current context: the nearest withContext/span scope, overlaid with
+ * the innermost framework span an integration reports (see
+ * registerContextResolver).
+ */
 export function getCurrentContext(): EventContext {
-  return { ...(storage.getStore() ?? {}) };
+  return getCallContext();
+}
+
+// ── Framework integrations ──
+
+/** A framework span that is current in this async context, as an integration sees it. */
+export interface ContextResolution {
+  /** Start order of the framework span (from nextSpanSeq()); the most recent wins. */
+  seq: number;
+  /** Context for work running inside it: at least `spanId` and `traceId`. */
+  context: EventContext;
+}
+
+export type ContextResolver = () => ContextResolution | null | undefined;
+
+const contextResolvers = new Set<ContextResolver>();
+
+/**
+ * Let an integration report the framework span that is current in the
+ * caller's async context (OpenAI Agents, LangChain and OpenTelemetry keep
+ * their own). Provider calls and new spans are attributed to whichever is
+ * innermost: the CostKey span or the framework span, by start order.
+ */
+export function registerContextResolver(resolver: ContextResolver): () => void {
+  contextResolvers.add(resolver);
+  return () => {
+    contextResolvers.delete(resolver);
+  };
+}
+
+/** A monotonic start order shared by CostKey spans and integration spans. */
+export function nextSpanSeq(): number {
+  spanSeqCounter += 1;
+  return spanSeqCounter;
+}
+
+/** The context a provider call or a new span made right now belongs to. */
+export function getCallContext(): EventContext {
+  const base = storage.getStore() ?? {};
+  if (contextResolvers.size === 0) return { ...base };
+  const ownSeq = spanSeqStorage.getStore() ?? 0;
+  let best: ContextResolution | null = null;
+  for (const resolver of contextResolvers) {
+    let resolution: ContextResolution | null | undefined;
+    try {
+      resolution = resolver();
+    } catch {
+      continue;
+    }
+    if (!resolution || resolution.seq <= ownSeq) continue;
+    if (!best || resolution.seq > best.seq) best = resolution;
+  }
+  return best ? { ...base, ...best.context } : { ...base };
+}
+
+/** Run `fn` with an integration span as the current CostKey context. */
+export function runWithSpanContext<T>(context: EventContext, seq: number, fn: () => T): T {
+  const merged = { ...(storage.getStore() ?? {}), ...context };
+  return spanSeqStorage.run(seq, () => storage.run(merged, fn));
+}
+
+/** Deliver a span record built by an integration (start or end). */
+export function emitIntegrationSpan(record: SpanRecord): void {
+  emitSpan(record);
+}
+
+/**
+ * Trace lifecycle for a framework run that started outside any CostKey
+ * trace. Returns the function that ends it.
+ */
+export function startIntegrationTrace(
+  traceId: string,
+  traceName: string | undefined,
+  context: EventContext,
+): (failed?: boolean, errorName?: string) => void {
+  const startedAt = new Date().toISOString();
+  const startedMs = Date.now();
+  const startSequence = traceSequence.get(traceId) ?? 0;
+  traceSequence.set(traceId, startSequence + 2);
+  const traceContext: EventContext = { ...context, traceId, ...(traceName ? { traceName } : {}) };
+  emitLifecycle({
+    entityType: "trace",
+    entityId: traceId,
+    lifecycle: "started",
+    sequence: startSequence,
+    traceId,
+    traceName,
+    startedAt,
+    context: traceContext,
+  });
+  let ended = false;
+  return (failed?: boolean, errorName?: string) => {
+    if (ended) return;
+    ended = true;
+    emitLifecycle({
+      entityType: "trace",
+      entityId: traceId,
+      lifecycle: failed ? "failed" : "completed",
+      sequence: startSequence + 1,
+      traceId,
+      traceName,
+      startedAt,
+      endedAt: new Date().toISOString(),
+      durationMs: Math.max(0, Date.now() - startedMs),
+      ...(errorName ? { errorName } : {}),
+      context: traceContext,
+    });
+  };
+}
+
+/** A fresh CostKey identifier (`sp_…`, `tr_…`). */
+export function newId(prefix: string): string {
+  return generateId(prefix);
 }
 
 /** Get the current trace ID if inside a trace scope. */
 export function getCurrentTraceId(): string | undefined {
-  return storage.getStore()?.traceId;
+  return getCallContext().traceId;
 }
 
 /**
@@ -434,7 +563,7 @@ export function getCurrentTraceId(): string | undefined {
  * caller into a new context at the destination.
  */
 export function exportContext(options?: { keys?: readonly string[] }): ContextCarrier {
-  const current = storage.getStore() ?? {};
+  const current = getCallContext();
   const carrier: Record<string, string | number | boolean> = {};
   const keys = options?.keys
     ? [...options.keys]
@@ -478,7 +607,7 @@ function runBoundary<T>(
   try {
     result = storage.run(context, fn);
   } catch (error) {
-    onTerminal(isCancellation(error) ? "cancelled" : "failed", error);
+    onTerminal("failed", error);
     throw error;
   }
 
@@ -489,7 +618,7 @@ function runBoundary<T>(
         return value;
       },
       (error) => {
-        onTerminal(isCancellation(error) ? "cancelled" : "failed", error);
+        onTerminal("failed", error);
         throw error;
       },
     );
@@ -561,18 +690,6 @@ function generateId(prefix: string): string {
 
 function isPromiseLike<T>(value: T | Promise<T>): value is Promise<T> {
   return !!value && typeof value === "object" && typeof (value as Promise<T>).then === "function";
-}
-
-function isCancellation(error: unknown): boolean {
-  if (!error || typeof error !== "object") return false;
-  const candidate = error as { name?: unknown; code?: unknown };
-  return candidate.name === "AbortError" || candidate.code === "ABORT_ERR";
-}
-
-function errorType(error: unknown): string | undefined {
-  if (!error || typeof error !== "object") return undefined;
-  const name = (error as { name?: unknown }).name;
-  return typeof name === "string" && name ? name : "Error";
 }
 
 function toJsonSafe(value: unknown): Record<string, unknown> | undefined {

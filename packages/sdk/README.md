@@ -1,6 +1,6 @@
 # costkey
 
-> Sentry for AI costs. Observe supported AI calls' cost, tokens, and latency with one line of code.
+> Sentry for AI costs. One line of code sends raw telemetry for every AI call and agent step; the CostKey server works out cost, tokens and usage.
 
 ## Install
 
@@ -22,20 +22,54 @@ CostKey.init({
 
 ## How It Works
 
-CostKey patches `globalThis.fetch`. When your code calls a supported provider
-endpoint through a supported transport:
+The SDK only sends telemetry. It does no processing in your app: no pricing,
+no token counting, no model or provider detection, no usage normalization.
+CostKey patches `globalThis.fetch`. When your code calls a provider host on
+the capture list:
 
-1. **Detects** the provider from the URL (see the supported-provider list below)
-2. **Extracts** token usage from the response (streaming + non-streaming)
-3. **Captures** a stack trace for automatic code attribution
-4. **Measures** streaming timing (TTFT, TPS) via SSE wrapping
-5. **Ships** the event async to your CostKey dashboard — server calculates cost
+1. **Matches** the host (the capture filter is the only provider knowledge in the SDK)
+2. **Records** the request and response as a *skeleton*: every key and number
+   is kept, every string becomes its length (`{"$s": 42}`) unless it is an
+   identifier such as `model` or `id`. Prompts and completions never leave
+   your process unless you turn on body capture
+3. **Passes streams through** untouched and records their chunks (as
+   skeletons) with first- and last-chunk timing
+4. **Captures** the full stack trace (every frame; the server picks the call site)
+5. **Ships** the event asynchronously; the server identifies the provider and
+   model, extracts usage and prices it
 
-Non-AI fetch calls and unsupported provider transports pass through untouched.
-Coverage depends on the provider/transport capability matrix; CostKey does not
-replace your provider client or route requests through a gateway. Capture and
-delivery failures stay inside the SDK; provider errors remain visible to your
+The one change the SDK makes to a request is `stream_options.include_usage`
+on streamed Chat Completions calls to hosts that need it, so the final chunk
+reports usage. Non-AI fetch calls pass through untouched. Capture and delivery
+failures stay inside the SDK; provider errors remain visible to your
 application.
+
+### What a call event carries
+
+```jsonc
+"telemetry": {
+  "v": 1,
+  "request":  { "method": "POST", "url": "https://api.openai.com/v1/chat/completions",
+                "headers": { "content-type": "application/json" },
+                "body": { "model": "gpt-4o", "messages": [{ "role": { "$s": 4 }, "content": { "$s": 812 } }] },
+                "bytes": 940 },
+  "response": { "status": 200, "headers": { "x-request-id": "req_..." },
+                "body": { "id": "chatcmpl-...", "model": "gpt-4o-2024-08-06",
+                          "usage": { "prompt_tokens": 210, "completion_tokens": 41 } }, "bytes": 1022 },
+  "stream": null,          // or { "format": "sse", "chunks": [...], "chunkCount": 214, "firstChunkMs": 412.5, "lastChunkMs": 3120.2 }
+  "error": null,           // or { "name": "AbortError", "code": "ECONNRESET" } (never the message)
+  "startedAt": "2026-10-11T09:00:00.000Z",
+  "durationMs": 3121.4
+}
+```
+
+Secrets are removed before anything is sent: `key`, `api_key`, `token`,
+`auth*`, `sig`, `x-amz-*` and similar query parameters are dropped (the rest
+of the query is kept), only a short allowlist of request headers is sent, and
+cookies, authorization and API-key response headers are dropped. Arrays over
+32 items keep 8 (embedding vectors don't ship), skeletons are capped at 64 KB
+and streams over 200 chunks keep the first 20 and the last 50. The full
+contract is in [`RAW_TELEMETRY.md`](../shared/RAW_TELEMETRY.md).
 
 ## Sourcemaps
 
@@ -90,8 +124,100 @@ await CostKey.agent('dash', async (span) => {
   await CostKey.step('answer', () => writeAnswer())
 })
 
-// Vercel AI SDK / Mastra: each tool's execute becomes a tool span
+// Any framework whose tools expose `execute`: each call becomes a tool span
 const tools = CostKey.instrumentTools({ getHoldings, searchFunds })
+```
+
+## Agent framework integrations
+
+Most agents run on a framework. Each integration is a subpath export with an
+optional peer dependency, so nothing is imported unless you use it. An
+integration only opens and closes spans and attaches the framework's raw data
+(a skeleton unless body capture is on). Model calls made in your process are
+already recorded by the fetch patch and are attributed to the span they ran
+in, so integrations never emit a second call event. The Claude Agent SDK is
+the exception: its model calls run in a separate Claude Code process.
+
+**OpenAI Agents SDK** (`@openai/agents`): agents, function tools, handoffs,
+guardrails and turns.
+
+```typescript
+import { addTraceProcessor } from '@openai/agents'
+import { CostKeyAgentsProcessor } from 'costkey/integrations/openai-agents'
+
+addTraceProcessor(new CostKeyAgentsProcessor())
+```
+
+The Agents SDK disables tracing when `NODE_ENV=test`; call
+`setTracingDisabled(false)` in tests.
+
+**Vercel AI SDK** (`ai` 7+): `generateText` / `streamText` runs (and
+`ToolLoopAgent`), their steps and tool executions, with no wrapping.
+
+```typescript
+import { registerTelemetry } from 'ai'
+import { costkeyTelemetry } from 'costkey/integrations/ai-sdk'
+
+registerTelemetry(costkeyTelemetry())
+// Runs are named by `telemetry: { functionId }` when you set it.
+```
+
+AI SDK 4–6 have no telemetry-integration API: enable their
+`experimental_telemetry` OpenTelemetry spans and use the OpenTelemetry bridge
+below.
+
+**Mastra** (`@mastra/core` 1.x with `@mastra/observability`): agent runs,
+workflows, workflow steps and tool calls.
+
+```typescript
+import { Observability } from '@mastra/observability'
+import { CostKeyMastraBridge } from 'costkey/integrations/mastra'
+
+new Mastra({
+  agents, workflows,
+  observability: new Observability({
+    configs: { default: { serviceName: 'api', bridge: new CostKeyMastraBridge() } },
+  }),
+})
+```
+
+If you already use another Mastra bridge, add `new CostKeyMastraExporter()` to
+`exporters` instead (pass Mastra's `getCurrentSpan` to keep call attribution).
+
+**LangChain.js and LangGraph.js**: chains, graphs, graph nodes, agents, tools
+and retrievers.
+
+```typescript
+import { CostKeyCallbackHandler } from 'costkey/integrations/langchain'
+
+const costkey = new CostKeyCallbackHandler()
+await graph.invoke(input, { callbacks: [costkey] })
+```
+
+**Claude Agent SDK** (`@anthropic-ai/claude-agent-sdk`): the run, tool uses
+(PreToolUse/PostToolUse hooks) and subagents become spans, and every message
+that carries usage is sent as a call event with
+`telemetry.source = "claude-agent-sdk"` and the raw message skeleton. No cost
+math happens in the SDK; your own `options.hooks` still run.
+
+```typescript
+import { query } from '@anthropic-ai/claude-agent-sdk'
+import { instrumentClaudeAgentQuery } from 'costkey/integrations/claude-agent-sdk'
+
+const tracedQuery = instrumentClaudeAgentQuery(query, { name: 'triage' })
+for await (const message of tracedQuery({ prompt, options })) { /* ... */ }
+```
+
+**OpenTelemetry**: a `SpanProcessor` that forwards every OTel span (GenAI
+semantic-convention spans included) as a CostKey span with `attributes.otel`
+(raw attributes), `otelKind`, `otelName` and `otelScope`. Provider calls made
+while an OTel span is active are attributed to it.
+
+```typescript
+import { BasicTracerProvider } from '@opentelemetry/sdk-trace-base'
+import { CostKeySpanProcessor } from 'costkey/integrations/opentelemetry'
+
+const provider = new BasicTracerProvider({ spanProcessors: [new CostKeySpanProcessor()] })
 ```
 
 See [Agents and tools](https://costkey.dev/docs/agents).
@@ -121,9 +247,10 @@ a fresh execution ID by default; pass `executionId` only when explicitly
 resuming or joining an invocation.
 
 For components not observed through supported HTTP integrations, report a
-caller-owned component, charge, unique event ID, and revision. `delta` events
-are increments; `cumulative` events replace the latest snapshot and are not
-summed:
+caller-owned component, unique event ID and revision. `delta` events are
+increments; `cumulative` events replace the latest snapshot and are not
+summed. The event is sent exactly as you pass it; the server dedupes repeated
+IDs and stale revisions:
 
 ```ts
 await CostKey.recordUsage({
@@ -136,28 +263,20 @@ await CostKey.recordUsage({
 })
 ```
 
-For LiveKit Agents, subscribe to the documented
-`SessionUsageUpdated` callback and pass its cumulative `usage.modelUsage` list
-to the structural `recordLiveKitUsage` adapter. It keeps STT/LLM/TTS provider
-and model components separate, converts LiveKit millisecond durations to
-`audioSeconds`/`sessionSeconds`, and preserves missing components as partial
-coverage. Duplicate rows for the same component/provider/model are aggregated
-before identity is assigned, so row order cannot change a charge ID. Use
-`components` or `excludeComponents` to make the source of charge explicit; for
-example, pass `excludeComponents: ["llm"]` when automatic HTTP capture owns the
-LLM calls and the session snapshot owns STT/TTS. It does not intercept LiveKit
-audio or WebRTC traffic. If a session snapshot is the verified source of charge
-for a provider request that would otherwise be auto-captured, wrap that request
-in `CostKey.withContext({ costkeyCapture: "manual" }, fn)` to avoid two charge
-records. The adapter emits a `billingUnits` map plus a primary `unitKind` /
-`unitValue` where a component has a natural billable unit.
+For LiveKit Agents, subscribe to the documented `SessionUsageUpdated`
+callback and pass each cumulative snapshot to `recordLiveKitUsage`. It sends
+the snapshot's rows as a skeleton (provider, model, type and every number)
+together with your options; the server separates STT/LLM/TTS components,
+sums duplicate rows and converts LiveKit's milliseconds. Use `components` or
+`excludeComponents` to name the source of charge, for example
+`excludeComponents: ["llm"]` when automatic HTTP capture owns the LLM calls.
+It does not intercept LiveKit audio or WebRTC traffic. If a session snapshot
+is the verified source of charge for a provider request that would otherwise
+be auto-captured, wrap that request in
+`CostKey.withContext({ costkeyCapture: "manual" }, fn)`.
 
-Duplicate `(chargeId, revision)` updates are idempotent. Conflicting revisions
-or switching aggregation mode are rejected. Missing usage or amount remains
-unknown; it is never treated as zero.
-
-Known retry/fallback relationships are explicit. A provider response exposes
-its `providerRequestId` and the SDK gives every attempt a distinct `attemptId`.
+Known retry/fallback relationships are explicit. The SDK gives every attempt a
+distinct `attemptId` (the provider's request id is in the raw telemetry).
 When the application knows that one attempt replaces another, scope that
 attempt with `CostKey.withContext({ attemptId, parentEventId }, fn)` or supply
 the same fields to `recordUsage`. The SDK never links two calls merely because
@@ -166,8 +285,8 @@ they share a trace, model, function, or timestamp.
 ## Explicit enforcement
 
 Installing or initializing CostKey does not block provider calls. To opt into
-the DSN-authenticated admission endpoint, configure an explicit enforced policy
-with a verified integration proof and honest upper bounds:
+the DSN-authenticated admission endpoint, configure an explicit enforced
+policy with a verified integration proof:
 
 ```ts
 CostKey.init({
@@ -179,10 +298,14 @@ CostKey.init({
       admissionSupported: true,
       verified: true,
     },
-    usageBounds: { maxInputTokens: 4_000, maxOutputTokens: 1_000 },
   },
 })
 ```
+
+Before each captured call the SDK sends the request skeleton to `/admit`
+(`telemetry.request`); the server estimates the usage bounds and answers
+allow or refuse, and the SDK enforces that answer. A custom
+`policy.admission` callback may decide instead (it is your code).
 
 An unavailable decision, unknown required price, unsupported integration, or
 exhausted allowance fails closed as `CostKeyPolicyRefused` in enforce mode.
@@ -214,24 +337,25 @@ even when remote text capture is enabled. Missing or revoked config fails
 closed to metadata-only without blocking provider calls. Existing projects
 that historically captured text keep that behavior only after the server
 explicitly reports text capture enabled.
-Metadata-only events may include bounded structural counts (such as message or
-choice counts), but never prompt, tool-definition, tool-call, or system
-instruction content.
+In metadata-only mode the raw telemetry is a skeleton: structure, numbers and
+string lengths, never prompt, tool-definition, tool-call, or system
+instruction text. Body capture adds the scrubbed, bounded `requestBody` and
+`responseBody`.
 
 ## Supported Providers
 
-| Provider | Hostname | Streaming / units |
+| Provider | Hostname | Streaming |
 |---|---|---|
-| OpenAI | `api.openai.com` | Yes (auto-injects `include_usage`); TTS characters, transcription seconds or tokens |
+| OpenAI | `api.openai.com` | Yes (requests `include_usage`) |
 | Anthropic | `api.anthropic.com` | Yes |
 | Google Gemini | `generativelanguage.googleapis.com` | Yes |
-| Azure OpenAI | `*.openai.azure.com`, `*.services.ai.azure.com`, `*.cognitiveservices.azure.com` | Yes; audio as OpenAI |
-| Google Vertex AI | `aiplatform.googleapis.com`, `*-aiplatform.googleapis.com` | Yes; Gemini plus partner models (Claude via `:rawPredict`/`:streamRawPredict` with cache tokens, Mistral, Llama, DeepSeek, Qwen, AI21) |
+| Azure OpenAI | `*.openai.azure.com`, `*.services.ai.azure.com`, `*.cognitiveservices.azure.com` | Yes |
+| Google Vertex AI | `aiplatform.googleapis.com`, `*-aiplatform.googleapis.com` | Yes |
 | Groq | `api.groq.com` | Yes |
 | xAI (Grok) | `api.x.ai` | Yes |
 | Mistral | `api.mistral.ai` | Yes |
 | DeepSeek | `api.deepseek.com` | Yes |
-| Cohere | `api.cohere.com` | Yes; billed units (embed tokens, rerank search units) |
+| Cohere | `api.cohere.com` | Yes |
 | Together AI | `api.together.xyz` | Yes |
 | Fireworks | `api.fireworks.ai` | Yes |
 | Perplexity | `api.perplexity.ai` | Yes |
@@ -248,39 +372,37 @@ instruction content.
 | Alibaba (DashScope / Qwen) | `dashscope.aliyuncs.com`, `dashscope-intl.aliyuncs.com`, `dashscope-us.aliyuncs.com` | Yes |
 | Moonshot (Kimi) | `api.moonshot.ai`, `api.moonshot.cn` | Yes |
 | Z.ai (GLM) | `api.z.ai`, `open.bigmodel.cn` | Yes |
-| MiniMax | `api.minimax.io`, `api.minimaxi.com`, `api.minimax.chat` | Yes; T2A characters |
+| MiniMax | `api.minimax.io`, `api.minimaxi.com`, `api.minimax.chat` | Yes |
 | Hugging Face | `router.huggingface.co`, `api-inference.huggingface.co` | Yes |
 | Baseten | `inference.baseten.co` | Yes |
 | Lambda | `api.lambda.ai` | Yes |
 | Featherless | `api.featherless.ai` | Yes |
 | Friendli | `api.friendli.ai` | Yes |
 | AI21 | `api.ai21.com` | Yes |
-| Upstage | `api.upstage.ai` | Yes; document pages |
-| Sarvam | `api.sarvam.ai` | Yes; TTS characters, STT seconds when reported |
-| Cloudflare Workers AI | `api.cloudflare.com` (`/ai/` routes only) | Yes; native `/ai/run/@cf/...` and `/ai/v1` |
+| Upstage | `api.upstage.ai` | Yes |
+| Sarvam | `api.sarvam.ai` | Yes |
+| Cloudflare Workers AI | `api.cloudflare.com` (`/ai/` routes only) | Yes |
 | Vercel AI Gateway | `ai-gateway.vercel.sh` | Yes |
-| Portkey, Helicone | `api.portkey.ai`, `oai.helicone.ai`, `gateway.helicone.ai` (as `openai`), `anthropic.helicone.ai` (as `anthropic`) | Yes |
+| Portkey, Helicone | `api.portkey.ai`, `oai.helicone.ai`, `gateway.helicone.ai`, `anthropic.helicone.ai` | Yes |
 | Ollama | `localhost:11434`, `127.0.0.1:11434` (inference routes) | Yes (NDJSON and SSE) |
-| ElevenLabs | `*.elevenlabs.io` | Characters (TTS), audio seconds (STT) |
-| Rumik | `*.rumik.ai` | Characters |
-| Deepgram | `api.deepgram.com` | Audio seconds (`/v1/listen`), characters (`/v1/speak`) |
-| AssemblyAI | `api.assemblyai.com`, `api.eu.assemblyai.com` | Audio seconds, on the completed transcript |
-| Cartesia | `api.cartesia.ai` | Characters (`/tts/bytes`, `/tts/sse`) |
-| Voyage AI | `api.voyageai.com` | Tokens (embeddings, rerank) |
-| Jina AI | `api.jina.ai` | Tokens (embeddings, rerank) |
-| Exa | `api.exa.ai` | Queries, results, pages, reported cost |
-| Firecrawl | `api.firecrawl.dev` | Credits, queries, results |
-| Tavily | `api.tavily.com` | Queries, credits |
+| ElevenLabs | `*.elevenlabs.io` | — |
+| Rumik | `*.rumik.ai` | — |
+| Deepgram | `api.deepgram.com` | — |
+| AssemblyAI | `api.assemblyai.com`, `api.eu.assemblyai.com` | — |
+| Cartesia | `api.cartesia.ai` | SSE |
+| Voyage AI | `api.voyageai.com` | — |
+| Jina AI | `api.jina.ai` | — |
+| Exa | `api.exa.ai` | — |
+| Firecrawl | `api.firecrawl.dev` | — |
+| Tavily | `api.tavily.com` | — |
 
-Providers that don't bill in tokens report `usage.nativeUnits` (`characters`,
-`audioSeconds`, `searchQueries`, `searchResults`, `groundingRequests`,
-`mapsGroundingRequests`, `credits`, `pages`, `images`, `requests`), which the
-server prices from its catalog. Gemini search and Maps grounding are counted
-the same way. Audio responses are never read or buffered: TTS characters come
-from the request text or the `character-cost` header. Units read from the
-request only count on a 2xx response.
-
-Custom providers: `CostKey.registerExtractor(extractor)`
+The SDK sends the same raw telemetry for every host; the server knows how each
+provider reports usage (tokens, characters, audio seconds, search queries,
+grounding, credits, pages) and prices it. Audio and image responses are never
+read or buffered: their size comes from `content-length` or is counted as the
+bytes pass through. Hosts configured as custom providers in your project
+settings are added to the capture list at runtime; their extraction rules
+live on the server.
 
 ### AWS SDK for JavaScript (Bedrock)
 
@@ -294,16 +416,17 @@ const bedrock = CostKey.instrumentBedrockClient(new BedrockRuntimeClient({ regio
 ```
 
 Converse, ConverseStream, InvokeModel and InvokeModelWithResponseStream calls
-are then recorded with token usage; streamed usage is recorded when your code
-finishes reading the stream. Bedrock calls made through `fetch` (for example
-`@ai-sdk/amazon-bedrock`) need no setup.
+are then recorded with the same raw telemetry (the serialized request, the
+token-count headers and the output as a skeleton); streams are recorded when
+your code finishes reading them. Bedrock calls made through `fetch` (for
+example `@ai-sdk/amazon-bedrock`) need no setup.
 
 ## Options
 
 | Option | Default | Description |
 |---|---|---|
 | `dsn` | required | `http://ck_key@localhost:4100/project` |
-| `captureBody` | `true` | Capture request/response bodies |
+| `captureBody` | `true` | Also send request/response content (subject to the project's capture setting) |
 | `release` | — | Release version for sourcemap translation |
 | `beforeSend` | — | Hook to modify/filter events |
 | `beforeSendEvent` | — | Hook to modify/filter lifecycle and usage events |
@@ -320,16 +443,39 @@ finishes reading the stream. Bedrock calls made through `fetch` (for example
 | `CostKey.init(options)` | Initialize. Call once at startup. |
 | `CostKey.startTrace(opts, fn)` | Run fn inside a trace scope. |
 | `CostKey.startExecution(opts, fn)` | Group repeatable work with a fresh execution ID. |
-| `CostKey.recordUsage(event)` | Report deduplicated external/native usage. |
-| `CostKey.recordLiveKitUsage(event, opts)` | Map selected LiveKit cumulative STT/LLM/TTS usage; use `components` or `excludeComponents` when another source owns a component. |
+| `CostKey.recordUsage(event)` | Report external/native usage as passed (the server dedupes). |
+| `CostKey.recordLiveKitUsage(event, opts)` | Send a LiveKit cumulative usage snapshot raw; `components` / `excludeComponents` name the source of charge. |
 | `CostKey.withContext(ctx, fn)` | Run fn with custom tags. |
 | `CostKey.agent / step / tool(name, fn)` | Run fn inside an agent, step or tool span. |
 | `CostKey.startSpan(opts, fn)` | Run fn inside a span of any kind. |
 | `CostKey.instrumentTools(tools)` | Wrap each tool's `execute` in a tool span. |
 | `CostKey.exportContext()` / `exportContextHeaders()` | Explicit allowlisted cross-process carrier. |
 | `CostKey.shutdown()` | Flush and restore original fetch. |
-| `CostKey.registerExtractor(ext)` | Add custom AI provider. |
-| `CostKey.instrumentBedrockClient(client)` | Record usage from an AWS SDK v3 `BedrockRuntimeClient`. |
+| `CostKey.instrumentBedrockClient(client)` | Record calls from an AWS SDK v3 `BedrockRuntimeClient`. |
+
+## Upgrading to 0.7.0
+
+0.7.0 makes the SDK telemetry-only. The server keeps accepting 0.6.x events.
+
+- Call events carry `telemetry` and no longer have `provider`, `model`,
+  `usage`, `costUsd`, `streamTiming`, `requestModel`, `providerRequestId`,
+  `chargeId`, `metadata` or `systemPrompt`. A `beforeSend` hook that read them
+  should read `event.telemetry` instead.
+- `CostKey.score()` and its types are removed: quality checks run on the server.
+- `CostKey.registerExtractor()`, `ProviderExtractor` and `ExtractorCall` are
+  removed: custom providers are project configuration on the server.
+- `policy.usageBounds` and `policy.claimedCostUsd` are removed: `/admit`
+  receives the request skeleton and the server estimates bounds. Settlement
+  no longer carries `actualUsage` / `actualCostUsd`.
+- `recordUsage` no longer dedupes, fences revisions, infers `unitValue` or
+  derives `costUsd` from `amount`; `UsageConflictError` is removed.
+- `recordLiveKitUsage` sends one raw event per snapshot (it returns one ID)
+  instead of classified, summed per-component events.
+- Errors carry the raw `errorName` (`AbortError`, `TypeError`...). A thrown
+  AbortError ends a trace as `failed` with `errorName: "AbortError"` and a
+  span with status `error`; the server maps it to cancelled.
+- `callSite.frames` holds every frame, unfiltered.
+- The legacy `Provider` enum is still exported but no longer used.
 
 ## Measuring overhead
 

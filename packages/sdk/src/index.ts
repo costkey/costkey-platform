@@ -7,12 +7,8 @@ import type {
   CostKeyUsageEvent,
   CostKeySpanEvent,
   CostKeyAdditiveEvent,
-  CostKeyScoreEvent,
   EventContext,
   ExecutionOptions,
-  ScoreOptions,
-  NormalizedUsage,
-  ProviderExtractor,
   RecordUsageEvent,
   TraceOptions,
   RuntimeCaptureConfig,
@@ -42,8 +38,8 @@ import {
   type LifecycleRecord,
   type SpanRecord,
 } from "./context.js";
-import { registerExtractor, unregisterExtractor } from "./providers/registry.js";
-import { Provider as ProviderValue } from "./types.js";
+import { addCaptureTarget, hostnameTarget, removeCaptureTarget, type CaptureTarget } from "./providers/registry.js";
+import { capSkeleton, skeleton } from "./telemetry.js";
 import { randomBytes } from "node:crypto";
 import { CostKeyPolicyClient, CostKeyPolicyRefused, type PolicyAdmissionClient } from "./policy.js";
 import { recordLiveKitUsage, recordLiveKitSessionUsage } from "./livekit.js";
@@ -54,8 +50,6 @@ export type {
   CostKeyOptions,
   EventContext,
   BeforeSendHook,
-  ProviderExtractor,
-  ExtractorCall,
   ContextCarrier,
   TraceOptions,
   ExecutionOptions,
@@ -66,10 +60,7 @@ export type {
   CostKeyLifecycleEvent,
   CostKeyUsageEvent,
   CostKeySpanEvent,
-  CostKeyScoreEvent,
   CostKeyAdditiveEvent,
-  ScoreOptions,
-  ScoreSource,
   SpanKind,
   SpanStatus,
   SpanOptions,
@@ -78,7 +69,6 @@ export type {
   PolicyMode,
   PolicyRefusalReason,
   PolicyIntegrationProof,
-  PolicyUsageBounds,
   PolicyAdmissionRequest,
   PolicyAdmissionResult,
   PolicySettlementRequest,
@@ -91,13 +81,20 @@ export { CostKeyPolicyClient, CostKeyPolicyRefused } from "./policy.js";
 export type { PolicyAdmissionClient } from "./policy.js";
 export type {
   CostKeyEvent,
+  CallTelemetry,
   NormalizedUsage,
   CallSite,
-  StreamTiming,
-  EventMetadata,
+  StackFrame,
   UsageAggregation,
   TransportPayload,
 } from "./types.js";
+export type {
+  TelemetryRequest,
+  TelemetryResponse,
+  TelemetryStream,
+  TelemetryError,
+  StreamFormat,
+} from "./telemetry.js";
 
 let transport: Transport | null = null;
 let initialized = false;
@@ -113,21 +110,9 @@ let configRefreshTimer: ReturnType<typeof setInterval> | null = null;
 let configRequest: Promise<void> | null = null;
 let configSyncActive = false;
 let configGeneration = 0;
-const runtimeExtractors = new Map<string, ProviderExtractor>();
-
-interface UsageLedgerEntry {
-  aggregation: RecordUsageEvent["aggregation"];
-  componentId: string;
-  revisions: Map<number, string>;
-  latestCumulativeRevision: number | undefined;
-}
-
-const usageLedger = new Map<string, UsageLedgerEntry>();
-const usageEnvelopeLedger = new Map<string, string>();
+// Custom provider hosts from the project's runtime configuration (capture filter only).
+const runtimeTargets: CaptureTarget[] = [];
 const additivePending = new Set<Promise<void>>();
-const MAX_USAGE_CHARGES = 2048;
-const MAX_USAGE_REVISIONS_PER_CHARGE = 1024;
-const MAX_USAGE_ENVELOPES = 4096;
 
 /**
  * Initialize CostKey. Call this once at app startup.
@@ -345,84 +330,24 @@ function normalizeRuntimeConfig(
   };
 }
 
+/**
+ * Custom providers configured for the project add hosts to the capture
+ * filter. Extraction (usage and model paths) is server configuration.
+ */
 function applyRuntimeProviders(providers: Array<Record<string, unknown>>): void {
   clearRuntimeProviders();
   for (const provider of providers) {
-    const id = runtimeProviderString(provider, "id") ?? runtimeProviderString(provider, "hostname");
-    const extractor = createRuntimeExtractor(provider);
-    if (!id || !extractor) continue;
-    runtimeExtractors.set(id, extractor);
-    registerExtractor(extractor);
+    const hostname = typeof provider["hostname"] === "string" ? provider["hostname"] : null;
+    const target = hostname ? hostnameTarget(hostname) : null;
+    if (!target) continue;
+    runtimeTargets.push(target);
+    addCaptureTarget(target);
   }
 }
 
 function clearRuntimeProviders(): void {
-  for (const extractor of runtimeExtractors.values()) unregisterExtractor(extractor);
-  runtimeExtractors.clear();
-}
-
-function createRuntimeExtractor(
-  provider: Record<string, unknown>,
-): ProviderExtractor | null {
-  const configuredHostname = runtimeProviderString(provider, "hostname");
-  if (!configuredHostname) return null;
-  const inputPath = runtimeProviderString(provider, "usageInputPath", "usage_input_path");
-  const outputPath = runtimeProviderString(provider, "usageOutputPath", "usage_output_path");
-  const modelPath = runtimeProviderString(provider, "modelPath", "model_path");
-  const hostname = configuredHostname.toLowerCase().replace(/^https?:\/\//, "").split("/")[0];
-  return {
-    provider: ProviderValue.Unknown,
-    match(url: URL): boolean {
-      if (hostname.startsWith("*.")) return url.hostname.endsWith(hostname.slice(1));
-      return url.hostname === hostname || url.host === hostname;
-    },
-    extractUsage(body: unknown): NormalizedUsage | null {
-      const inputTokens = finiteRuntimeNumber(readRuntimePath(body, inputPath));
-      const outputTokens = finiteRuntimeNumber(readRuntimePath(body, outputPath));
-      if (inputTokens == null && outputTokens == null) return null;
-      return {
-        inputTokens,
-        outputTokens,
-        totalTokens: inputTokens != null && outputTokens != null
-          ? inputTokens + outputTokens
-          : null,
-        reasoningTokens: null,
-        cacheReadTokens: null,
-        cacheCreationTokens: null,
-      };
-    },
-    extractModel(requestBody: unknown, responseBody: unknown): string | null {
-      return runtimeProviderString(readRuntimePath(responseBody, modelPath), "value")
-        ?? runtimeProviderString(readRuntimePath(requestBody, modelPath), "value")
-        ?? runtimeProviderString(responseBody, "model")
-        ?? runtimeProviderString(requestBody, "model");
-    },
-  };
-}
-
-function runtimeProviderString(
-  value: unknown,
-  ...keys: string[]
-): string | null {
-  if (typeof value === "string" && value.trim()) return value.trim();
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  for (const key of keys) {
-    const candidate = (value as Record<string, unknown>)[key];
-    if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
-  }
-  return null;
-}
-
-function readRuntimePath(value: unknown, path: string | null): unknown {
-  if (!path) return undefined;
-  return path.split(".").filter(Boolean).reduce<unknown>((current, segment) => {
-    if (!current || typeof current !== "object") return undefined;
-    return (current as Record<string, unknown>)[segment];
-  }, value);
-}
-
-function finiteRuntimeNumber(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
+  for (const target of runtimeTargets) removeCaptureTarget(target);
+  runtimeTargets.length = 0;
 }
 
 /** Alias for init — familiar to MLflow users. */
@@ -430,78 +355,13 @@ const autolog = init;
 
 /**
  * Record usage from a provider/framework component that CostKey cannot observe
- * automatically. The caller owns identity and revision; delivery is async.
+ * automatically. The caller owns identity and revision; the event is sent as
+ * passed (the server dedupes revisions). Delivery is async.
  */
 function recordUsage(input: RecordUsageEvent): Promise<void> {
-  const event = normalizeUsageEvent(input, projectId, defaultContext);
+  const event = buildUsageEvent(input, projectId, defaultContext);
   if (!transport || !projectId) return Promise.resolve();
-  const shouldSend = acceptUsage(event);
-  if (!shouldSend) return Promise.resolve();
   return trackAdditiveEvent(event, transport, additiveBeforeSend, false);
-}
-
-const MAX_SCORE_NAME_CHARS = 120;
-const MAX_SCORE_LABEL_CHARS = 60;
-const MAX_SCORE_COMMENT_CHARS = 1_000;
-const SCORE_SOURCES = new Set(["judge", "human", "code"]);
-
-/** Validate a score and attach it to the given or current run. */
-function buildScoreEvent(options: ScoreOptions, currentProjectId: string, capture: boolean): CostKeyScoreEvent {
-  if (!options || typeof options !== "object") throw new TypeError("CostKey.score() requires options");
-  const name = nonEmpty(options.name);
-  if (!name) throw new TypeError("CostKey.score() requires a non-empty name");
-  if (name.length > MAX_SCORE_NAME_CHARS) {
-    throw new TypeError(`CostKey.score() name must be at most ${MAX_SCORE_NAME_CHARS} characters`);
-  }
-  if (typeof options.value !== "number" || !Number.isFinite(options.value)) {
-    throw new TypeError("CostKey.score() value must be a finite number");
-  }
-  const label = nonEmpty(options.label);
-  if (label && label.length > MAX_SCORE_LABEL_CHARS) {
-    throw new TypeError(`CostKey.score() label must be at most ${MAX_SCORE_LABEL_CHARS} characters`);
-  }
-  if (options.source !== undefined && !SCORE_SOURCES.has(options.source)) {
-    throw new TypeError("CostKey.score() source must be judge, human or code");
-  }
-  const current = getCurrentContext();
-  const explicitTrace = nonEmpty(options.traceId);
-  const traceId = explicitTrace ?? nonEmpty(current.traceId);
-  // A score for another run never inherits the current span.
-  const spanId = nonEmpty(options.spanId) ?? (explicitTrace ? undefined : nonEmpty(current.spanId));
-  if (!traceId && !spanId) {
-    throw new TypeError("CostKey.score() needs a run: call it inside a trace or span, or pass traceId");
-  }
-  const comment = capture ? nonEmpty(options.comment) : undefined;
-  return {
-    id: nonEmpty(options.id) ?? generateId("sc"),
-    timestamp: options.timestamp === undefined ? new Date().toISOString() : normalizeScoreTimestamp(options.timestamp),
-    projectId: currentProjectId,
-    eventType: "score",
-    name,
-    value: options.value,
-    ...(label ? { label } : {}),
-    ...(comment ? { comment: comment.slice(0, MAX_SCORE_COMMENT_CHARS) } : {}),
-    ...(options.source ? { source: options.source } : {}),
-    ...(traceId ? { traceId } : {}),
-    ...(spanId ? { spanId } : {}),
-  };
-}
-
-function normalizeScoreTimestamp(timestamp: string | Date): string {
-  const date = timestamp instanceof Date ? timestamp : new Date(timestamp);
-  if (Number.isNaN(date.getTime())) throw new TypeError("CostKey.score() timestamp is invalid");
-  return date.toISOString();
-}
-
-/**
- * Record a judge, human or code score on a run. Inside a trace or span the
- * score attaches to it; otherwise pass `traceId`. Invalid input throws; when
- * CostKey is not initialized the call is a no-op.
- */
-function score(options: ScoreOptions): Promise<void> {
-  const event = buildScoreEvent(options, projectId ?? "", captureBodyRef?.current === true);
-  if (!transport || !projectId) return Promise.resolve();
-  return trackAdditiveEvent(event, transport, additiveBeforeSend, debugEnabled);
 }
 
 /** Flush all pending events and shut down the SDK. */
@@ -532,8 +392,6 @@ async function shutdown(): Promise<void> {
   localCaptureBodyDisabled = false;
   localCaptureBody = true;
   clearRuntimeProviders();
-  usageLedger.clear();
-  usageEnvelopeLedger.clear();
   resetLifecycleState();
   initialized = false;
 }
@@ -563,6 +421,42 @@ function spanPayload(value: unknown): string | undefined {
   return text.length > MAX_SPAN_PAYLOAD_CHARS ? `${text.slice(0, MAX_SPAN_PAYLOAD_CHARS)}…` : text;
 }
 
+const MAX_RAW_ATTRIBUTE_STRING_CHARS = 2_000;
+
+/**
+ * An integration's raw framework payload: verbatim (strings bounded) when
+ * body capture is on, otherwise a skeleton whose allowlist also matches a
+ * dotted key's last segment (`gen_ai.request.model`).
+ */
+function rawAttributes(value: unknown, capture: boolean): unknown {
+  if (!capture) return skeleton(value, undefined, { leafKeys: true });
+  return capSkeleton(boundedRaw(value, 0, new Set()));
+}
+
+function boundedRaw(value: unknown, depth: number, ancestors: Set<object>): unknown {
+  if (typeof value === "string") {
+    return value.length > MAX_RAW_ATTRIBUTE_STRING_CHARS ? `${value.slice(0, MAX_RAW_ATTRIBUTE_STRING_CHARS)}…` : value;
+  }
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (typeof value === "bigint") return Number(value);
+  if (value === null || typeof value !== "object") return typeof value === "boolean" ? value : null;
+  if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) return { $bytes: value.byteLength };
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value.toISOString();
+  if (depth >= 12 || ancestors.has(value)) return { $trunc: true };
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) return value.map((item) => boundedRaw(item, depth + 1, ancestors));
+    const result: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value)) {
+      if (entry === undefined || typeof entry === "function" || typeof entry === "symbol") continue;
+      result[key] = boundedRaw(entry, depth + 1, ancestors);
+    }
+    return result;
+  } finally {
+    ancestors.delete(value);
+  }
+}
+
 function buildSpanEvent(
   record: SpanRecord,
   currentProjectId: string,
@@ -570,6 +464,7 @@ function buildSpanEvent(
   capture: boolean,
 ): CostKeySpanEvent {
   const attributes: Record<string, unknown> = { ...record.attributes };
+  if (record.raw) attributes[record.raw.namespace] = rawAttributes(record.raw.value, capture);
   if (capture) {
     const input = spanPayload(record.input);
     const output = spanPayload(record.output);
@@ -592,7 +487,7 @@ function buildSpanEvent(
     startedAt: record.startedAt,
     ...(record.endedAt ? { endedAt: record.endedAt } : {}),
     ...(record.durationMs !== undefined ? { durationMs: record.durationMs } : {}),
-    ...(record.errorType ? { errorType: record.errorType } : {}),
+    ...(record.errorName ? { errorName: record.errorName, errorType: record.errorName } : {}),
     ...(Object.keys(attributes).length > 0 ? { attributes } : {}),
     context: { ...currentDefaultContext, ...record.context },
   };
@@ -625,7 +520,7 @@ function buildLifecycleEvent(
     startedAt: record.startedAt,
     endedAt: record.endedAt,
     durationMs: record.durationMs ?? 0,
-    ...(record.errorType ? { errorType: record.errorType } : {}),
+    ...(record.errorName ? { errorName: record.errorName, errorType: record.errorName } : {}),
     expectedItems: record.expectedItems,
     completedItems: record.completedItems,
     failedItems: record.failedItems,
@@ -639,16 +534,13 @@ function buildLifecycleEvent(
     usage: null,
     costUsd: null,
     streaming: false,
-    streamTiming: null,
     callSite: null,
-    metadata: null,
-    systemPrompt: null,
     requestBody: null,
     responseBody: null,
   };
 }
 
-function normalizeUsageEvent(
+function buildUsageEvent(
   input: RecordUsageEvent,
   currentProjectId: string | null,
   currentDefaultContext: EventContext,
@@ -725,13 +617,7 @@ function normalizeUsageEvent(
       throw new TypeError("CostKey.recordUsage() unitValue must be a non-negative number");
     }
     usageEvent.unitValue = input.unitValue;
-  } else if ((input.unitKind || input.unit) && usage) {
-    const numericValues = Object.values(usage).filter(
-      (value): value is number => typeof value === "number",
-    );
-    if (numericValues.length === 1) usageEvent.unitValue = numericValues[0];
   }
-  const unitValues = usageEvent["unitValue"];
   return {
     id: input.id,
     timestamp,
@@ -752,11 +638,11 @@ function normalizeUsageEvent(
     nativeUsage: usage,
     ...(billingUnits ? { billingUnits } : {}),
     ...(amount ? { amount } : {}),
-    costUsd: amount?.currency === "USD" ? amount.value : null,
+    costUsd: typeof input.costUsd === "number" ? input.costUsd : null,
     currency,
     amountKind: input.amountKind ?? "reported",
     unitKind: nonEmpty(input.unitKind) ?? nonEmpty(input.unit),
-    unitValue: typeof unitValues === "number" ? unitValues : undefined,
+    unitValue: input.unitValue,
     pricingId: nonEmpty(input.pricingId),
     unit: nonEmpty(input.unit),
     traceId: context.traceId,
@@ -775,117 +661,11 @@ function normalizeUsageEvent(
     statusCode: null,
     durationMs: 0,
     streaming: false,
-    streamTiming: null,
     callSite: null,
     requestBody: null,
     responseBody: null,
+    ...(input.telemetry ? { telemetry: input.telemetry } : {}),
   };
-}
-
-function acceptUsage(event: CostKeyUsageEvent): boolean {
-  const identityHash = stableSerialize({
-    componentId: event.componentId,
-    chargeId: event.chargeId,
-    revision: event.revision,
-    aggregation: event.aggregation,
-    provider: event.provider,
-    model: event.model,
-    providerRequestId: event.providerRequestId,
-    attemptId: event.attemptId,
-    parentEventId: event.parentEventId,
-    usage: event.usage,
-    billingUnits: event.billingUnits,
-    amount: event.amount,
-    amountKind: event.amountKind,
-    pricingId: event.pricingId,
-    unitKind: event.unitKind,
-    unitValue: event.unitValue,
-    unit: event.unit,
-    traceId: event.traceId,
-    executionId: event.executionId,
-    context: event.context,
-    metadata: event.metadata,
-  });
-  // The caller-supplied id is the envelope identity. Generated timestamps are
-  // intentionally excluded so an idempotent retry without an explicit
-  // timestamp is not treated as a conflicting revision.
-  const { id: _id, timestamp: _timestamp, ...envelopeFields } = event;
-  const envelopeHash = stableSerialize(envelopeFields);
-  const priorEnvelope = usageEnvelopeLedger.get(event.id);
-  if (priorEnvelope !== undefined) {
-    if (priorEnvelope !== envelopeHash) {
-      throw new UsageConflictError(`usage event id ${event.id} was reused with different data`);
-    }
-    return false;
-  }
-
-  const entry = usageLedger.get(event.chargeId) ?? {
-    aggregation: event.aggregation,
-    componentId: event.componentId,
-    revisions: new Map<number, string>(),
-    latestCumulativeRevision: undefined,
-  };
-  if (entry.aggregation !== event.aggregation) {
-    throw new UsageConflictError(`charge ${event.chargeId} cannot switch aggregation mode`);
-  }
-  if (entry.componentId !== event.componentId) {
-    throw new UsageConflictError(`charge ${event.chargeId} changed component identity`);
-  }
-
-  const priorRevision = entry.revisions.get(event.revision);
-  if (priorRevision !== undefined) {
-    if (priorRevision !== identityHash) {
-      throw new UsageConflictError(
-        `charge ${event.chargeId} revision ${event.revision} was reused with different data`,
-      );
-    }
-    usageEnvelopeLedger.set(event.id, envelopeHash);
-    return false;
-  }
-
-  if (
-    event.aggregation === "cumulative" &&
-    entry.latestCumulativeRevision !== undefined &&
-    event.revision < entry.latestCumulativeRevision
-  ) {
-    // The server applies the same latest-revision fence. Remember this envelope
-    // so a duplicate stale update is still idempotent within this process.
-    usageEnvelopeLedger.set(event.id, envelopeHash);
-    entry.revisions.set(event.revision, identityHash);
-    usageLedger.set(event.chargeId, entry);
-    trimUsageLedger(event.chargeId);
-    return false;
-  }
-
-  entry.revisions.set(event.revision, identityHash);
-  if (event.aggregation === "cumulative") {
-    entry.latestCumulativeRevision = Math.max(
-      entry.latestCumulativeRevision ?? event.revision,
-      event.revision,
-    );
-  }
-  usageLedger.set(event.chargeId, entry);
-  usageEnvelopeLedger.set(event.id, envelopeHash);
-  trimUsageLedger(event.chargeId);
-  return true;
-}
-
-function trimUsageLedger(currentChargeId: string): void {
-  const current = usageLedger.get(currentChargeId);
-  if (current && current.revisions.size > MAX_USAGE_REVISIONS_PER_CHARGE) {
-    const oldest = current.revisions.keys().next().value as number | undefined;
-    if (oldest !== undefined) current.revisions.delete(oldest);
-  }
-  while (usageLedger.size > MAX_USAGE_CHARGES) {
-    const oldest = usageLedger.keys().next().value as string | undefined;
-    if (oldest === undefined) break;
-    usageLedger.delete(oldest);
-  }
-  while (usageEnvelopeLedger.size > MAX_USAGE_ENVELOPES) {
-    const oldest = usageEnvelopeLedger.keys().next().value as string | undefined;
-    if (oldest === undefined) break;
-    usageEnvelopeLedger.delete(oldest);
-  }
 }
 
 async function sendAdditiveEvent(
@@ -985,11 +765,9 @@ function normalizeAmount(
   aliases: Record<string, unknown>,
 ): UsageAmount | null {
   let candidate: unknown = value;
-  if (candidate == null && typeof aliases["costUsd"] === "number") {
-    candidate = { value: aliases["costUsd"], currency: aliases["currency"] ?? "USD" };
-  }
   if (candidate == null) return null;
   if (typeof candidate === "number") {
+    // A bare number is the caller's amount in the currency they named.
     candidate = { value: candidate, currency: aliases["currency"] ?? "USD" };
   }
   if (typeof candidate !== "object" || Array.isArray(candidate)) {
@@ -1047,25 +825,6 @@ function importContextForUsage(input: EventContext | ContextCarrier): EventConte
   return importContext(input);
 }
 
-function stableSerialize(value: unknown, ancestors = new WeakSet<object>()): string {
-  if (value === undefined) return "undefined";
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (ancestors.has(value)) return '"[Circular]"';
-  ancestors.add(value);
-  if (Array.isArray(value)) {
-    const serialized = `[${value.map((item) => stableSerialize(item, ancestors)).join(",")}]`;
-    ancestors.delete(value);
-    return serialized;
-  }
-  const object = value as Record<string, unknown>;
-  const serialized = `{${Object.keys(object)
-    .sort()
-    .map((key) => `${JSON.stringify(key)}:${stableSerialize(object[key], ancestors)}`)
-    .join(",")}}`;
-  ancestors.delete(value);
-  return serialized;
-}
-
 function nonEmpty(value: string | null | undefined): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
@@ -1074,10 +833,6 @@ function nonEmpty(value: string | null | undefined): string | undefined {
 
 function generateId(prefix: string): string {
   return `${prefix}_${randomBytes(16).toString("hex")}`;
-}
-
-export class UsageConflictError extends Error {
-  readonly name = "UsageConflictError";
 }
 
 export const CostKey = {
@@ -1094,12 +849,10 @@ export const CostKey = {
   tool,
   instrumentTools,
   recordUsage,
-  score,
   exportContext,
   exportContextHeaders,
   getCurrentContext,
   getCurrentTraceId,
-  registerExtractor,
   recordLiveKitUsage,
   recordLiveKitSessionUsage,
   instrumentBedrockClient,

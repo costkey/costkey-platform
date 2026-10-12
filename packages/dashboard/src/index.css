@@ -4488,14 +4488,7 @@ textarea[aria-invalid="true"] {
 .ck-board-bar-line { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 6px; font-size: 13px; }
 .ck-board-bar-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ck-ink); }
 .ck-board-bar-value { flex: 0 0 auto; color: var(--ck-ink); font-variant-numeric: tabular-nums lining-nums; }
-.ck-board-bar-value small { margin-right: 10px; font-size: 12px; color: var(--ck-slate); }
-.ck-board-track-row { display: flex; align-items: center; gap: 10px; }
-.ck-board-track-row .ck-board-track { flex: 1 1 auto; min-width: 40px; }
-.ck-board-track-row small { flex: 0 0 auto; font-size: 12px; color: var(--ck-slate); font-variant-numeric: tabular-nums lining-nums; }
-/* A model's share of spend, under its name. */
-.ck-board-models td.ck-board-model-cell { padding-bottom: 7px; }
-.ck-board-share { display: block; height: 3px; margin: 6px 0 0 22px; border-radius: 2px; background: var(--ck-soft); overflow: hidden; }
-.ck-board-share i { display: block; height: 100%; min-width: 1px; border-radius: 2px; background: var(--ck-chart); }
+.ck-board-bar-value small { margin-left: 8px; font-size: 12px; color: var(--ck-slate); }
 .ck-board-track { height: 8px; border-radius: 4px; background: var(--ck-soft); overflow: hidden; }
 .ck-board-fill { display: block; height: 100%; min-width: 2px; border-radius: 4px; background: var(--ck-chart); }
 .ck-board-fill-split { display: flex; gap: 2px; height: 100%; min-width: 4px; }
@@ -4755,3 +4748,47 @@ a.ck-metric-link > .ck-metric-card { height: 100%; }
 .ck-chip-link .ck-users-copy { display: none; }
 .ck-inline-link { color: inherit; text-decoration: underline; text-decoration-color: var(--ck-border); text-underline-offset: 2px; }
 .ck-inline-link:hover { color: var(--ck-ink); text-decoration-color: currentColor; }
+
+/* Overview, matched to the landing page's console mockup (docs/index.html, .mb-*). */
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+.ck-board-kpis, .ck-board-row { gap: 12px; margin-bottom: 12px; }
+.ck-board-kpi { padding: 16px 18px; border-radius: 14px; }
+.ck-board-kpi-value { margin: 4px 0 2px; font-size: 30px; letter-spacing: -0.6px; }
+.ck-board-delta { margin-top: 6px; }
+.ck-board-delta > span { display: inline-flex; align-items: center; gap: 5px; font-weight: 400; }
+.ck-board-delta em { font-style: normal; color: var(--ck-slate); }
+.ck-board-chevron { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.ck-board-delta-flat { color: var(--ck-slate); }
+.ck-board-delta-good { color: #2f6b4f; }
+.ck-board-delta-bad { color: #9a6a1f; }
+.ck-board-panel { min-height: 0; border-radius: 14px; }
+.ck-board-head { padding: 16px 18px 0; gap: 12px; }
+.ck-board-title { font-size: 15px; letter-spacing: 0; }
+.ck-board-sub { font-size: 12px; }
+.ck-board-total strong { font-size: 15px; }
+.ck-board-controls { padding: 12px 18px 0; }
+.ck-board-body { padding: 12px 18px 16px; }
+.ck-board-pills { gap: 6px; padding: 0; border: 0; border-radius: 0; background: transparent; }
+.ck-board-pills button { min-height: 26px; padding: 3px 10px; border: 1px solid var(--ck-border); border-radius: 999px; background: transparent; font-size: 12px; font-weight: 400; }
+.ck-board-pills button.active { border-color: #c4ced1; background: var(--ck-raised); color: var(--ck-ink); box-shadow: none; }
+.ck-board-table-wrap { margin: 0 -18px; }
+.ck-board-table { font-size: 12.5px; }
+.ck-board-table td { padding: 8px 8px; }
+.ck-board-table th:first-child, .ck-board-table td:first-child { padding-left: 18px; }
+.ck-board-table th:last-child, .ck-board-table td:last-child { padding-right: 18px; }
+.ck-board-bars, .ck-board-summary { gap: 12px; }
+.ck-board-bar-value { color: var(--ck-slate); }
+.ck-board-track { height: 7px; border-radius: 999px; background: #edf0f0; }
+.ck-board-legend { gap: 6px 14px; padding-top: 12px; }
+.ck-board-legend i.dot { width: 8px; height: 8px; border-radius: 50%; }
+.ck-board-legend b { margin-left: 4px; color: var(--ck-ink); font-weight: 500; }
+@media (max-width: 767px) {
+  .ck-board-head, .ck-board-controls { padding-left: 14px; padding-right: 14px; }
+  .ck-board-body { padding: 12px 14px 14px; }
+  .ck-board-table-wrap { margin: 0 -14px; }
+  .ck-board-table th:first-child, .ck-board-table td:first-child { padding-left: 14px; }
+  .ck-board-table th:last-child, .ck-board-table td:last-child { padding-right: 14px; }
+  .ck-board-kpi { padding: 12px 14px; }
+  .ck-board-kpi-value { font-size: 22px; }
+  .ck-board-delta em { display: none; }
+}

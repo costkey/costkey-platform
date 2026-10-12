@@ -159,7 +159,7 @@ function monthlyBudget(policies: BudgetPolicySummary[]): BudgetPolicySummary | n
 
 function OverviewLoadingState(): ReactNode {
   return <>
-    <div className="ck-board-kpis">{["Agent runs", "Model cost", "Usage", "Avg score"].map((label) => <KpiCard key={label} label={label} value="" current={null} previous={null} previousLabel="" higherIsBetter loading />)}</div>
+    <div className="ck-board-kpis">{["Agent runs", "Model cost", "Tokens", "Avg score"].map((label) => <KpiCard key={label} label={label} value="" current={null} previous={null} previousLabel="" higherIsBetter loading />)}</div>
     <div className="ck-board-row ck-board-row-3"><BoardSkeleton /><BoardSkeleton /><BoardSkeleton /></div>
     <div className="ck-board-row ck-board-row-2"><BoardSkeleton /><BoardSkeleton /></div>
   </>;
@@ -312,9 +312,9 @@ export default function Dashboard() {
       {!resource.loading && !(status.tone === "good" && allClearIsHidden) && <StatusLine tone={status.tone} right={status.right} onDismiss={status.tone === "good" ? hideAllClear : undefined}>{status.text}</StatusLine>}
       {resource.loading ? <OverviewLoadingState /> : <>
         <div className="ck-board-kpis">
-          <KpiCard to={`${hasAgents ? "/agents" : "/workflows"}${scopeSearchText}`} label={runsKpi.label} value={board ? runsKpi.current.toLocaleString("en-US") : "—"} current={board ? runsKpi.current : null} previous={board ? runsKpi.previous : null} previousLabel={runsKpi.previous.toLocaleString("en-US")} higherIsBetter />
+          <KpiCard to={`${hasAgents ? "/agents" : "/workflows"}${scopeSearchText}`} label={runsKpi.label} value={board ? runsKpi.current.toLocaleString("en-US") : "—"} current={board ? runsKpi.current : null} previous={board ? runsKpi.previous : null} previousLabel={runsKpi.previous.toLocaleString("en-US")} higherIsBetter={null} />
           <KpiCard to={`/costs${scopeSearchText}`} label="Model cost" value={money(currentCost)} current={currentCost} previous={previousCost} previousLabel={money(previousCost)} higherIsBetter={false} />
-          <KpiCard to={`/models${scopeSearchText}`} label="Usage" value={currentTokens ? `${compactNumber(currentTokens)} tokens` : otherUnits || compactNumber(currentTokens)} current={currentTokens} previous={previousTokens} previousLabel={compactNumber(previousTokens)} higherIsBetter={false} note={currentTokens && otherUnits ? `+ ${otherUnits}` : undefined} />
+          <KpiCard to={`/models${scopeSearchText}`} label={currentTokens || !otherUnits ? "Tokens" : "Usage"} value={currentTokens ? compactNumber(currentTokens) : otherUnits || compactNumber(currentTokens)} current={currentTokens} previous={previousTokens} previousLabel={compactNumber(previousTokens)} higherIsBetter={null} />
           <KpiCard to={`/quality${scopeSearchText}`} label="Avg score" value={formatScore(board?.scores.current.avg)} current={board?.scores.current.avg ?? null} previous={board?.scores.previous.avg ?? null} previousLabel={formatScore(board?.scores.previous.avg)} higherIsBetter />
         </div>
         <SpendOverTime projectId={projectId} period={toolbarPeriod} range={requestedScope} environment={environment} money={money} />

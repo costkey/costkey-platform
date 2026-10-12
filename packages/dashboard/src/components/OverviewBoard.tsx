@@ -325,7 +325,9 @@ export function RunVolume({ board }: { board: OverviewBoard | null }) {
             <li key={row.name}>
               <div className="ck-board-bar-line">
                 <span className="ck-board-bar-name" title={row.name}>{row.name}</span>
-                <span className="ck-board-bar-value">{value(row).toLocaleString("en-US")}<small>{tools ? `in ${row.runs.toLocaleString("en-US")} ${row.runs === 1 ? "run" : "runs"}` : `${row.calls.toLocaleString("en-US")} ${row.calls === 1 ? "call" : "calls"}`}</small></span>
+                <span className="ck-board-bar-value">{tools
+                  ? <>{row.calls.toLocaleString("en-US")} {row.calls === 1 ? "call" : "calls"}<small>in {row.runs.toLocaleString("en-US")} {row.runs === 1 ? "run" : "runs"}</small></>
+                  : <>{row.runs.toLocaleString("en-US")} {row.runs === 1 ? "run" : "runs"}<small>{row.calls.toLocaleString("en-US")} {row.calls === 1 ? "call" : "calls"}</small></>}</span>
               </div>
               <div className="ck-board-track"><span className="ck-board-fill" style={{ width: `${max > 0 ? value(row) / max * 100 : 0}%` }} /></div>
             </li>

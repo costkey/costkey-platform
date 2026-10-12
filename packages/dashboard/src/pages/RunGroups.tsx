@@ -3,7 +3,7 @@ import { ArrowLeft, ArrowRight, ChevronDown, ChevronRight } from "lucide-react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { getAgentDetail, getAgents, getBudgetPolicies, getTabModels, getWorkflows, type AgentDetail, type AgentRun, type BudgetPolicy, type InsightScope, type RunGroup, type TokenUsage } from "../api";
 import { currentRouterPath } from "../basePath";
-import { RunFlow, runModel, RunSummaryStrip, useRunDetail } from "../components/RunFlow";
+import { RunFlow, runModel, RunStatusPill, RunSummaryStrip, useRunDetail } from "../components/RunFlow";
 import { LiveStatus } from "../components/LiveStatus";
 import { useNewIds, usePointerHold } from "../hooks/useLiveQuery";
 import { billedUnitsText, formatHitRate, formatTokenCount } from "../components/tokenUsage";
@@ -235,7 +235,9 @@ function AgentRunsTable({ runs, fresh, projectId, openRun, onToggle, currency, f
           <td className="numeric hide-mobile">{cacheCell(run.usage)}</td>
           <td className="numeric">{run.durationMs == null ? "—" : formatDuration(run.durationMs)}</td>
           <td className="hide-mobile">{run.userId ?? "—"}</td>
-          <td>{run.failed ? <StatusPill tone="critical">Failed</StatusPill> : <StatusPill tone="good">Done</StatusPill>}</td>
+          <td>{run.retry?.retried
+            ? <RunStatusPill status={{ tone: "warn", label: "Retried", title: `This attempt failed; the work item succeeded on attempt ${run.retry.succeededOnAttempt ?? 2}.`, succeededBy: run.retry.succeededBy, succeededOnAttempt: run.retry.succeededOnAttempt }} showLink={false} />
+            : run.failed ? <StatusPill tone="critical">{run.retry?.willRetry ? "Failed, will retry" : "Failed"}</StatusPill> : <StatusPill tone="good">Done</StatusPill>}</td>
         </tr>
         {open && <tr className="ck-run-expanded"><td colSpan={columns}><InlineRun projectId={projectId} traceId={run.traceId} currency={currency} fx={fx} initialCallId={callId} onCallChange={onCallChange} /></td></tr>}
       </Fragment>;
@@ -299,7 +301,7 @@ export function AgentDetailPage() {
     <PageHeader title={name} actions={<><LiveStatus status={liveStatus} updatedAt={updatedAt} onRefresh={refresh} />{toolbar}</>} />
     {error && !data ? <Panel><EmptyPanel title="Couldn’t load this agent" body={error} /></Panel> : <>
       <div className="ck-metric-grid ck-metric-grid-5">
-        <MetricCard icon="trace" label="Runs" value={(agent?.runs ?? 0).toLocaleString()} detail={agent && agent.failedRuns > 0 ? `${agent.failedRuns} failed` : undefined} loading={loading && !data} />
+        <MetricCard icon="trace" label="Runs" value={(agent?.runs ?? 0).toLocaleString()} detail={agent && (agent.failedRuns > 0 || (agent.retriedRuns ?? 0) > 0) ? [agent.failedRuns > 0 ? `${agent.failedRuns} failed` : null, agent.retriedRuns ? `${agent.retriedRuns} retried` : null].filter(Boolean).join(" · ") : undefined} loading={loading && !data} />
         <MetricCard icon="cost" label="Per run" value={money(agent?.costPerRun, currency, fx)} detail={agent ? `${money(agent.cost, currency, fx)} total` : undefined} loading={loading && !data} />
         <MetricCard icon="cost" label="Per successful run" value={money(agent?.costPerSuccess ?? null, currency, fx)} detail={agent && agent.runs > 0 ? `${(agent.runs - agent.failedRuns).toLocaleString()} of ${agent.runs.toLocaleString()} succeeded` : undefined} loading={loading && !data} />
         <MetricCard icon="clock" label="p95 run time" value={agent?.p95Ms == null ? "—" : formatDuration(agent.p95Ms)} detail={agent?.avgSteps != null ? [agent.avgSteps > 0 ? `${agent.avgSteps.toFixed(1)} steps` : null, `${(agent.avgTools ?? 0).toFixed(1)} tools per run`].filter(Boolean).join(" · ") : undefined} loading={loading && !data} />

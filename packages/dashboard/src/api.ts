@@ -282,6 +282,8 @@ export interface Trace {
   conversation_id?: string | null;
   agent_count?: number;
   step_count?: number;
+  /** Attempts of the same work item (context.work_id): a failed attempt a later one completed is retried. */
+  retry?: RunRetry | null;
   tool_count?: number;
   span_error?: boolean;
 }
@@ -375,6 +377,8 @@ export interface TraceQuery {
   groupBy?: "context";
   contextKey?: string;
   contextValue?: string | string[];
+  /** Only runs that made at least one model call. */
+  withCalls?: boolean;
 }
 
 export type TraceSort = "newest" | "cost_desc" | "duration_desc" | "calls_desc";
@@ -447,6 +451,7 @@ export async function getTraces(
   if (query.q) params.set("q", query.q);
   if (query.from) params.set("from", query.from);
   if (query.to) params.set("to", query.to);
+  if (query.withCalls) params.set("withCalls", "1");
   const appendValues = (key: string, value: string | string[] | undefined): void => {
     if (Array.isArray(value)) value.forEach((item) => params.append(key, item));
     else if (value) params.set(key, value);
@@ -1004,10 +1009,24 @@ export interface RunGroup {
   p50Ms: number | null;
   p95Ms: number | null;
   failedRuns: number;
+  /** Failed attempts that a later attempt of the same work item completed. */
+  retriedRuns?: number;
   avgSteps: number | null;
   avgTools: number | null;
   lastRun: string | null;
   usage?: TokenUsage;
+}
+
+/** How a run relates to other attempts of the same work item. */
+export interface RunRetry {
+  workId: string | null;
+  attempt: number;
+  attempts?: number;
+  retried: boolean;
+  succeededBy: string | null;
+  succeededOnAttempt: number | null;
+  willRetry: boolean;
+  errorType: string | null;
 }
 
 export interface AgentRun {
@@ -1022,6 +1041,7 @@ export interface AgentRun {
   durationMs: number | null;
   userId: string | null;
   usage?: TokenUsage;
+  retry?: RunRetry;
 }
 
 export interface AgentDetail {

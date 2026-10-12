@@ -118,7 +118,10 @@ export function chargesCte(): string {
              'call'::text AS record_type,
              e.input_tokens, e.output_tokens, e.total_tokens,
              NULL::double precision AS unit_value, NULL::text AS unit,
-             NULL::text AS unit_kind, NULL::integer AS revision
+             NULL::text AS unit_kind, NULL::integer AS revision,
+             -- A failed call without a price cost nothing: it is not unpriced.
+             (e.cost_usd IS NULL AND (COALESCE(e.lifecycle_state, '') IN ('failed', 'cancelled')
+               OR COALESCE(e.status_code, 200) >= 400)) AS no_charge
       FROM events e
       WHERE COALESCE(e.event_type, 'call') = 'call'
     ), auto_charges AS (
@@ -156,7 +159,8 @@ export function chargesCte(): string {
              anchor.bl_file, anchor.bl_function, anchor.bl_line,
              'usage'::text AS record_type, NULL::integer AS input_tokens,
              NULL::integer AS output_tokens, NULL::integer AS total_tokens,
-             u.unit_value, u.unit, u.unit_kind, u.revision
+             u.unit_value, u.unit, u.unit_kind, u.revision,
+             FALSE AS no_charge
       FROM usage_components u
       LEFT JOIN LATERAL (
         SELECT e.trace_name, e.context, (to_jsonb(e)->>'release') AS release, e.feature_source, e.feature_mapping_id,

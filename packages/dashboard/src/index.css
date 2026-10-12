@@ -4701,3 +4701,7 @@ textarea[aria-invalid="true"] {
 .ck-table tbody tr.is-new td { animation: ck-new-row 2.4s ease-out; }
 @media (prefers-reduced-motion: reduce) { .ck-table tbody tr.is-new td { animation: none; background: #eef4ff; } }
 @media (max-width: 767px) { .ck-live-status { padding: 0 4px; } }
+.ck-pricing-note { margin-top: 8px; } .ck-run-status { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; } .ck-run-status-link { color: var(--ck-slate); font-size: 12px; text-decoration: underline; text-underline-offset: 2px; } .ck-run-status-link:hover { color: var(--ck-ink); }
+.ck-list-option { display: flex; align-items: center; gap: 8px; padding: 10px 16px; border-bottom: 1px solid var(--ck-rule, var(--ck-border)); color: var(--ck-slate); font-size: 13px; cursor: pointer; }
+.ck-list-option input { margin: 0; }
+@media (max-width: 767px) { .ck-list-option { padding: 10px 12px; } }

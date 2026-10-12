@@ -1,5 +1,6 @@
 import { type ReactNode, useEffect, useState } from "react";
 import { CircleAlert, Copy } from "lucide-react";
+import { Link } from "react-router-dom";
 import { getEvent, getTrace, type EventRow, type Trace, type TraceEvent, type TraceSpan, type UsageComponent } from "../api";
 import { EmptyPanel, LoadingRows, Panel, StatusPill } from "./ConsolePrimitives";
 import { formatAbsoluteDate, formatCurrencyAmount, formatReportedAmount, sourceAttributionStatus, type ReportingFx } from "./consoleFormatters";
@@ -37,13 +38,39 @@ export function useRunDetail(projectId: string | null, traceId: string | null): 
   return { ...live, detail: current, error: live.error && !current ? live.error : null };
 }
 
-export function runStatus(trace: Pick<Trace, "execution_state" | "unpriced_count">, cost: number | null): { tone: "good" | "warn" | "critical" | "neutral"; label: string } {
+export interface RunStatusView {
+  tone: "good" | "warn" | "critical" | "neutral";
+  label: string;
+  /** Shown on hover. */
+  title?: string;
+  /** The later attempt that completed this work item. */
+  succeededBy?: string | null;
+  succeededOnAttempt?: number | null;
+}
+
+export const PRICE_PENDING_HINT = "This model has no price yet. Set one in Settings, Prices.";
+
+/** A run's status in words: retried attempts and runs without calls are not alarms. */
+export function runStatus(trace: Pick<Trace, "execution_state" | "unpriced_count" | "call_count" | "accounting_state" | "retry">, cost: number | null): RunStatusView {
   const execution = String(trace.execution_state ?? "").toLowerCase();
-  if (execution === "failed" || execution === "error") return { tone: "critical", label: "Failed" };
-  if (execution === "running" || execution === "in_progress") return { tone: "neutral", label: "Running" };
-  if ((trace.unpriced_count ?? 0) > 0) return { tone: "warn", label: "Partly priced" };
-  if (cost == null) return { tone: "neutral", label: "Price pending" };
+  const retry = trace.retry;
+  if (retry?.retried) return { tone: "warn", label: "Retried", title: `This attempt failed${retry.errorType ? ` (${retry.errorType})` : ""}; the work item succeeded on attempt ${retry.succeededOnAttempt ?? 2}.`, succeededBy: retry.succeededBy, succeededOnAttempt: retry.succeededOnAttempt };
+  if (execution === "failed" || execution === "error") return retry?.willRetry ? { tone: "critical", label: "Failed, will retry", title: retry.errorType ?? undefined } : { tone: "critical", label: "Failed" };
+  if (execution === "running" || execution === "in_progress" || execution === "started") return { tone: "neutral", label: "Running" };
+  // A run with no model calls has nothing to price.
+  if (trace.accounting_state === "no_calls" || Number(trace.call_count ?? 1) === 0) return { tone: "good", label: "Complete" };
+  if ((trace.unpriced_count ?? 0) > 0) return cost == null
+    ? { tone: "neutral", label: "Price pending", title: PRICE_PENDING_HINT }
+    : { tone: "warn", label: "Partly priced", title: PRICE_PENDING_HINT };
   return { tone: "good", label: "Complete" };
+}
+
+/** The status pill, with the later attempt linked when a retry completed the work. */
+export function RunStatusPill({ status, showLink = true }: { status: RunStatusView; showLink?: boolean }) {
+  return <span className="ck-run-status" title={status.title}>
+    <StatusPill tone={status.tone}>{status.label}</StatusPill>
+    {showLink && status.succeededBy && <Link className="ck-run-status-link" to={`/traces/${encodeURIComponent(status.succeededBy)}`} onClick={(event) => event.stopPropagation()}>Succeeded on attempt {status.succeededOnAttempt ?? 2}</Link>}
+  </span>;
 }
 
 /** Everything the run page and the inline run derive from a loaded run. */
@@ -101,7 +128,7 @@ export function runModel(trace: RunDetail, traceId: string, explicitState: Proto
   return {
     summary, events, spans: trace.spans ?? [], usageComponents: trace.usageComponents,
     knownCost, unpriced, start, elapsed, executionState, accountingState,
-    status: runStatus({ execution_state: executionState, unpriced_count: unpriced }, knownCost),
+    status: runStatus({ execution_state: executionState, unpriced_count: unpriced, call_count: events.length, accounting_state: events.length === 0 ? "no_calls" : undefined, retry: (summary.retry as Trace["retry"]) ?? null }, knownCost),
     mostExpensive, traceName: String(summary.trace_name ?? traceId), eventStartMs, eventSpan,
     usage: sumUsage(events.map(callUsage)),
     failedCalls: events.filter((event) => callFailure(event) != null).length,
@@ -115,7 +142,7 @@ export function RunSummaryStrip({ model, currency, fx, className = "" }: { model
   const units = billedUnitsText(sumUnits(model.events.map((event) => event.native_units)));
   const inputMeta = [cachedNote(usage), usage.cacheHitRate != null ? `${formatHitRate(usage.cacheHitRate)} hit rate` : ""].filter(Boolean).join(" · ");
   const items: ReactNode[] = [
-    <div className="ck-summary-item" key="cost"><div className="prototype-summary-label">Cost</div><div className="ck-summary-value">{model.knownCost == null ? "Unpriced" : formatReportedAmount(model.knownCost, currency, fx)}</div>{model.unpriced > 0 ? <div className="ck-summary-meta">{`${model.unpriced} of ${model.events.length} calls unpriced`}</div> : model.usage.cacheSavings != null && model.usage.cacheSavings > 0 ? <div className="ck-summary-meta">{formatReportedAmount(model.usage.cacheSavings, currency, fx)} saved by cache</div> : null}</div>,
+    <div className="ck-summary-item" key="cost"><div className="prototype-summary-label">Cost</div><div className="ck-summary-value">{model.events.length === 0 ? <span className="ck-muted-value">No model calls</span> : model.knownCost == null ? <span title={PRICE_PENDING_HINT}>Unpriced</span> : formatReportedAmount(model.knownCost, currency, fx)}</div>{model.unpriced > 0 ? <div className="ck-summary-meta">{`${model.unpriced} of ${model.events.length} calls unpriced`}</div> : model.usage.cacheSavings != null && model.usage.cacheSavings > 0 ? <div className="ck-summary-meta">{formatReportedAmount(model.usage.cacheSavings, currency, fx)} saved by cache</div> : null}</div>,
     <div className="ck-summary-item" key="duration"><div className="prototype-summary-label">Duration</div><div className="ck-summary-value">{Number.isFinite(model.elapsed) && model.elapsed >= 0 ? formatDuration(model.elapsed) : "Unknown"}</div></div>,
     <div className="ck-summary-item" key="calls"><div className="prototype-summary-label">Calls</div><div className="ck-summary-value">{model.events.length.toLocaleString()}</div><div className="ck-summary-meta"><ProviderLabel provider={[...new Set(model.events.map((event) => event.provider).filter(Boolean))].join(",")} size={13} /></div></div>,
   ];
@@ -125,7 +152,7 @@ export function RunSummaryStrip({ model, currency, fx, className = "" }: { model
   } else {
     items.push(<div className="ck-summary-item ck-summary-wide" key="usage"><div className="prototype-summary-label">Billed for</div><div className="ck-summary-value">{units}</div></div>);
   }
-  items.push(<div className="ck-summary-item" key="status"><div className="prototype-summary-label">Status</div><div className="ck-summary-value"><StatusPill tone={model.status.tone}>{model.status.label}</StatusPill></div>{model.failedCalls > 0 ? <div className="ck-summary-meta ck-tone-critical-text">{model.failedCalls} of {model.events.length} call{model.events.length === 1 ? "" : "s"} failed</div> : model.accountingState !== "complete" && model.unpriced > 0 && <div className="ck-summary-meta">{model.accountingState === "updating" ? "Cost still updating" : "Some prices missing"}</div>}</div>);
+  items.push(<div className="ck-summary-item" key="status"><div className="prototype-summary-label">Status</div><div className="ck-summary-value"><RunStatusPill status={model.status} /></div>{model.failedCalls > 0 ? <div className="ck-summary-meta ck-tone-critical-text">{model.failedCalls} of {model.events.length} call{model.events.length === 1 ? "" : "s"} failed</div> : model.accountingState !== "complete" && model.unpriced > 0 && <div className="ck-summary-meta">{model.accountingState === "updating" ? "Cost still updating" : "Some prices missing"}</div>}</div>);
   return <div className={`ck-summary-strip ck-run-summary ${className}`} data-items={items.length}>{items}</div>;
 }
 
@@ -387,7 +414,7 @@ export function RootInspector({ projectId, traceId, openChecks = false, summary,
 }
 
 function CostRootSummary({ knownCost, unpriced, mostExpensive, usageComponents, usage, currency, fx }: { knownCost: number | null; unpriced: number; mostExpensive?: TraceEvent | null; usageComponents?: UsageComponent[]; usage?: CallUsage; currency: string; fx?: ReportingFx | null }) {
-  return <div className="ck-inspector-body"><div className="ck-inspector-section"><div className="ck-definition-list"><div><span>Cost</span><strong>{knownCost == null ? "Unpriced" : formatReportedAmount(knownCost, currency, fx)}</strong></div><div><span>Pricing</span><strong>{unpriced > 0 ? `${unpriced} unpriced` : "All calls priced"}</strong></div><div><span>Currency</span><strong>{currency}</strong></div></div></div>{usage && <TokenUsageSection usage={usage} currency={currency} fx={fx} />}{mostExpensive && <div className="ck-inspector-section"><div className="ck-inspector-section-title"><span>Most expensive call</span></div><div className="ck-component-row"><span>{eventDisplayName(mostExpensive)}</span><span>{mostExpensive.cost_usd == null ? "Unpriced" : formatReportedAmount(Number(mostExpensive.cost_usd), currency, fx)}</span></div></div>}{usageComponents && usageComponents.length > 0 && <div className="ck-inspector-section"><div className="ck-inspector-section-title"><span>Usage reported separately</span></div><div className="ck-component-list">{usageComponents.map((component) => { const amount = component.amount == null ? "Unpriced" : component.currency && component.currency !== "USD" ? formatCurrencyAmount(component.amount, component.currency) : formatReportedAmount(component.amount, currency, fx); return <div className="ck-component-row" key={component.id}><span><ProviderLabel provider={component.provider} size={13} /> · {component.model || "Model not recorded"}</span><span>{component.unit_value == null ? "Usage not reported" : `${Number(component.unit_value).toLocaleString()} ${component.unit_kind || component.unit || "units"}`} · {amount}</span></div>; })}</div></div>}</div>;
+  return <div className="ck-inspector-body"><div className="ck-inspector-section"><div className="ck-definition-list"><div><span>Cost</span><strong>{knownCost == null ? "Unpriced" : formatReportedAmount(knownCost, currency, fx)}</strong></div></div>{unpriced > 0 && <p className="ck-inspector-note ck-pricing-note">{unpriced === 1 ? "1 call has" : `${unpriced} calls have`} no price yet. <Link className="ck-text-link" to="/settings?section=pricing">Set prices</Link></p>}</div>{usage && <TokenUsageSection usage={usage} currency={currency} fx={fx} />}{mostExpensive && <div className="ck-inspector-section"><div className="ck-inspector-section-title"><span>Most expensive call</span></div><div className="ck-component-row"><span>{eventDisplayName(mostExpensive)}</span><span>{mostExpensive.cost_usd == null ? "Unpriced" : formatReportedAmount(Number(mostExpensive.cost_usd), currency, fx)}</span></div></div>}{usageComponents && usageComponents.length > 0 && <div className="ck-inspector-section"><div className="ck-inspector-section-title"><span>Usage reported separately</span></div><div className="ck-component-list">{usageComponents.map((component) => { const amount = component.amount == null ? "Unpriced" : component.currency && component.currency !== "USD" ? formatCurrencyAmount(component.amount, component.currency) : formatReportedAmount(component.amount, currency, fx); return <div className="ck-component-row" key={component.id}><span><ProviderLabel provider={component.provider} size={13} /> · {component.model || "Model not recorded"}</span><span>{component.unit_value == null ? "Usage not reported" : `${Number(component.unit_value).toLocaleString()} ${component.unit_kind || component.unit || "units"}`} · {amount}</span></div>; })}</div></div>}</div>;
 }
 
 /** A value, or a muted "Not recorded" when there is none. */

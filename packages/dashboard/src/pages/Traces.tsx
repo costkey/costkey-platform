@@ -31,7 +31,7 @@ import { formatDuration } from "../utils";
 import { callCostText, callFailure } from "../components/callOutcome";
 import { LiveStatus } from "../components/LiveStatus";
 import { useLiveQuery, useNewIds, usePointerHold } from "../hooks/useLiveQuery";
-import { eventDisplayName, inspectorTab, isCallEvent, parseJson, RunFlow, runModel, runStatus, RunSummaryStrip, useRunDetail } from "../components/RunFlow";
+import { eventDisplayName, inspectorTab, isCallEvent, parseJson, PRICE_PENDING_HINT, RunFlow, runModel, runStatus, RunStatusPill, RunSummaryStrip, useRunDetail } from "../components/RunFlow";
 import { prototypeRole, prototypeState, PrototypeStateNotice, PrototypeStatePanel } from "../components/PrototypeState";
 import { isPrototypePreview } from "../prototypePreview";
 import "./PrototypeRoute.css";
@@ -167,12 +167,12 @@ function traceLabel(trace: Trace): string {
 }
 
 
-function useTraceList(projectId: string | null, view: ListView, period: Period, query: string, filters: TraceFiltersState, sort: TraceSort, page: number, pageSize: number, reload: number, timezone?: string | null, contextKey?: string | null, contextValue?: string[] | null, scopeOverride?: { from: string; to: string } | null, shouldDefer?: () => boolean) {
+function useTraceList(projectId: string | null, view: ListView, period: Period, query: string, filters: TraceFiltersState, sort: TraceSort, page: number, pageSize: number, reload: number, timezone?: string | null, contextKey?: string | null, contextValue?: string[] | null, scopeOverride?: { from: string; to: string } | null, shouldDefer?: () => boolean, withCalls = true) {
   const filterKey = JSON.stringify(filters);
   const contextValueKey = JSON.stringify(contextValue ?? []);
   const overrideFrom = scopeOverride?.from;
   const overrideTo = scopeOverride?.to;
-  const requestKey = [projectId ?? "none", view, period, query, filterKey, sort, page, pageSize, reload, timezone ?? "", contextKey ?? "", contextValueKey, overrideFrom ?? "", overrideTo ?? ""].join("\u0002");
+  const requestKey = [projectId ?? "none", view, period, query, filterKey, sort, page, pageSize, reload, timezone ?? "", contextKey ?? "", contextValueKey, overrideFrom ?? "", overrideTo ?? "", withCalls ? "calls" : "all"].join("\u0002");
   // Live: refreshes every 10 s while the tab is visible; the period's end moves with the clock.
   const live = useLiveQuery(projectId ? requestKey : null, async () => {
     const { from, to } = overrideFrom && overrideTo ? { from: overrideFrom, to: overrideTo } : periodDates(period, timezone ?? undefined);
@@ -180,7 +180,7 @@ function useTraceList(projectId: string | null, view: ListView, period: Period, 
     const requestContextValues = JSON.parse(contextValueKey) as string[];
     const contextScope: Pick<TraceQuery, "groupBy" | "contextKey" | "contextValue"> = contextKey && requestContextValues.length > 0 ? { groupBy: "context", contextKey, contextValue: requestContextValues } : {};
     if (view === "traces") {
-      const result = await getTraces(projectId!, { limit: pageSize, offset: page * pageSize, q: query || undefined, from, to, sort, ...requestFilters, ...contextScope } satisfies TraceQuery);
+      const result = await getTraces(projectId!, { limit: pageSize, offset: page * pageSize, q: query || undefined, from, to, sort, withCalls, ...requestFilters, ...contextScope } satisfies TraceQuery);
       return { key: requestKey, traces: result.traces.map(normalizeTrace), calls: [] as EventRow[], total: Number(result.total) || 0 };
     }
     const result = await getEvents(projectId!, { limit: pageSize, offset: page * pageSize, q: query || undefined, from, to, sort, ...requestFilters, ...contextScope });
@@ -226,7 +226,7 @@ function TraceRows({ traces, fresh, selected, onToggle, onToggleAll, onSort, sor
       ? [(trace.step_count ?? 0) > 0 ? `${trace.step_count} step${trace.step_count === 1 ? "" : "s"}` : null, (trace.tool_count ?? 0) > 0 ? `${trace.tool_count} tool call${trace.tool_count === 1 ? "" : "s"}` : null].filter(Boolean).join(", ")
       : null;
     const labels = [trace.feature, trace.environment, agentShape].filter(Boolean).join(" · ");
-    return <tr key={trace.trace_id} className={fresh?.has(trace.trace_id) ? "is-new" : undefined}><td><input type="checkbox" checked={selected.has(trace.trace_id)} onChange={() => onToggle(trace.trace_id)} aria-label={`Select ${traceLabel(trace)}`} /></td><td className="primary-cell"><Link className="ck-table-link" to={`/traces/${encodeURIComponent(trace.trace_id)}`} state={{ returnTo: currentRouterPath() }}>{traceLabel(trace)}</Link>{status.tone !== "good" && <> <StatusPill tone={status.tone}>{status.label}</StatusPill></>}{labels && <div className="muted">{labels}</div>}<span className="ck-trace-mobile-line muted">{formatDateTime(trace.started_at)}</span></td><td className="ck-trace-hide-mobile">{formatDateTime(trace.started_at)}</td><td className="numeric ck-trace-hide-mobile">{traceDuration(trace)}</td><td className="numeric ck-trace-hide-mobile">{trace.call_count.toLocaleString()}</td><td className="numeric ck-cost-cell">{cost == null ? <span title="Calls without a price are not counted as free">Unpriced</span> : formatTraceTableCost(cost, currency, fx)}</td></tr>;
+    return <tr key={trace.trace_id} className={fresh?.has(trace.trace_id) ? "is-new" : undefined}><td><input type="checkbox" checked={selected.has(trace.trace_id)} onChange={() => onToggle(trace.trace_id)} aria-label={`Select ${traceLabel(trace)}`} /></td><td className="primary-cell"><Link className="ck-table-link" to={`/traces/${encodeURIComponent(trace.trace_id)}`} state={{ returnTo: currentRouterPath() }}>{traceLabel(trace)}</Link>{status.tone !== "good" && <> <RunStatusPill status={status} /></>}{labels && <div className="muted">{labels}</div>}<span className="ck-trace-mobile-line muted">{formatDateTime(trace.started_at)}</span></td><td className="ck-trace-hide-mobile">{formatDateTime(trace.started_at)}</td><td className="numeric ck-trace-hide-mobile">{traceDuration(trace)}</td><td className="numeric ck-trace-hide-mobile">{trace.call_count.toLocaleString()}</td><td className="numeric ck-cost-cell">{trace.call_count === 0 ? <span className="ck-muted-value">No model calls</span> : cost == null ? <span title={PRICE_PENDING_HINT}>Unpriced</span> : formatTraceTableCost(cost, currency, fx)}</td></tr>;
   })}</tbody></table></div>;
 }
 
@@ -328,7 +328,10 @@ function TraceList({ projectId, period, setPeriod, contextKey, contextValue, sco
     accounting: filterValues("accounting", "coverage"),
   };
   const listHold = usePointerHold();
-  const list = useTraceList(projectId, view, period, committedQuery, filters, sort, page, pageSize, reload, workspaceSettings?.timezone ?? org?.timezone, contextKey, contextValue, scopeOverride, listHold.held);
+  const idleKey = `costkey.runs.includeNoCalls.${user?.id ?? "anon"}`;
+  const [includeNoCalls, setIncludeNoCalls] = useState(() => { try { return window.localStorage.getItem(idleKey) === "1"; } catch { return false; } });
+  const toggleNoCalls = (next: boolean) => { setIncludeNoCalls(next); setPage(0); try { window.localStorage.setItem(idleKey, next ? "1" : "0"); } catch { /* remembered for this visit only */ } };
+  const list = useTraceList(projectId, view, period, committedQuery, filters, sort, page, pageSize, reload, workspaceSettings?.timezone ?? org?.timezone, contextKey, contextValue, scopeOverride, listHold.held, !includeNoCalls);
   const freshRows = useNewIds(view === "traces" ? list.traces.map((trace) => trace.trace_id) : list.calls.map((call) => call.id));
   const reportingCurrency = workspaceSettings?.reportingCurrency ?? "USD";
   const fx = workspaceSettings?.fx;
@@ -444,6 +447,7 @@ function TraceList({ projectId, period, setPeriod, contextKey, contextValue, sco
     {explicitState === "orphan" && <div className="ck-alert" role="status" style={{ marginBottom: 16 }}><Info size={15} aria-hidden="true" /><div><strong>This call wasn’t part of a run.</strong> You can still inspect it here.</div></div>}
     <Panel className="ck-traces-panel">
       <ListToolbar draft={draft} onDraftChange={setDraft} onSubmit={submit} sort={sort} onSort={changeSort} selectedCount={selected.size} onClearSelection={() => setSelected(new Set())} savedViews={savedViews} onSavedViewChange={applySavedView} onCompare={compareSelected} filtersOpen={filtersOpen} onToggleFilters={() => setFiltersOpen((value) => !value)} onRefresh={() => list.refresh()} />
+      {view === "traces" && <label className="ck-list-option"><input type="checkbox" checked={includeNoCalls} onChange={(event) => toggleNoCalls(event.target.checked)} /> Include runs with no model calls</label>}
       {filtersOpen && <TraceFiltersPopover filters={filters} options={filterOptions} optionsComplete={filterOptionsComplete} nextCursor={filterOptionsNextCursor} optionSearch={filterOptionSearch} onOptionSearchChange={(value) => { setFilterOptionSearch(value); setFilterOptionOffset(0); }} onLoadMore={() => { if (filterOptionsNextCursor) setFilterOptionOffset(Number(filterOptionsNextCursor)); }} onApply={applyFilters} onClear={clearFilters} />}
       {previewStateLoading || (list.loading && loadedRows === 0) ? <LoadingRows count={7} columns={view === "traces" ? 6 : 5} /> : view === "traces" && previewStateRows.length === 0 ? <EmptyPanel title={committedQuery || (isPrototypePreview() && explicitState === "no-matches") ? "No runs match" : "Ready for your first run"} body={committedQuery ? `Nothing matches “${committedQuery}” in this period.` : "Send a request from your app. Runs show up here with their cost, no labels needed."} illustration={committedQuery ? undefined : "first-light"} action={committedQuery ? <button className="ck-button ck-button-secondary" type="button" onClick={() => { setParams((current) => { current.delete("q"); current.delete("query"); return current; }); setDraft(""); }}>Clear search</button> : <Link className="ck-button ck-button-primary" to="/onboarding">Check setup <ArrowRight size={13} /></Link>} icon={<Route size={18} />} /> : view === "traces" ? <div {...listHold.bind}><TraceRows traces={previewStateRows} fresh={freshRows} selected={selected} onToggle={toggle} onToggleAll={toggleAll} onSort={changeSort} sort={sort} currency={reportingCurrency} fx={fx} /></div> : <div {...listHold.bind}><CallRows calls={previewStateCalls} fresh={freshRows} returnTo={returnTo} currency={reportingCurrency} fx={fx} /></div>}
       {loadedRows > 0 && <div className="ck-pagination"><span>{displayedTotal.toLocaleString()} {view === "traces" ? "runs" : "calls"}</span><div><label className="ck-pagination-size">Rows <select className="ck-select" value={pageSize} onChange={(event) => { setPageSize(Number(event.target.value)); setPage(0); }}><option value={25}>25</option><option value={50}>50</option><option value={100}>100</option></select></label><button className="ck-button ck-button-quiet" type="button" disabled={page === 0} onClick={() => setPage((value) => value - 1)}>Previous</button><span className="ck-pagination-page">Page {page + 1} of {totalPages}</span><button className="ck-button ck-button-quiet" type="button" disabled={page + 1 >= totalPages} onClick={() => setPage((value) => value + 1)}>Next</button></div></div>}

@@ -43,6 +43,9 @@ function windowFrom(req: Request): Window {
   };
 }
 
+/** The work item a run is an attempt of: runs that share it are retries of one job. */
+export const WORK_ID_SQL = (e: string) => `NULLIF(COALESCE(${e}.context->>'work_id', ${e}.context->>'workId', ${e}.context->>'attempt_key'), '')`;
+
 /** One row per run in the window, with its root span. Params: $1 project, $2 from, $3 to, $4 environment. */
 export const RUNS_CTE = `
   calls AS (
@@ -55,7 +58,8 @@ export const RUNS_CTE = `
            ${CACHE_REPORTED_SQL("e")} AS cache_reported,
            e.request_model, e.url, e.cost_basis, e.cost_source, e.pricing_id, e.image_output_tokens, e.native_units,
            e.lifecycle_state, e.lifecycle_error_type,
-           (COALESCE(e.lifecycle_state, '') IN ('failed', 'cancelled') OR COALESCE(e.status_code, 200) >= 400) AS call_failed
+           (COALESCE(e.lifecycle_state, '') IN ('failed', 'cancelled') OR COALESCE(e.status_code, 200) >= 400) AS call_failed,
+           ${WORK_ID_SQL("e")} AS work_id
     FROM events e
     WHERE e.project_id = $1 AND COALESCE(e.event_type, 'call') = 'call' AND e.trace_id IS NOT NULL
       AND e.timestamp >= $2 AND e.timestamp < $3
@@ -73,7 +77,8 @@ export const RUNS_CTE = `
            MAX(group_kind) AS group_kind, MAX(group_name) AS group_name,
            SUM(prompt_tokens)::bigint AS prompt_tokens, SUM(cache_read_tokens)::bigint AS cache_read_tokens,
            SUM(cache_write_tokens)::bigint AS cache_write_tokens, SUM(completion_tokens)::bigint AS completion_tokens,
-           SUM(reasoning_tokens)::bigint AS reasoning_tokens, BOOL_OR(cache_reported) AS cache_reported
+           SUM(reasoning_tokens)::bigint AS reasoning_tokens, BOOL_OR(cache_reported) AS cache_reported,
+           MAX(work_id) AS work_id
     FROM calls GROUP BY trace_id
   ),
   roots AS (
@@ -91,14 +96,37 @@ export const RUNS_CTE = `
     WHERE s.project_id = $1 AND s.trace_id IN (SELECT trace_id FROM runs)
     GROUP BY s.trace_id
   ),
-  run_rows AS (
+  run_base AS (
     SELECT r.*, ro.kind AS root_kind, ro.name AS root_name, ro.status AS root_status,
            COALESCE(sh.steps, 0) AS steps, COALESCE(sh.tools, 0) AS tools,
-           (r.failed_call OR COALESCE(sh.failed_span, FALSE)) AS failed,
+           (r.failed_call OR COALESCE(sh.failed_span, FALSE) OR COALESCE(t.state IN ('failed', 'error'), FALSE)) AS raw_failed,
+           t.error_type,
            EXTRACT(EPOCH FROM (COALESCE(ro.ended_at, r.ended_at) - COALESCE(ro.started_at, r.started_at))) * 1000 AS duration_ms
     FROM runs r
     LEFT JOIN roots ro ON ro.trace_id = r.trace_id
     LEFT JOIN shape sh ON sh.trace_id = r.trace_id
+    LEFT JOIN traces t ON t.project_id = $1 AND t.id = r.trace_id
+  ),
+  -- Attempts of one work item (context.work_id) are separate runs. A failed
+  -- attempt that a later attempt completed is "retried", not failed: failure
+  -- counts only the work item's last attempt.
+  run_rows AS (
+    SELECT b.*,
+           (b.raw_failed AND later.trace_id IS NOT NULL) AS retried,
+           (b.raw_failed AND later.trace_id IS NULL) AS failed,
+           later.trace_id AS retried_by,
+           later.attempt AS retried_on_attempt,
+           CASE WHEN b.work_id IS NULL THEN 1
+                ELSE (SELECT COUNT(*) FROM run_base o WHERE o.work_id = b.work_id AND (o.started_at, o.trace_id) <= (b.started_at, b.trace_id))::int END AS attempt
+    FROM run_base b
+    LEFT JOIN LATERAL (
+      SELECT o.trace_id,
+             (SELECT COUNT(*) FROM run_base p WHERE p.work_id = o.work_id AND (p.started_at, p.trace_id) <= (o.started_at, o.trace_id))::int AS attempt
+      FROM run_base o
+      WHERE b.raw_failed AND b.work_id IS NOT NULL AND o.work_id = b.work_id
+        AND (o.started_at, o.trace_id) > (b.started_at, b.trace_id) AND NOT o.raw_failed
+      ORDER BY o.started_at, o.trace_id LIMIT 1
+    ) later ON TRUE
   )`;
 
 export const GROUP_COLUMNS = `
@@ -107,12 +135,13 @@ export const GROUP_COLUMNS = `
   SUM(cost) FILTER (WHERE unpriced = 0) / NULLIF(COUNT(*) FILTER (WHERE unpriced = 0), 0) AS cost_per_run,
   -- What each successful run really costs: every priced run's spend, failed
   -- runs included, over the priced runs that succeeded.
-  SUM(cost) FILTER (WHERE unpriced = 0) / NULLIF(COUNT(*) FILTER (WHERE unpriced = 0 AND NOT failed), 0) AS cost_per_success,
+  SUM(cost) FILTER (WHERE unpriced = 0) / NULLIF(COUNT(*) FILTER (WHERE unpriced = 0 AND NOT raw_failed), 0) AS cost_per_success,
   COUNT(*) FILTER (WHERE unpriced > 0)::int AS partly_priced_runs,
   SUM(calls)::int AS calls,
   percentile_cont(0.5) WITHIN GROUP (ORDER BY duration_ms) AS p50_ms,
   percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms) AS p95_ms,
   COUNT(*) FILTER (WHERE failed)::int AS failed_runs,
+  COUNT(*) FILTER (WHERE retried)::int AS retried_runs,
   AVG(steps)::float AS avg_steps,
   AVG(tools)::float AS avg_tools,
   MAX(started_at) AS last_run,
@@ -136,6 +165,7 @@ function groupRow(row: Record<string, unknown>): Record<string, unknown> {
     p50Ms: number(row.p50_ms),
     p95Ms: number(row.p95_ms),
     failedRuns: number(row.failed_runs) ?? 0,
+    retriedRuns: number(row.retried_runs) ?? 0,
     avgSteps: number(row.avg_steps),
     avgTools: number(row.avg_tools),
     lastRun: row.last_run,
@@ -409,6 +439,22 @@ export async function loadOverviewBoard(pool: pg.Pool, projectId: string, window
   };
 }
 
+/** How a run relates to other attempts of the same work item. */
+export function retryInfo(row: Record<string, unknown>): { workId: string | null; attempt: number; retried: boolean; succeededBy: string | null; succeededOnAttempt: number | null; willRetry: boolean; errorType: string | null } {
+  const errorType = row.error_type == null ? null : String(row.error_type);
+  const retried = Boolean(row.retried);
+  return {
+    workId: row.work_id == null ? null : String(row.work_id),
+    attempt: number(row.attempt) ?? 1,
+    retried,
+    succeededBy: retried && row.retried_by != null ? String(row.retried_by) : null,
+    succeededOnAttempt: retried ? number(row.retried_on_attempt) : null,
+    // A job that raised a retryable error will run again.
+    willRetry: !retried && Boolean(row.failed) && /retry/i.test(errorType ?? ""),
+    errorType,
+  };
+}
+
 /** Cache savings are kept per provider and model. */
 function modelKey(row: Record<string, unknown>): string {
   return `${String(row.provider ?? "")}\u0000${String(row.model ?? "unknown")}`;
@@ -501,7 +547,7 @@ export function createInsightsRouter(pool: pg.Pool): Router {
         pool.query(`${scoped} SELECT $5::text AS name, ${GROUP_COLUMNS} FROM agent_runs`, params),
         pool.query(
           `${scoped}
-           SELECT trace_id, started_at, cost, unpriced, calls, steps, tools, failed, duration_ms, user_id,
+           SELECT trace_id, started_at, cost, unpriced, calls, steps, tools, failed, retried, retried_by, retried_on_attempt, attempt, work_id, error_type, duration_ms, user_id,
                   prompt_tokens, cache_read_tokens, cache_write_tokens, completion_tokens, reasoning_tokens, cache_reported
            FROM agent_runs ORDER BY started_at DESC LIMIT 50`,
           params,
@@ -560,6 +606,7 @@ export function createInsightsRouter(pool: pg.Pool): Router {
           traceId: row.trace_id, startedAt: row.started_at, cost: row.unpriced > 0 && row.cost == null ? null : number(row.cost),
           unpriced: number(row.unpriced) ?? 0, calls: number(row.calls) ?? 0, steps: number(row.steps) ?? 0,
           tools: number(row.tools) ?? 0, failed: Boolean(row.failed), durationMs: number(row.duration_ms), userId: row.user_id ?? null,
+          retry: retryInfo(row),
           usage: usageFrom(row),
         })),
         tools: tools.rows.map((row) => ({ name: row.name, calls: number(row.calls) ?? 0, avgMs: number(row.avg_ms), failed: number(row.failed) ?? 0, cost: number(row.cost) })),

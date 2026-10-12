@@ -538,6 +538,13 @@ export function findBusinessLogicFrameWithGraph(
     && !isWrapperFn(f0)
     && !isServiceLayer(f0.fileName ?? "");
 
+  // The frame that called the provider SDK is the business logic, with or
+  // without a graph: a heavily used caller (a dispatcher, a tracing wrapper)
+  // must not outscore it. The graph decides only when that frame is a wrapper.
+  // Two frames from the same file at the top is a client wrapper around the
+  // SDK (call_haiku over _messages_create_with_backoff): leave that to the graph.
+  if (f0Qualifies && (frames[1]?.fileName ?? null) !== (f0.fileName ?? null)) return f0;
+
   const graphKeys = Object.keys(graph);
 
   for (const frame of frames) {

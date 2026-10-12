@@ -2362,6 +2362,21 @@ describe("findBusinessLogicFrameWithGraph", () => {
     assert.equal(result?.functionName, "run_l3_sonnet");
   });
 
+  it("the SDK's caller beats a busy dispatcher the graph scores well", () => {
+    const frames = [
+      frame("/app/apps/financial-data-worker/src/financial_data_worker/generated_media.py", "synthesize", 155),
+      frame("/app/packages/story-domain/src/story_domain/service.py", "process_next", 456),
+      frame("/app/apps/financial-data-worker/src/financial_data_worker/costkey_tracing.py", "run", 107),
+      frame("/app/packages/financial-domain/src/financial_domain/platform/work.py", "run", 182),
+    ];
+    const graph: Record<string, { score: number; fan_in: number; calls_ai: boolean }> = {
+      "src/financial_data_worker/generated_media.py:synthesize": { score: 6.0, fan_in: 1, calls_ai: true },
+      "src/financial_data_worker/costkey_tracing.py:run": { score: 1.0, fan_in: 40, calls_ai: false },
+    };
+    const filterCtx = { removedFiles: new Set(["httpx/_client.py"]), frame0WasAdjacentToSDK: true };
+    assert.equal(findBusinessLogicFrameWithGraph(frames, graph, filterCtx)?.functionName, "synthesize");
+  });
+
   it("frame[0] adjustment does NOT fire when frame[0] is a known wrapper", () => {
     const frames = [
       frame("/app/ai/anthropic_client.py", "_messages_create_with_backoff", 168),

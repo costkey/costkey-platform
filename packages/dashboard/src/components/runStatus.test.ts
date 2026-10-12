@@ -8,8 +8,8 @@ describe("run status", () => {
     expect(runStatus({ execution_state: "failed", unpriced_count: 0, call_count: 1, retry }, 0.01)).toMatchObject({ tone: "warn", label: "Retried", succeededBy: "t2", succeededOnAttempt: 2 });
   });
 
-  it("says a retryable failure will retry until a later attempt completes", () => {
-    expect(runStatus({ execution_state: "failed", unpriced_count: 0, call_count: 1, retry: { ...retry, retried: false, succeededBy: null, succeededOnAttempt: null, willRetry: true } }, 0.01).label).toBe("Failed, will retry");
+  it("never promises a retry: a failed attempt with no later one is Failed", () => {
+    expect(runStatus({ execution_state: "failed", unpriced_count: 0, call_count: 1, retry: { ...retry, retried: false, succeededBy: null, succeededOnAttempt: null, willRetry: true } }, 0.01).label).toBe("Failed");
     expect(runStatus({ execution_state: "failed", unpriced_count: 0, call_count: 1 }, 0.01).label).toBe("Failed");
   });
 

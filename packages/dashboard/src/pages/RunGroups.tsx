@@ -167,7 +167,7 @@ function AgentRunsTable({ runs, fresh, projectId, openRun, onToggle, currency, f
           <td className="hide-mobile">{run.userId ? <UserId id={run.userId} to={userHref(run.userId)} linkClassName="ck-table-link" /> : "—"}</td>
           <td>{run.retry?.retried
             ? <RunStatusPill status={{ tone: "warn", label: "Retried", title: `This attempt failed; the work item succeeded on attempt ${run.retry.succeededOnAttempt ?? 2}.`, succeededBy: run.retry.succeededBy, succeededOnAttempt: run.retry.succeededOnAttempt }} showLink={false} />
-            : run.failed ? <StatusPill tone="critical">{run.retry?.willRetry ? "Failed, will retry" : "Failed"}</StatusPill> : <StatusPill tone="good">Succeeded</StatusPill>}</td>
+            : run.failed ? <span title={run.retry?.errorType ? `The run raised ${run.retry.errorType}.` : undefined}><StatusPill tone="critical">Failed</StatusPill></span> : <StatusPill tone="good">Succeeded</StatusPill>}</td>
         </tr>
         {open && <tr className="ck-run-expanded"><td colSpan={columns}><InlineRun projectId={projectId} traceId={run.traceId} currency={currency} fx={fx} initialCallId={callId} onCallChange={onCallChange} /></td></tr>}
       </Fragment>;

@@ -45,6 +45,12 @@ test("runs with no model call, span or score are removed after the grace period"
         ...run("tr_span"),
         { id: "ev_span", eventType: "span", traceId: "tr_span", spanId: "sp_tool", name: "lookup", kind: "tool", timestamp: now, durationMs: 5 },
         ...run("tr_recent"),
+        // A work item's failed attempt, then a retry that had nothing left to do.
+        ...[lifecycle("tr_try1", "started"), { ...lifecycle("tr_try1", "failed"), lifecycleErrorType: "RetryableWorkError" }, {
+          id: "ev_try1_call", timestamp: now, durationMs: 900, provider: "openai", model: "gpt-4o", statusCode: 200,
+          costUsd: 0.01, usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 }, traceId: "tr_try1",
+        }].map((event) => ({ ...event, context: { ...(event as { context?: object }).context, work_id: "w1" } })),
+        ...run("tr_try2").map((event) => ({ ...event, context: { ...event.context, work_id: "w1" } })),
       ];
       const response = await fetch(`${baseUrl}/api/v1/events`, {
         method: "POST",
@@ -65,7 +71,7 @@ test("runs with no model call, span or score are removed after the grace period"
         "SELECT DISTINCT trace_id FROM events WHERE project_id = $1 ORDER BY trace_id",
         [projectId],
       );
-      assert.deepEqual(left.rows.map((row) => row.trace_id), ["tr_call", "tr_recent", "tr_span"]);
+      assert.deepEqual(left.rows.map((row) => row.trace_id), ["tr_call", "tr_recent", "tr_span", "tr_try1", "tr_try2"]);
       const traces = await pool.query("SELECT 1 FROM traces WHERE project_id = $1 AND id = 'tr_empty'", [projectId]);
       assert.equal(traces.rowCount, 0);
 

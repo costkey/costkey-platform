@@ -1,10 +1,15 @@
 import type pg from "pg";
+import { WORK_ID_SQL } from "./insights-api.js";
 
 /**
  * Runs that did no AI work are noise: a background job that woke, found
  * nothing to do and finished sends only its start and end. Once such a run
  * has been quiet for a grace period (so late calls in a later batch still
  * count), it is removed: no model call, no span, no score, no usage row.
+ *
+ * An attempt of a work item that has other attempts is kept even when empty: a
+ * retry that found nothing left to do is how a failed attempt shows it was
+ * retried and succeeded.
  *
  * COSTKEY_KEEP_EMPTY_RUNS=true keeps them.
  */
@@ -34,6 +39,10 @@ export async function sweepEmptyRuns(
         GROUP BY e.project_id, e.trace_id
        HAVING bool_and(e.event_type = 'lifecycle')
           AND max(e.timestamp) < NOW() - make_interval(secs => $1)
+          AND (max(${WORK_ID_SQL("e")}) IS NULL OR NOT EXISTS (
+            SELECT 1 FROM events o
+             WHERE o.project_id = e.project_id AND o.trace_id <> e.trace_id
+               AND ${WORK_ID_SQL("o")} = max(${WORK_ID_SQL("e")})))
           ${linked}
         LIMIT $2`,
       [graceSeconds, limit],

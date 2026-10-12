@@ -602,7 +602,9 @@ async function backfillFrames(pool: import("pg").Pool): Promise<void> {
   // Rebuild call_site_stats (also runs once)
   // v13: framework, entry-point and <frozen> frames no longer name a call, and
   // the SDK's caller beats busy dispatchers; re-derive every stored call site.
-  await runOnce(pool, "rebuild_callsite_stats_v15", async () => {
+  // v16: again, for calls an older server stored after v15 ran (a rollout keeps
+  // the previous revision ingesting until the new one serves).
+  await runOnce(pool, "rebuild_callsite_stats_v16", async () => {
     await rebuildCallSiteStats(pool);
   });
 }

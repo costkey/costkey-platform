@@ -57,7 +57,8 @@ export function runStatus(trace: Pick<Trace, "execution_state" | "unpriced_count
   const execution = String(trace.execution_state ?? "").toLowerCase();
   const retry = trace.retry;
   if (retry?.retried) return { tone: "warn", label: "Retried", title: `This attempt failed${retry.errorType ? ` (${retry.errorType})` : ""}; the work item succeeded on attempt ${retry.succeededOnAttempt ?? 2}.`, succeededBy: retry.succeededBy, succeededOnAttempt: retry.succeededOnAttempt };
-  if (execution === "failed" || execution === "error") return retry?.willRetry ? { tone: "critical", label: "Failed, will retry", title: retry.errorType ?? undefined } : { tone: "critical", label: "Failed" };
+  // CostKey sees attempts, not the queue: a retry is shown once it happens, never promised.
+  if (execution === "failed" || execution === "error") return { tone: "critical", label: "Failed", title: retry?.errorType ? `The run raised ${retry.errorType}.` : undefined };
   if (execution === "running" || execution === "in_progress" || execution === "started") return { tone: "neutral", label: "Running" };
   // A run with no model calls has nothing to price.
   if (trace.accounting_state === "no_calls" || Number(trace.call_count ?? 1) === 0) return { tone: "good", label: "Succeeded" };

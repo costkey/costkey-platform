@@ -4,6 +4,7 @@ import "./index.css";
 import { initAnalytics } from "./analytics.ts";
 import BootScreen from "./BootScreen";
 import { installFieldValidation } from "./fieldValidation";
+import { installChunkReload, loadChunk } from "./chunkLoad";
 
 const rootElement = document.getElementById("root");
 
@@ -19,6 +20,7 @@ function render(node: ReactNode): void {
 }
 
 installFieldValidation();
+installChunkReload();
 render(<BootScreen />);
 void initAnalytics().catch(() => {});
 
@@ -30,7 +32,7 @@ const syntheticFixtureRequested = new URLSearchParams(window.location.search).ge
   || import.meta.env.VITE_DESIGN_PREVIEW === "true";
 const appModule = syntheticFixtureRequested
   ? import("./prototypePreview").then(({ installPrototypePreview }) => installPrototypePreview()).then(() => import("./App.tsx"))
-  : import("./App.tsx");
+  : loadChunk(() => import("./App.tsx"));
 void appModule
   .then(({ default: App }) => render(<App />))
   .catch((reason: unknown) => {

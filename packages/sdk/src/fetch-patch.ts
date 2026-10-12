@@ -750,36 +750,17 @@ function buildCallEvent(
 }
 
 /**
- * Opt-in content capture (requestBody/responseBody): credentials scrubbed,
- * media bytes omitted, bounded in size.
+ * Opt-in content capture (requestBody/responseBody): credentials scrubbed and
+ * media bytes omitted. Text is never truncated; the transport splits large
+ * events across POSTs instead.
  */
-const MAX_CAPTURED_BODY_BYTES = 32 * 1024;
-const MAX_CAPTURED_TEXT_CHARS = 16 * 1024;
 const BINARY_VALUE_KEYS = new Set([
   "b64_json", "base64", "base64_data", "image_data", "inline_data", "bytes",
 ]);
 const IMAGE_DATA_URI = /^data:(image\/[a-z0-9.+-]+)(?:;[^,]*)?,/i;
 
 function captureContent(body: unknown): unknown {
-  const prepared = sanitizeCapturedValue(scrubCredentials(body));
-  const json = JSON.stringify(prepared);
-  if (json == null || Buffer.byteLength(json, "utf8") <= MAX_CAPTURED_BODY_BYTES) {
-    return prepared;
-  }
-
-  const originalBytes = Buffer.byteLength(json, "utf8");
-  const source = Buffer.from(json, "utf8");
-  let previewBytes = MAX_CAPTURED_BODY_BYTES / 2;
-  const envelope = {
-    __costkey_truncated__: true,
-    original_bytes: originalBytes,
-    preview: source.subarray(0, previewBytes).toString("utf8"),
-  };
-  while (Buffer.byteLength(JSON.stringify(envelope), "utf8") > MAX_CAPTURED_BODY_BYTES) {
-    previewBytes = Math.floor(previewBytes / 2);
-    envelope.preview = source.subarray(0, previewBytes).toString("utf8");
-  }
-  return envelope;
+  return sanitizeCapturedValue(scrubCredentials(body));
 }
 
 function sanitizeCapturedValue(value: unknown, key?: string): unknown {
@@ -796,9 +777,6 @@ function sanitizeCapturedValue(value: unknown, key?: string): unknown {
       return `[binary data omitted: ${value.length} chars]`;
     }
 
-    if (value.length > MAX_CAPTURED_TEXT_CHARS) {
-      return `${value.slice(0, MAX_CAPTURED_TEXT_CHARS)}… [truncated from ${value.length} chars]`;
-    }
     return value;
   }
 

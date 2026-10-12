@@ -585,9 +585,9 @@ export interface CostKeyEvent {
   phase?: string | null;
   datasetRevision?: string | null;
   caseId?: string | null;
-  /** Request body content, only when body capture is enabled (scrubbed, bounded). */
+  /** Request body content, only when body capture is enabled (scrubbed, never truncated). */
   requestBody: unknown | null;
-  /** Response body content, only when body capture is enabled (scrubbed, bounded). */
+  /** Response body content, only when body capture is enabled (scrubbed, never truncated). */
   responseBody: unknown | null;
   /** Raw telemetry (contract v1): always present, never content. */
   telemetry: CallTelemetry;
@@ -602,7 +602,7 @@ export type BeforeSendHook = (
 export interface CostKeyOptions {
   /** DSN in format https://<key>@costkey.dev/<project-id>. Falls back to COSTKEY_DSN env var. Omit both to disable (test mode). */
   dsn?: string;
-  /** Capture request/response bodies (default: true; media bytes are omitted and captures are bounded) */
+  /** Capture request/response bodies (default: true; media bytes are omitted, text is sent whole) */
   captureBody?: boolean;
   /** Hook to modify/filter events before sending */
   beforeSend?: BeforeSendHook;

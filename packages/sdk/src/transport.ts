@@ -1,4 +1,4 @@
-import type { CostKeyTelemetryEvent, TransportPayload } from "./types.js";
+import type { CostKeyTelemetryEvent } from "./types.js";
 import { SDK_VERSION } from "./version.js";
 
 export interface TransportOptions {
@@ -14,11 +14,21 @@ export interface TransportOptions {
   debug: boolean;
   /** Release version for sourcemap translation */
   release?: string;
+  /**
+   * Max serialized bytes per POST (default 8 MB, well under the ingest
+   * limit). A single event larger than this is sent alone.
+   */
+  maxBatchBytes?: number;
 }
+
+/** Default byte budget for one POST body to /api/v1/events. */
+export const MAX_BATCH_BYTES = 8 * 1024 * 1024;
 
 /**
  * Batched, async, non-blocking transport.
  * Queues events in memory and flushes them periodically or when the batch is full.
+ * A flush drains the queue in POSTs of at most `maxBatchSize` events and
+ * `maxBatchBytes` of JSON each, so large captured bodies arrive whole.
  * Never throws into user code. Never blocks the event loop.
  */
 export class Transport {
@@ -70,19 +80,60 @@ export class Transport {
   flush(): Promise<void> {
     if (this.inFlight) return this.inFlight;
     if (this.queue.length === 0) return Promise.resolve();
-    this.inFlight = this.sendBatch().finally(() => { this.inFlight = null; });
+    this.inFlight = this.drain().finally(() => { this.inFlight = null; });
     return this.inFlight;
   }
 
-  private async sendBatch(): Promise<void> {
-    try {
-      const batch = this.queue.splice(0, this.options.maxBatchSize);
-      const payload: TransportPayload = {
-        sdkVersion: SDK_VERSION,
-        release: this.options.release,
-        events: batch,
-      };
+  /** Send batches until the queue is empty or delivery should wait. */
+  private async drain(): Promise<void> {
+    while (this.queue.length > 0) {
+      if (!(await this.sendBatch())) return;
+    }
+  }
 
+  /**
+   * Take events from the head of the queue until the next one would pass the
+   * byte or count budget. The first event is always taken, so an oversized
+   * event goes alone. Events that can't be serialized are dropped.
+   */
+  private takeBatch(): { events: CostKeyTelemetryEvent[]; body: string } | null {
+    const maxBytes = this.options.maxBatchBytes ?? MAX_BATCH_BYTES;
+    const header = JSON.stringify({ sdkVersion: SDK_VERSION, release: this.options.release });
+    const prefix = `${header.slice(0, -1)},"events":[`;
+    const suffix = "]}";
+    let bytes = utf8Bytes(prefix) + utf8Bytes(suffix);
+    const events: CostKeyTelemetryEvent[] = [];
+    const parts: string[] = [];
+    while (this.queue.length > 0 && events.length < this.options.maxBatchSize) {
+      const event = this.queue[0]!;
+      let json: string | undefined;
+      try {
+        json = JSON.stringify(event);
+      } catch {
+        json = undefined;
+      }
+      if (json === undefined) {
+        this.queue.shift();
+        if (this.options.debug) console.warn("[costkey] Dropping an event that can't be serialized");
+        continue;
+      }
+      const added = utf8Bytes(json) + (parts.length > 0 ? 1 : 0);
+      if (events.length > 0 && bytes + added > maxBytes) break;
+      this.queue.shift();
+      events.push(event);
+      parts.push(json);
+      bytes += added;
+    }
+    if (events.length === 0) return null;
+    return { events, body: `${prefix}${parts.join(",")}${suffix}` };
+  }
+
+  /** POST one batch. Returns false when the rest of the queue should wait. */
+  private async sendBatch(): Promise<boolean> {
+    const taken = this.takeBatch();
+    if (!taken) return false;
+    const { events: batch, body } = taken;
+    try {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 15_000);
 
@@ -94,17 +145,18 @@ export class Transport {
             Authorization: `Bearer ${this.options.authKey}`,
             "User-Agent": `costkey-sdk/${SDK_VERSION}`,
           },
-          body: JSON.stringify(payload),
+          body,
           signal: controller.signal,
         }));
 
         if (response.status === 429) {
-          // Rate limited — put events back and let the interval retry
+          // Rate limited — put this batch back at the head (ahead of the
+          // events it was split from) and let the interval retry.
           this.queue.unshift(...batch);
           if (this.options.debug) {
             console.warn("[costkey] Rate limited, will retry");
           }
-          return;
+          return false;
         }
 
         if (response.status === 401 || response.status === 403) {
@@ -112,7 +164,7 @@ export class Transport {
           console.warn(
             `[costkey] Authentication failed (${response.status}). Check the DSN under Settings, Projects in your CostKey console`,
           );
-          return;
+          return false;
         }
 
         if (!response.ok && this.options.debug) {
@@ -130,14 +182,35 @@ export class Transport {
         clearTimeout(timeout);
       }
 
-      return;
+      return true;
     } catch (err) {
       // Network error — fire and forget. Never crash user's app.
       if (this.options.debug) {
         console.warn("[costkey] Failed to send events:", err);
       }
+      return false;
     }
   }
+}
+
+/** UTF-8 length of a string, without allocating (works outside Node too). */
+function utf8Bytes(text: string): number {
+  let bytes = 0;
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code < 0x80) bytes += 1;
+    else if (code < 0x800) bytes += 2;
+    else if (code >= 0xd800 && code <= 0xdbff && i + 1 < text.length) {
+      const next = text.charCodeAt(i + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        bytes += 4;
+        i++;
+      } else {
+        bytes += 3;
+      }
+    } else bytes += 3;
+  }
+  return bytes;
 }
 
 const OTEL_API = Symbol.for("opentelemetry.js.api.1");

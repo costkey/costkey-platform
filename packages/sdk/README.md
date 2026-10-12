@@ -339,8 +339,11 @@ that historically captured text keep that behavior only after the server
 explicitly reports text capture enabled.
 In metadata-only mode the raw telemetry is a skeleton: structure, numbers and
 string lengths, never prompt, tool-definition, tool-call, or system
-instruction text. Body capture adds the scrubbed, bounded `requestBody` and
-`responseBody`.
+instruction text. Body capture adds the scrubbed `requestBody` and
+`responseBody`, plus span input and output, all sent whole: text is never
+truncated (only image and binary bytes are replaced by a size note). Large
+events are split across ingest requests of at most 8 MB each, and an event
+bigger than that is sent on its own.
 
 ## Supported Providers
 
@@ -452,6 +455,16 @@ example `@ai-sdk/amazon-bedrock`) need no setup.
 | `CostKey.exportContext()` / `exportContextHeaders()` | Explicit allowlisted cross-process carrier. |
 | `CostKey.shutdown()` | Flush and restore original fetch. |
 | `CostKey.instrumentBedrockClient(client)` | Record calls from an AWS SDK v3 `BedrockRuntimeClient`. |
+
+## 0.7.3
+
+- With body capture on, content is no longer truncated: request and response
+  bodies (previously 32 KB, strings 16K chars), span input and output
+  (previously 2,000 chars) and raw framework attributes (previously 2,000-char
+  strings, 12 levels deep, 64 KB) are sent whole.
+- The transport batches by size: each POST to `/api/v1/events` holds at most
+  `maxBatchSize` events and about 8 MB of JSON, an event over 8 MB is sent
+  alone, and a flush drains the whole queue.
 
 ## Upgrading to 0.7.0
 

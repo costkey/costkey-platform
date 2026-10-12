@@ -217,6 +217,19 @@ describe("filterFrames", () => {
     assert.equal(findBusinessLogicFrameWithGraph(filtered, {}, getFilterContext(frames, filtered))?.functionName, "answer");
   });
 
+  it("names nothing when only a framework, a server and the entry point made the call", () => {
+    // The OpenAI Agents SDK calls the model in a task of its own: no app frame.
+    const frames = filterFrames([
+      frame("/app/apps/api/.venv/lib/python3.12/site-packages/agents/models/openai_responses.py", "_fetch_response"),
+      frame("/app/apps/api/.venv/lib/python3.12/site-packages/agents/run_internal/run_loop.py", "run_single_turn"),
+      frame("/app/apps/api/.venv/lib/python3.12/site-packages/uvicorn/server.py", "run"),
+      frame("/app/apps/api/src/platform_api/__main__.py", "run"),
+      frame("<frozen runpy>", "_run_code"),
+    ]);
+    assert.equal(findBusinessLogicFrame(frames), undefined);
+    assert.equal(findBusinessLogicFrameWithGraph(frames, {}), undefined);
+  });
+
   it("still names a call inside an installed package when there is nothing else", () => {
     const frames = [frame("/srv/venv/lib/python3.12/site-packages/myapp/jobs.py", "nightly")];
     assert.equal(findBusinessLogicFrame(filterFrames(frames))?.functionName, "nightly");

@@ -316,6 +316,8 @@ export function isInternalFrame(frame: StackFrame): boolean {
   const file = frame.fileName ?? "";
   const fn = frame.functionName ?? "";
   if (!file && !fn) return true;
+  // Python 3.11+ frozen stdlib modules: <frozen runpy>, <frozen importlib._bootstrap>.
+  if (file.startsWith("<frozen ")) return true;
   if (INTERNAL_FILE_PATTERNS.some((p) => file.includes(p))) return true;
   if (INTERNAL_FN_PATTERNS.some((p) => fn.includes(p))) return true;
   // Python stdlib: /lib/pythonX.Y/foo.py but NOT /lib/pythonX.Y/site-packages/
@@ -325,6 +327,26 @@ export function isInternalFrame(frame: StackFrame): boolean {
 
 /** Installed third-party code: site-packages, dist-packages, node_modules. */
 export const INSTALLED_PACKAGE = /[\\/](?:site-packages|dist-packages|node_modules)[\\/]/;
+
+/**
+ * Frameworks, servers and SDKs that never name a call: a stack made only of
+ * them (a model call the OpenAI Agents SDK makes in its own task) has no
+ * business logic, and the call is better named by its model and span.
+ */
+const FRAMEWORK_PACKAGE = /[\\/](?:site-packages|dist-packages|node_modules)[\\/](?:agents|openai|anthropic|langchain[^\\/]*|langgraph[^\\/]*|llama_index|litellm|crewai|dspy|smolagents|autogen[^\\/]*|ag2|strands|pydantic_ai|google|mistralai|cohere|groq|httpx|httpcore|aiohttp|requests|urllib3|uvicorn|starlette|fastapi|anyio|gunicorn|celery|ai|@(?:openai|anthropic-ai|ai-sdk|langchain|mastra|google)[\\/][^\\/]+)[\\/]/;
+
+/** An app's entry point (python -m, __main__.py) starts everything and names nothing. */
+function isEntryPoint(frame: StackFrame): boolean {
+  return /(?:^|[\\/])__main__\.py$/.test(frame.fileName ?? "");
+}
+
+/** The frames that may name a call: the app's own first, then non-framework packages. */
+function namingFrames(frames: StackFrame[]): StackFrame[] {
+  const candidates = frames.filter((frame) => !isEntryPoint(frame));
+  const own = candidates.filter((frame) => !INSTALLED_PACKAGE.test(frame.fileName ?? ""));
+  if (own.length > 0) return own;
+  return candidates.filter((frame) => !FRAMEWORK_PACKAGE.test(frame.fileName ?? ""));
+}
 
 export function filterFrames(frames: StackFrame[]): StackFrame[] {
   const filtered = frames.filter((frame) => !isInternalFrame(frame));
@@ -442,9 +464,11 @@ export function findBusinessLogicFrame(
   // A call made through a framework (the OpenAI Agents SDK, LangChain) has
   // the framework's frames between the provider SDK and the app: name the call
   // after the app's own code. Installed packages count only when nothing else
-  // is there, so code that is itself installed as a package still attributes.
-  const own = allFrames.filter((frame) => !INSTALLED_PACKAGE.test(frame.fileName ?? ""));
-  const frames = own.length > 0 ? own : allFrames;
+  // is there, so code that is itself installed as a package still attributes;
+  // a stack of frameworks and servers alone names nothing.
+  const own = namingFrames(allFrames);
+  if (own.length === 0) return undefined;
+  const frames = own;
   // Framework frames sat between the provider SDK and the app: the app's first
   // frame is the code that made the call.
   if (frames !== allFrames && own[0] !== allFrames[0]) filterCtx = { removedFiles: filterCtx?.removedFiles ?? new Set(), frame0WasAdjacentToSDK: true };
@@ -512,8 +536,9 @@ export function findBusinessLogicFrameWithGraph(
   filterCtx?: { removedFiles: Set<string>; frame0WasAdjacentToSDK: boolean },
 ): StackFrame | undefined {
   // As in findBusinessLogicFrame: the app's own frames over installed packages.
-  const own = allFrames.filter((frame) => !INSTALLED_PACKAGE.test(frame.fileName ?? ""));
-  const frames = own.length > 0 ? own : allFrames;
+  const own = namingFrames(allFrames);
+  if (own.length === 0) return undefined;
+  const frames = own;
   // Framework frames sat between the provider SDK and the app: the app's first
   // frame is the code that made the call.
   if (frames !== allFrames && own[0] !== allFrames[0]) filterCtx = { removedFiles: filterCtx?.removedFiles ?? new Set(), frame0WasAdjacentToSDK: true };

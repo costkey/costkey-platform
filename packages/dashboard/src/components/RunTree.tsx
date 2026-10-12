@@ -59,6 +59,7 @@ export function RunTree({
   callName,
   currency,
   fx,
+  showSplit = true,
 }: {
   rows: RunTreeNode[];
   events: TraceEvent[];
@@ -77,6 +78,8 @@ export function RunTree({
   callName: (event: TraceEvent) => string;
   currency: string;
   fx?: ReportingFx | null;
+  /** The run page's timeline already shows the provider split. */
+  showSplit?: boolean;
 }) {
   const money = (value: number | null) => value == null ? "Unpriced" : formatReportedAmount(value, currency, fx);
   const bar = (startMs: number, endMs: number, color: string) => {
@@ -123,7 +126,7 @@ export function RunTree({
             <span className={`ck-wf-cost ${node.event.cost_usd == null && failure ? "is-muted" : ""}`}>{callCostText(node.event, (value) => formatReportedAmount(value, currency, fx))}</span>
           </button>
         ); })}
-      <ProviderSplit events={events} />
+      {showSplit && <ProviderSplit events={events} />}
     </div>
   );
 }

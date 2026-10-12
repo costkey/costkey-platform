@@ -49,11 +49,13 @@ export function chartRange(range: { from: string; to: string }, bucket: "day" | 
   return { from: zonedMidnight(startMonth.getUTCFullYear(), startMonth.getUTCMonth() + 1, 1, timezone).toISOString(), to: range.to, widened: true };
 }
 
-/** "4 Oct" for a day key, "Oct" (or "Oct 2026" when asked) for a month key. */
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** "4 Oct" for a day key, "Oct" (or "Oct 2026" when asked) for a month key. Keys are already local dates. */
 export function spendKeyLabel(key: string, bucket: "day" | "month", withYear = false): string {
-  const date = new Date(`${bucket === "month" ? `${key}-01` : key}T00:00:00Z`);
-  if (Number.isNaN(date.getTime())) return key;
-  return bucket === "month"
-    ? date.toLocaleDateString("en-GB", { month: "short", ...(withYear ? { year: "numeric" } : {}), timeZone: "UTC" })
-    : date.toLocaleDateString("en-GB", { day: "numeric", month: "short", ...(withYear ? { year: "numeric" } : {}), timeZone: "UTC" });
+  const [year, month, day] = key.split("-").map(Number);
+  const name = MONTHS[(month ?? 0) - 1];
+  if (!name || !year) return key;
+  const text = bucket === "month" ? name : `${day} ${name}`;
+  return withYear ? `${text} ${year}` : text;
 }

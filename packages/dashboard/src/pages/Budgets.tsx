@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { CircleAlert, Plus } from "lucide-react";
 import { Link, Navigate, useParams, useSearchParams } from "react-router-dom";
 import { deleteBudget, listBudgets, type Budget } from "../budgetsApi";
@@ -36,7 +37,8 @@ function DeleteDialog({ budget, onCancel, onConfirm, busy, error }: { budget: Bu
     document.addEventListener("keydown", onKey);
     return () => { document.removeEventListener("keydown", onKey); opener?.focus(); };
   }, []);
-  return <div className="ck-dialog-backdrop" role="presentation" onClick={onCancel}>
+  // On the body, so no page container can clip the backdrop.
+  return createPortal(<div className="ck-dialog-backdrop" role="presentation" onClick={onCancel}>
     <section className="ck-dialog ck-budget-dialog" role="alertdialog" aria-modal="true" aria-labelledby="budget-delete-title" aria-describedby="budget-delete-copy" onClick={(event) => event.stopPropagation()}>
       <h2 id="budget-delete-title">Delete {budget.name || "this budget"}?</h2>
       <p id="budget-delete-copy">It stops checking calls right away. Spend history is kept.</p>
@@ -46,7 +48,7 @@ function DeleteDialog({ budget, onCancel, onConfirm, busy, error }: { budget: Bu
         <button className="ck-button ck-button-danger" type="button" onClick={onConfirm} disabled={busy}>{busy ? "Deleting" : "Delete budget"}</button>
       </div>
     </section>
-  </div>;
+  </div>, document.body);
 }
 
 function BudgetTable({ budgets, projectId, canManage, timezone, onDelete }: { budgets: Budget[]; projectId: string; canManage: boolean; timezone?: string; onDelete: (budget: Budget) => void }) {

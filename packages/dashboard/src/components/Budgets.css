@@ -54,7 +54,7 @@
 }
 
 /* Compact card on agent and workflow pages. */
-.ck-scope-budget { display: flex; flex-direction: column; gap: 16px; margin-bottom: 16px; padding: 16px 20px; }
+.ck-scope-budget { display: flex; flex-direction: column; gap: 16px; margin: 0; padding: 16px 20px; }
 .ck-scope-budget-skeleton { height: 56px; width: 100%; }
 .ck-scope-budget-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-width: 0; }
 .ck-scope-budget-title { display: inline-flex; align-items: center; gap: 8px; min-width: 0; font-size: 14px; font-weight: 500; color: var(--ck-ink); }
@@ -93,6 +93,7 @@
 .ck-board-legend i.dash { width: 14px; height: 0; border-top: 2px dashed var(--ck-warn); background: none; }
 .ck-spend-note { margin: 0; font-size: 12px; color: var(--ck-slate); }
 @media (max-width: 767px) {
-  .ck-spend-head-right { justify-content: flex-start; }
+  .ck-spend-panel .ck-board-head { flex-direction: column; align-items: stretch; gap: 12px; }
+  .ck-spend-head-right { justify-content: space-between; }
 }
 .ck-budget-scope-custom { grid-column: 1 / -1; }

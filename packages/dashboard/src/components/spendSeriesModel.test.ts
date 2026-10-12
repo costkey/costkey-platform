@@ -28,5 +28,6 @@ describe("spend over time", () => {
     expect(spendKeyLabel("2026-10-04", "day")).toBe("4 Oct");
     expect(spendKeyLabel("2026-10", "month")).toBe("Oct");
     expect(spendKeyLabel("2026-10", "month", true)).toBe("Oct 2026");
+    expect(spendKeyLabel("2026-09-30", "day", true)).toBe("30 Sep 2026");
   });
 });

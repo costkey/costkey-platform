@@ -8,7 +8,7 @@ import { StatusPill } from "./ConsolePrimitives";
 import { periodDates, type ConsolePeriod } from "./consoleFormatters";
 import { Pills, useWidth } from "./OverviewBoard";
 import { niceCeiling, tickIndexes } from "./overviewBoardModel";
-import { formatBudgetAmount, healthCounts, limitInUsd, periodText, projectMoneyBudget } from "./budgetModel";
+import { formatBudgetAmount, healthCounts, limitInUsd, projectMoneyBudget } from "./budgetModel";
 import { useProjectBudgets } from "./ScopeBudget";
 import { budgetLineValue, chartRange, LONG_RANGE_DAYS, spendKeyLabel } from "./spendSeriesModel";
 import "./Budgets.css";
@@ -111,10 +111,10 @@ export function SpendOverTime({ projectId, period, range, environment, money }: 
   const format = (value: number) => money(value);
   // Axis ticks drop trailing zeros: "$20", "$0.5".
   const axisFormat = (value: number) => money(value).replace(/\.0+$/, "").replace(/(\.\d*?)0+$/, "$1");
-  const lineLabel = budget ? bucket === "month"
-    ? `${budget.name || "Project budget"}: ${formatBudgetAmount(budget, budget.allowance)} ${periodText(budget.window).toLowerCase()}`
-    : budget.window === "calendar_month" ? `Daily share of the ${formatBudgetAmount(budget, budget.allowance)} monthly budget` : `${budget.name || "Project budget"}: ${formatBudgetAmount(budget, budget.allowance)} daily`
-    : null;
+  const lineLabel = !budget ? null
+    : budget.window === "calendar_month"
+      ? bucket === "month" ? `Budget, ${formatBudgetAmount(budget, budget.allowance)} a month` : `Daily share of the ${formatBudgetAmount(budget, budget.allowance)} monthly budget`
+      : bucket === "day" ? `Budget, ${formatBudgetAmount(budget, budget.allowance)} a day` : `Daily budget of ${formatBudgetAmount(budget, budget.allowance)}, added up`;
   return (
     <section className="ck-panel ck-board-panel ck-spend-panel">
       <header className="ck-board-head">

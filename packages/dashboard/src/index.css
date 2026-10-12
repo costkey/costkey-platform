@@ -403,7 +403,8 @@ textarea {
 }
 .ck-sidebar-popover {
   position: absolute;
-  right: 0;
+  /* Anchored left so it opens over the page: it is wider than the sidebar. */
+  left: 0;
   bottom: 62px;
   z-index: 80;
   width: 264px;

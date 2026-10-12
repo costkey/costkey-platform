@@ -31,6 +31,8 @@ const Traces = lazy(() => loadChunk(() => import("./pages/Traces")));
 const Workflows = lazy(() => loadChunk(() => import("./pages/RunGroups")).then((module) => ({ default: module.Workflows })));
 const Agents = lazy(() => loadChunk(() => import("./pages/RunGroups")).then((module) => ({ default: module.Agents })));
 const AgentDetailPage = lazy(() => loadChunk(() => import("./pages/RunGroups")).then((module) => ({ default: module.AgentDetailPage })));
+const UsersPage = lazy(() => loadChunk(() => import("./pages/Users")).then((module) => ({ default: module.UsersPage })));
+const UserDetailPage = lazy(() => loadChunk(() => import("./pages/Users")).then((module) => ({ default: module.UserDetailPage })));
 const ModelDetailPage = lazy(() => loadChunk(() => import("./pages/ModelDetail")).then((module) => ({ default: module.ModelDetailPage })));
 const WorkflowDetailPage = lazy(() => loadChunk(() => import("./pages/RunGroups")).then((module) => ({ default: module.WorkflowDetailPage })));
 const Quality = lazy(() => loadChunk(() => import("./pages/Quality")));
@@ -288,6 +290,7 @@ function AppShell() {
     { to: "/workflows", label: "Workflows", icon: "workflow" as PrototypeIconName },
     { to: "/agents", label: "Agents", icon: "agent" as PrototypeIconName },
     { to: "/traces", label: "Traces", icon: "trace" as PrototypeIconName },
+    { to: "/users", label: "Users", icon: "users" as PrototypeIconName },
     { to: "/quality", label: "Quality", icon: "quality" as PrototypeIconName },
     { to: "/budgets", label: "Budgets", icon: "shield" as PrototypeIconName },
   ], []);
@@ -299,6 +302,7 @@ function AppShell() {
     if (pathname.startsWith("/traces") || pathname === "/trace" || pathname.startsWith("/compare")) return "/traces";
     if (pathname.startsWith("/executions") || pathname.startsWith("/group")) return "/workflows";
     if (pathname.startsWith("/quality")) return "/quality";
+    if (pathname.startsWith("/users")) return "/users";
     if (pathname.startsWith("/models") || pathname.startsWith("/costs") || pathname.startsWith("/contributor")) return "/models";
     if (pathname.startsWith("/forecast")) return "/forecast";
     if (pathname.startsWith("/budgets") || pathname.startsWith("/policy")) return "/budgets";
@@ -422,6 +426,8 @@ export default function App() {
             <RouterRoute path="/agents/:name" element={<AgentDetailPage />} />
             <RouterRoute path="/workflows/:name" element={<WorkflowDetailPage />} />
             <RouterRoute path="/models/:provider/*" element={<ModelDetailPage />} />
+            <RouterRoute path="/users" element={<UsersPage />} />
+            <RouterRoute path="/users/:userId" element={<UserDetailPage />} />
             <RouterRoute path="/errors" element={<Navigate to="/quality" replace />} />
             <RouterRoute path="/quality" element={<Quality />} />
             <RouterRoute path="/alerting" element={<Alerting />} />

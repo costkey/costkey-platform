@@ -1,10 +1,12 @@
 import { Fragment, useEffect, useRef } from "react";
 import { ArrowLeft, ArrowRight, ChevronDown, ChevronRight } from "lucide-react";
-import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import { getAgentDetail, getWorkflowDetail, getAgents, getBudgetPolicies, getTabModels, getWorkflows, type AgentDetail, type AgentRun, type BudgetPolicy, type InsightScope, type RunGroup, type TokenUsage } from "../api";
 import { currentRouterPath } from "../basePath";
 import { RunFlow, runModel, RunStatusPill, RunSummaryStrip, useRunDetail } from "../components/RunFlow";
 import { LiveStatus } from "../components/LiveStatus";
+import { UserId } from "../components/UserId";
+import { modelHref, ownerHref, toolHref, userHref } from "../components/links";
 import { useNewIds, usePointerHold } from "../hooks/useLiveQuery";
 import { billedUnitsText, formatHitRate, formatTokenCount } from "../components/tokenUsage";
 import { EmptyPanel, LoadingRows, MetricCard, PageHeader, Panel, StatusPill } from "../components/ConsolePrimitives";
@@ -35,11 +37,11 @@ function Totals({ groups, currency, fx, loading }: { groups: RunGroup[]; currenc
   </div>;
 }
 
-function GroupTable({ groups, label, showShape, currency, fx, onOpen }: { groups: RunGroup[]; label: string; showShape: boolean; currency: string; fx?: ReportingFx | null; onOpen: (group: RunGroup) => void }) {
-  return <div className="ck-table-wrap"><table className="ck-table ck-table-clickable">
+function GroupTable({ groups, label, kind, showShape, currency, fx }: { groups: RunGroup[]; label: string; kind: GroupKind; showShape: boolean; currency: string; fx?: ReportingFx | null }) {
+  return <div className="ck-table-wrap"><table className="ck-table">
     <thead><tr><th>{label}</th><th className="numeric">Runs</th><th className="numeric">Spend</th><th className="numeric">Per run</th><th className="numeric hide-mobile" title="Spend over runs that succeeded, failed runs included">Per success</th>{showShape && <th className="numeric hide-mobile">Steps</th>}{showShape && <th className="numeric hide-mobile">Tool calls</th>}<th className="numeric hide-mobile">p95</th><th className="numeric hide-mobile" title="Share of input tokens read from cache">Cache</th><th className="numeric">Failed</th><th className="hide-mobile">Last run</th></tr></thead>
-    <tbody>{groups.map((group) => <tr key={group.name} tabIndex={0} onClick={() => onOpen(group)} onKeyDown={(event) => { if (event.key === "Enter") onOpen(group); }}>
-      <td className="primary-cell">{group.name}</td>
+    <tbody>{groups.map((group) => <tr key={group.name} className="ck-row-link">
+      <td className="primary-cell"><Link className="ck-table-link ck-stretch-link" to={ownerHref(kind, group.name)}>{group.name}</Link></td>
       <td className="numeric">{group.runs.toLocaleString()}</td>
       <td className="numeric">{money(group.cost, currency, fx)}{group.partlyPricedRuns > 0 && <small className="ck-table-sub">{group.partlyPricedRuns} partly priced</small>}</td>
       <td className="numeric">{money(group.costPerRun, currency, fx)}</td>
@@ -108,8 +110,8 @@ function ModelsView({ kind, projectId, scope, scopeKey, currency, fx }: { kind: 
   const total = models.reduce((sum, model) => sum + (model.cost ?? 0), 0);
   return <div className="ck-table-wrap"><table className="ck-table">
     <thead><tr><th>Model</th><th className="numeric">Spend</th><th className="numeric">Share</th><th className="numeric">Calls</th><th className="numeric hide-mobile" title="Tokens in and out, or the units the model bills">Usage</th><th className="numeric hide-mobile">Per call</th><th className="numeric hide-mobile" title="Share of input tokens read from cache">Cache hit</th><th className="numeric hide-mobile" title="Output tokens spent on reasoning">Reasoning</th><th className="numeric hide-mobile" title="Saved against the uncached input price">Saved by cache</th><th className="hide-mobile">{kind === "agent" ? "Agents" : "Workflows"}</th></tr></thead>
-    <tbody>{models.map((model) => <tr key={`${model.provider}/${model.model}`}>
-      <td className="primary-cell">{model.model}<small className="ck-table-sub"><ProviderLabel provider={model.provider} size={12} /></small></td>
+    <tbody>{models.map((model) => <tr key={`${model.provider}/${model.model}`} className="ck-row-link">
+      <td className="primary-cell"><Link className="ck-table-link ck-stretch-link" to={modelHref(model.provider, model.model)}>{model.model}</Link><small className="ck-table-sub"><ProviderLabel provider={model.provider} size={12} /></small></td>
       <td className="numeric">{money(model.cost, currency, fx)}</td>
       <td className="numeric">{model.cost != null && total > 0 ? `${Math.round(model.cost / total * 100)}%` : "—"}</td>
       <td className="numeric">{model.calls.toLocaleString()}</td>
@@ -118,7 +120,7 @@ function ModelsView({ kind, projectId, scope, scopeKey, currency, fx }: { kind: 
       <td className="numeric hide-mobile">{formatHitRate(model.usage?.cacheHitRate)}</td>
       <td className="numeric hide-mobile">{formatTokenCount(model.usage?.reasoningTokens)}</td>
       <td className="numeric hide-mobile">{model.usage?.cacheSavings == null ? "—" : formatReportedAmount(model.usage.cacheSavings, currency, fx)}</td>
-      <td className="hide-mobile">{model.topOwners.join(", ")}</td>
+      <td className="hide-mobile">{model.topOwners.map((owner, index) => <span key={owner}>{index > 0 && ", "}<Link className="ck-table-link" to={ownerHref(kind, owner)}>{owner}</Link></span>)}</td>
     </tr>)}</tbody>
   </table></div>;
 }
@@ -147,7 +149,7 @@ function ForecastView({ kind, projectId, currency, fx, timezone }: { kind: Group
       const budget = budgetFor(group.name);
       const over = budget && projected != null && projected > budget.allowance;
       return <tr key={group.name}>
-        <td className="primary-cell">{group.name}</td>
+        <td className="primary-cell"><Link className="ck-table-link" to={ownerHref(kind, group.name)}>{group.name}</Link></td>
         <td className="numeric">{money(group.cost, currency, fx)}</td>
         <td className="numeric">{money(projected, currency, fx)}</td>
         <td className="numeric">{budget ? policyAmount(budget, budget.allowance, currency, fx) : <Link className="ck-table-link" to={`/policy-edit?scopeDimension=${kind}&scopeValue=${encodeURIComponent(group.name)}`}>Set budget</Link>}</td>
@@ -160,7 +162,6 @@ function ForecastView({ kind, projectId, currency, fx, timezone }: { kind: Group
 function RunGroupsPage({ kind }: { kind: GroupKind }) {
   const { projectId, scope, scopeKey, currency, fx, toolbar } = useInsightScope();
   const { workspaceSettings, org } = useAuth();
-  const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const view = (VIEWS.find((item) => item.id === params.get("view"))?.id ?? "runs") as View;
   const { data, error, loading, status: liveStatus, updatedAt, refresh } = useScopedLoad(projectId ? `${kind}|${scopeKey}` : null, () => kind === "agent"
@@ -177,7 +178,7 @@ function RunGroupsPage({ kind }: { kind: GroupKind }) {
       <Totals groups={groups} currency={currency} fx={fx} loading={loading && !data} />
       <Panel>{error && !data ? <EmptyPanel title={`Couldn’t load ${title.toLowerCase()}`} body={error} /> : loading && !data ? <LoadingRows count={6} columns={6} /> : groups.length === 0
         ? <EmptyPanel illustration="first-light" title={kind === "agent" ? "No agent runs yet" : "No workflows yet"} body={kind === "agent" ? "Wrap a run in CostKey.agent() to see it here." : "Name a run with startTrace to see it here."} />
-        : <GroupTable groups={groups} label={kind === "agent" ? "Agent" : "Workflow"} showShape={kind === "agent"} currency={currency} fx={fx} onOpen={(group) => navigate(`${kind === "agent" ? "/agents" : "/workflows"}/${encodeURIComponent(group.name)}${window.location.search}`)} />}</Panel>
+        : <GroupTable groups={groups} label={kind === "agent" ? "Agent" : "Workflow"} kind={kind} showShape={kind === "agent"} currency={currency} fx={fx} />}</Panel>
     </div>}
     {view !== "runs" && projectId && <Panel key={view} className="ck-view">
       {view === "models" && <ModelsView kind={kind} projectId={projectId} scope={scope} scopeKey={scopeKey} currency={currency} fx={fx} />}
@@ -235,7 +236,7 @@ function AgentRunsTable({ runs, fresh, projectId, openRun, onToggle, currency, f
           {shape && <><td className="numeric hide-mobile">{run.steps}</td><td className="numeric hide-mobile">{run.tools}</td></>}
           <td className="numeric hide-mobile">{cacheCell(run.usage)}</td>
           <td className="numeric">{run.durationMs == null ? "—" : formatDuration(run.durationMs)}</td>
-          <td className="hide-mobile">{run.userId ?? "—"}</td>
+          <td className="hide-mobile">{run.userId ? <UserId id={run.userId} to={userHref(run.userId)} linkClassName="ck-table-link" /> : "—"}</td>
           <td>{run.retry?.retried
             ? <RunStatusPill status={{ tone: "warn", label: "Retried", title: `This attempt failed; the work item succeeded on attempt ${run.retry.succeededOnAttempt ?? 2}.`, succeededBy: run.retry.succeededBy, succeededOnAttempt: run.retry.succeededOnAttempt }} showLink={false} />
             : run.failed ? <StatusPill tone="critical">{run.retry?.willRetry ? "Failed, will retry" : "Failed"}</StatusPill> : <StatusPill tone="good">Done</StatusPill>}</td>
@@ -258,8 +259,8 @@ function cacheDetail(usage: TokenUsage | undefined, currency: string, fx?: Repor
 function ModelUsageTable({ models, currency, fx }: { models: AgentDetail["models"]; currency: string; fx?: ReportingFx | null }) {
   return <div className="ck-table-wrap"><table className="ck-table">
     <thead><tr><th>Model</th><th className="numeric">Calls</th><th className="numeric">Spend</th><th className="numeric hide-mobile" title="Input tokens with cache, or the units the model bills">Usage</th><th className="numeric" title="Share of input tokens read from cache">Cache hit</th><th className="numeric hide-mobile">Cached</th><th className="numeric hide-mobile" title="Output tokens spent on reasoning">Reasoning</th><th className="numeric hide-mobile" title="Saved against the uncached input price">Saved by cache</th></tr></thead>
-    <tbody>{models.map((model) => <tr key={`${model.provider}/${model.model}`}>
-      <td className="primary-cell">{model.model}<small className="ck-table-sub"><ProviderLabel provider={model.provider} size={12} /></small></td>
+    <tbody>{models.map((model) => <tr key={`${model.provider}/${model.model}`} className="ck-row-link">
+      <td className="primary-cell"><Link className="ck-table-link ck-stretch-link" to={modelHref(model.provider, model.model)}>{model.model}</Link><small className="ck-table-sub"><ProviderLabel provider={model.provider} size={12} /></small></td>
       <td className="numeric">{model.calls.toLocaleString()}</td>
       <td className="numeric">{money(model.cost, currency, fx)}</td>
       <td className="numeric hide-mobile">{model.usage?.inputTokens ? formatTokenCount(model.usage.inputTokens) : billedUnitsText(model.units) || "—"}</td>
@@ -281,13 +282,12 @@ export function WorkflowDetailPage() {
 
 /** Who an agent or workflow ran for, by spend. */
 function UsersPanel({ users, total, currency, fx }: { users: NonNullable<AgentDetail["users"]>; total: number | null; currency: string; fx?: ReportingFx | null }) {
-  const search = typeof window === "undefined" ? "" : window.location.search;
   return <div className="ck-table-wrap"><table className="ck-table ck-table-linked">
     <thead><tr><th>User</th><th className="numeric">Runs</th><th className="numeric hide-mobile">Calls</th><th className="numeric hide-mobile">Usage</th><th className="numeric">Spend</th><th className="numeric hide-mobile">Share</th></tr></thead>
     <tbody>{users.map((user) => {
       const tokens = (user.usage?.inputTokens ?? 0) + (user.usage?.outputTokens ?? 0);
       return <tr key={user.userId}>
-        <td className="primary-cell"><Link className="ck-table-link ck-user-link" to={`/users/${encodeURIComponent(user.userId)}${search}`} title={user.userId}>{truncateId(user.userId)}</Link>{user.failedRuns > 0 && <small className="ck-table-sub">{user.failedRuns} failed</small>}</td>
+        <td className="primary-cell"><UserId id={user.userId} to={userHref(user.userId)} linkClassName="ck-table-link" />{user.failedRuns > 0 && <small className="ck-table-sub">{user.failedRuns} failed</small>}</td>
         <td className="numeric">{user.runs.toLocaleString()}</td>
         <td className="numeric hide-mobile">{user.calls.toLocaleString()}</td>
         <td className="numeric hide-mobile">{tokens > 0 ? `${formatTokenCount(tokens)} tokens` : billedUnitsText(user.units) || "—"}</td>
@@ -298,10 +298,6 @@ function UsersPanel({ users, total, currency, fx }: { users: NonNullable<AgentDe
   </table></div>;
 }
 
-/** Long ids (UUIDs) shortened in the middle; the full id is on hover. */
-function truncateId(id: string): string {
-  return id.length > 14 ? `${id.slice(0, 6)}…${id.slice(-4)}` : id;
-}
 
 function GroupDetailPage({ kind }: { kind: GroupKind }) {
   const { name = "" } = useParams();
@@ -346,7 +342,7 @@ function GroupDetailPage({ kind }: { kind: GroupKind }) {
       {(data?.users?.length ?? 0) > 0 && <Panel title="Users" subtitle="Who the runs were for, by spend">{<UsersPanel users={data!.users!} total={agent?.cost ?? null} currency={currency} fx={fx} />}</Panel>}
       <Panel title="Tools">{loading && !data ? <LoadingRows count={2} columns={5} /> : (data?.tools.length ?? 0) === 0 ? <EmptyPanel title="No tool calls" /> : <div className="ck-table-wrap"><table className="ck-table">
         <thead><tr><th>Tool</th><th className="numeric">Calls</th><th className="numeric">Avg time</th><th className="numeric">Failed</th><th className="numeric">Model spend</th></tr></thead>
-        <tbody>{data!.tools.map((tool) => <tr key={tool.name}><td className="primary-cell">{tool.name}</td><td className="numeric">{tool.calls}</td><td className="numeric">{tool.avgMs == null ? "—" : formatDuration(tool.avgMs)}</td><td className="numeric">{tool.failed}</td><td className="numeric">{tool.cost ? money(tool.cost, currency, fx) : "—"}</td></tr>)}</tbody>
+        <tbody>{data!.tools.map((tool) => <tr key={tool.name} className="ck-row-link"><td className="primary-cell"><Link className="ck-table-link ck-stretch-link" to={toolHref(tool.name)} title="Runs that used this tool">{tool.name}</Link></td><td className="numeric">{tool.calls}</td><td className="numeric">{tool.avgMs == null ? "—" : formatDuration(tool.avgMs)}</td><td className="numeric">{tool.failed}</td><td className="numeric">{tool.cost ? money(tool.cost, currency, fx) : "—"}</td></tr>)}</tbody>
       </table></div>}</Panel>
     </>}
   </div>;

@@ -4726,3 +4726,26 @@ textarea[aria-invalid="true"] {
 @media (min-width: 901px) {
   .ck-call-inspector .ck-inspector-body { max-height: min(78vh, 900px); overflow-y: auto; overscroll-behavior: contain; }
 }
+
+/* Rows that open something: the first link stretches over the row, so a click anywhere opens it and cmd-click opens a new tab. */
+tr.ck-row-link { position: relative; cursor: pointer; }
+tr.ck-row-link:hover td { background: var(--ck-soft); }
+tr.ck-row-link .ck-stretch-link::after { content: ""; position: absolute; inset: 0; }
+tr.ck-row-link .ck-stretch-link:focus-visible { outline: none; }
+tr.ck-row-link:has(.ck-stretch-link:focus-visible) td { background: var(--ck-soft); box-shadow: inset 0 0 0 2px var(--ck-focus, #476d9c); }
+tr.ck-row-link a:not(.ck-stretch-link), .ck-table tr.ck-row-link button { position: relative; z-index: 1; }
+.ck-board-link { color: inherit; text-decoration: none; }
+.ck-board-link:hover .ck-board-bar-name, .ck-board-link:hover .ck-board-model > span { text-decoration: underline; text-underline-offset: 2px; }
+.ck-board-bars a.ck-board-link { display: block; margin: -4px -6px; padding: 4px 6px; border-radius: 8px; }
+.ck-board-bars a.ck-board-link:hover { background: var(--ck-soft); }
+.ck-board-bars a.ck-board-link:focus-visible { outline: 2px solid var(--ck-focus, #476d9c); outline-offset: 0; }
+a.ck-metric-link { display: block; color: inherit; text-decoration: none; border-radius: var(--ck-radius); }
+a.ck-metric-link:hover .ck-metric-card { border-color: var(--ck-border-strong, #c9d1d6); }
+a.ck-metric-link:focus-visible { outline: 2px solid var(--ck-focus, #476d9c); outline-offset: 2px; }
+a.ck-metric-link > .ck-metric-card { height: 100%; }
+.ck-chip-link { display: inline-flex; color: inherit; text-decoration: none; border-radius: 100px; }
+.ck-chip-link:hover .ck-status-pill { background: var(--ck-hover, #dce8ee); color: var(--ck-ink); }
+.ck-chip-link:focus-visible { outline: 2px solid var(--ck-focus, #476d9c); outline-offset: 1px; }
+.ck-chip-link .ck-users-copy { display: none; }
+.ck-inline-link { color: inherit; text-decoration: underline; text-decoration-color: var(--ck-border); text-underline-offset: 2px; }
+.ck-inline-link:hover { color: var(--ck-ink); text-decoration-color: currentColor; }

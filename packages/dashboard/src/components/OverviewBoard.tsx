@@ -4,6 +4,8 @@ import type { BoardBucketUnit, OverviewBoard, OverviewBoardUsage } from "../api"
 import { formatDuration } from "../utils";
 import { ProviderLogo } from "./ProviderLogo";
 import { providerName } from "./consoleFormatters";
+import { Link } from "react-router-dom";
+import { checkHref, modelHref, ownerHref, toolHref } from "./links";
 import { billedUnitsText, sumUnits } from "./tokenUsage";
 import { alignSeries, bucketLabel, compactNumber, formatScore, kpiDelta, niceCeiling, signedPercent, tickIndexes } from "./overviewBoardModel";
 
@@ -43,9 +45,9 @@ function BoardEmpty({ children }: { children: ReactNode }) {
 
 /* ── KPI cards ─────────────────────────────────────────────────────── */
 
-export function KpiCard({ label, value, current, previous, previousLabel, higherIsBetter, loading, fact, note }: { label: string; value: string; current: number | null; previous: number | null; previousLabel: string; higherIsBetter: boolean; loading?: boolean; /** Shown when there's nothing earlier to compare with. */ fact?: ReactNode; /** A second line under the value, e.g. other billed units. */ note?: ReactNode }) {
+export function KpiCard({ label, value, current, previous, previousLabel, higherIsBetter, loading, fact, note, to }: { /** Where the card leads: the list behind the number. */ to?: string; label: string; value: string; current: number | null; previous: number | null; previousLabel: string; higherIsBetter: boolean; loading?: boolean; /** Shown when there's nothing earlier to compare with. */ fact?: ReactNode; /** A second line under the value, e.g. other billed units. */ note?: ReactNode }) {
   const delta = kpiDelta(current, previous, higherIsBetter);
-  return (
+  const card = (
     <article className="ck-metric-card ck-board-kpi">
       <div className="ck-board-kpi-label">{label}</div>
       {loading ? <div className="ck-skeleton ck-skeleton-metric" /> : <div className="ck-board-kpi-value">{value}</div>}
@@ -64,6 +66,8 @@ export function KpiCard({ label, value, current, previous, previousLabel, higher
       )}
     </article>
   );
+  // The card leads to the list behind its number.
+  return to ? <Link className="ck-metric-link" to={to} aria-label={`${label}: ${value}. Open the details`}>{card}</Link> : card;
 }
 
 /* ── Cost by model ─────────────────────────────────────────────────── */
@@ -100,8 +104,8 @@ export function CostByModel({ board, totalCost, money }: { board: OverviewBoard 
               {rows.map((row) => {
                 const usage = modelUsage(row);
                 return (
-                  <tr key={`${row.provider}:${row.model}`}>
-                    <td className="ck-board-model-cell"><span className="ck-board-model"><ProviderLogo provider={row.provider} size={14} /><span title={`${providerName(row.provider ?? "")} · ${row.model}`}>{row.model}</span></span></td>
+                  <tr key={`${row.provider}:${row.model}`} className="ck-row-link">
+                    <td className="ck-board-model-cell"><Link className="ck-board-link ck-stretch-link ck-board-model" to={modelHref(row.provider, row.model)}><ProviderLogo provider={row.provider} size={14} /><span title={`${providerName(row.provider ?? "")} · ${row.model}`}>{row.model}</span></Link></td>
                     {usage.tokens
                       ? <><td className="numeric">{compactNumber(row.input)}</td><td className="numeric">{compactNumber(row.output)}</td>{hasCache && <td className="numeric">{compactNumber(row.cacheRead)}</td>}</>
                       : <td className="numeric ck-board-units" colSpan={usageColumns}>{usage.text}</td>}
@@ -155,14 +159,14 @@ export function UsageByAgent({ board, money }: { board: OverviewBoard | null; mo
             const units = billedUnitsText(owner.units);
             const shown = mode === "cost" ? money(owner.cost) : tokens > 0 ? compactNumber(tokens) : units || "0";
             return (
-              <li key={owner.name}>
+              <li key={owner.name}><Link className="ck-board-link" to={ownerHref(kind, owner.name)}>
                 <div className="ck-board-bar-line"><span className="ck-board-bar-name" title={owner.name}>{owner.name}</span><span className="ck-board-bar-value">{shown}{mode === "usage" && tokens > 0 && units && <small>+ {units}</small>}</span></div>
                 <div className="ck-board-track" title={mode === "usage" && tokens > 0 ? `${compactNumber(owner.input)} input, ${compactNumber(owner.output)} output` : undefined}>
                   {mode === "usage" && tokens > 0
                     ? <span className="ck-board-fill-split" style={{ width: `${width}%` }}><i className="input" style={{ flexGrow: owner.input }} /><i className="output" style={{ flexGrow: owner.output }} /></span>
                     : <span className="ck-board-fill" style={{ width: `${width}%` }} />}
                 </div>
-              </li>
+              </Link></li>
             );
           })}
         </ul>
@@ -178,7 +182,7 @@ export function UsageByAgent({ board, money }: { board: OverviewBoard | null; mo
 
 /** The element's width, kept current. A callback ref, so it also measures an element that
  * mounts after the first render (a chart that replaces its loading state). */
-function useWidth<T extends HTMLElement>(fallback = 520): [(element: T | null) => void, number] {
+export function useWidth<T extends HTMLElement>(fallback = 520): [(element: T | null) => void, number] {
   const [element, setElement] = useState<T | null>(null);
   const [width, setWidth] = useState(fallback);
   useEffect(() => {
@@ -284,11 +288,11 @@ export function ScoresPanel({ board }: { board: OverviewBoard | null }) {
         </>) : (
           <ul className="ck-board-summary">
             {checks.map((check) => (
-              <li key={check.name}>
+              <li key={check.name}><Link className="ck-board-link" to={checkHref(check.name)}>
                 <div className="ck-board-bar-line"><span className="ck-board-bar-name" title={check.name}>{check.name}</span><span className="ck-board-bar-value">{formatScore(check.avg)}</span></div>
                 {check.unitScale && <div className="ck-board-track"><span className="ck-board-fill" style={{ width: `${Math.max(0, Math.min(1, check.avg ?? 0)) * 100}%` }} /></div>}
                 <div className="ck-board-note">{check.count.toLocaleString()} {check.count === 1 ? "score" : "scores"} on {check.runs.toLocaleString()} {check.runs === 1 ? "run" : "runs"}{check.unitScale ? "" : ", not on a 0 to 1 scale"}</div>
-              </li>
+              </Link></li>
             ))}
           </ul>
         )}
@@ -322,7 +326,7 @@ export function RunVolume({ board }: { board: OverviewBoard | null }) {
       {rows.length === 0 ? <BoardEmpty>{tools ? "No tool calls in this period." : kind === "agents" ? "No agent runs in this period." : "No workflow runs in this period."}</BoardEmpty> : (
         <ul className="ck-board-bars">
           {shown.map((row) => (
-            <li key={row.name}>
+            <li key={row.name}><Link className="ck-board-link" to={tools ? toolHref(row.name) : ownerHref(kind, row.name)}>
               <div className="ck-board-bar-line">
                 <span className="ck-board-bar-name" title={row.name}>{row.name}</span>
                 <span className="ck-board-bar-value">{tools
@@ -330,7 +334,7 @@ export function RunVolume({ board }: { board: OverviewBoard | null }) {
                   : <>{row.runs.toLocaleString("en-US")} {row.runs === 1 ? "run" : "runs"}<small>{row.calls.toLocaleString("en-US")} {row.calls === 1 ? "call" : "calls"}</small></>}</span>
               </div>
               <div className="ck-board-track"><span className="ck-board-fill" style={{ width: `${max > 0 ? value(row) / max * 100 : 0}%` }} /></div>
-            </li>
+            </Link></li>
           ))}
         </ul>
       )}

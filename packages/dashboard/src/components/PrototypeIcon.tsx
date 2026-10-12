@@ -4,7 +4,7 @@ export type PrototypeIconName =
   | "overview" | "trace" | "flask" | "telescope" | "shield" | "folder" | "search" | "settings"
   | "activity" | "clock" | "doc" | "download" | "check" | "alert" | "pause"
   | "cost" | "help" | "calendar" | "plus" | "info" | "arrow" | "right" | "down"
-  | "workflow" | "agent" | "quality" | "model" | "bell";
+  | "workflow" | "agent" | "quality" | "model" | "bell" | "users";
 
 // Geometry from the CostKey design language icon set (24 px grid, 1.75 px
 // stroke, rounded ends). "trace" is the Runs play glyph; "pause" is the
@@ -37,6 +37,7 @@ const paths: Record<PrototypeIconName, string> = {
   agent: '<rect x="4" y="7" width="16" height="12" rx="3"/><path d="M12 3v4M9 12v1m6-1v1M9 16h6"/>',
   quality: '<path d="m12 3 2.6 5.5 6 .8-4.4 4.2 1.1 6L12 16.6 6.7 19.5l1.1-6L3.4 9.3l6-.8L12 3Z"/>',
   model: '<path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z"/><path d="m4 7.5 8 4.5 8-4.5M12 12v9"/>',
+  users: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0M16 4.6a3.5 3.5 0 0 1 0 6.8M18 14.2a6.5 6.5 0 0 1 3.5 5.8"/>',
   bell: '<path d="M6 16V11a6 6 0 1 1 12 0v5l2 2H4l2-2Zm4 4h4"/>',
 };
 

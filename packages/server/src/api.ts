@@ -10,6 +10,7 @@ import { createAccountingRouter } from "./accounting-api.js";
 import { createPricingRouter } from "./pricing-api.js";
 import { createInsightsRouter } from "./insights-api.js";
 import { createModelDetailRouter } from "./model-detail-api.js";
+import { createUsersRouter } from "./users-api.js";
 import { createQualityRouter } from "./quality-api.js";
 import { createFeatureMappingsRouter } from "./feature-mappings.js";
 import { listAccessibleProjects, roleCanManageWorkspace } from "./permissions.js";
@@ -43,6 +44,7 @@ export function createApiRouter(pool: pg.Pool): Router {
   router.use(createPricingRouter(pool));
   router.use(createInsightsRouter(pool));
   router.use(createModelDetailRouter(pool));
+  router.use(createUsersRouter(pool));
   router.use(createQualityRouter(pool));
   router.use(createFeatureMappingsRouter(pool));
 

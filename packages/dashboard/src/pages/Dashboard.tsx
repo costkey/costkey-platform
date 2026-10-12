@@ -27,6 +27,7 @@ import {
 } from "../components/ConsolePrimitives";
 import { PrototypeIcon } from "../components/PrototypeIcon";
 import { billedUnitsText } from "../components/tokenUsage";
+import { scopeSearch as drillScope } from "../components/links";
 import { allClearDismissed, dismissAllClear } from "../components/allClear";
 import { LiveStatus } from "../components/LiveStatus";
 import { useLiveQuery } from "../hooks/useLiveQuery";
@@ -283,6 +284,7 @@ export default function Dashboard() {
   const currentTokens = overviewTokens(overview);
   // Speech, audio, images and searches bill in their own units; they count as usage too.
   const otherUnits = billedUnitsText(board?.units?.current);
+  const scopeSearchText = drillScope();
   const previousTokens = overviewTokens(previousOverview);
   const finding = activeFindings[0];
   const findingHref = finding ? `/finding?id=${encodeURIComponent(finding.id)}&project=${encodeURIComponent(projectId ?? "")}` : "";
@@ -309,10 +311,10 @@ export default function Dashboard() {
       {!resource.loading && !(status.tone === "good" && allClearIsHidden) && <StatusLine tone={status.tone} right={status.right} onDismiss={status.tone === "good" ? hideAllClear : undefined}>{status.text}</StatusLine>}
       {resource.loading ? <OverviewLoadingState /> : <>
         <div className="ck-board-kpis">
-          <KpiCard label={runsKpi.label} value={board ? runsKpi.current.toLocaleString("en-US") : "—"} current={board ? runsKpi.current : null} previous={board ? runsKpi.previous : null} previousLabel={runsKpi.previous.toLocaleString("en-US")} higherIsBetter />
-          <KpiCard label="Model cost" value={money(currentCost)} current={currentCost} previous={previousCost} previousLabel={money(previousCost)} higherIsBetter={false} />
-          <KpiCard label="Usage" value={currentTokens ? `${compactNumber(currentTokens)} tokens` : otherUnits || compactNumber(currentTokens)} current={currentTokens} previous={previousTokens} previousLabel={compactNumber(previousTokens)} higherIsBetter={false} note={currentTokens && otherUnits ? `+ ${otherUnits}` : undefined} />
-          <KpiCard label="Avg score" value={formatScore(board?.scores.current.avg)} current={board?.scores.current.avg ?? null} previous={board?.scores.previous.avg ?? null} previousLabel={formatScore(board?.scores.previous.avg)} higherIsBetter />
+          <KpiCard to={`${hasAgents ? "/agents" : "/workflows"}${scopeSearchText}`} label={runsKpi.label} value={board ? runsKpi.current.toLocaleString("en-US") : "—"} current={board ? runsKpi.current : null} previous={board ? runsKpi.previous : null} previousLabel={runsKpi.previous.toLocaleString("en-US")} higherIsBetter />
+          <KpiCard to={`/costs${scopeSearchText}`} label="Model cost" value={money(currentCost)} current={currentCost} previous={previousCost} previousLabel={money(previousCost)} higherIsBetter={false} />
+          <KpiCard to={`/models${scopeSearchText}`} label="Usage" value={currentTokens ? `${compactNumber(currentTokens)} tokens` : otherUnits || compactNumber(currentTokens)} current={currentTokens} previous={previousTokens} previousLabel={compactNumber(previousTokens)} higherIsBetter={false} note={currentTokens && otherUnits ? `+ ${otherUnits}` : undefined} />
+          <KpiCard to={`/quality${scopeSearchText}`} label="Avg score" value={formatScore(board?.scores.current.avg)} current={board?.scores.current.avg ?? null} previous={board?.scores.previous.avg ?? null} previousLabel={formatScore(board?.scores.previous.avg)} higherIsBetter />
         </div>
         <div className="ck-board-row ck-board-row-3">
           <CostByModel board={board} totalCost={money(currentCost)} money={money} />

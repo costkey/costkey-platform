@@ -4,6 +4,8 @@ import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom"
 import { getAgentDetail, getAgents, getBudgetPolicies, getTabModels, getWorkflows, type AgentDetail, type AgentRun, type BudgetPolicy, type InsightScope, type RunGroup, type TokenUsage } from "../api";
 import { currentRouterPath } from "../basePath";
 import { RunFlow, runModel, RunSummaryStrip, useRunDetail } from "../components/RunFlow";
+import { LiveStatus } from "../components/LiveStatus";
+import { useNewIds, usePointerHold } from "../hooks/useLiveQuery";
 import { billedUnitsText, formatHitRate, formatTokenCount } from "../components/tokenUsage";
 import { EmptyPanel, LoadingRows, MetricCard, PageHeader, Panel, StatusPill } from "../components/ConsolePrimitives";
 import { formatDateTime, formatReportedAmount, periodDates, type ReportingFx } from "../components/consoleFormatters";
@@ -161,13 +163,13 @@ function RunGroupsPage({ kind }: { kind: GroupKind }) {
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const view = (VIEWS.find((item) => item.id === params.get("view"))?.id ?? "runs") as View;
-  const { data, error, loading } = useScopedLoad(projectId ? `${kind}|${scopeKey}` : null, () => kind === "agent"
+  const { data, error, loading, status: liveStatus, updatedAt, refresh } = useScopedLoad(projectId ? `${kind}|${scopeKey}` : null, () => kind === "agent"
     ? getAgents(projectId!, scope).then((result) => result.agents)
     : getWorkflows(projectId!, scope).then((result) => result.workflows));
   const groups = data ?? [];
   const title = kind === "agent" ? "Agents" : "Workflows";
   const setView = (next: View) => setParams((current) => { if (next === "runs") current.delete("view"); else current.set("view", next); return current; });
-  const headerAction = view === "budgets" && projectId ? <Link className="ck-button ck-button-primary" to={`/policy-edit?scopeDimension=${kind}`}>New budget</Link> : view === "forecast" ? undefined : toolbar;
+  const headerAction = view === "budgets" && projectId ? <Link className="ck-button ck-button-primary" to={`/policy-edit?scopeDimension=${kind}`}>New budget</Link> : view === "forecast" ? undefined : <><LiveStatus status={liveStatus} updatedAt={updatedAt} onRefresh={refresh} />{toolbar}</>;
   return <div className="ck-main-inner">
     <PageHeader title={title} actions={headerAction} />
     <div className="ck-tabs ck-page-tabs" role="tablist" aria-label={`${title} views`}>{VIEWS.map((item) => <button key={item.id} className={`ck-tab ${view === item.id ? "active" : ""}`} role="tab" aria-selected={view === item.id} type="button" onClick={() => setView(item.id)}>{item.label}</button>)}</div>
@@ -217,14 +219,14 @@ function cacheCell(usage: TokenUsage | undefined): string {
   return formatHitRate(usage?.cacheHitRate);
 }
 
-function AgentRunsTable({ runs, projectId, openRun, onToggle, currency, fx, callId, onCallChange }: { runs: AgentRun[]; projectId: string; openRun: string | null; onToggle: (traceId: string) => void; currency: string; fx?: ReportingFx | null; callId: string | null; onCallChange: (callId: string | null) => void }) {
+function AgentRunsTable({ runs, fresh, projectId, openRun, onToggle, currency, fx, callId, onCallChange }: { runs: AgentRun[]; fresh?: ReadonlySet<string>; projectId: string; openRun: string | null; onToggle: (traceId: string) => void; currency: string; fx?: ReportingFx | null; callId: string | null; onCallChange: (callId: string | null) => void }) {
   const columns = 9;
   return <div className="ck-table-wrap ck-runs-wrap"><table className="ck-table ck-runs-expandable">
     <thead><tr><th>Started</th><th className="numeric">Cost</th><th className="numeric hide-mobile">Calls</th><th className="numeric hide-mobile">Steps</th><th className="numeric hide-mobile">Tools</th><th className="numeric hide-mobile" title="Share of input tokens read from cache">Cache</th><th className="numeric">Time</th><th className="hide-mobile">User</th><th>Status</th></tr></thead>
     <tbody>{runs.map((run) => {
       const open = openRun === run.traceId;
       return <Fragment key={run.traceId}>
-        <tr id={`run-row-${run.traceId}`} className={`ck-run-row ${open ? "is-open" : ""}`} onClick={() => onToggle(run.traceId)}>
+        <tr id={`run-row-${run.traceId}`} className={`ck-run-row ${open ? "is-open" : ""} ${fresh?.has(run.traceId) ? "is-new" : ""}`} onClick={() => onToggle(run.traceId)}>
           <td className="primary-cell"><button className="ck-run-toggle" type="button" aria-expanded={open} aria-controls={`run-${run.traceId}`} onClick={(event) => { event.stopPropagation(); onToggle(run.traceId); }}>{open ? <ChevronDown size={14} aria-hidden="true" /> : <ChevronRight size={14} aria-hidden="true" />}<span>{formatDateTime(run.startedAt)}</span><span className="sr-only">{open ? ", hide this run" : ", show this run"}</span></button></td>
           <td className="numeric">{run.unpriced > 0 && run.cost == null ? "Unpriced" : money(run.cost, currency, fx)}</td>
           <td className="numeric hide-mobile">{run.calls}</td>
@@ -270,7 +272,9 @@ export function AgentDetailPage() {
   const { name = "" } = useParams();
   const { projectId, scope, scopeKey, currency, fx, toolbar } = useInsightScope();
   const [params, setParams] = useSearchParams();
-  const { data, error, loading } = useScopedLoad(projectId && name ? `agent|${name}|${scopeKey}` : null, () => getAgentDetail(projectId!, name, scope));
+  const runsHold = usePointerHold();
+  const { data, error, loading, status: liveStatus, updatedAt, refresh } = useScopedLoad(projectId && name ? `agent|${name}|${scopeKey}` : null, () => getAgentDetail(projectId!, name, scope), { shouldDefer: runsHold.held });
+  const freshRuns = useNewIds(data?.runs.map((run) => run.traceId) ?? []);
   const agent = data?.agent;
   const openRun = params.get("run");
   const callId = openRun ? params.get("call") : null;
@@ -292,7 +296,7 @@ export function AgentDetailPage() {
   const usage = agent?.usage;
   return <div className="ck-main-inner">
     <Link className="ck-back-link" to="/agents"><ArrowLeft size={13} /> Agents</Link>
-    <PageHeader title={name} actions={toolbar} />
+    <PageHeader title={name} actions={<><LiveStatus status={liveStatus} updatedAt={updatedAt} onRefresh={refresh} />{toolbar}</>} />
     {error && !data ? <Panel><EmptyPanel title="Couldn’t load this agent" body={error} /></Panel> : <>
       <div className="ck-metric-grid ck-metric-grid-5">
         <MetricCard icon="trace" label="Runs" value={(agent?.runs ?? 0).toLocaleString()} detail={agent && agent.failedRuns > 0 ? `${agent.failedRuns} failed` : undefined} loading={loading && !data} />
@@ -302,7 +306,7 @@ export function AgentDetailPage() {
         <MetricCard icon="model" label="Cache hit rate" value={formatHitRate(usage?.cacheHitRate)} detail={cacheDetail(usage, currency, fx)} loading={loading && !data} />
       </div>
       {openRun && data && !runListed && projectId && <Panel title="Run" className="ck-run-panel"><InlineRun projectId={projectId} traceId={openRun} currency={currency} fx={fx} initialCallId={callId} onCallChange={changeCall} /></Panel>}
-      <Panel title="Runs" subtitle={data && data.runs.length > 0 ? "Select a run to see its steps, tools and calls." : undefined}>{loading && !data ? <LoadingRows count={5} columns={6} /> : (data?.runs.length ?? 0) === 0 ? <EmptyPanel title="No runs in this period" /> : <AgentRunsTable runs={data!.runs} projectId={projectId!} openRun={openRun} onToggle={toggleRun} currency={currency} fx={fx} callId={callId} onCallChange={changeCall} />}</Panel>
+      <Panel title="Runs" subtitle={data && data.runs.length > 0 ? "Select a run to see its steps, tools and calls." : undefined}>{loading && !data ? <LoadingRows count={5} columns={6} /> : (data?.runs.length ?? 0) === 0 ? <EmptyPanel title="No runs in this period" /> : <div {...runsHold.bind}><AgentRunsTable runs={data!.runs} fresh={freshRuns} projectId={projectId!} openRun={openRun} onToggle={toggleRun} currency={currency} fx={fx} callId={callId} onCallChange={changeCall} /></div>}</Panel>
       <Panel title="Models" subtitle={usage?.reasoningTokens ? `${formatTokenCount(usage.outputTokens)} output tokens, ${formatTokenCount(usage.reasoningTokens)} of them reasoning` : undefined}>{loading && !data ? <LoadingRows count={2} columns={5} /> : (data?.models.length ?? 0) === 0 ? <EmptyPanel title="No model calls" /> : <ModelUsageTable models={data!.models} currency={currency} fx={fx} />}{(data?.subagents.length ?? 0) > 0 && <p className="ck-table-note">Hands off to {data!.subagents.map((agent) => `${agent.name} (${agent.runs})`).join(", ")}</p>}</Panel>
       <Panel title="Tools">{loading && !data ? <LoadingRows count={2} columns={5} /> : (data?.tools.length ?? 0) === 0 ? <EmptyPanel title="No tool calls" /> : <div className="ck-table-wrap"><table className="ck-table">
         <thead><tr><th>Tool</th><th className="numeric">Calls</th><th className="numeric">Avg time</th><th className="numeric">Failed</th><th className="numeric">Model spend</th></tr></thead>

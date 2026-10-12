@@ -4688,3 +4688,16 @@ textarea[aria-invalid="true"] {
   .ck-status-line.is-dismissible { position: relative; padding-right: 40px; }
   .ck-status-line.is-dismissible .ck-status-line-close { position: absolute; top: 10px; right: 10px; margin: 0; }
 }
+
+/* Live refresh: a quiet note in the page header, and new rows that glow briefly. */
+.ck-live-status { display: inline-flex; align-items: center; gap: 6px; min-height: 28px; padding: 0 8px; border: 0; border-radius: 100px; background: none; color: var(--ck-slate); font: inherit; font-size: 12px; white-space: nowrap; cursor: pointer; }
+.ck-live-status:hover { color: var(--ck-ink); background: var(--ck-soft); }
+.ck-live-status:focus-visible { outline: 2px solid var(--ck-focus, #476d9c); outline-offset: 1px; }
+.ck-live-status i { width: 7px; height: 7px; border-radius: 50%; background: var(--ck-slate); opacity: 0.5; }
+.ck-live-status.is-live i { background: var(--ck-good, #2f7a4f); opacity: 1; }
+.ck-live-status.is-warn { color: var(--ck-warn, #9a6a12); }
+.ck-live-status.is-warn i { background: var(--ck-warn, #c48a1a); opacity: 1; }
+@keyframes ck-new-row { from { background: #e6f0ff; } to { background: transparent; } }
+.ck-table tbody tr.is-new td { animation: ck-new-row 2.4s ease-out; }
+@media (prefers-reduced-motion: reduce) { .ck-table tbody tr.is-new td { animation: none; background: #eef4ff; } }
+@media (max-width: 767px) { .ck-live-status { padding: 0 4px; } }

@@ -1,6 +1,7 @@
 import { Link, useSearchParams } from "react-router-dom";
 import { getQualitySummary, type QualitySummary } from "../api";
 import { EmptyPanel, LoadingRows, MetricCard, PageHeader, Panel, StatusPill } from "../components/ConsolePrimitives";
+import { LiveStatus } from "../components/LiveStatus";
 import { formatDateTime, formatReportedAmount, type ReportingFx } from "../components/consoleFormatters";
 import { formatDuration } from "../utils";
 import { useInsightScope, useScopedLoad } from "./useInsightScope";
@@ -76,7 +77,7 @@ export default function Quality() {
   const [params, setParams] = useSearchParams();
   const view = (VIEWS.find((item) => item.id === params.get("view"))?.id ?? "runs") as View;
   const owner = params.get("owner");
-  const { data, error, loading } = useScopedLoad(projectId ? `quality|${scopeKey}|${owner ?? ""}` : null, () => getQualitySummary(projectId!, scope, owner));
+  const { data, error, loading, status: liveStatus, updatedAt, refresh } = useScopedLoad(projectId ? `quality|${scopeKey}|${owner ?? ""}` : null, () => getQualitySummary(projectId!, scope, owner));
   const totals = data?.totals;
   const setView = (next: View, nextOwner: string | null = null) => setParams((current) => {
     if (next === "runs") current.delete("view"); else current.set("view", next);
@@ -84,7 +85,7 @@ export default function Quality() {
     return current;
   });
   return <div className="ck-main-inner">
-    <PageHeader title="Quality" actions={toolbar} />
+    <PageHeader title="Quality" actions={<><LiveStatus status={liveStatus} updatedAt={updatedAt} onRefresh={refresh} />{toolbar}</>} />
     <div className="ck-metric-grid">
       <MetricCard icon="alert" label="Failed runs" value={totals ? rate(totals.failedRuns, totals.runs) : "—"} tone={(totals?.failedRuns ?? 0) > 0 ? "warn" : "neutral"} detail={totals ? `${totals.failedRuns.toLocaleString()} of ${totals.runs.toLocaleString()} runs` : undefined} loading={loading && !data} />
       <MetricCard icon="activity" label="Failed calls" value={totals ? rate(totals.failedCalls, totals.calls) : "—"} detail={totals ? `${totals.failedCalls.toLocaleString()} failed · ${totals.retries.toLocaleString()} retries` : undefined} loading={loading && !data} />

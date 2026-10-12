@@ -28,7 +28,9 @@ import {
 import { PrototypeIcon } from "../components/PrototypeIcon";
 import { billedUnitsText } from "../components/tokenUsage";
 import { allClearDismissed, dismissAllClear } from "../components/allClear";
-import { formatDateTime, formatReportedAmount, parsePeriod, periodDates, periodLabel } from "../components/consoleFormatters";
+import { LiveStatus } from "../components/LiveStatus";
+import { useLiveQuery } from "../hooks/useLiveQuery";
+import { formatDateTime, formatReportedAmount, parsePeriod, periodDates, periodLabel, zonedDateParts, zonedDaysInMonth } from "../components/consoleFormatters";
 import { prototypeRole, prototypeState, PrototypeStateNotice, PrototypeStatePanel } from "../components/PrototypeState";
 import { BoardSkeleton, CostByModel, KpiCard, LatencyPanel, RunVolume, ScoresPanel, UsageByAgent } from "../components/OverviewBoard";
 import { compactNumber, formatScore, previousRange } from "../components/overviewBoardModel";
@@ -79,64 +81,49 @@ async function getJson<T>(path: string): Promise<T> {
 
 function useOverviewData(projectId: string | null, period: Period, timezone?: string | null, scopeOverride?: { from?: string; to?: string } | null, environment?: string) {
   const requestKey = [projectId ?? "none", period, timezone ?? "", scopeOverride?.from ?? "", scopeOverride?.to ?? "", environment ?? "all"].join("\u0001");
-  const [state, setState] = useState<{ key: string; data: OverviewData; error: string | null }>({ key: "", data: EMPTY_DATA, error: null });
-  const loading = Boolean(projectId) && state.key !== requestKey;
-  const data = state.key === requestKey ? state.data : EMPTY_DATA;
-  const [refreshing, setRefreshing] = useState(false);
-  const [reloadKey, setReloadKey] = useState(0);
-
-  useEffect(() => {
-    if (!projectId) return;
-    let cancelled = false;
+  // Live: the board refreshes every 10 s while the tab is visible, keeping what is on screen.
+  const live = useLiveQuery(projectId ? requestKey : null, async () => {
     const dates = periodDates(period, timezone ?? undefined);
     const from = scopeOverride?.from ?? dates.from;
     const to = scopeOverride?.to ?? dates.to;
     const previous = previousRange(from, to);
     const env = environment && environment !== "all" ? environment : undefined;
-    const load = async () => {
-      const [overview, previousOverview, board, callSites, forecast, health, anomalies, policies] = await Promise.allSettled([
-        getOverview(projectId, from, to, env),
-        getOverview(projectId, previous.from, previous.to, env),
-        getOverviewBoard(projectId, { from, to, environment: env }),
-        // Only for the environments that have data.
-        getCostBreakdown(projectId, { groupBy: "feature", from, to, environment: env }),
-        period === "mtd" ? getForecast(projectId, { from, to, environment: env }) : Promise.resolve(null),
-        getHealth(projectId),
-        getJson<{ findings: FindingRow[] }>(`/api/v1/projects/${projectId}/findings`),
-        getJson<{ policies: BudgetPolicySummary[] }>(`/api/v1/projects/${projectId}/budget/policies`),
-      ]);
-      if (cancelled) return;
-      const forecastResult = period === "mtd" ? forecast : null;
-      const next: OverviewData = {
-        overview: overview.status === "fulfilled" ? overview.value.overview : null,
-        previousOverview: previousOverview.status === "fulfilled" ? previousOverview.value.overview : null,
-        board: board.status === "fulfilled" ? board.value : null,
-        forecast: forecastResult?.status === "fulfilled" ? forecastResult.value?.forecast ?? null : null,
-        health: health.status === "fulfilled" ? health.value : null,
-        findings: anomalies.status === "fulfilled" ? anomalies.value.findings ?? [] : [],
-        policies: policies.status === "fulfilled" ? policies.value.policies ?? [] : [],
-        environments: callSites.status === "fulfilled" ? callSites.value.availableFilters?.environments ?? [] : [],
-      };
-      const firstError = [overview, board, callSites].find((result) => result.status === "rejected");
-      setState({ key: requestKey, data: next, error: firstError?.status === "rejected" ? firstError.reason instanceof Error ? firstError.reason.message : "Could not load overview" : null });
-      setRefreshing(false);
+    const [overview, previousOverview, board, callSites, forecast, health, anomalies, policies] = await Promise.allSettled([
+      getOverview(projectId!, from, to, env),
+      getOverview(projectId!, previous.from, previous.to, env),
+      getOverviewBoard(projectId!, { from, to, environment: env }),
+      // Only for the environments that have data.
+      getCostBreakdown(projectId!, { groupBy: "feature", from, to, environment: env }),
+      period === "mtd" ? getForecast(projectId!, { from, to, environment: env }) : Promise.resolve(null),
+      getHealth(projectId!),
+      getJson<{ findings: FindingRow[] }>(`/api/v1/projects/${projectId}/findings`),
+      getJson<{ policies: BudgetPolicySummary[] }>(`/api/v1/projects/${projectId}/budget/policies`),
+    ]);
+    const forecastResult = period === "mtd" ? forecast : null;
+    const next: OverviewData = {
+      overview: overview.status === "fulfilled" ? overview.value.overview : null,
+      previousOverview: previousOverview.status === "fulfilled" ? previousOverview.value.overview : null,
+      board: board.status === "fulfilled" ? board.value : null,
+      forecast: forecastResult?.status === "fulfilled" ? forecastResult.value?.forecast ?? null : null,
+      health: health.status === "fulfilled" ? health.value : null,
+      findings: anomalies.status === "fulfilled" ? anomalies.value.findings ?? [] : [],
+      policies: policies.status === "fulfilled" ? policies.value.policies ?? [] : [],
+      environments: callSites.status === "fulfilled" ? callSites.value.availableFilters?.environments ?? [] : [],
     };
-    void load().catch((reason: unknown) => {
-      if (cancelled) return;
-      setState({ key: requestKey, data: EMPTY_DATA, error: reason instanceof Error ? reason.message : "Could not load overview" });
-      setRefreshing(false);
-    });
-    return () => { cancelled = true; };
-  }, [projectId, period, timezone, reloadKey, requestKey, scopeOverride?.from, scopeOverride?.to, environment]);
-
-  const error = state.key === requestKey ? state.error : null;
-
+    const firstError = [overview, board, callSites].find((result) => result.status === "rejected");
+    // Every part failing is a failed refresh: keep the last numbers and say so.
+    if (overview.status === "rejected" && board.status === "rejected") throw firstError?.status === "rejected" && firstError.reason instanceof Error ? firstError.reason : new Error("Could not load overview");
+    return { key: requestKey, data: next, error: firstError?.status === "rejected" ? firstError.reason instanceof Error ? firstError.reason.message : "Could not load overview" : null };
+  });
+  const current = live.data?.key === requestKey ? live.data : null;
   return {
-    data,
-    loading,
-    refreshing,
-    error,
-    refresh: () => { setRefreshing(true); setReloadKey((key) => key + 1); },
+    data: current?.data ?? EMPTY_DATA,
+    loading: Boolean(projectId) && !current,
+    refreshing: false,
+    error: current ? current.error : live.error,
+    status: live.status,
+    updatedAt: live.updatedAt,
+    refresh: live.refresh,
   };
 }
 
@@ -176,10 +163,6 @@ function OverviewLoadingState(): ReactNode {
   </>;
 }
 
-function daysInMonth(date: Date): number {
-  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)).getUTCDate();
-}
-
 export default function Dashboard() {
   const { currentProjectId, projects, org, workspaceSettings, setCurrentProjectId } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -204,6 +187,7 @@ export default function Dashboard() {
     if (requestedProject && requestedProject.id !== currentProjectId) setCurrentProjectId(requestedProject.id);
   }, [requestedProject, currentProjectId, setCurrentProjectId]);
   const resource = useOverviewData(projectId, period, timezone, requestedScope, environment);
+  void dataVersion;
   const overview = normalizeOverview(resource.data.overview);
   const previousOverview = normalizeOverview(resource.data.previousOverview);
   const board = resource.data.board;
@@ -215,8 +199,9 @@ export default function Dashboard() {
   const pace = resource.data.forecast?.currentPace;
   const projected = pace?.available && pace.projectedCost != null ? Number(pace.projectedCost) : null;
   const now = new Date();
-  const periodDays = pace?.periodDays ?? daysInMonth(now);
-  const dayOfMonth = now.getUTCDate();
+  // Days count in the workspace time zone: 1 Nov starts at midnight in India, not UTC.
+  const periodDays = pace?.periodDays ?? zonedDaysInMonth(now, timezone);
+  const dayOfMonth = zonedDateParts(now, timezone).day;
   const unpriced = Number(overview?.unpriced_count ?? forecastObserved?.unpricedObservations) || 0;
   const explicitState = prototypeState(searchParams);
   const activeFindings = explicitState === "healthy" ? [] : resource.data.findings.filter((finding) => finding.state !== "no_longer_outside_threshold" && finding.state !== "acknowledged");
@@ -255,9 +240,10 @@ export default function Dashboard() {
 
   const scopeEnvironments = environmentOptions.length > 1 || environment !== "all";
   const periodBadge = <div className="ck-period-badge">
+    <LiveStatus status={resource.status} updatedAt={resource.updatedAt} onRefresh={resource.refresh} />
     {scopeEnvironments && <span className="ck-pill-select"><select aria-label="Environment" value={environment} onChange={(event) => onEnvironmentChange(event.target.value)}>{environmentOptions.concat(environment !== "all" && !environmentOptions.some((option) => option.value === environment) ? [{ value: environment, label: environment }] : []).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select><PrototypeIcon name="down" size={12} /></span>}
     <span className="ck-pill-select ck-period-pill"><select aria-label="Period" value={toolbarPeriod === "custom" ? "custom" : period} onChange={(event) => changePeriod(event.target.value as Period)}>
-      <option value="mtd">{now.toLocaleDateString("en-US", { month: "long", timeZone: "UTC" })}</option>
+      <option value="mtd">{now.toLocaleDateString("en-US", { month: "long", timeZone: timezone ?? undefined })}</option>
       <option value="7d">Last 7 days</option>
       <option value="30d">Last 30 days</option>
       {toolbarPeriod === "custom" && <option value="custom">Custom range</option>}
@@ -318,7 +304,7 @@ export default function Dashboard() {
       <PageHeader title="Overview" actions={periodBadge} />
       
       {!["partial", "stale", "error", "healthy"].includes(explicitState) && <PrototypeStateNotice state={explicitState} family="overview" role={prototypeRole(searchParams, "viewer")} />}
-      {(explicitState === "error" || resource.error) && <div className="ck-alert ck-alert-error" role="alert"><AlertCircle size={15} aria-hidden="true" /><div><strong>Couldn’t refresh everything.</strong> Showing the latest numbers we have. <button type="button" className="ck-button ck-button-quiet ck-inline-button" onClick={() => setDataVersion((value) => value + 1)}>Try again</button></div></div>}
+      {(explicitState === "error" || resource.error) && <div className="ck-alert ck-alert-error" role="alert"><AlertCircle size={15} aria-hidden="true" /><div><strong>Couldn’t refresh everything.</strong> Showing the latest numbers we have. <button type="button" className="ck-button ck-button-quiet ck-inline-button" onClick={() => { resource.refresh(); setDataVersion((value) => value + 1); }}>Try again</button></div></div>}
       {/* The all-clear can be dismissed for the month; a warning always shows. */}
       {!resource.loading && !(status.tone === "good" && allClearIsHidden) && <StatusLine tone={status.tone} right={status.right} onDismiss={status.tone === "good" ? hideAllClear : undefined}>{status.text}</StatusLine>}
       {resource.loading ? <OverviewLoadingState /> : <>

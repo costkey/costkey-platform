@@ -6,6 +6,7 @@ import { formatAbsoluteDate, formatCurrencyAmount, formatReportedAmount, sourceA
 import { formatDuration } from "../utils";
 import { RunTree, SpanInspector } from "./RunTree";
 import { RunQualityChecks } from "./RunQualityChecks";
+import { useLiveQuery, type LiveQuery } from "../hooks/useLiveQuery";
 import { buildRunTree, defaultCollapsed, flattenRunTree, type RunTreeNode, type RunTreeSpanNode } from "./runTreeModel";
 import type { PrototypeState } from "./PrototypeState";
 import { ProviderLabel } from "./ProviderLogo";
@@ -22,20 +23,18 @@ import { billedUnitsText, cachedNote, cacheWriteText, callUsage, formatHitRate, 
 
 export type RunDetail = Awaited<ReturnType<typeof getTrace>>;
 
-/** Load one run. Keyed by project and run so a stale response never shows. */
-export function useRunDetail(projectId: string | null, traceId: string | null): { detail: RunDetail | null; error: string | null; loading: boolean } {
-  const requestKey = projectId && traceId ? `${projectId}:${traceId}` : "";
-  const [state, setState] = useState<{ key: string; detail: RunDetail | null; error: string | null }>({ key: "", detail: null, error: null });
-  useEffect(() => {
-    if (!projectId || !traceId) return;
-    let cancelled = false;
-    getTrace(projectId, traceId)
-      .then((result) => { if (!cancelled) setState({ key: requestKey, detail: result, error: null }); })
-      .catch((reason: unknown) => { if (!cancelled) setState({ key: requestKey, detail: null, error: reason instanceof Error ? reason.message : "Run not found" }); });
-    return () => { cancelled = true; };
-  }, [projectId, traceId, requestKey]);
-  const current = state.key === requestKey;
-  return { detail: current ? state.detail : null, error: current ? state.error : null, loading: Boolean(requestKey) && !current };
+/** A run is still in progress while a span is open or the run has no end. */
+export function runInProgress(detail: RunDetail): boolean {
+  const state = String(detail.summary?.execution_state ?? "").toLowerCase();
+  if (state === "running" || state === "in_progress") return true;
+  return (detail.spans ?? []).some((span) => span.status === "running" || (span.started_at != null && span.ended_at == null));
+}
+
+/** Load one run and keep it current: every 10 s, every 3 s while it is still running. */
+export function useRunDetail(projectId: string | null, traceId: string | null): LiveQuery<RunDetail> & { detail: RunDetail | null } {
+  const live = useLiveQuery(projectId && traceId ? `${projectId}:${traceId}` : null, () => getTrace(projectId!, traceId!), { isFast: runInProgress });
+  const current = live.data && (live.data.traceId === traceId || !live.loading) ? live.data : null;
+  return { ...live, detail: current, error: live.error && !current ? live.error : null };
 }
 
 export function runStatus(trace: Pick<Trace, "execution_state" | "unpriced_count">, cost: number | null): { tone: "good" | "warn" | "critical" | "neutral"; label: string } {

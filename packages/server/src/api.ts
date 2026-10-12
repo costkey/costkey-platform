@@ -183,11 +183,14 @@ export function createApiRouter(pool: pg.Pool): Router {
         [projectId],
       );
       const recentCount = await pool.query(
-        `SELECT COUNT(*)::int as cnt FROM events WHERE project_id = $1 AND timestamp > NOW() - INTERVAL '1 hour'`,
+        `SELECT COUNT(*)::int as cnt,
+                COUNT(*) FILTER (WHERE COALESCE(lifecycle_state, '') IN ('failed', 'cancelled') OR COALESCE(status_code, 200) >= 400)::int AS failed
+         FROM events WHERE project_id = $1 AND timestamp > NOW() - INTERVAL '1 hour'`,
         [projectId],
       );
       const lastAt = lastEvent.rows[0]?.last_event_at;
       const eventsLastHour = recentCount.rows[0]?.cnt ?? 0;
+      const failedLastHour = recentCount.rows[0]?.failed ?? 0;
 
       let status: "active" | "idle" | "inactive" | "no_data" = "no_data";
       if (lastAt) {
@@ -195,6 +198,12 @@ export function createApiRouter(pool: pg.Pool): Router {
         if (msSince < 5 * 60 * 1000) status = "active";
         else if (msSince < 24 * 60 * 60 * 1000) status = "idle";
         else status = "inactive";
+      }
+
+      // The sidebar's live dot polls with ?light=1: status only, no scans.
+      if (req.query["light"] === "1") {
+        res.json({ status, lastEventAt: lastAt ?? null, eventsLastHour, failedLastHour, hints: [] });
+        return;
       }
 
       // Detect minified/bundled code without sourcemaps

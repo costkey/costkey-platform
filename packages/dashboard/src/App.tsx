@@ -1,3 +1,4 @@
+import { IngestStatus } from "./components/IngestStatus";
 import { appUrl, BASE_PATH } from "./basePath";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -355,6 +356,7 @@ function AppShell() {
             </section>
           )}
           <div className="ck-utility-optional"><FeedbackLink /></div>
+          <IngestStatus projectId={currentProjectId ?? projects[0]?.id ?? null} />
           <div className="ck-user-row" role="button" tabIndex={0} aria-expanded={sidebarPanel === "account"} aria-haspopup="dialog" onClick={() => setSidebarPanel((panel) => panel === "account" ? null : "account")} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setSidebarPanel((panel) => panel === "account" ? null : "account"); } }}>
             <span className="ck-user-avatar" aria-hidden="true">{initials}</span>
             <div className="ck-user-meta"><div className="ck-user-name" title={user?.email}>{user?.name || user?.email}</div><div className="ck-user-role">{displayRole(user?.role)}</div></div>

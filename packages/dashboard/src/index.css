@@ -4705,3 +4705,19 @@ textarea[aria-invalid="true"] {
 .ck-list-option { display: flex; align-items: center; gap: 8px; padding: 10px 16px; border-bottom: 1px solid var(--ck-rule, var(--ck-border)); color: var(--ck-slate); font-size: 13px; cursor: pointer; }
 .ck-list-option input { margin: 0; }
 @media (max-width: 767px) { .ck-list-option { padding: 10px 12px; } }
+
+/* Sidebar: the current project's ingest health as a small live dot. */
+.ck-ingest-status { display: flex; align-items: center; gap: 10px; min-height: 32px; padding: 6px 12px; border-radius: 10px; color: var(--ck-slate); font-size: 12.5px; text-decoration: none; }
+.ck-ingest-status:hover { background: var(--ck-soft); color: var(--ck-ink); }
+.ck-ingest-status:focus-visible { outline: 2px solid var(--ck-focus, #476d9c); outline-offset: 1px; }
+.ck-ingest-status i { position: relative; flex: 0 0 auto; width: 8px; height: 8px; margin: 0 5px; border-radius: 50%; background: #9aa5ad; }
+.ck-ingest-status.is-live i { background: var(--ck-good, #2f7a4f); }
+.ck-ingest-status.is-live i::after { content: ""; position: absolute; inset: -4px; border-radius: 50%; background: var(--ck-good, #2f7a4f); opacity: 0.35; animation: ck-ingest-pulse 2.4s ease-out infinite; }
+.ck-ingest-status.is-warn i { background: #c48a1a; }
+.ck-ingest-status.is-error i { background: var(--ck-critical, #a33d32); }
+@keyframes ck-ingest-pulse { from { transform: scale(0.6); opacity: 0.45; } to { transform: scale(1.6); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .ck-ingest-status.is-live i::after { animation: none; opacity: 0; } }
+@media (max-width: 1100px) and (min-width: 768px) {
+  .ck-ingest-status { justify-content: center; padding: 8px 0; }
+  .ck-ingest-status span { display: none; }
+}

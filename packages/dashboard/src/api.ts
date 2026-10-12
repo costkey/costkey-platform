@@ -852,11 +852,14 @@ export interface PipelineHealth {
   status: "active" | "idle" | "inactive" | "no_data";
   lastEventAt: string | null;
   eventsLastHour: number;
+  /** Calls in the last hour that failed or were cancelled (light mode). */
+  failedLastHour?: number;
   hints?: HealthHint[];
 }
 
-export async function getHealth(projectId: string): Promise<PipelineHealth> {
-  return get(`/projects/${projectId}/health`);
+/** `light` skips the hint scans; the sidebar's live dot polls it. */
+export async function getHealth(projectId: string, light = false): Promise<PipelineHealth> {
+  return get(`/projects/${projectId}/health${light ? "?light=1" : ""}`);
 }
 
 // ── Custom Providers ──

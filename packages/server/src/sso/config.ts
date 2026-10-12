@@ -13,7 +13,7 @@ export type AuthMode = "password" | "iap" | "oidc";
 export type SsoRole = "admin" | "developer" | "viewer";
 
 export interface IapSettings {
-  /** Accepted `aud` values: /projects/<number>/(global|regions/<r>)/backendServices/<id>. */
+  /** Accepted `aud` values: /projects/<number>/(global|<region>)/backendServices/<id>. IAP puts no "regions/" segment in regional audiences. */
   audiences: string[];
 }
 
@@ -39,7 +39,7 @@ export interface AuthSettings {
 
 const SSO_ROLES: readonly SsoRole[] = ["admin", "developer", "viewer"];
 
-const AUDIENCE_PATTERN = /^\/projects\/\d+\/(?:global|regions\/[a-z0-9-]+)\/backendServices\/\d+$/;
+const AUDIENCE_PATTERN = /^\/projects\/\d+\/(global|[a-z]+-[a-z]+\d+)\/backendServices\/\d+$/;
 
 const logged = new Set<string>();
 function logOnce(message: string): void {
@@ -79,12 +79,12 @@ export function readAuthSettings(env: NodeJS.ProcessEnv = process.env): AuthSett
   if (mode === "iap") {
     const audiences = list(env["COSTKEY_IAP_AUDIENCE"]);
     if (audiences.length === 0) {
-      problems.push("COSTKEY_IAP_AUDIENCE is not set. Set it to /projects/<number>/regions/<region>/backendServices/<id> (or /global/ for a global load balancer).");
+      problems.push("COSTKEY_IAP_AUDIENCE is not set. Set it to /projects/<number>/<region>/backendServices/<id>, for example /projects/123/asia-south1/backendServices/456 (or /projects/<number>/global/backendServices/<id> for a global load balancer).");
     }
     for (const audience of audiences) {
       // A warning, not a failure: the token's aud is compared exactly anyway.
       if (!AUDIENCE_PATTERN.test(audience)) {
-        logOnce(`COSTKEY_IAP_AUDIENCE value "${audience}" does not look like /projects/<number>/regions/<region>/backendServices/<id> or /projects/<number>/global/backendServices/<id>. Use the project number, not the project ID.`);
+        logOnce(`COSTKEY_IAP_AUDIENCE value "${audience}" does not look like /projects/<number>/<region>/backendServices/<id> or /projects/<number>/global/backendServices/<id>. IAP puts no "regions/" segment in a regional audience. Use the project number, not the project ID.`);
       }
     }
     iap = { audiences };

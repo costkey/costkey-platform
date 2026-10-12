@@ -18,7 +18,7 @@ import { es256Key, signJwt, startStubIssuer } from "./helpers/sso-fixtures.js";
 const connectionString = process.env["ACCOUNTING_TEST_DATABASE_URL"];
 const canRun = Boolean(connectionString) && process.env["DATABASE_URL"] === connectionString;
 
-const AUDIENCE = "/projects/123456789/regions/asia-south1/backendServices/987654321";
+const AUDIENCE = "/projects/123456789/asia-south1/backendServices/987654321";
 const iapKey = es256Key();
 
 const ENV_KEYS = [

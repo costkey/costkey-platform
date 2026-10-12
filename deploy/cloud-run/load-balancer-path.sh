@@ -12,11 +12,11 @@
 #   COPY_IAP_FROM=my-backend  Copy IAP access from an existing backend service
 #                             instead of naming IAP_MEMBERS
 #
-# The console goes through IAP. The endpoints SDKs call (events, policy,
-# runtime config and call graph uploads) and the setup CLI's two follow-up
-# calls skip IAP: they authenticate with a DSN key or CLI token and can't sign
-# in with Google. Run CostKey with COSTKEY_AUTH=iap so the console signs people
-# in from IAP.
+# The console goes through IAP. Only the endpoints SDKs call (events, policy,
+# runtime config and call graph uploads) skip IAP: they authenticate with a
+# DSN key and can't sign in with Google. Every console path, /auth/me
+# included, must stay behind IAP, or the console sees no identity. Run
+# CostKey with COSTKEY_AUTH=iap so the console signs people in from IAP.
 #
 # Then point CostKey at the new address:
 #   COSTKEY_INGRESS=internal-and-cloud-load-balancing \
@@ -111,9 +111,6 @@ else:
             {"prefixMatch": f"{prefix}/api/v1/sdk/"},
             {"pathTemplateMatch": f"{prefix}/api/v1/projects/{{project=*}}/config"},
             {"pathTemplateMatch": f"{prefix}/api/v1/projects/{{project=*}}/callgraph"},
-            # The setup CLI's follow-up calls carry a CLI token, not an IAP identity.
-            {"fullPathMatch": f"{prefix}/auth/me"},
-            {"fullPathMatch": f"{prefix}/api/v1/projects"},
         ],
         "service": sdk,
     })
@@ -129,6 +126,6 @@ gc compute url-maps import "$URL_MAP" --region "$REGION" --source "$WORK/next.js
 
 echo
 echo "CostKey is routed at https://${HOST}${PREFIX}"
-AUDIENCE="/projects/$(gc projects describe "$PROJECT" --format='value(projectNumber)')/regions/${REGION}/backendServices/$(gc compute backend-services describe "$CONSOLE_BE" --region "$REGION" --format='value(id)')"
+AUDIENCE="/projects/$(gc projects describe "$PROJECT" --format='value(projectNumber)')/${REGION}/backendServices/$(gc compute backend-services describe "$CONSOLE_BE" --region "$REGION" --format='value(id)')"
 echo "Now run: COSTKEY_INGRESS=internal-and-cloud-load-balancing COSTKEY_PUBLIC_URL=https://${HOST}${PREFIX} \\"
 echo "  COSTKEY_AUTH=iap COSTKEY_IAP_AUDIENCE=${AUDIENCE} ./deploy.sh"

@@ -117,7 +117,7 @@ Use this when CostKey runs on Cloud Run behind a Google Cloud Application Load B
 | `COSTKEY_AUTH` | `iap` |
 | `COSTKEY_IAP_AUDIENCE` | Required. The IAP audience of the load balancer's backend service. List several with commas. |
 
-The audience is `/projects/<project number>/regions/<region>/backendServices/<id>` for a regional load balancer, or `/projects/<project number>/global/backendServices/<id>` for a global one. Use the project number, not the project ID. Find the two numbers with:
+The audience is `/projects/<project number>/<region>/backendServices/<id>` for a regional load balancer (no `regions/` segment, for example `/projects/123/asia-south1/backendServices/456`), or `/projects/<project number>/global/backendServices/<id>` for a global one. Use the project number, not the project ID. Find the two numbers with:
 
 ```bash
 gcloud projects describe <project-id> --format='value(projectNumber)'

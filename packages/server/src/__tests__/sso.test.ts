@@ -8,7 +8,7 @@ import { isSdkPath, iapLogoutUrl, oidcRedirectUri } from "../sso/router.js";
 import type { OidcSettings } from "../sso/config.js";
 import { es256Key, signJwt, startStubIssuer } from "./helpers/sso-fixtures.js";
 
-const AUDIENCE = "/projects/123456789/regions/asia-south1/backendServices/987654321";
+const AUDIENCE = "/projects/123456789/asia-south1/backendServices/987654321";
 
 function iapClaims(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   const now = Math.floor(Date.now() / 1000);

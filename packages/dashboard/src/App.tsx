@@ -31,6 +31,7 @@ const Traces = lazy(() => loadChunk(() => import("./pages/Traces")));
 const Workflows = lazy(() => loadChunk(() => import("./pages/RunGroups")).then((module) => ({ default: module.Workflows })));
 const Agents = lazy(() => loadChunk(() => import("./pages/RunGroups")).then((module) => ({ default: module.Agents })));
 const AgentDetailPage = lazy(() => loadChunk(() => import("./pages/RunGroups")).then((module) => ({ default: module.AgentDetailPage })));
+const WorkflowDetailPage = lazy(() => loadChunk(() => import("./pages/RunGroups")).then((module) => ({ default: module.WorkflowDetailPage })));
 const Quality = lazy(() => loadChunk(() => import("./pages/Quality")));
 const Alerting = lazy(() => loadChunk(() => import("./pages/Alerting")));
 const ContributorPage = lazy(() => loadChunk(() => import("./pages/ProductParityRoutes")).then((module) => ({ default: module.ContributorPage })));
@@ -417,6 +418,7 @@ export default function App() {
             <RouterRoute path="/workflows" element={<Workflows />} />
             <RouterRoute path="/agents" element={<Agents />} />
             <RouterRoute path="/agents/:name" element={<AgentDetailPage />} />
+            <RouterRoute path="/workflows/:name" element={<WorkflowDetailPage />} />
             <RouterRoute path="/errors" element={<Navigate to="/quality" replace />} />
             <RouterRoute path="/quality" element={<Quality />} />
             <RouterRoute path="/alerting" element={<Alerting />} />

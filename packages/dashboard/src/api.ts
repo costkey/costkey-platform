@@ -1053,6 +1053,8 @@ export interface AgentDetail {
   tools: Array<{ name: string; calls: number; avgMs: number | null; failed: number; cost: number | null }>;
   models: Array<{ model: string; provider: string; calls: number; cost: number | null; usage?: TokenUsage; units?: Record<string, number> }>;
   subagents: Array<{ name: string; runs: number }>;
+  /** Top users by spend: context.customer or userId on the runs' calls. */
+  users?: Array<{ userId: string; runs: number; calls: number; cost: number | null; failedRuns: number; lastRun: string | null; usage?: TokenUsage; units?: Record<string, number> }>;
 }
 
 export interface ErrorSummary {
@@ -1084,6 +1086,11 @@ export function getAgents(projectId: string, scope: InsightScope): Promise<{ age
 
 export function getAgentDetail(projectId: string, name: string, scope: InsightScope): Promise<AgentDetail> {
   return get(`/projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(name)}?${scopeQuery(scope)}`);
+}
+
+/** A workflow's page: the same shape as an agent's. */
+export function getWorkflowDetail(projectId: string, name: string, scope: InsightScope): Promise<AgentDetail> {
+  return get(`/projects/${encodeURIComponent(projectId)}/workflows/${encodeURIComponent(name)}?${scopeQuery(scope)}`);
 }
 
 export function getErrors(projectId: string, scope: InsightScope): Promise<ErrorSummary> {

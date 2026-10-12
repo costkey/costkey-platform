@@ -374,3 +374,45 @@ test("the board lists every model whatever it bills, and its costs add up to the
     await pool.end();
   }
 });
+
+test("a workflow has its own page, and agent and workflow pages split usage by user", { skip: !connectionString }, async () => {
+  const pool = new pg.Pool({ connectionString });
+  const suffix = randomBytes(6).toString("hex");
+  const orgId = `org_users_${suffix}`;
+  const projectId = `project_users_${suffix}`;
+  const app = express();
+  app.use((req, _res, next) => { (req as any).user = { id: `owner-${suffix}`, orgId, role: "owner" }; next(); });
+  app.use(createInsightsRouter(pool));
+  const server = await new Promise<ReturnType<typeof app.listen>>((resolve) => { const listening = app.listen(0, "127.0.0.1", () => resolve(listening)); });
+  try {
+    await initDatabase();
+    await ensurePlatformSchema(pool);
+    await pool.query("INSERT INTO orgs(id,name,slug) VALUES ($1,'Users',$2)", [orgId, `users-${suffix}`]);
+    await pool.query("INSERT INTO projects(id,name,org_id,auth_key) VALUES ($1,'Users',$2,$3)", [projectId, orgId, `key_${suffix}`]);
+    const at = new Date(Date.now() - 10 * 60_000).toISOString();
+    const call = (id: string, trace: string, cost: number, context: Record<string, unknown>, units: Record<string, number> | null = null) => pool.query(
+      `INSERT INTO events (id, project_id, timestamp, provider, model, cost_usd, duration_ms, status_code, trace_id, trace_name, native_units, context)
+       VALUES ($1,$2,$3,'elevenlabs','eleven_multilingual_v2',$4,500,200,$5,'generated-media-synthesize-next',$6,$7)`,
+      [id, projectId, at, cost, trace, units ? JSON.stringify(units) : null, JSON.stringify(context)],
+    );
+    await call("u1a", "t1", 0.159, { customer: "3f2a9c41-0000-4000-8000-00000000e81b" }, { characters: 1_791 });
+    await call("u1b", "t2", 0.163, { customer: "3f2a9c41-0000-4000-8000-00000000e81b" }, { characters: 907 });
+    await call("u2", "t3", 0.05, { userId: "user-2" }, { characters: 300 });
+    await call("anon", "t4", 0.01, {});
+    const range = `from=${encodeURIComponent(new Date(Date.now() - 3_600_000).toISOString())}&to=${encodeURIComponent(new Date(Date.now() + 60_000).toISOString())}`;
+    const response = await fetch(`http://127.0.0.1:${(server.address() as { port: number }).port}/api/v1/projects/${projectId}/workflows/${encodeURIComponent("generated-media-synthesize-next")}?${range}`);
+    assert.equal(response.status, 200);
+    const body = await response.json() as { agent: { runs: number }; runs: unknown[]; users: Array<{ userId: string; runs: number; cost: number; units: Record<string, number> }> };
+    assert.equal(body.agent.runs, 4);
+    assert.equal(body.runs.length, 4);
+    assert.deepEqual(body.users.map((user) => [user.userId, user.runs]), [["3f2a9c41-0000-4000-8000-00000000e81b", 2], ["user-2", 1]]);
+    assert.ok(Math.abs(body.users[0].cost - 0.322) < 1e-9);
+    assert.deepEqual(body.users[0].units, { characters: 2_698 });
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    await pool.query("DELETE FROM events WHERE project_id = $1", [projectId]).catch(() => undefined);
+    await pool.query("DELETE FROM projects WHERE id = $1", [projectId]).catch(() => undefined);
+    await pool.query("DELETE FROM orgs WHERE id = $1", [orgId]).catch(() => undefined);
+    await pool.end();
+  }
+});

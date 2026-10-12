@@ -600,7 +600,9 @@ async function backfillFrames(pool: import("pg").Pool): Promise<void> {
   });
 
   // Rebuild call_site_stats (also runs once)
-  await runOnce(pool, "rebuild_callsite_stats_v12", async () => {
+  // v13: framework, entry-point and <frozen> frames no longer name a call, and
+  // the SDK's caller beats busy dispatchers; re-derive every stored call site.
+  await runOnce(pool, "rebuild_callsite_stats_v15", async () => {
     await rebuildCallSiteStats(pool);
   });
 }
@@ -647,18 +649,23 @@ async function rebuildCallSiteStats(pool: import("pg").Pool): Promise<void> {
       ? JSON.parse(row.call_site_frames) : row.call_site_frames;
     if (!frames || frames.length === 0) continue;
     const filtered = filterFrames(frames);
-    const filterCtx = getFilterContext(frames, filtered);
+    // Stored stacks were filtered at ingest: the provider SDK's frames are
+    // gone, so the first stored frame is the one that called it.
+    const filterCtx = filtered[0] === frames[0]
+      ? { removedFiles: new Set<string>(), frame0WasAdjacentToSDK: true }
+      : getFilterContext(frames, filtered);
     const graph = callGraphCache.get(row.project_id);
     const best = graph
       ? findBusinessLogicFrameWithGraph(filtered, graph, filterCtx)
       : findBusinessLogicFrame(filtered, filterCtx);
-    if (best) {
-      const fn = (best.functionName ?? "").split("\n")[0].trim() || null;
-      await pool.query(
-        "UPDATE events SET bl_function = $1, bl_file = $2, bl_line = $3 WHERE project_id = $4 AND id = $5",
-        [fn, best.fileName ?? null, best.lineNumber ?? null, row.project_id, row.id],
-      );
-    }
+    // No business-logic frame (a stack of frameworks only) clears the old name.
+    const fn = best ? (best.functionName ?? "").split("\n")[0].trim() || null : null;
+    await pool.query(
+      `UPDATE events SET bl_function = $1, bl_file = $2, bl_line = $3
+        WHERE project_id = $4 AND id = $5
+          AND (bl_function IS DISTINCT FROM $1 OR bl_file IS DISTINCT FROM $2 OR bl_line IS DISTINCT FROM $3)`,
+      [fn, best?.fileName ?? null, best?.lineNumber ?? null, row.project_id, row.id],
+    );
   }
   if (needBl.rows.length > 0) {
     console.log(`[costkey] Backfilled bl_ fields on ${needBl.rows.length} events`);

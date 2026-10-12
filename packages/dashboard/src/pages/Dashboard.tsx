@@ -34,6 +34,7 @@ import { useLiveQuery } from "../hooks/useLiveQuery";
 import { formatDateTime, formatReportedAmount, parsePeriod, periodDates, periodLabel, zonedDateParts, zonedDaysInMonth } from "../components/consoleFormatters";
 import { prototypeRole, prototypeState, PrototypeStateNotice, PrototypeStatePanel } from "../components/PrototypeState";
 import { BoardSkeleton, CostByModel, KpiCard, LatencyPanel, RunVolume, ScoresPanel, UsageByAgent } from "../components/OverviewBoard";
+import { SpendOverTime } from "../components/SpendOverTime";
 import { compactNumber, formatScore, previousRange } from "../components/overviewBoardModel";
 
 interface BudgetPolicySummary {
@@ -316,6 +317,7 @@ export default function Dashboard() {
           <KpiCard to={`/models${scopeSearchText}`} label="Usage" value={currentTokens ? `${compactNumber(currentTokens)} tokens` : otherUnits || compactNumber(currentTokens)} current={currentTokens} previous={previousTokens} previousLabel={compactNumber(previousTokens)} higherIsBetter={false} note={currentTokens && otherUnits ? `+ ${otherUnits}` : undefined} />
           <KpiCard to={`/quality${scopeSearchText}`} label="Avg score" value={formatScore(board?.scores.current.avg)} current={board?.scores.current.avg ?? null} previous={board?.scores.previous.avg ?? null} previousLabel={formatScore(board?.scores.previous.avg)} higherIsBetter />
         </div>
+        <SpendOverTime projectId={projectId} period={toolbarPeriod} range={requestedScope} environment={environment} money={money} />
         <div className="ck-board-row ck-board-row-3">
           <CostByModel board={board} totalCost={money(currentCost)} money={money} />
           <UsageByAgent board={board} money={money} />

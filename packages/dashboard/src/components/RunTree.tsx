@@ -1,4 +1,5 @@
 import { ChevronDown, ChevronRight } from "lucide-react";
+import { attributeRows, valueText } from "./spanAttributes";
 import type { TraceEvent } from "../api";
 import { formatDuration } from "../utils";
 import { formatDateTime, formatReportedAmount, providerName, type ReportingFx } from "./consoleFormatters";
@@ -212,12 +213,12 @@ export function SpanInspector({ node, currency, fx }: { node: RunTreeSpanNode; c
           <div><dt>Duration</dt><dd>{duration == null ? "—" : formatDuration(duration)}</dd></div>
           <div><dt>Started</dt><dd>{span.started_at ? formatDateTime(span.started_at) : "—"}</dd></div>
           {span.error_type && <div><dt>Error</dt><dd>{span.error_type}</dd></div>}
-          {attributes.map(([key, value]) => <div key={key}><dt>{key}</dt><dd>{String(value ?? "—")}</dd></div>)}
+          {attributeRows(Object.fromEntries(attributes)).map(([label, text]) => <div key={label}><dt>{label}</dt><dd>{text}</dd></div>)}
         </dl>
         {content.map(([key, value]) => (
           <div className="ck-inspector-section" key={key}>
             <div className="ck-inspector-section-title"><span>{key === "input" ? "Input" : "Output"}</span></div>
-            <pre className="ck-inspector-pre">{String(value)}</pre>
+            <pre className="ck-inspector-pre">{valueText(value)}</pre>
           </div>
         ))}
       </div>

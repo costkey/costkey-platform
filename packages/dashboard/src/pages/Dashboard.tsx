@@ -159,7 +159,7 @@ function monthlyBudget(policies: BudgetPolicySummary[]): BudgetPolicySummary | n
 
 function OverviewLoadingState(): ReactNode {
   return <>
-    <div className="ck-board-kpis">{["Agent runs", "Model cost", "Tokens", "Avg score"].map((label) => <KpiCard key={label} label={label} value="" current={null} previous={null} previousLabel="" higherIsBetter loading />)}</div>
+    <div className="ck-board-kpis">{["Runs", "Model cost", "Tokens", "Avg score"].map((label) => <KpiCard key={label} label={label} value="" current={null} previous={null} previousLabel="" higherIsBetter loading />)}</div>
     <div className="ck-board-row ck-board-row-3"><BoardSkeleton /><BoardSkeleton /><BoardSkeleton /></div>
     <div className="ck-board-row ck-board-row-2"><BoardSkeleton /><BoardSkeleton /></div>
   </>;
@@ -275,12 +275,16 @@ export default function Dashboard() {
     return <div className="ck-main-inner"><PageHeader title="Overview" actions={periodBadge} /><Panel><EmptyPanel illustration={lastSeen ? "a-closer-look" : "first-light"} title={lastSeen ? "No runs in this period" : "Ready for your first run"} body={lastSeen ? `The last run arrived ${formatDateTime(lastSeen)}. Try a longer period. A quiet project is not necessarily disconnected.` : "Send a request from your app. It shows up here with its cost."} action={<div className="ck-button-row"><Link className="ck-button ck-button-secondary" to={`/traces${scopeSearch}`}>View runs</Link><Link className="ck-button ck-button-primary" to="/onboarding">Check setup</Link></div>} /></Panel></div>;
   }
 
-  // "Agent runs" counts runs whose root is an agent; a project with no agents counts all runs.
-  const hasAgents = Boolean(board && (board.runs.current.agentRuns > 0 || board.runs.previous.agentRuns > 0));
+  // Every run counts, agents and workflows alike; the split is under the number.
+  const agentRuns = board?.runs.current.agentRuns ?? 0;
+  const workflowRuns = Math.max(0, (board?.runs.current.runs ?? 0) - agentRuns);
   const runsKpi = {
-    label: hasAgents || !board ? "Agent runs" : "Runs",
-    current: board ? hasAgents ? board.runs.current.agentRuns : board.runs.current.runs : 0,
-    previous: board ? hasAgents ? board.runs.previous.agentRuns : board.runs.previous.runs : 0,
+    label: "Runs",
+    current: board ? board.runs.current.runs : 0,
+    previous: board ? board.runs.previous.runs : 0,
+    split: board && agentRuns > 0 && workflowRuns > 0
+      ? `${agentRuns.toLocaleString("en-US")} agent · ${workflowRuns.toLocaleString("en-US")} workflow`
+      : undefined,
   };
   const currentTokens = overviewTokens(overview);
   // Speech, audio, images and searches bill in their own units; they count as usage too.
@@ -312,7 +316,7 @@ export default function Dashboard() {
       {!resource.loading && !(status.tone === "good" && allClearIsHidden) && <StatusLine tone={status.tone} right={status.right} onDismiss={status.tone === "good" ? hideAllClear : undefined}>{status.text}</StatusLine>}
       {resource.loading ? <OverviewLoadingState /> : <>
         <div className="ck-board-kpis">
-          <KpiCard to={`${hasAgents ? "/agents" : "/workflows"}${scopeSearchText}`} label={runsKpi.label} value={board ? runsKpi.current.toLocaleString("en-US") : "—"} current={board ? runsKpi.current : null} previous={board ? runsKpi.previous : null} previousLabel={runsKpi.previous.toLocaleString("en-US")} higherIsBetter={null} />
+          <KpiCard to={`/traces${scopeSearchText}`} label={runsKpi.label} value={board ? runsKpi.current.toLocaleString("en-US") : "—"} current={board ? runsKpi.current : null} previous={board ? runsKpi.previous : null} previousLabel={runsKpi.previous.toLocaleString("en-US")} higherIsBetter={null} note={runsKpi.split} />
           <KpiCard to={`/costs${scopeSearchText}`} label="Model cost" value={money(currentCost)} current={currentCost} previous={previousCost} previousLabel={money(previousCost)} higherIsBetter={false} />
           <KpiCard to={`/models${scopeSearchText}`} label={currentTokens || !otherUnits ? "Tokens" : "Usage"} value={currentTokens ? compactNumber(currentTokens) : otherUnits || compactNumber(currentTokens)} current={currentTokens} previous={previousTokens} previousLabel={compactNumber(previousTokens)} higherIsBetter={null} />
           <KpiCard to={`/quality${scopeSearchText}`} label="Avg score" value={formatScore(board?.scores.current.avg)} current={board?.scores.current.avg ?? null} previous={board?.scores.previous.avg ?? null} previousLabel={formatScore(board?.scores.previous.avg)} higherIsBetter />

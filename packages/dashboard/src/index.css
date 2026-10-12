@@ -4792,3 +4792,8 @@ a.ck-metric-link > .ck-metric-card { height: 100%; }
   .ck-board-kpi-value { font-size: 22px; }
   .ck-board-delta em { display: none; }
 }
+
+/* A note right under a panel's header (an empty list, a status line) lines up with the
+   header's title instead of sitting at the table inset with a gap above it. */
+.ck-panel > .ck-panel-header + .ck-table-note { padding: 0 20px 18px; border-top: 0; }
+.ck-feature-labels .ck-mapping-row { padding: 14px 20px; }

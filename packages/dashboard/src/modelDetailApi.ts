@@ -274,3 +274,51 @@ export function otherCostLabel(basis: string, source: string | null): string {
   const how = pricedHow(basis, source);
   return how.charAt(0).toUpperCase() + how.slice(1);
 }
+
+/** A rate shortly: "$0.10 / 1M tokens", "$0.18 / 1K characters", "$0.006 / minute". */
+export function shortRate(key: RateKey, value: number): string {
+  const words = RATE_WORDS.find((item) => item.key === key);
+  if (!words) return formatRateUsd(value);
+  const per = words.per.replace(/^(1[MK]) .*?(tokens|characters|searches|web searches|requests|pages)$/, "$1 $2").replace("web searches", "searches");
+  return `${formatRateUsd(value * words.scale)} / ${per}`;
+}
+
+export interface PriceTableRow { key: string; label: string; rate: string; used: string | null; cost: number | null }
+
+/**
+ * One table for a model's pricing: every rate it lists, what this period used
+ * at that rate and what that came to, then anything charged another way.
+ */
+export function priceTableRows(price: ModelCatalogPrice | null, breakdown: CostBreakdownData | null | undefined): PriceTableRow[] {
+  const rows: PriceTableRow[] = [];
+  const lines = [...(breakdown?.lines ?? [])];
+  const take = (rateKey: RateKey) => {
+    const index = lines.findIndex((line) => !line.tier && LINE_WORDS[line.component]?.rate === rateKey);
+    return index < 0 ? null : lines.splice(index, 1)[0];
+  };
+  if (price) {
+    // Reading order: what goes in (fresh, cached, written to cache), then what comes out.
+    const order: RateKey[] = ["input", "cacheRead", "cacheWrite", "cacheWrite1h", "output", "reasoning"];
+    const ordered = [...RATE_WORDS].sort((a, b) => (order.indexOf(a.key) + 1 || 99) - (order.indexOf(b.key) + 1 || 99));
+    for (const words of ordered) {
+      const value = price.rates[words.key];
+      if (typeof value !== "number" || !Number.isFinite(value)) continue;
+      const line = take(words.key);
+      rows.push({ key: words.key, label: words.label, rate: shortRate(words.key, value), used: line ? costLineWords(line).quantity : null, cost: line ? line.cost : null });
+    }
+  }
+  // Long-context lines, and lines charged at a rate the current list no longer has.
+  for (const line of lines) {
+    const words = costLineWords(line);
+    const rateKey = LINE_WORDS[line.component]?.rate as RateKey | undefined;
+    rows.push({ key: `${line.component}:${line.rate}:${line.tier ?? ""}`, label: words.label, rate: rateKey ? shortRate(rateKey, TOKEN_LINES.has(line.component) ? line.rate * 1_000_000 : line.rate) : formatRateUsd(line.rate), used: words.quantity, cost: line.cost });
+  }
+  const reported = (breakdown?.other ?? []).filter((other) => other.basis === "reported");
+  const rest = (breakdown?.other ?? []).filter((other) => other.basis !== "reported");
+  for (const [label, group] of [["Billed by the provider", reported], ["Other calls", rest]] as const) {
+    if (group.length === 0) continue;
+    const calls = group.reduce((sum, other) => sum + other.calls, 0);
+    rows.push({ key: `other:${label}`, label, rate: "", used: `${calls.toLocaleString("en-US")} ${calls === 1 ? "call" : "calls"}`, cost: group.reduce((sum, other) => sum + other.cost, 0) });
+  }
+  return rows;
+}

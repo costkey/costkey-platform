@@ -7,7 +7,7 @@ import { ModelCostInfo } from "./CostBreakdown";
 import { providerName } from "./consoleFormatters";
 import { Link } from "react-router-dom";
 import { checkHref, modelHref, ownerHref, toolHref } from "./links";
-import { billedUnitsText, callUsage, formatHitRate, sumUnits } from "./tokenUsage";
+import { billedUnitsText, callUsage, formatHitRate } from "./tokenUsage";
 import { alignSeries, bucketLabel, compactNumber, formatScore, kpiDelta, niceCeiling, signedPercent, tickIndexes } from "./overviewBoardModel";
 
 /** Validated categorical order for series on the light raised surface. */

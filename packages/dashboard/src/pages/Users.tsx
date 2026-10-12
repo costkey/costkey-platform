@@ -200,7 +200,7 @@ export function UserDetailPage() {
         <MetricCard icon="model" label="Usage" value={usage.value} detail={tokenDetail} loading={first} />
         <MetricCard icon="clock" label="Last run" value={summary?.lastRun ? formatDateTime(summary.lastRun) : "—"} detail={summary?.firstRun && summary.firstRun !== summary.lastRun ? `First ${formatDateTime(summary.firstRun)}` : undefined} loading={first} />
       </div>
-      <Panel title="Spend over time" subtitle={data ? `Per day, ${data.window.timezone} time` : undefined}>
+      <Panel title="Spend over time" subtitle="By day">
         {first ? <div className="ck-users-chart"><LoadingRows count={4} columns={1} /></div>
           : data && !empty ? <div className="ck-users-chart"><LineChart
             buckets={data.series.map((point) => point.bucket)}

@@ -11,7 +11,7 @@ import { RunTimeline } from "./RunTimeline";
 import { useLiveQuery, type LiveQuery } from "../hooks/useLiveQuery";
 import { buildRunTree, defaultCollapsed, flattenRunTree, type RunTreeNode, type RunTreeSpanNode } from "./runTreeModel";
 import type { PrototypeState } from "./PrototypeState";
-import { ProviderLabel } from "./ProviderLogo";
+import { ProviderLabel, ProviderLogo } from "./ProviderLogo";
 import { callCostText, callFailure, isNoCharge } from "./callOutcome";
 import { runCallSites, runLabel, siteLocation } from "./runCallSites";
 import { frameViews, shortenPath, type StackFrame } from "./stackFrames";
@@ -150,7 +150,7 @@ export function RunSummaryStrip({ model, currency, fx, className = "" }: { model
   const items: ReactNode[] = [
     <div className="ck-summary-item" key="cost"><div className="prototype-summary-label">Cost</div><div className="ck-summary-value">{model.events.length === 0 ? <span className="ck-muted-value">No model calls</span> : model.knownCost == null ? <span title={PRICE_PENDING_HINT}>Unpriced</span> : formatReportedAmount(model.knownCost, currency, fx)}</div>{model.unpriced > 0 ? <div className="ck-summary-meta">{`${model.unpriced} of ${model.events.length} calls unpriced`}</div> : model.usage.cacheSavings != null && model.usage.cacheSavings > 0 ? <div className="ck-summary-meta">{formatReportedAmount(model.usage.cacheSavings, currency, fx)} saved by cache</div> : null}</div>,
     <div className="ck-summary-item" key="duration"><div className="prototype-summary-label">Duration</div><div className="ck-summary-value">{Number.isFinite(model.elapsed) && model.elapsed >= 0 ? formatDuration(model.elapsed) : "Unknown"}</div></div>,
-    <div className="ck-summary-item" key="calls"><div className="prototype-summary-label">Calls</div><div className="ck-summary-value">{model.events.length.toLocaleString()}</div><div className="ck-summary-meta"><ProviderLabel provider={[...new Set(model.events.map((event) => event.provider).filter(Boolean))].join(",")} size={13} /></div></div>,
+    <div className="ck-summary-item" key="calls"><div className="prototype-summary-label">Calls</div><div className="ck-summary-value">{model.events.length.toLocaleString()}</div><div className="ck-summary-meta"><RunModels events={model.events} /></div></div>,
   ];
   if (tokens || !units) {
     items.push(<div className="ck-summary-item" key="input"><div className="prototype-summary-label">Input tokens</div><div className="ck-summary-value">{formatTokenCount(usage.inputTokens)}</div>{inputMeta && <div className="ck-summary-meta">{inputMeta}</div>}</div>);
@@ -334,11 +334,26 @@ function ContentTab({ canReadContent, input, output, contentStatus, provider, mo
 }
 
 
+/** The models a run called, each with its provider's logo: "gpt-6-luna", "+2 more". */
+function RunModels({ events }: { events: TraceEvent[] }) {
+  const seen = new Map<string, { provider: string | null; model: string }>();
+  for (const event of events) {
+    if (!event.model) continue;
+    const key = `${event.provider ?? ""}\u0000${event.model}`;
+    if (!seen.has(key)) seen.set(key, { provider: event.provider ?? null, model: event.model });
+  }
+  const models = [...seen.values()];
+  if (models.length === 0) return <ProviderLabel provider={[...new Set(events.map((event) => event.provider).filter(Boolean))].join(",")} size={13} />;
+  const shown = models.slice(0, 2);
+  return <span className="ck-run-models" title={models.map((item) => item.model).join(", ")}>
+    {shown.map((item) => <span key={`${item.provider}:${item.model}`}><ProviderLogo provider={item.provider} size={13} />{item.model}</span>)}
+    {models.length > shown.length && <span>+{models.length - shown.length} more</span>}
+  </span>;
+}
+
 function CostTab({ event, detail, cost, currency, fx }: { event: TraceEvent; detail: EventRow | null; cost: number | null | undefined; currency: string; fx?: ReportingFx | null }) {
   const usedModel = event.model || detail?.model || null;
   const requestedModel = event.request_model ?? detail?.request_model ?? null;
-  const basis = event.cost_basis ?? detail?.cost_basis;
-  const source = event.cost_source ?? detail?.cost_source;
   const usage = callUsage({
     ...event,
     input_tokens: event.input_tokens ?? detail?.input_tokens ?? null,
@@ -351,16 +366,12 @@ function CostTab({ event, detail, cost, currency, fx }: { event: TraceEvent; det
   const units = billedUnitsText(event.native_units);
   const billed = units || (tokens ? `${formatTokenCount((usage.inputTokens ?? 0) + (usage.outputTokens ?? 0))} tokens` : event.unit_value != null ? `${Number(event.unit_value).toLocaleString()} ${event.unit_kind || event.unit || "units"}` : null);
   // request_model is stored only when it differs from the model used.
-  const requested = requestedModel && requestedModel !== usedModel
-    ? <>{requestedModel}<span className="ck-inspector-value-note">Served by {usedModel ?? "another model"}</span></>
-    : usedModel ? <span className="ck-muted-value">Same as used</span> : "—";
-  return <><div className="ck-inspector-section"><div className="ck-inspector-section-title"><span>How this was priced</span></div><div className="ck-inspector-grid">
+  const modelText = usedModel
+    ? <span className="ck-inspector-model"><ProviderLogo provider={event.provider} size={14} />{usedModel}{requestedModel && requestedModel !== usedModel && <span className="ck-inspector-value-note">Asked for {requestedModel}</span>}</span>
+    : <span className="ck-muted-value">Not recorded</span>;
+  return <><div className="ck-inspector-section"><div className="ck-inspector-grid">
     <InspectorValue label="Cost" value={callCostText({ ...event, cost_usd: cost }, (value) => formatReportedAmount(value, currency, fx))} />
-    <InspectorValue label="Price from" value={basis === "reported" ? "Reported by the provider" : basis === "estimated" ? "Estimated from list prices" : <span className="ck-muted-value">Not known</span>} />
-    <InspectorValue label="Provider" value={<ProviderLabel provider={event.provider} />} />
-    <InspectorValue label="Model used" value={usedModel ?? <span className="ck-muted-value">Not recorded</span>} />
-    <InspectorValue label="Model requested" value={requested} />
-    <InspectorValue label="Rate card" value={source || <span className="ck-muted-value">Not recorded</span>} />
+    <InspectorValue label="Model" value={modelText} />
     <InspectorValue label="Billed for" value={billed ?? <span className="ck-muted-value">Not reported</span>} />
     <InspectorValue label="Duration" value={formatDuration(Number(event.duration_ms) || 0)} />
   </div></div>

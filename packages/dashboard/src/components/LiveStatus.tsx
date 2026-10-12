@@ -13,15 +13,17 @@ export function liveStatusText(status: Status, updatedAt: number | null, now: nu
   return `Updated ${minutes} min ago`;
 }
 
+/** A dot and one word: Live, Not live or Reconnecting. When it last updated is on hover. */
 export function LiveStatus({ status, updatedAt, onRefresh }: { status: Status; updatedAt: number | null; onRefresh?: () => void }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 5_000);
     return () => window.clearInterval(timer);
   }, []);
-  const text = liveStatusText(status, updatedAt, now);
-  const tone = status === "reconnecting" ? "is-warn" : status === "live" ? "is-live" : "";
-  return <button className={`ck-live-status ${tone}`} type="button" onClick={onRefresh} title="Refreshes every 10 seconds. Click to refresh now." aria-live="polite">
-    <i aria-hidden="true" />{text}
+  const label = status === "live" ? "Live" : status === "reconnecting" ? "Reconnecting" : "Not live";
+  const tone = status === "reconnecting" ? "is-warn" : status === "live" ? "is-live" : "is-off";
+  const updated = updatedAt == null ? null : liveStatusText("live", updatedAt, now);
+  return <button className={`ck-live-status ${tone}`} type="button" onClick={onRefresh} title={`${updated ? `${updated}. ` : ""}Click to refresh now.`} aria-live="polite">
+    <i aria-hidden="true" />{label}
   </button>;
 }

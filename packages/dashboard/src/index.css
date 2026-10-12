@@ -4818,3 +4818,17 @@ a.ck-metric-link > .ck-metric-card { height: 100%; }
 /* On a model page the breakdown sits under the price list, at its inset. */
 .ck-md-price + .ck-cost-breakdown { margin: 0; padding: 4px 18px 16px; }
 .ck-md-price + .ck-cost-breakdown .ck-cost-breakdown-caption { margin-bottom: 4px; padding-top: 12px; border-top: 1px solid var(--ck-rule); }
+.ck-run-models { display: inline-flex; flex-wrap: wrap; gap: 4px 10px; }
+.ck-run-models > span { display: inline-flex; align-items: center; gap: 5px; }
+.ck-inspector-model { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+/* A model's pricing: price, what was used at it and what it cost. */
+.ck-price-table td:first-child { color: var(--ck-ink); }
+.ck-price-table tr.is-unused td { color: var(--ck-slate); }
+.ck-price-table tfoot td { border-top: 1px solid var(--ck-border); font-weight: 600; color: var(--ck-ink); }
+.ck-price-notes { border-top: 0; }
+.ck-price-table td.numeric { white-space: nowrap; }
+.ck-price-table .show-mobile { display: none; }
+@media (max-width: 767px) { .ck-price-table .show-mobile { display: block; } }
+/* The project switcher sits at the foot of the sidebar, above the account; its menu opens upward. */
+.ck-sidebar-bottom .ck-project-switcher { position: relative; margin: 4px 0; }
+.ck-sidebar-bottom .ck-project-menu { top: auto; bottom: calc(100% + 6px); }

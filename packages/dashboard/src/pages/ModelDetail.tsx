@@ -6,16 +6,15 @@ import { EmptyPanel, LoadingRows, MetricCard, Panel, StatusPill } from "../compo
 import { LiveStatus } from "../components/LiveStatus";
 import { LineChart, Pills } from "../components/OverviewBoard";
 import { ProviderLogo } from "../components/ProviderLogo";
-import { formatDateTime, formatDayDate, formatReportedAmount, providerName } from "../components/consoleFormatters";
-import { billedUnitsText, cachedNote, cacheWriteText, formatHitRate, formatTokenCount, reasoningNote, type CallUsage } from "../components/tokenUsage";
+import { formatDateTime, formatReportedAmount, providerName } from "../components/consoleFormatters";
+import { billedUnitsText, cachedNote, formatHitRate, formatTokenCount, reasoningNote } from "../components/tokenUsage";
 import {
-  catalogName, getModelDetail, longContextLine, pricingSourcesText, rateLines,
+  getModelDetail, priceTableRows,
   type ModelDetail, type ModelOwner, type ModelRecentCall,
 } from "../modelDetailApi";
 import { formatDuration, formatTokens } from "../utils";
 import { useInsightScope, useScopedLoad } from "./useInsightScope";
 import "./ModelDetail.css";
-import { CostBreakdownTable } from "../components/CostBreakdown";
 
 type Money = (value: number | null | undefined) => string;
 
@@ -44,7 +43,7 @@ function usageCard(summary: ModelDetail["summary"] | undefined): { value: string
 
 function spendDetail(summary: ModelDetail["summary"] | undefined, money: Money): string | undefined {
   if (!summary || summary.calls === 0) return undefined;
-  const parts = [summary.cost != null && summary.pricedCalls > 0 ? `${money(summary.cost / summary.pricedCalls)} per call` : null];
+  const parts = [summary.cost != null && summary.pricedCalls > 0 ? `${money(summary.cost / summary.pricedCalls)} avg per call` : null];
   if (summary.unpricedCalls > 0) parts.push(`${summary.unpricedCalls.toLocaleString()} unpriced`);
   return parts.filter(Boolean).join(" · ") || undefined;
 }
@@ -92,26 +91,28 @@ function SpendChart({ data, measure, money }: { data: ModelDetail; measure: Meas
 }
 
 function PricePanel({ data, money }: { data: ModelDetail; money: Money }) {
-  const price = data.price.current;
   const usage = data.summary.usage;
-  const sources = pricingSourcesText(data.price.sources);
-  const writes: CallUsage = { ...usage, cacheWriteTokens: data.cacheWrites.total, cacheWrite5mTokens: data.cacheWrites.fiveMinute, cacheWrite1hTokens: data.cacheWrites.oneHour };
-  const cacheReported = usage.cacheReadTokens != null || data.cacheWrites.total != null;
-  return <><dl className="ck-definition-list ck-md-price">
-    <div><dt>List price</dt><dd>{price ? `${catalogName(price.catalogSource)} catalog${new Date(price.effectiveFrom).getUTCFullYear() > 2000 ? `, since ${formatDayDate(price.effectiveFrom)}` : ""}` : "Not in the price catalog"}</dd></div>
-    {price && rateLines(price.rates).map((line) => <div key={line.key}><dt>{line.label}</dt><dd>{line.value}</dd></div>)}
-    {price && price.longContext.map((tier) => {
-      const line = longContextLine(tier);
-      return <div key={tier.threshold}><dt>{line.label}</dt><dd>{line.value}</dd></div>;
-    })}
-    {sources && <div><dt>Calls in this period</dt><dd>{sources}</dd></div>}
-    {data.summary.unpricedCalls > 0 && <div><dt>Unpriced</dt><dd>{plural(data.summary.unpricedCalls, "call has", "calls have")} no price yet</dd></div>}
-    {cacheReported && <div><dt>Cache hit rate</dt><dd>{formatHitRate(usage.cacheHitRate)}{usage.cacheReadTokens ? ` (${formatTokenCount(usage.cacheReadTokens)} cached)` : ""}</dd></div>}
-    {data.cacheWrites.total != null && <div><dt>Cache writes</dt><dd>{cacheWriteText(writes)}</dd></div>}
-    {usage.cacheSavings != null && usage.cacheSavings > 0 && <div><dt>Saved by cache</dt><dd>{money(usage.cacheSavings)}</dd></div>}
-    {usage.reasoningTokens != null && usage.reasoningTokens > 0 && <div><dt>Reasoning</dt><dd>{reasoningNote(usage)} of {formatTokenCount(usage.outputTokens)} output</dd></div>}
-  </dl>
-  {data.price.breakdown && <CostBreakdownTable breakdown={data.price.breakdown} money={money} caption="How this period's cost adds up" />}
+  const rows = priceTableRows(data.price.current, data.price.breakdown);
+  const total = data.price.breakdown?.total ?? data.summary.cost;
+  const notes = [
+    usage.cacheReadTokens ? `${formatHitRate(usage.cacheHitRate)} of input read from cache` : null,
+    usage.cacheSavings != null && usage.cacheSavings > 0 ? `${money(usage.cacheSavings)} saved by cache` : null,
+    usage.reasoningTokens ? `${reasoningNote(usage)} of ${formatTokenCount(usage.outputTokens)} output` : null,
+    data.summary.unpricedCalls > 0 ? plural(data.summary.unpricedCalls, "call has", "calls have") + " no price yet" : null,
+  ].filter(Boolean);
+  if (rows.length === 0) return <EmptyPanel title="No price for this model yet" body="Set one in Settings, Prices." />;
+  return <>
+    <div className="ck-table-wrap"><table className="ck-table ck-price-table">
+      <thead><tr><th>Charged for</th><th className="numeric hide-mobile">Price</th><th className="numeric">Used this period</th><th className="numeric">Cost</th></tr></thead>
+      <tbody>{rows.map((row) => <tr key={row.key} className={row.cost == null ? "is-unused" : undefined}>
+        <td>{row.label}{row.rate && <small className="ck-table-sub show-mobile">{row.rate}</small>}</td>
+        <td className="numeric hide-mobile">{row.rate || "—"}</td>
+        <td className="numeric">{row.used ?? "—"}</td>
+        <td className="numeric">{row.cost == null ? "—" : money(row.cost)}</td>
+      </tr>)}</tbody>
+      <tfoot><tr><td>Total</td><td className="hide-mobile" /><td /><td className="numeric">{money(total)}</td></tr></tfoot>
+    </table></div>
+    {notes.length > 0 && <p className="ck-table-note ck-price-notes">{notes.join(" · ")}</p>}
   </>;
 }
 
@@ -179,10 +180,10 @@ export function ModelDetailPage() {
         <MetricCard icon="model" label="Usage" value={usage.value} detail={usage.detail} loading={first} />
         <MetricCard icon="clock" label="Latency p50" value={summary?.p50Ms == null ? "—" : formatDuration(summary.p50Ms)} detail={summary?.p95Ms == null ? undefined : `p95 ${formatDuration(summary.p95Ms)}`} loading={first} />
       </div>
-      <Panel title="Spend over time" subtitle={data ? `Per ${data.window.bucket}, ${data.window.timezone} time` : undefined} actions={data && !empty ? <Pills label="Measure" value={measure} onChange={setMeasure} options={[{ value: "spend", label: "Spend" }, { value: "calls", label: "Calls" }]} /> : undefined}>
+      <Panel title="Spend over time" subtitle={data ? `By ${data.window.bucket}` : undefined} actions={data && !empty ? <Pills label="Measure" value={measure} onChange={setMeasure} options={[{ value: "spend", label: "Spend" }, { value: "calls", label: "Calls" }]} /> : undefined}>
         {first ? <div className="ck-md-chart"><LoadingRows count={4} columns={1} /></div> : data && !empty ? <SpendChart data={data} measure={measure} money={money} /> : <EmptyPanel title="No calls to this model in this period" />}
       </Panel>
-      <Panel title="Price" subtitle="List price and how calls in this period got their cost">
+      <Panel title="Pricing" subtitle="What this model charges, and what you used">
         {first ? <LoadingRows count={4} columns={2} /> : data ? <PricePanel data={data} money={money} /> : null}
       </Panel>
       <Panel title="Used by" subtitle={data && data.owners.length > 0 ? "Agents and workflows that call this model, by spend" : undefined}>

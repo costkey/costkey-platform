@@ -339,11 +339,6 @@ function AppShell() {
       {menuOpen && <div className="ck-mobile-overlay" onClick={closeMenu} role="presentation" />}
       <aside className={`ck-sidebar ${menuOpen ? "open" : ""}`} aria-label="Primary navigation">
         <Link className="ck-sidebar-brand" to="/" onClick={closeMenu}><BrandMark className="ck-brand-mark" /><span className="ck-brand-name">CostKey</span></Link>
-        <div className="ck-workspace-block">
-          <div className="ck-overline">Workspace</div>
-          <div className="ck-workspace-name" title={org?.name}>{org?.name ?? "Your workspace"}</div>
-          <ProjectSwitcher />
-        </div>
         <nav className="ck-nav" aria-label="Main">
           {navItems.map(({ to, label, icon }) => (
             <Link key={to} className={`ck-nav-link ${isActive(to) ? "active" : ""}`} to={to} onClick={closeMenu} aria-current={isActive(to) ? "page" : undefined}>
@@ -365,6 +360,7 @@ function AppShell() {
           )}
           <div className="ck-utility-optional"><FeedbackLink /></div>
           <IngestStatus projectId={currentProjectId ?? projects[0]?.id ?? null} />
+          <ProjectSwitcher />
           <div className="ck-user-row" role="button" tabIndex={0} aria-expanded={sidebarPanel === "account"} aria-haspopup="dialog" onClick={() => setSidebarPanel((panel) => panel === "account" ? null : "account")} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setSidebarPanel((panel) => panel === "account" ? null : "account"); } }}>
             <span className="ck-user-avatar" aria-hidden="true">{initials}</span>
             <div className="ck-user-meta"><div className="ck-user-name" title={user?.email}>{user?.name || user?.email}</div><div className="ck-user-role">{displayRole(user?.role)}</div></div>

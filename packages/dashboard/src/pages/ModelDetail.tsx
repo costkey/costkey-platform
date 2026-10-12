@@ -15,6 +15,7 @@ import {
 import { formatDuration, formatTokens } from "../utils";
 import { useInsightScope, useScopedLoad } from "./useInsightScope";
 import "./ModelDetail.css";
+import { CostBreakdownTable } from "../components/CostBreakdown";
 
 type Money = (value: number | null | undefined) => string;
 
@@ -96,8 +97,8 @@ function PricePanel({ data, money }: { data: ModelDetail; money: Money }) {
   const sources = pricingSourcesText(data.price.sources);
   const writes: CallUsage = { ...usage, cacheWriteTokens: data.cacheWrites.total, cacheWrite5mTokens: data.cacheWrites.fiveMinute, cacheWrite1hTokens: data.cacheWrites.oneHour };
   const cacheReported = usage.cacheReadTokens != null || data.cacheWrites.total != null;
-  return <dl className="ck-definition-list ck-md-price">
-    <div><dt>List price</dt><dd>{price ? `${catalogName(price.catalogSource)} catalog, since ${formatDayDate(price.effectiveFrom)}` : "Not in the price catalog"}</dd></div>
+  return <><dl className="ck-definition-list ck-md-price">
+    <div><dt>List price</dt><dd>{price ? `${catalogName(price.catalogSource)} catalog${new Date(price.effectiveFrom).getUTCFullYear() > 2000 ? `, since ${formatDayDate(price.effectiveFrom)}` : ""}` : "Not in the price catalog"}</dd></div>
     {price && rateLines(price.rates).map((line) => <div key={line.key}><dt>{line.label}</dt><dd>{line.value}</dd></div>)}
     {price && price.longContext.map((tier) => {
       const line = longContextLine(tier);
@@ -109,7 +110,9 @@ function PricePanel({ data, money }: { data: ModelDetail; money: Money }) {
     {data.cacheWrites.total != null && <div><dt>Cache writes</dt><dd>{cacheWriteText(writes)}</dd></div>}
     {usage.cacheSavings != null && usage.cacheSavings > 0 && <div><dt>Saved by cache</dt><dd>{money(usage.cacheSavings)}</dd></div>}
     {usage.reasoningTokens != null && usage.reasoningTokens > 0 && <div><dt>Reasoning</dt><dd>{reasoningNote(usage)} of {formatTokenCount(usage.outputTokens)} output</dd></div>}
-  </dl>;
+  </dl>
+  {data.price.breakdown && <CostBreakdownTable breakdown={data.price.breakdown} money={money} caption="How this period's cost adds up" />}
+  </>;
 }
 
 function OwnersTable({ owners, money }: { owners: ModelOwner[]; money: Money }) {

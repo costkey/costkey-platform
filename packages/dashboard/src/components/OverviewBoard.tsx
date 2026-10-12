@@ -3,6 +3,7 @@ import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import type { BoardBucketUnit, OverviewBoard, OverviewBoardUsage } from "../api";
 import { formatDuration } from "../utils";
 import { ProviderLogo } from "./ProviderLogo";
+import { ModelCostInfo } from "./CostBreakdown";
 import { providerName } from "./consoleFormatters";
 import { Link } from "react-router-dom";
 import { checkHref, modelHref, ownerHref, toolHref } from "./links";
@@ -73,7 +74,7 @@ export function KpiCard({ label, value, current, previous, previousLabel, higher
 
 const MODEL_ROWS = 7;
 
-export function CostByModel({ board, totalCost, money }: { board: OverviewBoard | null; totalCost: string; money: (value: number | null | undefined) => string }) {
+export function CostByModel({ board, totalCost, money, projectId = null }: { board: OverviewBoard | null; totalCost: string; money: (value: number | null | undefined) => string; projectId?: string | null }) {
   // Every model with calls counts, whatever it bills, so the costs add up to the total. Rows come sorted by cost.
   const all = board?.models ?? [];
   const rows = all.length > MODEL_ROWS + 1 ? all.slice(0, MODEL_ROWS) : all;
@@ -100,7 +101,7 @@ export function CostByModel({ board, totalCost, money }: { board: OverviewBoard 
                     <td className="numeric hide-narrow">{row.calls.toLocaleString("en-US")}</td>
                     <td className="numeric" title={tokens && hit !== "—" ? `${hit} of input read from cache` : undefined}>{tokens ? compactNumber(usage.inputTokens) : units || "—"}</td>
                     <td className="numeric hide-narrow">{tokens ? compactNumber(usage.outputTokens) : "—"}</td>
-                    <td className="numeric ck-board-cost">{row.cost == null ? (row.unpriced > 0 ? "Unpriced" : "—") : money(row.cost)}</td>
+                    <td className="numeric ck-board-cost">{row.cost == null ? (row.unpriced > 0 ? "Unpriced" : "—") : <span className="ck-board-cost-cell">{money(row.cost)}{board && <ModelCostInfo projectId={projectId} provider={row.provider} model={row.model} period={board.window} money={money} />}</span>}</td>
                   </tr>
                 );
               })}

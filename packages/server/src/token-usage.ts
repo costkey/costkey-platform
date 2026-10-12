@@ -1,6 +1,6 @@
 import { billableOutputTokens } from "./billing.js";
 import { getPriceCatalog, providerChain } from "./price-catalog/catalog.js";
-import { costFromRates } from "./price-catalog/compute.js";
+import { costFromRates, costLinesFromRates, type CostLine } from "./price-catalog/compute.js";
 import type { PriceRates, PricedUsage } from "./price-catalog/types.js";
 import { computeCost, inferImageOutputTokens, tableCacheIncludedInInput } from "./pricing.js";
 
@@ -195,3 +195,107 @@ export function sumCacheSavings(rows: Array<Record<string, unknown>>, keyOf: (ro
 export const SAVINGS_COLUMNS = (e: string) => `${e}.provider, ${e}.model, ${e}.request_model, ${e}.url, ${e}.timestamp,
   ${e}.cost_usd, ${e}.cost_basis, ${e}.cost_source, ${e}.pricing_id, ${e}.input_tokens, ${e}.output_tokens,
   ${e}.reasoning_tokens, ${e}.cache_read_tokens, ${e}.cache_creation_tokens, ${e}.image_output_tokens, ${e}.native_units`;
+
+/** How one stored call got its cost. */
+export type CallCostBreakdown =
+  | { kind: "catalog"; priceId: string; catalogSource: string; lines: CostLine[]; tier: number | null }
+  | { kind: "other"; basis: string; source: string | null; cost: number };
+
+/**
+ * A stored call's cost line by line, from the price it was charged at. Null
+ * when the call has no cost or the lines don't add up to what it was charged
+ * (a price edited since), so a breakdown never contradicts the stored cost.
+ */
+export function callCostBreakdown(row: Record<string, unknown>): CallCostBreakdown | null {
+  const stored = count(row["cost_usd"]);
+  if (stored == null) return null;
+  const source = String(row["cost_source"] ?? "");
+  // The price it was charged at; a call priced before the source was recorded
+  // is explained by the catalog price for it, when that gives the same cost.
+  const catalog = getPriceCatalog();
+  const charged = source.startsWith("catalog:") && typeof row["pricing_id"] === "string" ? catalog.byId(row["pricing_id"]) : null;
+  const fallback = !charged && !source ? catalogPriceFor(row) : null;
+  for (const price of [charged ?? fallback].filter(Boolean)) {
+    if (price) {
+      const provider = String(row["provider"] ?? "");
+      const model = typeof row["model"] === "string" && row["model"] ? row["model"] : null;
+      const requestModel = typeof row["request_model"] === "string" && row["request_model"] ? row["request_model"] : null;
+      const rawOutput = count(row["output_tokens"]);
+      const reasoning = count(row["reasoning_tokens"]);
+      const usage: PricedUsage = {
+        inputTokens: count(row["input_tokens"]),
+        outputTokens: billableOutputTokens({ provider, model, usage: { outputTokens: rawOutput, reasoningTokens: reasoning } }),
+        reasoningTokens: reasoning,
+        cacheReadTokens: count(row["cache_read_tokens"]),
+        cacheCreationTokens: provider === "deepseek" ? null : count(row["cache_creation_tokens"]),
+        imageOutputTokens: count(row["image_output_tokens"]) ?? inferImageOutputTokens(model, rawOutput),
+        nativeUnits: nativeUnitsOf(row["native_units"]),
+      };
+      const usageProvider = providerChain(provider, typeof row["url"] === "string" ? row["url"] : null)[0] ?? provider;
+      const priced = costLinesFromRates(price.rates, usage, usageProvider, model ?? requestModel ?? price.model);
+      if (priced && sameCost(priced.lines.reduce((sum, line) => sum + line.cost, 0), stored)) {
+        return { kind: "catalog", priceId: price.id, catalogSource: price.source, lines: priced.lines, tier: priced.tier };
+      }
+    }
+  }
+  return { kind: "other", basis: String(row["cost_basis"] ?? "unknown"), source: source || null, cost: stored };
+}
+
+/** A period's cost by line: each component at each rate, then cost priced another way. */
+export interface CostBreakdown {
+  lines: Array<{ component: string; rate: number; quantity: number; cost: number; calls: number; tier: number | null }>;
+  other: Array<{ basis: string; source: string | null; calls: number; cost: number }>;
+  total: number;
+  /** Calls left out because the period has more than the row limit. */
+  partial: boolean;
+}
+
+export function sumCostBreakdown(rows: Array<Record<string, unknown>>, limit = SAVINGS_ROW_LIMIT): CostBreakdown {
+  const lines = new Map<string, CostBreakdown["lines"][number]>();
+  const other = new Map<string, CostBreakdown["other"][number]>();
+  let total = 0;
+  for (const row of rows.slice(0, limit)) {
+    const breakdown = callCostBreakdown(row);
+    if (!breakdown) continue;
+    if (breakdown.kind === "catalog") {
+      for (const line of breakdown.lines) {
+        const key = `${line.component}\u0000${line.rate}\u0000${breakdown.tier ?? ""}`;
+        const entry = lines.get(key) ?? { component: line.component, rate: line.rate, quantity: 0, cost: 0, calls: 0, tier: breakdown.tier };
+        entry.quantity += line.quantity;
+        entry.cost += line.cost;
+        entry.calls += 1;
+        lines.set(key, entry);
+        total += line.cost;
+      }
+    } else {
+      const key = `${breakdown.basis}\u0000${breakdown.source ?? ""}`;
+      const entry = other.get(key) ?? { basis: breakdown.basis, source: breakdown.source, calls: 0, cost: 0 };
+      entry.calls += 1;
+      entry.cost += breakdown.cost;
+      other.set(key, entry);
+      total += breakdown.cost;
+    }
+  }
+  const order = ["input", "cacheRead", "cacheWrite", "cacheWrite1h", "output", "imageOutput"];
+  const rank = (component: string) => { const index = order.indexOf(component); return index < 0 ? order.length : index; };
+  return {
+    lines: [...lines.values()].sort((a, b) => rank(a.component) - rank(b.component) || (a.tier ?? 0) - (b.tier ?? 0) || b.cost - a.cost),
+    other: [...other.values()].sort((a, b) => b.cost - a.cost),
+    total,
+    partial: rows.length > limit,
+  };
+}
+
+/** The catalog price a call would be charged at now, for calls stored without a price source. */
+function catalogPriceFor(row: Record<string, unknown>): ReturnType<ReturnType<typeof getPriceCatalog>["byId"]> {
+  const provider = String(row["provider"] ?? "");
+  const model = typeof row["model"] === "string" && row["model"] ? row["model"] : null;
+  if (!provider || !model) return null;
+  const timestamp = row["timestamp"] instanceof Date ? row["timestamp"] : row["timestamp"] == null ? null : String(row["timestamp"]);
+  const priced = getPriceCatalog().price({
+    provider, model, url: typeof row["url"] === "string" ? row["url"] : null,
+    requestModel: typeof row["request_model"] === "string" ? row["request_model"] : null, at: timestamp,
+    usage: { inputTokens: count(row["input_tokens"]), outputTokens: count(row["output_tokens"]), cacheReadTokens: count(row["cache_read_tokens"]) },
+  });
+  return priced ? getPriceCatalog().byId(priced.priceId) : null;
+}

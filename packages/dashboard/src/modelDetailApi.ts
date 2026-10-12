@@ -92,7 +92,7 @@ export interface ModelDetail {
   series: Array<{ bucket: string; cost: number; calls: number }>;
   owners: ModelOwner[];
   recentCalls: ModelRecentCall[];
-  price: { current: ModelCatalogPrice | null; sources: ModelPriceSource[] };
+  price: { current: ModelCatalogPrice | null; sources: ModelPriceSource[]; breakdown?: CostBreakdownData };
   cacheWrites: { total: number | null; fiveMinute: number | null; oneHour: number | null };
 }
 
@@ -215,4 +215,62 @@ export function pricingSourcesText(sources: ModelPriceSource[]): string {
 /** What a model page's link looks like: `/models/<provider>/<model>`, slashes in the model kept. */
 export function modelPath(provider: string, model: string): string {
   return `/models/${encodeURIComponent(provider)}/${model.split("/").map(encodeURIComponent).join("/")}`;
+}
+
+/* ── Cost breakdown ────────────────────────────────────────────────── */
+
+/** One part of a cost: a quantity at a rate (USD per token or per unit). */
+export interface CostLine { component: string; quantity: number; rate: number; cost: number; calls?: number; tier?: number | null }
+
+/** A period's or a call's cost, line by line, then cost priced another way. */
+export interface CostBreakdownData {
+  lines: CostLine[];
+  other: Array<{ basis: string; source: string | null; calls: number; cost: number }>;
+  total: number;
+  partial?: boolean;
+}
+
+/** A call's breakdown as the call detail endpoint returns it. */
+export type CallCostBreakdown =
+  | { kind: "catalog"; priceId: string; catalogSource: string; lines: CostLine[]; tier: number | null }
+  | { kind: "other"; basis: string; source: string | null; cost: number };
+
+const LINE_WORDS: Record<string, { label: string; rate: RateKey; noun: string }> = {
+  input: { label: "Input", rate: "input", noun: "tokens" },
+  cacheRead: { label: "Cached input", rate: "cacheRead", noun: "tokens" },
+  cacheWrite: { label: "Cache write", rate: "cacheWrite", noun: "tokens" },
+  cacheWrite1h: { label: "Cache write, 1 hour", rate: "cacheWrite1h", noun: "tokens" },
+  output: { label: "Output", rate: "output", noun: "tokens" },
+  imageOutput: { label: "Image output", rate: "outputImage", noun: "tokens" },
+  characters: { label: "Characters", rate: "perCharacter", noun: "characters" },
+  audioSeconds: { label: "Audio", rate: "perSecond", noun: "seconds" },
+  searchQueries: { label: "Searches", rate: "perQuery", noun: "searches" },
+  groundingRequests: { label: "Search grounding", rate: "searchPerQuery", noun: "requests" },
+  mapsGroundingRequests: { label: "Maps grounding", rate: "mapsPerQuery", noun: "requests" },
+  webSearchRequests: { label: "Web search", rate: "searchPerQuery", noun: "searches" },
+  credits: { label: "Credits", rate: "perCredit", noun: "credits" },
+  pages: { label: "Pages", rate: "perPage", noun: "pages" },
+  images: { label: "Images", rate: "perOutputImage", noun: "images" },
+  requests: { label: "Requests", rate: "perRequest", noun: "requests" },
+};
+
+const TOKEN_LINES = new Set(["input", "cacheRead", "cacheWrite", "cacheWrite1h", "output", "imageOutput"]);
+
+/** A line in words: label, "979,466 tokens", "$0.10 per 1M input tokens". */
+export function costLineWords(line: CostLine): { label: string; quantity: string; rate: string } {
+  const words = LINE_WORDS[line.component] ?? { label: line.component, rate: undefined, noun: "units" };
+  const tier = line.tier ? `, above ${line.tier >= 1000 && line.tier % 1000 === 0 ? `${line.tier / 1000}K` : line.tier.toLocaleString("en-US")} prompt tokens` : "";
+  // Token rates are stored per token; the rate words are per 1M tokens.
+  const rateValue = TOKEN_LINES.has(line.component) ? line.rate * 1_000_000 : line.rate;
+  return {
+    label: `${words.label}${tier}`,
+    quantity: `${Math.round(line.quantity).toLocaleString("en-US")} ${words.noun}`,
+    rate: words.rate ? formatRate(words.rate as RateKey, rateValue) : `${formatRateUsd(line.rate)} each`,
+  };
+}
+
+/** Cost priced some other way, in words: "Reported by the provider". */
+export function otherCostLabel(basis: string, source: string | null): string {
+  const how = pricedHow(basis, source);
+  return how.charAt(0).toUpperCase() + how.slice(1);
 }

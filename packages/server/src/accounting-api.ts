@@ -48,7 +48,7 @@ import {
   type ChargeScope,
   type ScopeValues,
 } from "./charge-cohort.js";
-import { callCacheSavings } from "./token-usage.js";
+import { callCacheSavings, callCostBreakdown } from "./token-usage.js";
 import { loadRetries } from "./retries.js";
 
 type ScopeDimension = "feature" | "function" | "customer" | "model" | "provider" | "context";
@@ -1173,7 +1173,9 @@ export function createAccountingRouter(pool: pg.Pool): Router {
       );
       if (result.rows.length === 0) { res.status(404).json({ error: "Event not found" }); return; }
       const sourceRestricted = !await sourceAccessAllowed(pool, String(req.params["projectId"]), user(req).role);
-      res.json({ event: exposeEvent(result.rows[0] as Record<string, unknown>, sourceRestricted) });
+      const row = result.rows[0] as Record<string, unknown>;
+      // How its cost adds up: each component at its rate, from the price it was charged at.
+      res.json({ event: { ...exposeEvent(row, sourceRestricted), cost_breakdown: callCostBreakdown(row) } });
     } catch (err) {
       console.error("[costkey] Accounting event detail error:", err);
       res.status(500).json({ error: "Failed to fetch event" });

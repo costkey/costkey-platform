@@ -20,11 +20,22 @@ export const PRICEABLE_NATIVE_UNITS = new Set([
   "credits", "pages", "images", "requests", "webSearchRequests",
 ]);
 
+/** One part of a call's cost: a quantity at a rate. */
+export interface CostLine {
+  /** input, cacheRead, cacheWrite, cacheWrite1h, output, imageOutput, or a native unit such as characters. */
+  component: string;
+  quantity: number;
+  /** USD per token or per unit. */
+  rate: number;
+  cost: number;
+}
+
 /**
- * Price one call from catalog rates. Returns null when any billed component
- * has no rate, so a call is never silently priced for only part of its usage.
+ * Price one call from catalog rates, line by line. Null when any billed
+ * component has no rate, so a call is never silently priced for only part of
+ * its usage. `tier` is the long-context threshold whose rates applied.
  */
-export function costFromRates(rates: PriceRates, usage: PricedUsage, provider: string, model: string): number | null {
+export function costLinesFromRates(rates: PriceRates, usage: PricedUsage, provider: string, model: string): { lines: CostLine[]; tier: number | null } | null {
   const input = nonNegative(usage.inputTokens);
   const output = nonNegative(usage.outputTokens);
   const cacheRead = nonNegative(usage.cacheReadTokens);
@@ -35,11 +46,18 @@ export function costFromRates(rates: PriceRates, usage: PricedUsage, provider: s
   const promptTokens = included ? input : input + cacheRead + cacheWrite;
 
   let active: PriceRates = rates;
-  for (const tier of rates.longContext ?? []) {
-    if (promptTokens > tier.threshold) active = { ...active, ...Object.fromEntries(Object.entries(tier).filter(([key, value]) => key !== "threshold" && value !== undefined)) };
+  let tier: number | null = null;
+  for (const longContext of rates.longContext ?? []) {
+    if (promptTokens > longContext.threshold) {
+      active = { ...active, ...Object.fromEntries(Object.entries(longContext).filter(([key, value]) => key !== "threshold" && value !== undefined)) };
+      tier = longContext.threshold;
+    }
   }
 
-  let cost = 0;
+  const lines: CostLine[] = [];
+  const add = (component: string, quantity: number, rate: number) => {
+    if (quantity > 0) lines.push({ component, quantity, rate, cost: quantity * rate });
+  };
   const hasTokens = input + output + cacheRead + cacheWrite > 0;
   if (hasTokens) {
     if (active.input === undefined && input > 0) return null;
@@ -52,14 +70,15 @@ export function costFromRates(rates: PriceRates, usage: PricedUsage, provider: s
     // Where the input count includes cache tokens, they're carved out of it
     // (DeepSeek's cache misses land on the input rate this way).
     const billableInput = included ? Math.max(0, input - cacheRead - cacheWrite) : input;
-    cost += billableInput * (active.input ?? 0);
-    cost += cacheRead * cacheReadRate;
-    cost += (cacheWrite - cacheWrite1h) * cacheWriteRate + cacheWrite1h * cacheWrite1hRate;
-    cost += (output - imageOutput) * (active.output ?? 0);
+    add("input", billableInput, active.input ?? 0);
+    add("cacheRead", cacheRead, cacheReadRate);
+    add("cacheWrite", cacheWrite - cacheWrite1h, cacheWriteRate);
+    add("cacheWrite1h", cacheWrite1h, cacheWrite1hRate);
+    add("output", output - imageOutput, active.output ?? 0);
     if (imageOutput > 0) {
       const imageRate = active.outputImage ?? active.output;
       if (imageRate === undefined) return null;
-      cost += imageOutput * imageRate;
+      add("imageOutput", imageOutput, imageRate);
     }
   }
 
@@ -82,10 +101,10 @@ export function costFromRates(rates: PriceRates, usage: PricedUsage, provider: s
         // Search APIs price per query, sometimes by result count; model
         // grounding prices per executed search query.
         const results = nonNegative(units["searchResults"]);
-        const tier = results > 0 ? rates.queryTiers?.find((candidate) => results <= candidate.maxResults) : undefined;
+        const queryTier = results > 0 ? rates.queryTiers?.find((candidate) => results <= candidate.maxResults) : undefined;
         // Model grounding billed per grounded request is charged below.
-        if (!tier && rates.perQuery === undefined && rates.searchBilling === "request") continue;
-        unitRate = tier?.perQuery ?? rates.perQuery ?? rates.searchPerQuery;
+        if (!queryTier && rates.perQuery === undefined && rates.searchBilling === "request") continue;
+        unitRate = queryTier?.perQuery ?? rates.perQuery ?? rates.searchPerQuery;
         if (unitRate !== undefined && rates.includedResults !== undefined && rates.perExtraResult !== undefined) {
           unitRate += Math.max(0, results - rates.includedResults) * rates.perExtraResult;
         }
@@ -102,9 +121,20 @@ export function costFromRates(rates: PriceRates, usage: PricedUsage, provider: s
       case "webSearchRequests": unitRate = rates.searchPerQuery ?? rates.perQuery; break;
     }
     if (unitRate === undefined) return null;
-    cost += value * unitRate;
+    add(unit, value, unitRate);
   }
-  if (rates.perRequest !== undefined && units["requests"] === undefined) cost += rates.perRequest;
+  if (rates.perRequest !== undefined && units["requests"] === undefined) add("requests", 1, rates.perRequest);
+  return { lines, tier };
+}
+
+/**
+ * Price one call from catalog rates. Returns null when any billed component
+ * has no rate, so a call is never silently priced for only part of its usage.
+ */
+export function costFromRates(rates: PriceRates, usage: PricedUsage, provider: string, model: string): number | null {
+  const priced = costLinesFromRates(rates, usage, provider, model);
+  if (!priced) return null;
+  const cost = priced.lines.reduce((sum, line) => sum + line.cost, 0);
   return Math.round(cost * 1e12) / 1e12;
 }
 

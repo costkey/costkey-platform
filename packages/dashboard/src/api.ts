@@ -70,6 +70,8 @@ export interface CallSite {
 }
 
 export interface EventRow {
+  /** How its cost adds up, line by line (call detail only). */
+  cost_breakdown?: import("./modelDetailApi").CallCostBreakdown | null;
   id: string;
   timestamp: string;
   trace_id?: string | null;

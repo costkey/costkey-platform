@@ -8,7 +8,7 @@ import { getPriceCatalog } from "./price-catalog/catalog.js";
 import type { PriceRates } from "./price-catalog/types.js";
 import {
   CACHE_REPORTED_SQL, CACHE_WRITE_SQL, OUTPUT_TOKENS_SQL, PROMPT_TOKENS_SQL, SAVINGS_COLUMNS, SAVINGS_ROW_LIMIT,
-  sumCacheSavings, USAGE_SUM_COLUMNS, usageFrom, type TokenUsage,
+  sumCacheSavings, sumCostBreakdown, USAGE_SUM_COLUMNS, usageFrom, type TokenUsage,
 } from "./token-usage.js";
 
 /**
@@ -120,7 +120,7 @@ function currentPrice(provider: string, model: string) {
 export async function loadModelDetail(pool: pg.Pool, projectId: string, query: ModelDetailQuery) {
   const params = [projectId, query.from, query.to, query.environment, query.provider, query.model];
   const bucket = boardBucket(query.from, query.to);
-  const [summary, units, series, owners, recent, sources, cacheHits] = await Promise.all([
+  const [summary, units, series, owners, recent, sources, cacheHits, pricedCalls] = await Promise.all([
     pool.query(
       `WITH c AS (
          SELECT e.cost_usd, e.duration_ms, e.cache_read_tokens, e.reasoning_tokens,
@@ -212,6 +212,13 @@ export async function loadModelDetail(pool: pg.Pool, projectId: string, query: M
        LIMIT ${SAVINGS_ROW_LIMIT + 1}`,
       params,
     ),
+    // Every priced call, to show how the period's cost adds up.
+    pool.query(
+      `SELECT ${SAVINGS_COLUMNS("e")}
+       FROM events e WHERE ${MODEL_CALLS} AND e.cost_usd IS NOT NULL
+       LIMIT ${SAVINGS_ROW_LIMIT + 1}`,
+      params,
+    ),
   ]);
 
   const total = (summary.rows[0] ?? {}) as Record<string, unknown>;
@@ -266,6 +273,7 @@ export async function loadModelDetail(pool: pg.Pool, projectId: string, query: M
     })),
     price: {
       current: currentPrice(query.provider, query.model),
+      breakdown: sumCostBreakdown(pricedCalls.rows as Array<Record<string, unknown>>),
       sources: (sources.rows as Array<Record<string, unknown>>).map((row) => ({
         basis: String(row.basis),
         source: row.source == null ? null : String(row.source),

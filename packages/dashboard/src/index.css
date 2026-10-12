@@ -4797,3 +4797,24 @@ a.ck-metric-link > .ck-metric-card { height: 100%; }
    header's title instead of sitting at the table inset with a gap above it. */
 .ck-panel > .ck-panel-header + .ck-table-note { padding: 0 20px 18px; border-top: 0; }
 .ck-feature-labels .ck-mapping-row { padding: 14px 20px; }
+
+/* How a cost adds up: component, quantity at a rate, cost. */
+.ck-cost-breakdown { margin-top: 14px; }
+.ck-cost-breakdown-caption { margin-bottom: 6px; font-size: 12px; font-weight: 500; color: var(--ck-slate); }
+.ck-cost-breakdown table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums lining-nums; }
+.ck-cost-breakdown td { padding: 7px 0; border-top: 1px solid var(--ck-rule); vertical-align: top; color: var(--ck-ink); }
+.ck-cost-breakdown td.numeric { padding-left: 12px; text-align: right; white-space: nowrap; }
+.ck-cost-breakdown tr:first-child td { border-top: 0; }
+.ck-cost-breakdown small { display: block; margin-top: 2px; font-size: 12px; color: var(--ck-slate); }
+.ck-cost-breakdown tfoot td { border-top: 1px solid var(--ck-border); font-weight: 600; }
+.ck-cost-breakdown-note { margin: 6px 0 0; font-size: 12px; color: var(--ck-slate); }
+.ck-board-cost-cell { display: inline-flex; align-items: center; gap: 4px; }
+.ck-cost-info { position: relative; display: inline-flex; z-index: 2; }
+.ck-cost-info-button { display: inline-grid; place-items: center; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--ck-slate); cursor: pointer; }
+.ck-cost-info-button:hover, .ck-cost-info-button[aria-expanded="true"] { background: var(--ck-soft); color: var(--ck-ink); }
+.ck-cost-info-pop { position: fixed; z-index: 60; display: block; width: 340px; max-height: calc(100vh - 32px); overflow: auto; max-width: calc(100vw - 32px); padding: 12px 14px; border: 1px solid var(--ck-border); border-radius: 12px; background: var(--ck-raised); box-shadow: 0 10px 28px #182b451f; text-align: left; font-weight: 400; white-space: normal; cursor: default; }
+.ck-cost-info-title { display: block; font-size: 13px; font-weight: 600; color: var(--ck-ink); }
+.ck-cost-info-pop .ck-cost-breakdown { margin-top: 8px; }
+/* On a model page the breakdown sits under the price list, at its inset. */
+.ck-md-price + .ck-cost-breakdown { margin: 0; padding: 4px 18px 16px; }
+.ck-md-price + .ck-cost-breakdown .ck-cost-breakdown-caption { margin-bottom: 4px; padding-top: 12px; border-top: 1px solid var(--ck-rule); }

@@ -18,6 +18,7 @@ import { frameViews, shortenPath, type StackFrame } from "./stackFrames";
 import { CallContent } from "./CallContent";
 import { modelHref } from "./links";
 import { billedUnitsText, cachedNote, cacheWriteText, callUsage, formatHitRate, formatTokenCount, hasTokens, reasoningNote, sumUnits, sumUsage, type CallUsage } from "./tokenUsage";
+import { CostBreakdownTable } from "./CostBreakdown";
 
 /**
  * One run's whole flow, shared by the run page and the inline run on the
@@ -363,6 +364,9 @@ function CostTab({ event, detail, cost, currency, fx }: { event: TraceEvent; det
     <InspectorValue label="Billed for" value={billed ?? <span className="ck-muted-value">Not reported</span>} />
     <InspectorValue label="Duration" value={formatDuration(Number(event.duration_ms) || 0)} />
   </div></div>
+  {detail?.cost_breakdown?.kind === "catalog" && cost != null && <div className="ck-inspector-section"><div className="ck-inspector-section-title"><span>How the cost adds up</span></div>
+    <CostBreakdownTable breakdown={{ lines: detail.cost_breakdown.lines, other: [], total: cost }} money={(value) => formatReportedAmount(value ?? 0, currency, fx)} />
+  </div>}
   {tokens && <TokenUsageSection usage={usage} currency={currency} fx={fx} />}
   {cost == null && !isNoCharge(event) && <div className="ck-inspector-section"><div className="ck-inspector-restricted">We don’t have a price for this call yet, so it isn’t counted as $0.</div></div>}
   {cost == null && isNoCharge(event) && <div className="ck-inspector-section"><div className="ck-inspector-note">This call failed before the provider charged for it, so it counts as no charge.</div></div>}</>;

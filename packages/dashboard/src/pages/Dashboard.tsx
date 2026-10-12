@@ -323,7 +323,7 @@ export default function Dashboard() {
         </div>
         <SpendOverTime projectId={projectId} period={toolbarPeriod} range={requestedScope} environment={environment} money={money} />
         <div className="ck-board-row ck-board-row-3">
-          <CostByModel board={board} totalCost={money(currentCost)} money={money} />
+          <CostByModel board={board} totalCost={money(currentCost)} money={money} projectId={projectId} />
           <UsageByAgent board={board} money={money} />
           <ScoresPanel board={board} />
         </div>

@@ -83,7 +83,7 @@ export function usageFrom(row: Record<string, unknown>): TokenUsage {
   return {
     inputTokens: input,
     cacheReadTokens: cacheRead,
-    cacheWriteTokens: reported ? count(row["cache_write_tokens"]) ?? 0 : null,
+    cacheWriteTokens: count(row["cache_write_tokens"]),
     cacheHitRate: cacheRead != null && input != null && input > 0 ? Math.min(1, cacheRead / input) : null,
     outputTokens: count(row["output_tokens"] ?? row["completion_tokens"]),
     reasoningTokens: count(row["reasoning_tokens"]),

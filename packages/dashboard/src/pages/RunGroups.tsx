@@ -1,6 +1,10 @@
-import { ArrowLeft } from "lucide-react";
+import { Fragment, useEffect, useRef } from "react";
+import { ArrowLeft, ArrowRight, ChevronDown, ChevronRight } from "lucide-react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { getAgentDetail, getAgents, getBudgetPolicies, getTabModels, getWorkflows, type BudgetPolicy, type InsightScope, type RunGroup } from "../api";
+import { getAgentDetail, getAgents, getBudgetPolicies, getTabModels, getWorkflows, type AgentDetail, type AgentRun, type BudgetPolicy, type InsightScope, type RunGroup, type TokenUsage } from "../api";
+import { currentRouterPath } from "../basePath";
+import { RunFlow, runModel, RunSummaryStrip, useRunDetail } from "../components/RunFlow";
+import { formatHitRate, formatTokenCount } from "../components/tokenUsage";
 import { EmptyPanel, LoadingRows, MetricCard, PageHeader, Panel, StatusPill } from "../components/ConsolePrimitives";
 import { formatDateTime, formatReportedAmount, periodDates, type ReportingFx } from "../components/consoleFormatters";
 import { useAuth } from "../contexts/useAuth";
@@ -31,7 +35,7 @@ function Totals({ groups, currency, fx, loading }: { groups: RunGroup[]; currenc
 
 function GroupTable({ groups, label, showShape, currency, fx, onOpen }: { groups: RunGroup[]; label: string; showShape: boolean; currency: string; fx?: ReportingFx | null; onOpen: (group: RunGroup) => void }) {
   return <div className="ck-table-wrap"><table className="ck-table ck-table-clickable">
-    <thead><tr><th>{label}</th><th className="numeric">Runs</th><th className="numeric">Spend</th><th className="numeric">Per run</th><th className="numeric hide-mobile" title="Spend over runs that succeeded, failed runs included">Per success</th>{showShape && <th className="numeric hide-mobile">Steps</th>}{showShape && <th className="numeric hide-mobile">Tool calls</th>}<th className="numeric hide-mobile">p95</th><th className="numeric">Failed</th><th className="hide-mobile">Last run</th></tr></thead>
+    <thead><tr><th>{label}</th><th className="numeric">Runs</th><th className="numeric">Spend</th><th className="numeric">Per run</th><th className="numeric hide-mobile" title="Spend over runs that succeeded, failed runs included">Per success</th>{showShape && <th className="numeric hide-mobile">Steps</th>}{showShape && <th className="numeric hide-mobile">Tool calls</th>}<th className="numeric hide-mobile">p95</th><th className="numeric hide-mobile" title="Share of input tokens read from cache">Cache</th><th className="numeric">Failed</th><th className="hide-mobile">Last run</th></tr></thead>
     <tbody>{groups.map((group) => <tr key={group.name} tabIndex={0} onClick={() => onOpen(group)} onKeyDown={(event) => { if (event.key === "Enter") onOpen(group); }}>
       <td className="primary-cell">{group.name}</td>
       <td className="numeric">{group.runs.toLocaleString()}</td>
@@ -41,6 +45,7 @@ function GroupTable({ groups, label, showShape, currency, fx, onOpen }: { groups
       {showShape && <td className="numeric hide-mobile">{group.avgSteps == null ? "—" : group.avgSteps.toFixed(1)}</td>}
       {showShape && <td className="numeric hide-mobile">{group.avgTools == null ? "—" : group.avgTools.toFixed(1)}</td>}
       <td className="numeric hide-mobile">{group.p95Ms == null ? "—" : formatDuration(group.p95Ms)}</td>
+      <td className="numeric hide-mobile">{formatHitRate(group.usage?.cacheHitRate)}</td>
       <td className="numeric">{group.failedRuns > 0 ? <StatusPill tone="warn">{failureRate(group)}</StatusPill> : "0%"}</td>
       <td className="hide-mobile">{group.lastRun ? formatDateTime(group.lastRun) : "—"}</td>
     </tr>)}</tbody>
@@ -100,13 +105,16 @@ function ModelsView({ kind, projectId, scope, scopeKey, currency, fx }: { kind: 
   if (models.length === 0) return <EmptyPanel title="No model calls in this period" />;
   const total = models.reduce((sum, model) => sum + (model.cost ?? 0), 0);
   return <div className="ck-table-wrap"><table className="ck-table">
-    <thead><tr><th>Model</th><th className="numeric">Spend</th><th className="numeric">Share</th><th className="numeric">Calls</th><th className="numeric hide-mobile">Per call</th><th className="hide-mobile">{kind === "agent" ? "Agents" : "Workflows"}</th></tr></thead>
+    <thead><tr><th>Model</th><th className="numeric">Spend</th><th className="numeric">Share</th><th className="numeric">Calls</th><th className="numeric hide-mobile">Per call</th><th className="numeric hide-mobile" title="Share of input tokens read from cache">Cache hit</th><th className="numeric hide-mobile" title="Output tokens spent on reasoning">Reasoning</th><th className="numeric hide-mobile" title="Saved against the uncached input price">Saved by cache</th><th className="hide-mobile">{kind === "agent" ? "Agents" : "Workflows"}</th></tr></thead>
     <tbody>{models.map((model) => <tr key={`${model.provider}/${model.model}`}>
       <td className="primary-cell">{model.model}<small className="ck-table-sub"><ProviderLabel provider={model.provider} size={12} /></small></td>
       <td className="numeric">{money(model.cost, currency, fx)}</td>
       <td className="numeric">{model.cost != null && total > 0 ? `${Math.round(model.cost / total * 100)}%` : "—"}</td>
       <td className="numeric">{model.calls.toLocaleString()}</td>
       <td className="numeric hide-mobile">{model.cost != null && model.calls > 0 ? money(model.cost / model.calls, currency, fx) : "—"}</td>
+      <td className="numeric hide-mobile">{formatHitRate(model.usage?.cacheHitRate)}</td>
+      <td className="numeric hide-mobile">{formatTokenCount(model.usage?.reasoningTokens)}</td>
+      <td className="numeric hide-mobile">{model.usage?.cacheSavings == null ? "—" : formatReportedAmount(model.usage.cacheSavings, currency, fx)}</td>
       <td className="hide-mobile">{model.topOwners.join(", ")}</td>
     </tr>)}</tbody>
   </table></div>;
@@ -185,44 +193,120 @@ export function Agents() {
   return <RunGroupsPage kind="agent" />;
 }
 
+/** One run opened in place: its summary, waterfall and inspector, with a link to the full run page. */
+function InlineRun({ projectId, traceId, currency, fx, initialCallId, onCallChange }: { projectId: string; traceId: string; currency: string; fx?: ReportingFx | null; initialCallId: string | null; onCallChange: (callId: string | null) => void }) {
+  const { user } = useAuth();
+  const { detail, error, loading } = useRunDetail(projectId, traceId);
+  const model = detail ? runModel(detail, traceId) : null;
+  return <div className="ck-run-inline" id={`run-${traceId}`}>
+    <div className="ck-run-inline-head">
+      <span className="ck-run-inline-id">{model ? model.traceName : "Run"} <span className="mono">{traceId}</span></span>
+      <Link className="ck-button ck-button-secondary" to={`/traces/${encodeURIComponent(traceId)}${initialCallId ? `?call=${encodeURIComponent(initialCallId)}` : ""}`} state={{ returnTo: currentRouterPath() }}>Open run page <ArrowRight size={13} aria-hidden="true" /></Link>
+    </div>
+    {loading ? <div className="ck-run-inline-loading"><LoadingRows count={4} columns={4} /></div>
+      : error || !model ? <EmptyPanel title="Couldn’t open this run" body="It may have expired. Try the run page." />
+      : <>
+        <RunSummaryStrip model={model} currency={currency} fx={fx} />
+        <RunFlow projectId={projectId} traceId={traceId} model={model} role={user?.role ?? "viewer"} currency={currency} fx={fx} initialCallId={initialCallId} onCallChange={onCallChange} requestedTab="cost" inline />
+      </>}
+  </div>;
+}
+
+function cacheCell(usage: TokenUsage | undefined): string {
+  return formatHitRate(usage?.cacheHitRate);
+}
+
+function AgentRunsTable({ runs, projectId, openRun, onToggle, currency, fx, callId, onCallChange }: { runs: AgentRun[]; projectId: string; openRun: string | null; onToggle: (traceId: string) => void; currency: string; fx?: ReportingFx | null; callId: string | null; onCallChange: (callId: string | null) => void }) {
+  const columns = 9;
+  return <div className="ck-table-wrap ck-runs-wrap"><table className="ck-table ck-runs-expandable">
+    <thead><tr><th>Started</th><th className="numeric">Cost</th><th className="numeric hide-mobile">Calls</th><th className="numeric hide-mobile">Steps</th><th className="numeric hide-mobile">Tools</th><th className="numeric hide-mobile" title="Share of input tokens read from cache">Cache</th><th className="numeric">Time</th><th className="hide-mobile">User</th><th>Status</th></tr></thead>
+    <tbody>{runs.map((run) => {
+      const open = openRun === run.traceId;
+      return <Fragment key={run.traceId}>
+        <tr id={`run-row-${run.traceId}`} className={`ck-run-row ${open ? "is-open" : ""}`} onClick={() => onToggle(run.traceId)}>
+          <td className="primary-cell"><button className="ck-run-toggle" type="button" aria-expanded={open} aria-controls={`run-${run.traceId}`} onClick={(event) => { event.stopPropagation(); onToggle(run.traceId); }}>{open ? <ChevronDown size={14} aria-hidden="true" /> : <ChevronRight size={14} aria-hidden="true" />}<span>{formatDateTime(run.startedAt)}</span><span className="sr-only">{open ? ", hide this run" : ", show this run"}</span></button></td>
+          <td className="numeric">{run.unpriced > 0 && run.cost == null ? "Unpriced" : money(run.cost, currency, fx)}</td>
+          <td className="numeric hide-mobile">{run.calls}</td>
+          <td className="numeric hide-mobile">{run.steps}</td>
+          <td className="numeric hide-mobile">{run.tools}</td>
+          <td className="numeric hide-mobile">{cacheCell(run.usage)}</td>
+          <td className="numeric">{run.durationMs == null ? "—" : formatDuration(run.durationMs)}</td>
+          <td className="hide-mobile">{run.userId ?? "—"}</td>
+          <td>{run.failed ? <StatusPill tone="critical">Failed</StatusPill> : <StatusPill tone="good">Done</StatusPill>}</td>
+        </tr>
+        {open && <tr className="ck-run-expanded"><td colSpan={columns}><InlineRun projectId={projectId} traceId={run.traceId} currency={currency} fx={fx} initialCallId={callId} onCallChange={onCallChange} /></td></tr>}
+      </Fragment>;
+    })}</tbody>
+  </table></div>;
+}
+
+/** Cache hit rate across the agent's runs, with what it saved when that can be checked. */
+function cacheDetail(usage: TokenUsage | undefined, currency: string, fx?: ReportingFx | null): string | undefined {
+  if (!usage) return undefined;
+  if (usage.cacheReadTokens == null) return "No cache usage reported";
+  const parts = [`${formatTokenCount(usage.cacheReadTokens)} cached`];
+  if (usage.cacheSavings != null && usage.cacheSavings > 0) parts.push(`${formatReportedAmount(usage.cacheSavings, currency, fx)} saved`);
+  return parts.join(" · ");
+}
+
+function ModelUsageTable({ models, currency, fx }: { models: AgentDetail["models"]; currency: string; fx?: ReportingFx | null }) {
+  return <div className="ck-table-wrap"><table className="ck-table">
+    <thead><tr><th>Model</th><th className="numeric">Calls</th><th className="numeric">Spend</th><th className="numeric hide-mobile" title="Input tokens, cache included">Input</th><th className="numeric" title="Share of input tokens read from cache">Cache hit</th><th className="numeric hide-mobile">Cached</th><th className="numeric hide-mobile" title="Output tokens spent on reasoning">Reasoning</th><th className="numeric hide-mobile" title="Saved against the uncached input price">Saved by cache</th></tr></thead>
+    <tbody>{models.map((model) => <tr key={`${model.provider}/${model.model}`}>
+      <td className="primary-cell">{model.model}<small className="ck-table-sub"><ProviderLabel provider={model.provider} size={12} /></small></td>
+      <td className="numeric">{model.calls.toLocaleString()}</td>
+      <td className="numeric">{money(model.cost, currency, fx)}</td>
+      <td className="numeric hide-mobile">{formatTokenCount(model.usage?.inputTokens)}</td>
+      <td className="numeric">{formatHitRate(model.usage?.cacheHitRate)}</td>
+      <td className="numeric hide-mobile">{formatTokenCount(model.usage?.cacheReadTokens)}</td>
+      <td className="numeric hide-mobile">{formatTokenCount(model.usage?.reasoningTokens)}</td>
+      <td className="numeric hide-mobile">{model.usage?.cacheSavings == null ? "—" : formatReportedAmount(model.usage.cacheSavings, currency, fx)}</td>
+    </tr>)}</tbody>
+  </table></div>;
+}
+
 export function AgentDetailPage() {
   const { name = "" } = useParams();
   const { projectId, scope, scopeKey, currency, fx, toolbar } = useInsightScope();
+  const [params, setParams] = useSearchParams();
   const { data, error, loading } = useScopedLoad(projectId && name ? `agent|${name}|${scopeKey}` : null, () => getAgentDetail(projectId!, name, scope));
   const agent = data?.agent;
+  const openRun = params.get("run");
+  const callId = openRun ? params.get("call") : null;
+  const runListed = Boolean(openRun && data?.runs.some((run) => run.traceId === openRun));
+  const toggleRun = (traceId: string) => setParams((current) => {
+    current.delete("call");
+    if (current.get("run") === traceId) current.delete("run"); else current.set("run", traceId);
+    return current;
+  }, { replace: true });
+  const changeCall = (next: string | null) => setParams((current) => { if (next) current.set("call", next); else current.delete("call"); return current; }, { replace: true });
+  // A shared link opens with its run in view.
+  const scrolled = useRef(false);
+  useEffect(() => {
+    if (scrolled.current || !data) return;
+    scrolled.current = true;
+    if (!openRun) return;
+    document.getElementById(runListed ? `run-row-${openRun}` : `run-${openRun}`)?.scrollIntoView({ block: "start" });
+  }, [openRun, data, runListed]);
+  const usage = agent?.usage;
   return <div className="ck-main-inner">
     <Link className="ck-back-link" to="/agents"><ArrowLeft size={13} /> Agents</Link>
     <PageHeader title={name} actions={toolbar} />
     {error && !data ? <Panel><EmptyPanel title="Couldn’t load this agent" body={error} /></Panel> : <>
-      <div className="ck-metric-grid ck-metric-grid-4">
+      <div className="ck-metric-grid ck-metric-grid-5">
         <MetricCard icon="trace" label="Runs" value={(agent?.runs ?? 0).toLocaleString()} detail={agent && agent.failedRuns > 0 ? `${agent.failedRuns} failed` : undefined} loading={loading && !data} />
         <MetricCard icon="cost" label="Per run" value={money(agent?.costPerRun, currency, fx)} detail={agent ? `${money(agent.cost, currency, fx)} total` : undefined} loading={loading && !data} />
         <MetricCard icon="cost" label="Per successful run" value={money(agent?.costPerSuccess ?? null, currency, fx)} detail={agent && agent.runs > 0 ? `${(agent.runs - agent.failedRuns).toLocaleString()} of ${agent.runs.toLocaleString()} succeeded` : undefined} loading={loading && !data} />
-        <MetricCard icon="clock" label="p95 run time" value={agent?.p95Ms == null ? "—" : formatDuration(agent.p95Ms)} detail={agent?.avgSteps != null ? `${agent.avgSteps.toFixed(1)} steps · ${(agent.avgTools ?? 0).toFixed(1)} tool calls` : undefined} loading={loading && !data} />
+        <MetricCard icon="clock" label="p95 run time" value={agent?.p95Ms == null ? "—" : formatDuration(agent.p95Ms)} detail={agent?.avgSteps != null ? [agent.avgSteps > 0 ? `${agent.avgSteps.toFixed(1)} steps` : null, `${(agent.avgTools ?? 0).toFixed(1)} tools per run`].filter(Boolean).join(" · ") : undefined} loading={loading && !data} />
+        <MetricCard icon="model" label="Cache hit rate" value={formatHitRate(usage?.cacheHitRate)} detail={cacheDetail(usage, currency, fx)} loading={loading && !data} />
       </div>
-      <Panel title="Runs">{loading && !data ? <LoadingRows count={5} columns={6} /> : (data?.runs.length ?? 0) === 0 ? <EmptyPanel title="No runs in this period" /> : <div className="ck-table-wrap"><table className="ck-table">
-        <thead><tr><th>Started</th><th className="numeric">Cost</th><th className="numeric">Calls</th><th className="numeric hide-mobile">Steps</th><th className="numeric hide-mobile">Tools</th><th className="numeric">Time</th><th className="hide-mobile">User</th><th>Status</th></tr></thead>
-        <tbody>{data!.runs.map((run) => <tr key={run.traceId}>
-          <td className="primary-cell"><Link className="ck-table-link" to={`/traces/${encodeURIComponent(run.traceId)}`}>{formatDateTime(run.startedAt)}</Link></td>
-          <td className="numeric">{run.unpriced > 0 && run.cost == null ? "Unpriced" : money(run.cost, currency, fx)}</td>
-          <td className="numeric">{run.calls}</td>
-          <td className="numeric hide-mobile">{run.steps}</td>
-          <td className="numeric hide-mobile">{run.tools}</td>
-          <td className="numeric">{run.durationMs == null ? "—" : formatDuration(run.durationMs)}</td>
-          <td className="hide-mobile">{run.userId ?? "—"}</td>
-          <td>{run.failed ? <StatusPill tone="critical">Failed</StatusPill> : <StatusPill tone="good">Done</StatusPill>}</td>
-        </tr>)}</tbody>
+      {openRun && data && !runListed && projectId && <Panel title="Run" className="ck-run-panel"><InlineRun projectId={projectId} traceId={openRun} currency={currency} fx={fx} initialCallId={callId} onCallChange={changeCall} /></Panel>}
+      <Panel title="Runs" subtitle={data && data.runs.length > 0 ? "Select a run to see its steps, tools and calls." : undefined}>{loading && !data ? <LoadingRows count={5} columns={6} /> : (data?.runs.length ?? 0) === 0 ? <EmptyPanel title="No runs in this period" /> : <AgentRunsTable runs={data!.runs} projectId={projectId!} openRun={openRun} onToggle={toggleRun} currency={currency} fx={fx} callId={callId} onCallChange={changeCall} />}</Panel>
+      <Panel title="Models" subtitle={usage?.reasoningTokens ? `${formatTokenCount(usage.outputTokens)} output tokens, ${formatTokenCount(usage.reasoningTokens)} of them reasoning` : undefined}>{loading && !data ? <LoadingRows count={2} columns={5} /> : (data?.models.length ?? 0) === 0 ? <EmptyPanel title="No model calls" /> : <ModelUsageTable models={data!.models} currency={currency} fx={fx} />}{(data?.subagents.length ?? 0) > 0 && <p className="ck-table-note">Hands off to {data!.subagents.map((agent) => `${agent.name} (${agent.runs})`).join(", ")}</p>}</Panel>
+      <Panel title="Tools">{loading && !data ? <LoadingRows count={2} columns={5} /> : (data?.tools.length ?? 0) === 0 ? <EmptyPanel title="No tool calls" /> : <div className="ck-table-wrap"><table className="ck-table">
+        <thead><tr><th>Tool</th><th className="numeric">Calls</th><th className="numeric">Avg time</th><th className="numeric">Failed</th><th className="numeric">Model spend</th></tr></thead>
+        <tbody>{data!.tools.map((tool) => <tr key={tool.name}><td className="primary-cell">{tool.name}</td><td className="numeric">{tool.calls}</td><td className="numeric">{tool.avgMs == null ? "—" : formatDuration(tool.avgMs)}</td><td className="numeric">{tool.failed}</td><td className="numeric">{tool.cost ? money(tool.cost, currency, fx) : "—"}</td></tr>)}</tbody>
       </table></div>}</Panel>
-      <div className="ck-content-grid">
-        <Panel title="Tools">{(data?.tools.length ?? 0) === 0 ? <EmptyPanel title="No tool calls" /> : <div className="ck-table-wrap"><table className="ck-table">
-          <thead><tr><th>Tool</th><th className="numeric">Calls</th><th className="numeric">Avg time</th><th className="numeric">Failed</th><th className="numeric">Model spend</th></tr></thead>
-          <tbody>{data!.tools.map((tool) => <tr key={tool.name}><td className="primary-cell">{tool.name}</td><td className="numeric">{tool.calls}</td><td className="numeric">{tool.avgMs == null ? "—" : formatDuration(tool.avgMs)}</td><td className="numeric">{tool.failed}</td><td className="numeric">{tool.cost ? money(tool.cost, currency, fx) : "—"}</td></tr>)}</tbody>
-        </table></div>}</Panel>
-        <Panel title="Models">{(data?.models.length ?? 0) === 0 ? <EmptyPanel title="No model calls" /> : <div className="ck-table-wrap"><table className="ck-table">
-          <thead><tr><th>Model</th><th className="numeric">Calls</th><th className="numeric">Spend</th></tr></thead>
-          <tbody>{data!.models.map((model) => <tr key={`${model.provider}/${model.model}`}><td className="primary-cell">{model.model}<small className="ck-table-sub"><ProviderLabel provider={model.provider} size={12} /></small></td><td className="numeric">{model.calls}</td><td className="numeric">{money(model.cost, currency, fx)}</td></tr>)}</tbody>
-        </table></div>}{(data?.subagents.length ?? 0) > 0 && <p className="ck-table-note">Hands off to {data!.subagents.map((agent) => `${agent.name} (${agent.runs})`).join(", ")}</p>}</Panel>
-      </div>
     </>}
   </div>;
 }

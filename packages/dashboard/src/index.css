@@ -4534,3 +4534,83 @@ textarea[aria-invalid="true"] {
   .ck-board-table th:first-child, .ck-board-table td:first-child { padding-left: 16px; }
   .ck-board-table th:last-child, .ck-board-table td:last-child { padding-right: 16px; }
 }
+
+/* Agent page: five metric cards; the cache card spans the row when they wrap. */
+.ck-metric-grid.ck-metric-grid-5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+@media (max-width: 1100px) {
+  .ck-metric-grid.ck-metric-grid-5 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ck-metric-grid.ck-metric-grid-5 > .ck-metric-card:first-child { grid-column: auto; }
+  .ck-metric-grid.ck-metric-grid-5 > .ck-metric-card:last-child { grid-column: 1 / -1; }
+}
+@media (max-width: 767px) {
+  .ck-metric-grid.ck-metric-grid-5 { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* A run's summary: cost, time, calls, input and output tokens, status. */
+.ck-summary-strip.ck-run-summary { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+.ck-run-summary .ck-summary-meta { margin-top: 2px; }
+@media (max-width: 1100px) {
+  .ck-summary-strip.ck-run-summary { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .ck-run-summary .ck-summary-item:nth-child(3n) { border-right: 0; }
+  .ck-run-summary .ck-summary-item:nth-child(-n + 3) { border-bottom: 1px solid var(--ck-border); }
+}
+@media (max-width: 767px) {
+  .ck-summary-strip.ck-run-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ck-run-summary .ck-summary-item { border-right: 1px solid var(--ck-border); border-bottom: 1px solid var(--ck-border); }
+  .ck-run-summary .ck-summary-item:nth-child(2n) { border-right: 0; }
+  .ck-run-summary .ck-summary-item:nth-last-child(-n + 2) { border-bottom: 0; }
+}
+
+/* Token breakdown in the inspector: parts sit under their total. */
+.ck-inspector .ck-token-list > div.is-part dt { padding-left: 12px; }
+.ck-inspector .ck-token-list > div.is-part { padding-top: 6px; padding-bottom: 6px; border-bottom-color: transparent; }
+.ck-inspector .ck-token-list > div:has(+ div.is-part) { border-bottom-color: transparent; padding-bottom: 6px; }
+
+/* Runs that open in place. The row's first cell is a real button. */
+.ck-runs-expandable .ck-run-row { cursor: pointer; }
+.ck-runs-expandable .ck-run-row:hover td { background: var(--ck-soft); }
+.ck-runs-expandable .ck-run-row.is-open td { background: var(--ck-paper); border-bottom: 0; }
+.ck-run-toggle { display: inline-flex; align-items: center; gap: 6px; margin: -4px 0 -4px -4px; padding: 4px; border: 0; border-radius: 6px; background: none; color: var(--ck-ink); font: inherit; font-weight: 500; white-space: nowrap; cursor: pointer; }
+.ck-run-toggle svg { flex: 0 0 auto; color: var(--ck-slate); }
+.ck-run-toggle:focus-visible { outline: 2px solid var(--ck-focus, #476d9c); outline-offset: 0; }
+.ck-table td.ck-run-expanded-cell, .ck-run-expanded > td { height: auto; padding: 0; border-top: 0; background: var(--ck-paper); }
+.ck-run-expanded:hover td { background: var(--ck-paper); }
+.ck-run-inline { display: grid; gap: 16px; padding: 4px 16px 16px; min-width: 0; color: var(--ck-ink); font-size: 14px; cursor: default; }
+.ck-run-panel .ck-run-inline { padding-top: 0; background: transparent; }
+.ck-run-inline-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; }
+.ck-run-inline-id { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ck-slate); font-size: 13px; }
+.ck-run-inline-id .mono { margin-left: 6px; font-size: 12px; }
+.ck-run-inline-head .ck-button { flex: 0 0 auto; }
+.ck-run-inline .ck-summary-strip { margin: 0; }
+.ck-run-inline .ck-trace-layout { gap: 16px; }
+.ck-run-inline .ck-inspector { min-height: 0; }
+.ck-run-inline-loading { border: 1px solid var(--ck-border); border-radius: var(--ck-radius); background: var(--ck-raised); }
+/* On a narrow screen the inspector stacks under the waterfall instead of replacing it. */
+@media (max-width: 900px) {
+  .ck-run-flow-inline.ck-trace-layout .ck-inspector,
+  .ck-run-flow-inline.ck-trace-layout.has-selection .ck-trace-tree { display: block; }
+}
+@media (max-width: 767px) {
+  .ck-run-inline { padding: 4px 12px 12px; gap: 12px; }
+  .ck-run-inline .ck-trace-layout { gap: 12px; }
+  .ck-run-inline-id .mono { display: none; }
+}
+
+/* The waterfall gives names and usage more room than the bars. */
+@media (min-width: 761px) {
+  .ck-wf-row { grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr) 54px 78px; }
+}
+@media (min-width: 901px) {
+  .ck-run-inline .ck-trace-layout { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); }
+}
+.ck-inspector .ck-token-list { margin-top: 8px; }
+/* The opened run takes the width of the table's frame, not of its widest row,
+   and stays in view if the table scrolls sideways. */
+.ck-runs-wrap { container-type: inline-size; }
+.ck-runs-wrap .ck-run-inline { box-sizing: border-box; width: 100cqw; position: sticky; left: 0; }
+.ck-runs-expandable td.numeric { white-space: nowrap; }
+@media (max-width: 767px) {
+  .ck-runs-expandable th:not(:first-child), .ck-runs-expandable td:not(:first-child) { padding-left: 8px; }
+  .ck-runs-expandable th:not(:last-child), .ck-runs-expandable td:not(:last-child) { padding-right: 8px; }
+  .ck-runs-expandable .ck-run-expanded > td { padding: 0; }
+}

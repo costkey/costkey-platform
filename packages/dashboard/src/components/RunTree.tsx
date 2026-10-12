@@ -5,6 +5,7 @@ import { formatDateTime, formatReportedAmount, providerName, type ReportingFx } 
 import { Panel, StatusPill } from "./ConsolePrimitives";
 import { SPAN_KIND_LABEL, spanTitle, type RunTreeNode, type RunTreeSpanNode } from "./runTreeModel";
 import { ProviderLogo, providerId } from "./ProviderLogo";
+import { callUsage, callUsageLine } from "./tokenUsage";
 
 const BAR_TONE: Record<string, string> = {
   agent: "var(--ck-ink)",
@@ -35,8 +36,10 @@ export function usageText(event: TraceEvent): string {
   if (units["searchQueries"]) return `${n(units["searchQueries"])} ${units["searchQueries"] === 1 ? "query" : "queries"}`;
   if (units["pages"]) return `${n(units["pages"])} pages`;
   if (units["images"]) return `${n(units["images"])} images`;
+  // Tokens: input with cache, output with reasoning, and the cache hit rate when reported.
+  const tokens = callUsageLine(callUsage(event));
+  if (tokens) return tokens;
   if (event.total_tokens) return `${n(event.total_tokens)} tokens`;
-  if (event.input_tokens || event.output_tokens) return `${n((event.input_tokens ?? 0) + (event.output_tokens ?? 0))} tokens`;
   return "";
 }
 
@@ -94,7 +97,7 @@ export function RunTree({
       {runSpanMs > 1 && (
         <div className="ck-wf-row ck-wf-axis" aria-hidden="true">
           <span />
-          <span className="ck-wf-ticks">{[0, 1 / 3, 2 / 3, 1].map((at) => <i key={at} style={{ left: `${at * 100}%` }}>{at === 0 ? "0 s" : formatDuration(runSpanMs * at)}</i>)}</span>
+          <span className="ck-wf-ticks">{[0, 0.5, 1].map((at) => <i key={at} style={{ left: `${at * 100}%` }}>{at === 0 ? "0 s" : formatDuration(runSpanMs * at)}</i>)}</span>
           <span /><span />
         </div>
       )}
@@ -115,7 +118,7 @@ export function RunTree({
               <span className="ck-wf-tile" title={providerName(node.event.provider || "")}><ProviderLogo provider={node.event.provider} size={15} /></span>
               <span className="ck-wf-text">
                 <span className="ck-wf-title ck-wf-mono">{callName(node.event)}{node.event.parent_event_id && <em className="ck-wf-tag">Retry</em>}{Number(node.event.status_code) >= 400 && <em className="ck-wf-tag is-error">{node.event.status_code}</em>}</span>
-                <span className="ck-wf-sub">{node.event.model || "Model not recorded"}{usageText(node.event) ? ` · ${usageText(node.event)}` : ""}</span>
+                <span className="ck-wf-sub">{[callName(node.event) === node.event.model ? null : node.event.model || "Model not recorded", usageText(node.event) || null].filter(Boolean).join(" · ") || node.event.model}</span>
               </span>
             </span>
             {bar(node.startMs, node.endMs, providerTone(node.event.provider))}

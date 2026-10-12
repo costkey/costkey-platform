@@ -328,6 +328,11 @@ export interface TraceEvent {
   input_tokens: number | null;
   output_tokens: number | null;
   total_tokens: number | null;
+  reasoning_tokens?: number | null;
+  cache_read_tokens?: number | null;
+  cache_creation_tokens?: number | null;
+  /** What cache hits saved on this call in USD; null when its price can't be checked. */
+  cache_saved_usd?: number | null;
   cost_usd: number | null;
   duration_ms: number;
   streaming: number;
@@ -965,6 +970,22 @@ export async function getInsights(projectId: string, range?: TimeRange): Promise
   return get(`/projects/${projectId}/insights${qs}`);
 }
 
+/**
+ * Token usage as the server reads it across providers: input counts the whole
+ * prompt with cache included, output includes reasoning. Cache fields are null
+ * when no call reported one.
+ */
+export interface TokenUsage {
+  inputTokens: number | null;
+  cacheReadTokens: number | null;
+  cacheWriteTokens: number | null;
+  cacheHitRate: number | null;
+  outputTokens: number | null;
+  reasoningTokens: number | null;
+  /** USD saved by cache hits; only set when every hit was priced from a list price we could check. */
+  cacheSavings?: number | null;
+}
+
 export interface RunGroup {
   name: string;
   runs: number;
@@ -980,13 +1001,28 @@ export interface RunGroup {
   avgSteps: number | null;
   avgTools: number | null;
   lastRun: string | null;
+  usage?: TokenUsage;
+}
+
+export interface AgentRun {
+  traceId: string;
+  startedAt: string;
+  cost: number | null;
+  unpriced: number;
+  calls: number;
+  steps: number;
+  tools: number;
+  failed: boolean;
+  durationMs: number | null;
+  userId: string | null;
+  usage?: TokenUsage;
 }
 
 export interface AgentDetail {
   agent: RunGroup;
-  runs: Array<{ traceId: string; startedAt: string; cost: number | null; unpriced: number; calls: number; steps: number; tools: number; failed: boolean; durationMs: number | null; userId: string | null }>;
+  runs: AgentRun[];
   tools: Array<{ name: string; calls: number; avgMs: number | null; failed: number; cost: number | null }>;
-  models: Array<{ model: string; provider: string; calls: number; cost: number | null }>;
+  models: Array<{ model: string; provider: string; calls: number; cost: number | null; usage?: TokenUsage }>;
   subagents: Array<{ name: string; runs: number }>;
 }
 
@@ -1032,6 +1068,7 @@ export interface TabModel {
   runs: number;
   cost: number | null;
   topOwners: string[];
+  usage?: TokenUsage;
 }
 
 export function getTabModels(projectId: string, kind: "agent" | "workflow", scope: InsightScope): Promise<{ models: TabModel[] }> {

@@ -1,9 +1,8 @@
 import { appUrl, currentRouterPath } from "../basePath";
-import { type ReactNode, useEffect, useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { ArrowLeft, ArrowRight, Check, CircleAlert, Copy, Download, ExternalLink, GitCompare, Info, Pin, RefreshCw, Route, Search, Share, SlidersHorizontal } from "lucide-react";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
-  getEvent,
   getEvents,
   getTrace,
   getTraceFilterOptions,
@@ -15,8 +14,6 @@ import {
   type TraceFilterDimension,
   type TraceFilterOption,
   type TraceSort,
-  type UsageComponent,
-  type TraceSpan,
 } from "../api";
 import { useAuth } from "../contexts/useAuth";
 import {
@@ -28,13 +25,11 @@ import {
   StatusPill,
   type Period,
 } from "../components/ConsolePrimitives";
-import { dateInputToIso, displayTimeZoneLabel, formatAbsoluteDate, formatCurrencyAmount, formatDateTime, formatReportedAmount, periodDates, reportingCurrencyNote, sourceAttributionStatus, type ReportingFx } from "../components/consoleFormatters";
+import { dateInputToIso, displayTimeZoneLabel, formatAbsoluteDate, formatDateTime, formatReportedAmount, periodDates, reportingCurrencyNote, type ReportingFx } from "../components/consoleFormatters";
 import { restoreTraceView, serializeTraceView, TRACE_VIEW_FILTER_KEYS } from "./traceViewState";
 import { formatDuration } from "../utils";
-import { RunTree, SpanInspector } from "../components/RunTree";
-import { RunQualityChecks } from "../components/RunQualityChecks";
-import { buildRunTree, defaultCollapsed, flattenRunTree, type RunTreeNode, type RunTreeSpanNode } from "../components/runTreeModel";
-import { prototypeRole, prototypeState, PrototypeStateNotice, PrototypeStatePanel, type PrototypeState } from "../components/PrototypeState";
+import { eventDisplayName, inspectorTab, isCallEvent, parseJson, RunFlow, runModel, runStatus, RunSummaryStrip, useRunDetail } from "../components/RunFlow";
+import { prototypeRole, prototypeState, PrototypeStateNotice, PrototypeStatePanel } from "../components/PrototypeState";
 import { isPrototypePreview } from "../prototypePreview";
 import "./PrototypeRoute.css";
 import { ProviderLabel } from "../components/ProviderLogo";
@@ -168,9 +163,6 @@ function traceLabel(trace: Trace): string {
   return trace.trace_name?.trim() || `Run ${trace.trace_id.slice(0, 12)}`;
 }
 
-function isCallEvent(event: TraceEvent): boolean {
-  return !event.event_type || event.event_type === "call";
-}
 
 function useTraceList(projectId: string | null, view: ListView, period: Period, query: string, filters: TraceFiltersState, sort: TraceSort, page: number, pageSize: number, reload: number, timezone?: string | null, contextKey?: string | null, contextValue?: string[] | null, scopeOverride?: { from: string; to: string } | null) {
   const filterKey = JSON.stringify(filters);
@@ -226,40 +218,6 @@ function ListToolbar({ draft, onDraftChange, onSubmit, sort, onSort, selectedCou
       </div>
     </>
   );
-}
-
-// The fixture adapter records a human call name in event metadata; prefer it
-// for tree/step labels like the prototype ("Embed query"), falling back to
-// the recorded function for live events that carry no friendly name.
-function findSpanNode(nodes: RunTreeNode[], spanId: string): RunTreeSpanNode | null {
-  for (const node of nodes) {
-    if (node.type !== "span") continue;
-    if (node.id === spanId) return node;
-    const nested = findSpanNode(node.children, spanId);
-    if (nested) return nested;
-  }
-  return null;
-}
-
-function eventDisplayName(event: { metadata?: unknown; bl_function?: string | null; model?: string | null }): string {
-  try {
-    const raw = event.metadata;
-    const meta = typeof raw === "string" ? JSON.parse(raw) as unknown : raw;
-    const callName = (meta as { callName?: unknown } | null)?.callName;
-    if (typeof callName === "string" && callName.trim()) return callName;
-  } catch {
-    /* fall through to the recorded function */
-  }
-  return event.bl_function || event.model || "Recorded call";
-}
-
-function runStatus(trace: Trace, cost: number | null): { tone: "good" | "warn" | "critical" | "neutral"; label: string } {
-  const execution = String(trace.execution_state ?? "").toLowerCase();
-  if (execution === "failed" || execution === "error") return { tone: "critical", label: "Failed" };
-  if (execution === "running" || execution === "in_progress") return { tone: "neutral", label: "Running" };
-  if ((trace.unpriced_count ?? 0) > 0) return { tone: "warn", label: "Partly priced" };
-  if (cost == null) return { tone: "neutral", label: "Price pending" };
-  return { tone: "good", label: "Complete" };
 }
 
 
@@ -495,113 +453,6 @@ function TraceList({ projectId, period, setPeriod, contextKey, contextValue, sco
   </div>;
 }
 
-function parseJson(value: unknown): unknown {
-  if (!value) return null;
-  if (typeof value !== "string") return value;
-  try { return JSON.parse(value); } catch { return value; }
-}
-
-function jsonText(value: unknown): string {
-  if (value == null) return "";
-  if (typeof value === "string") return value;
-  return JSON.stringify(value, null, 2);
-}
-
-type InspectorTab = "content" | "cost" | "source" | "context";
-
-function inspectorTab(value: string | null | undefined): InspectorTab {
-  const normalized = value?.toLowerCase().replaceAll(" & ", "-").replaceAll(" ", "-");
-  if (normalized === "cost-usage" || normalized === "cost") return "cost";
-  if (normalized === "source") return "source";
-  if (normalized === "context") return "context";
-  return "content";
-}
-
-function CallInspector({ projectId, event, role, currency, fx, initialTab = "content", prototypeVariant = "default", forceError = false }: { projectId: string; event: TraceEvent; role: string; currency: string; fx?: ReportingFx | null; initialTab?: InspectorTab; prototypeVariant?: PrototypeState; forceError?: boolean }) {
-  const requestKey = `${projectId}:${event.id}:${role}`;
-  const [state, setState] = useState<{ key: string; detail: EventRow | null; error: string | null }>({ key: "", detail: null, error: null });
-  const loading = role !== "viewer" && state.key !== requestKey;
-  const detail = role === "viewer" ? event as unknown as EventRow : state.key === requestKey ? state.detail : null;
-  const detailError = forceError ? "Call details could not be loaded" : role === "viewer" ? null : state.key === requestKey ? state.error : null;
-  const [tab, setTab] = useState<InspectorTab>(initialTab);
-  const canReadContent = role !== "viewer";
-
-  useEffect(() => {
-    let cancelled = false;
-    if (role === "viewer") {
-      return () => { cancelled = true; };
-    }
-    getEvent(projectId, event.id)
-      .then((result) => { if (!cancelled) setState({ key: requestKey, detail: result.event, error: null }); })
-      .catch((reason: unknown) => { if (!cancelled) setState({ key: requestKey, detail: null, error: reason instanceof Error ? reason.message : "Call detail could not be loaded" }); });
-    return () => { cancelled = true; };
-  }, [projectId, event.id, role, requestKey]);
-
-  const content = detail ? parseJson(detail.request_body) : null;
-  const output = detail ? parseJson(detail.response_body) : null;
-  const context = parseJson(detail?.context ?? event.context);
-  const frames = parseJson(detail?.call_site_frames ?? event.call_site_frames);
-  const cost = detail?.cost_usd ?? event.cost_usd;
-
-  return <Panel className="ck-inspector" title="Call">
-    <div className="ck-tabs" role="tablist" aria-label="Call detail"><button className={`ck-tab ${tab === "content" ? "active" : ""}`} role="tab" aria-selected={tab === "content"} type="button" onClick={() => setTab("content")}>Content</button><button className={`ck-tab ${tab === "cost" ? "active" : ""}`} role="tab" aria-selected={tab === "cost"} type="button" onClick={() => setTab("cost")}>Cost &amp; usage</button><button className={`ck-tab ${tab === "source" ? "active" : ""}`} role="tab" aria-selected={tab === "source"} type="button" onClick={() => setTab("source")}>Source</button><button className={`ck-tab ${tab === "context" ? "active" : ""}`} role="tab" aria-selected={tab === "context"} type="button" onClick={() => setTab("context")}>Context</button></div>
-      <div className="ck-inspector-body">
-      <div className="ck-inspector-call"><div><div className="ck-inspector-heading">{eventDisplayName({ ...event, bl_function: detail?.bl_function ?? event.bl_function })}</div><div className="ck-inspector-subheading"><ProviderLabel provider={event.provider} size={13} /> · {event.model || "Model not recorded"} · {formatAbsoluteDate(event.timestamp)}</div></div><strong className="ck-inspector-cost">{cost == null ? "Unpriced" : formatReportedAmount(Number(cost), currency, fx)}</strong></div>
-      {loading && <div style={{ marginTop: 18 }}><LoadingRows count={3} columns={2} /></div>}
-      {detailError && <div className="ck-alert" role="alert" style={{ marginTop: 16 }}><CircleAlert size={14} /><div><strong>Couldn’t load this call’s details.</strong> Its cost and timing are still accurate.</div></div>}
-      {!loading && tab === "content" && <ContentTab canReadContent={canReadContent} input={content} output={output} contentStatus={prototypeVariant === "expired" ? "expired" : prototypeVariant === "uncaptured" ? "not_available" : prototypeVariant === "redacted" ? "redacted" : prototypeVariant === "long-content" ? "too_long" : prototypeVariant === "restricted" ? "restricted" : detail?.content_status ?? event.content_status} />}
-      {!loading && tab === "cost" && <CostTab event={event} detail={detail} cost={cost} currency={currency} fx={fx} />}
-      {!loading && tab === "source" && <SourceTab detail={prototypeVariant === "missing-source" ? null : detail} frames={prototypeVariant === "missing-source" ? [] : frames} canReadContent={canReadContent} />}
-      {!loading && tab === "context" && <ContextTab context={context} />}
-    </div>
-  </Panel>;
-}
-
-function ContentTab({ canReadContent, input, output, contentStatus }: { canReadContent: boolean; input: unknown; output: unknown; contentStatus?: string | null }) {
-  if (!canReadContent || contentStatus === "restricted") return <div className="ck-inspector-section"><div className="ck-inspector-restricted"><strong>Prompts and responses are hidden for your role.</strong><br />Viewers see cost and usage. Ask an Owner or Admin if you need more access.</div></div>;
-  if (!input && !output) {
-    const message = contentStatus === "metadata_only"
-      ? { title: "Prompts aren’t captured", body: "This project records cost and usage only. You can turn on text capture in Settings." }
-      : contentStatus === "redacted"
-        ? { title: "Content removed", body: "This call’s prompt and response were deleted for privacy. Its cost and usage remain." }
-        : contentStatus === "expired"
-          ? { title: "Content expired", body: "Prompts are kept for a limited time and this one has expired. Its cost and usage remain." }
-            : contentStatus === "not_available"
-              ? { title: "No content for this call", body: "The provider didn’t return a prompt or response we could capture." }
-              : contentStatus === "too_long"
-                ? { title: "Too long to show here", body: "The content is stored, but it’s too large to display inline." }
-            : { title: "No content for this call", body: "There’s no prompt or response stored for this call. Its cost and usage are still here." };
-    return <div className="ck-inspector-section"><EmptyPanel title={message.title} body={message.body} /></div>;
-  }
-  return <><InspectorBlock title="Input" value={jsonText(input) || "Not captured"} /><InspectorBlock title="Output" value={jsonText(output) || "Not captured"} /></>;
-}
-
-function InspectorBlock({ title, value }: { title: string; value: string }) { return <div className="ck-inspector-section"><div className="ck-inspector-section-title"><span>{title}</span><button className="ck-button ck-button-quiet" style={{ minHeight: 0, padding: 0 }} type="button" onClick={() => void navigator.clipboard.writeText(value)}><Copy size={11} /> Copy</button></div><pre className="ck-inspector-pre">{value}</pre></div>; }
-
-function CostTab({ event, detail, cost, currency, fx }: { event: TraceEvent; detail: EventRow | null; cost: number | null | undefined; currency: string; fx?: ReportingFx | null }) {
-  const input = event.input_tokens ?? detail?.input_tokens;
-  const output = event.output_tokens ?? detail?.output_tokens;
-  const total = event.total_tokens ?? detail?.total_tokens;
-  const requestedModel = event.request_model ?? detail?.request_model;
-  const basis = event.cost_basis ?? detail?.cost_basis;
-  const source = event.cost_source ?? detail?.cost_source;
-  const nativeUsage = event.unit_value == null ? "Tokens below" : `${Number(event.unit_value).toLocaleString()} ${event.unit_kind || event.unit || "units"}`;
-  return <><div className="ck-inspector-section"><div className="ck-inspector-section-title"><span>How this was priced</span></div><div className="ck-inspector-grid"><InspectorValue label="Cost" value={cost == null ? "Unpriced" : formatReportedAmount(Number(cost), currency, fx)} /><InspectorValue label="Price from" value={basis === "reported" ? "Reported by the provider" : basis === "estimated" ? "Estimated from list prices" : "Not known"} /><InspectorValue label="Provider" value={<ProviderLabel provider={event.provider} />} /><InspectorValue label="Model used" value={event.model || "Not recorded"} /><InspectorValue label="Model requested" value={requestedModel || "Not recorded"} /><InspectorValue label="Rate card" value={source || "Not recorded"} /><InspectorValue label="Usage" value={nativeUsage} /><InspectorValue label="Input tokens" value={input == null ? "—" : Number(input).toLocaleString()} /><InspectorValue label="Output tokens" value={output == null ? "—" : Number(output).toLocaleString()} /><InspectorValue label="Total tokens" value={total == null ? "—" : Number(total).toLocaleString()} /><InspectorValue label="Duration" value={formatDuration(Number(event.duration_ms) || 0)} /></div></div>{cost == null && <div className="ck-inspector-section"><div className="ck-inspector-restricted">We don’t have a price for this call yet, so it isn’t counted as $0.</div></div>}</>;
-}
-
-function InspectorValue({ label, value }: { label: string; value: ReactNode }) { return <div><div className="ck-inspector-key">{label}</div><div className="ck-inspector-value">{value}</div></div>; }
-
-function SourceTab({ detail, frames, canReadContent }: { detail: EventRow | null; frames: unknown; canReadContent: boolean }) {
-  if (!canReadContent) return <div className="ck-inspector-section"><div className="ck-inspector-restricted"><strong>Source is hidden for your role.</strong><br />Viewers don’t see file and function locations.</div></div>;
-  const frameRows = Array.isArray(frames) ? frames as Array<Record<string, unknown>> : [];
-  const attribution = sourceAttributionStatus(detail ? { featureSource: detail.feature_source, featureMappingId: detail.feature_mapping_id, functionName: detail.bl_function, fileName: detail.bl_file } : null);
-  return <><div className="ck-inspector-section"><div className="ck-inspector-section-title"><span>Where in your code</span></div><div className="ck-inspector-grid"><InspectorValue label="Function" value={detail?.bl_function || "Not recorded"} /><InspectorValue label="File" value={detail?.bl_file || "Not recorded"} /><InspectorValue label="Line" value={detail?.bl_line == null ? "—" : String(detail.bl_line)} /><InspectorValue label="Feature label" value={attribution === "Explicit" ? "Set in code" : attribution === "Mapped" ? "From a mapping" : attribution === "Inferred" ? "Inferred" : attribution === "Recorded location" ? "Not set" : "Not recorded"} /></div></div>{frameRows.length > 0 && <div className="ck-inspector-section"><div className="ck-inspector-section-title"><span>Call stack</span></div><pre className="ck-inspector-pre">{frameRows.slice(0, 8).map((frame, index) => `${index + 1}. ${String(frame["functionName"] ?? "anonymous")} · ${String(frame["fileName"] ?? "file unavailable")}${frame["lineNumber"] ? `:${String(frame["lineNumber"])}` : ""}`).join("\n")}</pre></div>}{frameRows.length === 0 && <div className="ck-inspector-section"><div className="ck-inspector-restricted">No stack was recorded for this call. Its cost is unaffected.</div></div>}</>;
-}
-
-function ContextTab({ context }: { context: unknown }) {
-  if (!context || (typeof context === "object" && Object.keys(context as object).length === 0)) return <div className="ck-inspector-section"><EmptyPanel title="No labels on this call" /></div>;
-  return <div className="ck-inspector-section"><div className="ck-inspector-section-title"><span>Labels from your app</span></div><pre className="ck-inspector-pre">{jsonText(context)}</pre><p className="ck-table-note" style={{ paddingLeft: 0, paddingRight: 0, borderTop: 0 }}>Shown exactly as your app sent them.</p></div>;
-}
 
 function TraceDetail({ projectId, traceId }: { projectId: string; traceId: string }) {
   const { user, workspaceSettings } = useAuth();
@@ -609,28 +460,12 @@ function TraceDetail({ projectId, traceId }: { projectId: string; traceId: strin
   const fx = workspaceSettings?.fx;
   const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
-  const requestKey = `${projectId}:${traceId}`;
-  const [state, setState] = useState<{ key: string; trace: { traceId: string; summary: Record<string, unknown>; events: TraceEvent[]; usageComponents?: UsageComponent[]; spans?: TraceSpan[] } | null; error: string | null }>({ key: "", trace: null, error: null });
-  const loading = state.key !== requestKey;
-  const trace = state.key === requestKey ? state.trace : null;
-  const error = state.key === requestKey ? state.error : null;
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [selectedSpanId, setSelectedSpanId] = useState<string | null>(null);
-  const [collapsedState, setCollapsedState] = useState<Set<string> | null>(null);
+  const { detail: trace, error, loading } = useRunDetail(projectId, traceId);
   const [copied, setCopied] = useState(false);
   const [shareFallback, setShareFallback] = useState<string | null>(null);
   const explicitState = prototypeState(searchParams);
   const effectiveRole = prototypeRole(searchParams, user?.role ?? "viewer");
   const requestedTab = inspectorTab(searchParams.get("tab"));
-
-  useEffect(() => {
-    let cancelled = false;
-    getTrace(projectId, traceId)
-      .then((result) => { if (!cancelled) { const requestedRaw = new URLSearchParams(window.location.search).get("call"); const requested = requestedRaw ? result.events.filter(isCallEvent).find((event) => event.id === requestedRaw || event.id.endsWith(`:${requestedRaw}`))?.id : null; setState({ key: requestKey, trace: result, error: null }); setSelectedId(requested ?? "__root__"); } })
-      .catch((reason: unknown) => { if (!cancelled) setState({ key: requestKey, trace: null, error: reason instanceof Error ? reason.message : "Run not found" }); });
-    return () => { cancelled = true; };
-  }, [projectId, traceId, requestKey]);
-
 
   const namedState = PrototypeStatePanel({ state: explicitState, family: "Run", title: explicitState === "no-access" ? "Access required" : explicitState === "not-found" ? "Run not found" : undefined, backHref: "/traces", retryHref: `/traces/${encodeURIComponent(traceId)}${window.location.search}` });
   if (namedState) return namedState;
@@ -642,51 +477,13 @@ function TraceDetail({ projectId, traceId }: { projectId: string; traceId: strin
   if (loading) return <><PageHeader title="Loading run" /><Panel><LoadingRows count={6} columns={4} /></Panel></>;
   if (error || !trace) return <><PageHeader title="Run unavailable" actions={<Link className="ck-button ck-button-secondary" to="/traces"><ArrowLeft size={13} /> Back to runs</Link>} /><Panel><EmptyPanel title="Couldn’t open this run" body="It may have expired, or it belongs to a project you can’t open." action={<button className="ck-button ck-button-secondary" type="button" onClick={() => window.location.reload()}>Try again</button>} icon={<CircleAlert size={18} />} /></Panel></>;
 
-  const summary = trace.summary;
-  const allEvents = trace.events ?? [];
-  const rawEvents = allEvents.filter(isCallEvent);
-  const events = explicitState === "partial" ? rawEvents.map((event, index) => index === 2 ? { ...event, cost_usd: null, cost_basis: "unknown" as const } : event) : rawEvents;
-  const selected = events.find((event) => event.id === selectedId) ?? null;
-  const knownCost = explicitState === "partial"
-    ? events.reduce<number>((sum, event) => sum + (event.cost_usd == null ? 0 : Number(event.cost_usd) || 0), 0)
-    : summary.known_cost !== undefined
-    ? (summary.known_cost == null ? null : Number(summary.known_cost) || 0)
-    : events.reduce<number>((sum, event) => sum + (event.cost_usd == null ? 0 : Number(event.cost_usd) || 0), 0);
-  const unpriced = explicitState === "partial" ? Math.max(1, events.filter((event) => event.cost_usd == null).length) : summary.unpriced_count == null
-    ? events.filter((event) => event.cost_usd == null).length
-    : Number(summary.unpriced_count) || 0;
-  const start = String(summary.started_at ?? events[0]?.timestamp ?? "");
-  const end = String(summary.ended_at ?? events[events.length - 1]?.timestamp ?? "");
-  const fallbackStart = events.reduce((min, event) => Math.min(min, new Date(event.timestamp).getTime()), Number.POSITIVE_INFINITY);
-  const fallbackEnd = events.reduce((max, event) => Math.max(max, new Date(event.timestamp).getTime() + (Number(event.duration_ms) || 0)), 0);
-  const elapsed = summary.elapsed_ms == null
-    ? (Number.isFinite(fallbackStart) && fallbackEnd > 0 ? fallbackEnd - fallbackStart : new Date(end).getTime() - new Date(start).getTime())
-    : Number(summary.elapsed_ms);
-  const executionState = explicitState === "in-progress" ? "in_progress" : explicitState === "interrupted" ? "interrupted" : String(summary.execution_state ?? "unknown");
-  const accountingState = ["accounting", "in-progress"].includes(explicitState) ? "updating" : explicitState === "partial" ? "partial" : String(summary.accounting_state ?? (unpriced > 0 ? "partial" : "complete"));
-  const mostExpensive = events.reduce<TraceEvent | null>((current, event) => event.cost_usd != null && (current == null || Number(event.cost_usd) > Number(current.cost_usd)) ? event : current, null);
-  const traceName = String(summary.trace_name ?? traceId);
+  const model = runModel(trace, traceId, explicitState);
+  const { summary, events, start, traceName } = model;
   const service = typeof summary.service === "string" ? summary.service : null;
   const customer = typeof summary.customer === "string" ? summary.customer : null;
   const release = typeof summary.release === "string" ? summary.release : null;
   const retryEvents = events.filter((event) => Boolean(event.parent_event_id));
   const retrySubtotal = retryEvents.reduce((total, event) => total + (event.cost_usd == null ? 0 : Number(event.cost_usd) || 0), 0);
-  const orderedEvents = [...events].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-  const eventStartMs = orderedEvents.reduce((minimum, event) => Math.min(minimum, new Date(event.timestamp).getTime()), Number.POSITIVE_INFINITY);
-  const eventEndMs = orderedEvents.reduce((maximum, event) => Math.max(maximum, new Date(event.timestamp).getTime() + (Number(event.duration_ms) || 0)), eventStartMs);
-  const eventSpan = Number.isFinite(eventStartMs) && eventEndMs > eventStartMs ? eventEndMs - eventStartMs : Math.max(elapsed, 1);
-  const spans = trace.spans ?? [];
-  const treeRoots = buildRunTree(spans, events);
-  const collapsed = collapsedState ?? defaultCollapsed(spans);
-  const treeRows = flattenRunTree(treeRoots, collapsed);
-  const selectedSpan = selectedSpanId ? findSpanNode(treeRoots, selectedSpanId) : null;
-  const toggleSpan = (spanId: string): void => setCollapsedState((current) => {
-    const next = new Set(current ?? defaultCollapsed(spans));
-    if (next.has(spanId)) next.delete(spanId);
-    else next.add(spanId);
-    return next;
-  });
-  const detailStatus = runStatus({ execution_state: executionState, unpriced_count: unpriced } as Trace, knownCost);
   const timeZoneLabel = displayTimeZoneLabel();
 
   function share(): void {
@@ -697,30 +494,19 @@ function TraceDetail({ projectId, traceId }: { projectId: string; traceId: strin
     void navigator.clipboard.writeText(link).then(() => { setCopied(true); window.setTimeout(() => setCopied(false), 1600); }).catch(() => setShareFallback(link));
   }
   const returnTo = typeof location.state === "object" && location.state !== null && "returnTo" in location.state && typeof (location.state as { returnTo?: unknown }).returnTo === "string" ? (location.state as { returnTo: string }).returnTo : "/traces";
-  function selectRoot(): void { setSelectedSpanId(null); setSelectedId("__root__"); setSearchParams((current) => { current.delete("call"); return current; }, { replace: true }); }
-  function selectEvent(eventId: string): void { setSelectedSpanId(null); setSelectedId(eventId); setSearchParams((current) => { current.set("call", eventId); return current; }, { replace: true }); }
+  const agentReturn = returnTo.match(/^\/agents\/([^/?#]+)/);
+  const backLabel = agentReturn ? decodeURIComponent(agentReturn[1]) : "Traces";
+  function changeCall(callId: string | null): void { setSearchParams((current) => { if (callId) current.set("call", callId); else current.delete("call"); return current; }, { replace: true }); }
   const feature = typeof summary.feature === "string" ? summary.feature : null;
-  const allowanceParams = new URLSearchParams({ project: projectId });
-  if (feature) { allowanceParams.set("scopeDimension", "feature"); allowanceParams.set("scopeValue", feature); }
 
   return <div className="prototype-trace-route">
     
     <PrototypeStateNotice state={explicitState} family="trace" role={effectiveRole} onRetry={() => window.location.reload()} />
-    <div className="ck-detail-header prototype-trace-header"><div><Link className="ck-back-link" to={returnTo}><ArrowLeft size={13} aria-hidden="true" /> Traces</Link><h1 className="ck-detail-title">{traceName}</h1><div className="ck-detail-id">{start ? `${formatAbsoluteDate(start)}${timeZoneLabel ? ` ${timeZoneLabel}` : ""} · ` : ""}<span className="mono">{traceId}</span></div>{shareFallback && <label className="ck-share-fallback">Copy this authenticated link manually<input readOnly value={shareFallback} onFocus={(event) => event.currentTarget.select()} /></label>}<div className="ck-pill-row" style={{ marginTop: 12, marginBottom: 0 }}>{[feature, customer ?? service, typeof summary.environment === "string" ? summary.environment : null, release ? `Release ${release}` : null].filter(Boolean).map((value) => <StatusPill tone="neutral" key={String(value)}>{String(value)}</StatusPill>)}</div></div><div className="ck-detail-actions"><button className="ck-button ck-button-secondary" type="button" onClick={share}>{copied ? <Check size={13} /> : <Share size={13} />}{copied ? "Link copied" : shareFallback ? "Try copy again" : "Share"}</button><Link className="ck-button ck-button-secondary" to={`/compare?ids=${encodeURIComponent(traceId)}&project=${encodeURIComponent(projectId)}`}><GitCompare size={13} /> Compare</Link></div></div>
-    <div className="ck-summary-strip prototype-trace-summary"><div className="ck-summary-item"><div className="prototype-summary-label">Cost</div><div className="ck-summary-value">{knownCost == null ? "Unpriced" : formatReportedAmount(knownCost, reportingCurrency, fx)}</div>{unpriced > 0 && <div className="ck-summary-meta">{`${unpriced} of ${events.length} calls unpriced`}</div>}</div><div className="ck-summary-item"><div className="prototype-summary-label">Duration</div><div className="ck-summary-value">{Number.isFinite(elapsed) && elapsed >= 0 ? formatDuration(elapsed) : "Unknown"}</div></div><div className="ck-summary-item"><div className="prototype-summary-label">Calls</div><div className="ck-summary-value">{events.length.toLocaleString()}</div><div className="ck-summary-meta"><ProviderLabel provider={[...new Set(events.map((event) => event.provider).filter(Boolean))].join(",")} size={13} /></div></div><div className="ck-summary-item"><div className="prototype-summary-label">Status</div><div className="ck-summary-value"><StatusPill tone={detailStatus.tone}>{detailStatus.label}</StatusPill></div>{accountingState !== "complete" && <div className="ck-summary-meta">{accountingState === "updating" ? "Cost still updating" : "Some prices missing"}</div>}</div></div>
+    <div className="ck-detail-header prototype-trace-header"><div><Link className="ck-back-link" to={returnTo}><ArrowLeft size={13} aria-hidden="true" /> {backLabel}</Link><h1 className="ck-detail-title">{traceName}</h1><div className="ck-detail-id">{start ? `${formatAbsoluteDate(start)}${timeZoneLabel ? ` ${timeZoneLabel}` : ""} · ` : ""}<span className="mono">{traceId}</span></div>{shareFallback && <label className="ck-share-fallback">Copy this authenticated link manually<input readOnly value={shareFallback} onFocus={(event) => event.currentTarget.select()} /></label>}<div className="ck-pill-row" style={{ marginTop: 12, marginBottom: 0 }}>{[feature, customer ?? service, typeof summary.environment === "string" ? summary.environment : null, release ? `Release ${release}` : null].filter(Boolean).map((value) => <StatusPill tone="neutral" key={String(value)}>{String(value)}</StatusPill>)}</div></div><div className="ck-detail-actions"><button className="ck-button ck-button-secondary" type="button" onClick={share}>{copied ? <Check size={13} /> : <Share size={13} />}{copied ? "Link copied" : shareFallback ? "Try copy again" : "Share"}</button><Link className="ck-button ck-button-secondary" to={`/compare?ids=${encodeURIComponent(traceId)}&project=${encodeURIComponent(projectId)}`}><GitCompare size={13} /> Compare</Link></div></div>
+    <RunSummaryStrip model={model} currency={reportingCurrency} fx={fx} className="prototype-trace-summary" />
     {retryEvents.length > 0 && <div className="ck-alert ck-trace-context-notice"><Info size={15} aria-hidden="true" /><span><strong>{retryEvents.length} retr{retryEvents.length === 1 ? "y" : "ies"}:</strong> {formatReportedAmount(retrySubtotal, reportingCurrency, fx)}</span></div>}
-    <div className={`ck-trace-layout prototype-trace-layout ${selected || selectedSpan ? "has-selection" : ""}`}><Panel className="ck-trace-tree" title={spans.length > 0 ? "Timeline" : "Calls"}>{events.length === 0 && spans.length === 0 ? <EmptyPanel title="No calls recorded" /> : <RunTree rows={treeRows} events={events} collapsed={collapsed} onToggle={toggleSpan} selectedId={selectedSpan ? `span:${selectedSpan.id}` : selectedId} onSelectRoot={selectRoot} onSelectCall={selectEvent} onSelectSpan={(spanId) => { setSelectedSpanId(spanId); setSelectedId(null); }} runName={traceName} runCost={knownCost} runDurationMs={elapsed} callCount={events.length} runStartMs={eventStartMs} runSpanMs={eventSpan} callName={eventDisplayName} currency={reportingCurrency} fx={fx} />}</Panel>{selectedSpan ? <SpanInspector node={selectedSpan} currency={reportingCurrency} fx={fx} /> : selected ? <CallInspector projectId={projectId} event={selected} role={effectiveRole} currency={reportingCurrency} fx={fx} initialTab={requestedTab} prototypeVariant={explicitState} forceError={explicitState === "child-error"} /> : <RootInspector projectId={projectId} traceId={traceId} openChecks={searchParams.get("tab") === "checks"} summary={summary} context={events[0]?.context ?? null} knownCost={knownCost} unpriced={unpriced} usageComponents={trace.usageComponents} callEvents={events} mostExpensive={mostExpensive} currency={reportingCurrency} fx={fx} initialTab={requestedTab} />}</div>
+    <RunFlow key={traceId} projectId={projectId} traceId={traceId} model={model} role={effectiveRole} currency={reportingCurrency} fx={fx} explicitState={explicitState} requestedTab={requestedTab} openChecks={searchParams.get("tab") === "checks"} initialCallId={searchParams.get("call")} onCallChange={changeCall} />
   </div>;
-}
-
-function RootInspector({ projectId, traceId, openChecks = false, summary, context, knownCost, unpriced, usageComponents, callEvents, mostExpensive, currency, fx, initialTab = "content" }: { projectId: string; traceId: string; openChecks?: boolean; summary: Record<string, unknown>; context: unknown; knownCost: number | null; unpriced: number; usageComponents?: UsageComponent[]; callEvents?: TraceEvent[]; mostExpensive?: TraceEvent | null; currency: string; fx?: ReportingFx | null; initialTab?: InspectorTab }) {
-  const [tab, setTab] = useState<InspectorTab | "checks">(openChecks ? "checks" : initialTab === "content" ? "cost" : initialTab);
-  const callCount = Number(summary.call_count ?? callEvents?.length ?? 0) || 0;
-  return <Panel className="ck-inspector"><div className="ck-inspector-call"><div><div className="ck-inspector-heading">This run</div><div className="ck-inspector-subheading">{callCount.toLocaleString()} call{callCount === 1 ? "" : "s"} · {String(summary.operation_name ?? summary.trace_name ?? "Unnamed run")}</div></div></div><div className="ck-tabs" role="tablist" aria-label="Run detail"><button className={`ck-tab ${tab === "cost" ? "active" : ""}`} role="tab" aria-selected={tab === "cost"} type="button" onClick={() => setTab("cost")}>Cost &amp; usage</button><button className={`ck-tab ${tab === "source" ? "active" : ""}`} role="tab" aria-selected={tab === "source"} type="button" onClick={() => setTab("source")}>Source</button><button className={`ck-tab ${tab === "context" ? "active" : ""}`} role="tab" aria-selected={tab === "context"} type="button" onClick={() => setTab("context")}>Context</button><button className={`ck-tab ${tab === "checks" ? "active" : ""}`} role="tab" aria-selected={tab === "checks"} type="button" onClick={() => setTab("checks")}>Checks</button></div><div className="ck-inspector-body">{tab === "cost" && <><CostRootSummary knownCost={knownCost} unpriced={unpriced} mostExpensive={mostExpensive} usageComponents={usageComponents} currency={currency} fx={fx} /></>}{tab === "source" && <div className="ck-inspector-section"><h3>Where in your code</h3><p className="ck-panel-subtitle">Select a call to see its file and function. Missing locations don’t affect cost.</p><div className="ck-definition-list"><div><span>Feature label</span><strong>{summary.feature_source ? String(summary.feature_source) : "Not set"}</strong></div><div><span>Release</span><strong>{summary.release ? String(summary.release) : "Not recorded"}</strong></div></div></div>}{tab === "context" && <ContextTab context={context} />}{tab === "checks" && <RunQualityChecks projectId={projectId} traceId={traceId} />}</div></Panel>;
-}
-
-function CostRootSummary({ knownCost, unpriced, mostExpensive, usageComponents, currency, fx }: { knownCost: number | null; unpriced: number; mostExpensive?: TraceEvent | null; usageComponents?: UsageComponent[]; currency: string; fx?: ReportingFx | null }) {
-  return <div className="ck-inspector-body"><div className="ck-inspector-section"><div className="ck-definition-list"><div><span>Cost</span><strong>{knownCost == null ? "Unpriced" : formatReportedAmount(knownCost, currency, fx)}</strong></div><div><span>Pricing</span><strong>{unpriced > 0 ? `${unpriced} unpriced` : "All calls priced"}</strong></div><div><span>Currency</span><strong>{currency}</strong></div></div></div>{mostExpensive && <div className="ck-inspector-section"><div className="ck-inspector-section-title"><span>Most expensive call</span></div><div className="ck-component-row"><span>{mostExpensive.bl_function || mostExpensive.model || mostExpensive.id}</span><span>{mostExpensive.cost_usd == null ? "Unpriced" : formatReportedAmount(Number(mostExpensive.cost_usd), currency, fx)}</span></div></div>}{usageComponents && usageComponents.length > 0 && <div className="ck-inspector-section"><div className="ck-inspector-section-title"><span>Usage reported separately</span></div><div className="ck-component-list">{usageComponents.map((component) => { const amount = component.amount == null ? "Unpriced" : component.currency && component.currency !== "USD" ? formatCurrencyAmount(component.amount, component.currency) : formatReportedAmount(component.amount, currency, fx); return <div className="ck-component-row" key={component.id}><span><ProviderLabel provider={component.provider} size={13} /> · {component.model || "Model not recorded"}</span><span>{component.unit_value == null ? "Usage not reported" : `${Number(component.unit_value).toLocaleString()} ${component.unit_kind || component.unit || "units"}`} · {amount}</span></div>; })}</div></div>}</div>;
 }
 
 export default function Traces() {

@@ -4,7 +4,7 @@ import type { AddressInfo } from "node:net";
 import express from "express";
 import type { Express } from "express";
 import { computeCost, findPricing } from "../pricing.js";
-import { createIngestRouter, filterFrames, findBusinessLogicFrame, findBusinessLogicFrameWithGraph, truncateBody } from "../ingest.js";
+import { createIngestRouter, filterFrames, findBusinessLogicFrame, findBusinessLogicFrameWithGraph, getFilterContext, truncateBody } from "../ingest.js";
 import { configureRequestParsing, requestParseErrorHandler } from "../request-parsing.js";
 
 // ─── Pricing: findPricing ─────────────────────────────────────────────
@@ -204,6 +204,22 @@ describe("filterFrames", () => {
     functionName: functionName ?? "someFunc",
     lineNumber: 10,
     columnNumber: 5,
+  });
+
+  it("names a framework call after the app, not the framework in site-packages", () => {
+    const frames = [
+      frame("/app/apps/api/.venv/lib/python3.12/site-packages/agents/run_internal/model_retry.py", "stream_response_with_retry"),
+      frame("/app/apps/api/.venv/lib/python3.12/site-packages/agents/run.py", "run"),
+      frame("/app/apps/api/src/platform_api/modules/chat/run_loop.py", "answer"),
+    ];
+    const filtered = filterFrames(frames);
+    assert.equal(findBusinessLogicFrame(filtered, getFilterContext(frames, filtered))?.functionName, "answer");
+    assert.equal(findBusinessLogicFrameWithGraph(filtered, {}, getFilterContext(frames, filtered))?.functionName, "answer");
+  });
+
+  it("still names a call inside an installed package when there is nothing else", () => {
+    const frames = [frame("/srv/venv/lib/python3.12/site-packages/myapp/jobs.py", "nightly")];
+    assert.equal(findBusinessLogicFrame(filterFrames(frames))?.functionName, "nightly");
   });
 
   it("Anthropic Python SDK frames removed", () => {
@@ -4891,13 +4907,9 @@ describe("e2e: AI agent and tool-use patterns", () => {
       frame("src/agent.py", "run_agent"),
     ];
     const r = pick(frames);
-    // openai/ filtered. langchain plan adjacent → but "_call" stripped is "call" → wrapper!
-    // plan is not in wrapper names. Not service layer. → fast-path returns plan.
-    // Wait: filtered[0] is langchain plan. Is plan adjacent to openai? Let me trace...
-    // original[0]=openai, original[1]=langchain plan. After filter: [plan, _call, web_search, run_agent]
-    // firstSurvivor=plan, prev in original=openai (filtered) → adjacent!
-    // plan: not wrapper, not service → fast-path returns it.
-    assert.equal(r!.functionName, "plan");
+    // openai/ filtered; langchain's frames are an installed framework, so the
+    // call is named after the app's first frame on the path: the tool.
+    assert.equal(r!.functionName, "web_search");
   });
 
   it("CrewAI multi-agent — nested agent calls", () => {
@@ -5366,9 +5378,9 @@ describe("e2e: multi-provider fallback patterns", () => {
       frame("src/handler.py", "generate"),
     ];
     const r = pick(frames);
-    // openai/ filtered. litellm stays. generate adjacent? No — litellm is adjacent.
-    // litellm:completion is not wrapper. fast-path returns it.
-    assert.equal(r!.functionName, "completion");
+    // openai/ filtered; litellm is an installed package, so the call is named
+    // after the app code that called it.
+    assert.equal(r!.functionName, "generate");
   });
 
   it("Helicone proxy — logging layer between app and SDK", () => {

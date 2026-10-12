@@ -1095,6 +1095,14 @@ textarea {
 .ck-inspector-section:first-child {
   margin-top: 0;
 }
+/* Inside the inspector everything lines up on the body's 20px inset: a nested
+   body, a definition list or an empty note adds no padding of its own. */
+.ck-inspector-body .ck-inspector-body { padding: 0; }
+.ck-inspector-body .ck-inspector-call { padding: 0 0 4px; }
+.ck-inspector .ck-definition-list { padding: 0; }
+.ck-inspector .ck-definition-list > div:first-child { padding-top: 0; }
+.ck-inspector .ck-empty-panel { min-height: 0; padding: 24px 0 8px; }
+.ck-inspector .ck-component-row { margin: 8px -10px 0; padding: 9px 10px; gap: 12px; font-size: 13px; }
 .ck-inspector-section-title {
   font-size: 12px;
   display: flex;

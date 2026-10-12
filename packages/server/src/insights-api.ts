@@ -56,7 +56,7 @@ export const RUNS_CTE = `
            MIN(timestamp) AS started_at,
            MAX(timestamp + COALESCE(duration_ms, 0) * INTERVAL '1 millisecond') AS ended_at,
            BOOL_OR(COALESCE(status_code, 200) >= 400) AS failed_call,
-           MAX(context->>'userId') AS user_id,
+           MAX(COALESCE(context->>'userId', context->>'user_id', context->>'customer', context->>'customerId')) AS user_id,
            MAX(group_kind) AS group_kind, MAX(group_name) AS group_name
     FROM calls GROUP BY trace_id
   ),

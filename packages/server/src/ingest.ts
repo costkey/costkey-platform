@@ -323,6 +323,9 @@ export function isInternalFrame(frame: StackFrame): boolean {
   return false;
 }
 
+/** Installed third-party code: site-packages, dist-packages, node_modules. */
+export const INSTALLED_PACKAGE = /[\\/](?:site-packages|dist-packages|node_modules)[\\/]/;
+
 export function filterFrames(frames: StackFrame[]): StackFrame[] {
   const filtered = frames.filter((frame) => !isInternalFrame(frame));
   // Intentional: when every frame is internal (SDK/framework/runtime), return
@@ -432,10 +435,19 @@ function isServiceLayer(filePath: string): boolean {
 }
 
 export function findBusinessLogicFrame(
-  frames: StackFrame[],
+  allFrames: StackFrame[],
   filterCtx?: { removedFiles: Set<string>; frame0WasAdjacentToSDK: boolean },
 ): StackFrame | undefined {
-  if (frames.length === 0) return undefined;
+  if (allFrames.length === 0) return undefined;
+  // A call made through a framework (the OpenAI Agents SDK, LangChain) has
+  // the framework's frames between the provider SDK and the app: name the call
+  // after the app's own code. Installed packages count only when nothing else
+  // is there, so code that is itself installed as a package still attributes.
+  const own = allFrames.filter((frame) => !INSTALLED_PACKAGE.test(frame.fileName ?? ""));
+  const frames = own.length > 0 ? own : allFrames;
+  // Framework frames sat between the provider SDK and the app: the app's first
+  // frame is the code that made the call.
+  if (frames !== allFrames && own[0] !== allFrames[0]) filterCtx = { removedFiles: filterCtx?.removedFiles ?? new Set(), frame0WasAdjacentToSDK: true };
 
   // Filter out useless names
   const useless = new Set(["<module>", "<anonymous>", "anonymous", "<lambda>", "main", "_run", ""]);
@@ -495,10 +507,16 @@ export const callGraphCache = new Map<string, Record<string, { score: number; fa
  * Falls back to findBusinessLogicFrame if no matches found.
  */
 export function findBusinessLogicFrameWithGraph(
-  frames: StackFrame[],
+  allFrames: StackFrame[],
   graph: Record<string, { score: number; fan_in: number; calls_ai: boolean }>,
   filterCtx?: { removedFiles: Set<string>; frame0WasAdjacentToSDK: boolean },
 ): StackFrame | undefined {
+  // As in findBusinessLogicFrame: the app's own frames over installed packages.
+  const own = allFrames.filter((frame) => !INSTALLED_PACKAGE.test(frame.fileName ?? ""));
+  const frames = own.length > 0 ? own : allFrames;
+  // Framework frames sat between the provider SDK and the app: the app's first
+  // frame is the code that made the call.
+  if (frames !== allFrames && own[0] !== allFrames[0]) filterCtx = { removedFiles: filterCtx?.removedFiles ?? new Set(), frame0WasAdjacentToSDK: true };
   let bestFrame: StackFrame | null = null;
   let bestScore = Infinity;
   const scoredFrames: { frame: StackFrame; score: number }[] = [];

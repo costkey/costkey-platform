@@ -521,7 +521,7 @@ function TraceDetail({ projectId, traceId }: { projectId: string; traceId: strin
     </div></div><div className="ck-detail-actions"><LiveStatus status={liveStatus} updatedAt={updatedAt} onRefresh={refreshRun} /><button className="ck-button ck-button-secondary" type="button" onClick={share}>{copied ? <Check size={13} /> : <Share size={13} />}{copied ? "Link copied" : shareFallback ? "Try copy again" : "Share"}</button><Link className="ck-button ck-button-secondary" to={`/compare?ids=${encodeURIComponent(traceId)}&project=${encodeURIComponent(projectId)}`}><GitCompare size={13} /> Compare</Link></div></div>
     <RunSummaryStrip model={model} currency={reportingCurrency} fx={fx} className="prototype-trace-summary" />
     {retryEvents.length > 0 && <div className="ck-alert ck-trace-context-notice"><Info size={15} aria-hidden="true" /><span><strong>{retryEvents.length} retr{retryEvents.length === 1 ? "y" : "ies"}:</strong> {formatReportedAmount(retrySubtotal, reportingCurrency, fx)}</span></div>}
-    <RunFlow key={traceId} projectId={projectId} traceId={traceId} model={model} role={effectiveRole} currency={reportingCurrency} fx={fx} explicitState={explicitState} requestedTab={requestedTab} openChecks={searchParams.get("tab") === "checks"} initialCallId={searchParams.get("call")} onCallChange={changeCall} />
+    <RunFlow key={traceId} projectId={projectId} traceId={traceId} model={model} role={effectiveRole} currency={reportingCurrency} fx={fx} explicitState={explicitState} requestedTab={requestedTab} openChecks={searchParams.get("tab") === "checks"} initialCallId={searchParams.get("call")} onCallChange={changeCall} timeline />
   </div>;
 }
 

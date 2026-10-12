@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { CircleAlert } from "lucide-react";
 import { Link } from "react-router-dom";
 import { getEvent, getTrace, type EventRow, type Trace, type TraceEvent, type TraceSpan, type UsageComponent } from "../api";
@@ -7,6 +7,7 @@ import { formatAbsoluteDate, formatCurrencyAmount, formatReportedAmount, sourceA
 import { formatDuration } from "../utils";
 import { RunTree, SpanInspector } from "./RunTree";
 import { RunQualityChecks } from "./RunQualityChecks";
+import { RunTimeline } from "./RunTimeline";
 import { useLiveQuery, type LiveQuery } from "../hooks/useLiveQuery";
 import { buildRunTree, defaultCollapsed, flattenRunTree, type RunTreeNode, type RunTreeSpanNode } from "./runTreeModel";
 import type { PrototypeState } from "./PrototypeState";
@@ -179,7 +180,7 @@ export function TokenUsageSection({ usage, currency, fx }: { usage: CallUsage; c
  * The waterfall beside its inspector. Selection lives here; a parent that
  * keeps the selected call in its URL passes `initialCallId` and `onCallChange`.
  */
-export function RunFlow({ projectId, traceId, model, role, currency, fx, explicitState = "default", requestedTab = "content", openChecks = false, initialCallId = null, onCallChange, inline = false }: {
+export function RunFlow({ projectId, traceId, model, role, currency, fx, explicitState = "default", requestedTab = "content", openChecks = false, initialCallId = null, onCallChange, inline = false, timeline = false }: {
   projectId: string;
   traceId: string;
   model: RunModel;
@@ -193,8 +194,11 @@ export function RunFlow({ projectId, traceId, model, role, currency, fx, explici
   onCallChange?: (callId: string | null) => void;
   /** Inside a page section: the inspector stacks below the waterfall on narrow screens instead of replacing it. */
   inline?: boolean;
+  /** Lead with the run's calls on one time axis, as the landing page shows them. */
+  timeline?: boolean;
 }) {
   const { events, spans } = model;
+  const layoutRef = useRef<HTMLDivElement>(null);
   const [selectedId, setSelectedId] = useState<string | null>(() => (initialCallId ? events.find((event) => event.id === initialCallId || event.id.endsWith(`:${initialCallId}`))?.id : null) ?? "__root__");
   const [selectedSpanId, setSelectedSpanId] = useState<string | null>(null);
   const [collapsedState, setCollapsedState] = useState<Set<string> | null>(null);
@@ -212,15 +216,22 @@ export function RunFlow({ projectId, traceId, model, role, currency, fx, explici
   function selectRoot(): void { setSelectedSpanId(null); setSelectedId("__root__"); onCallChange?.(null); }
   function selectEvent(eventId: string): void { setSelectedSpanId(null); setSelectedId(eventId); onCallChange?.(eventId); }
   function selectSpan(spanId: string): void { setSelectedSpanId(spanId); setSelectedId(null); onCallChange?.(null); }
+  /** From the timeline: on a narrow screen the inspector sits below it, so bring it into view. */
+  function selectFromTimeline(eventId: string): void {
+    selectEvent(eventId);
+    if (typeof window !== "undefined" && window.matchMedia?.("(max-width: 900px)").matches) {
+      window.requestAnimationFrame(() => layoutRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
+    }
+  }
 
-  return <div className={`ck-trace-layout prototype-trace-layout ${inline ? "ck-run-flow-inline" : ""} ${selected || selectedSpan ? "has-selection" : ""}`}>
-    <Panel className="ck-trace-tree" title={spans.length > 0 ? "Timeline" : "Calls"}>{events.length === 0 && spans.length === 0 ? <EmptyPanel title="No calls recorded" /> : <RunTree rows={treeRows} events={events} collapsed={collapsed} onToggle={toggleSpan} selectedId={selectedSpan ? `span:${selectedSpan.id}` : selectedId} onSelectRoot={selectRoot} onSelectCall={selectEvent} onSelectSpan={selectSpan} runName={model.traceName} runCost={model.knownCost} runDurationMs={model.elapsed} callCount={events.length} runStartMs={model.eventStartMs} runSpanMs={model.eventSpan} callName={eventDisplayName} currency={currency} fx={fx} />}</Panel>
+  return <>{timeline && <RunTimeline traceId={traceId} runName={model.traceName} events={events} spans={spans} runCost={model.knownCost} unpriced={model.unpriced} runDurationMs={model.elapsed} selectedId={selectedSpan ? null : selectedId} onSelectCall={selectFromTimeline} currency={currency} fx={fx} />}<div ref={layoutRef} className={`ck-trace-layout prototype-trace-layout ${inline ? "ck-run-flow-inline" : ""} ${selected || selectedSpan ? "has-selection" : ""}`}>
+    <Panel className="ck-trace-tree" title={spans.length > 0 ? (timeline ? "Steps and calls" : "Timeline") : "Calls"}>{events.length === 0 && spans.length === 0 ? <EmptyPanel title="No calls recorded" /> : <RunTree rows={treeRows} events={events} collapsed={collapsed} onToggle={toggleSpan} selectedId={selectedSpan ? `span:${selectedSpan.id}` : selectedId} onSelectRoot={selectRoot} onSelectCall={selectEvent} onSelectSpan={selectSpan} runName={model.traceName} runCost={model.knownCost} runDurationMs={model.elapsed} callCount={events.length} runStartMs={model.eventStartMs} runSpanMs={model.eventSpan} callName={eventDisplayName} currency={currency} fx={fx} />}</Panel>
     {selectedSpan
       ? <SpanInspector node={selectedSpan} currency={currency} fx={fx} />
       : selected
         ? <CallInspector projectId={projectId} event={selected} role={role} currency={currency} fx={fx} initialTab={requestedTab} prototypeVariant={explicitState} forceError={explicitState === "child-error"} />
         : <RootInspector projectId={projectId} traceId={traceId} openChecks={openChecks} summary={model.summary} context={events[0]?.context ?? null} knownCost={model.knownCost} unpriced={model.unpriced} usageComponents={model.usageComponents} callEvents={events} mostExpensive={model.mostExpensive} usage={model.usage} currency={currency} fx={fx} initialTab={requestedTab} onSelectCall={selectEvent} />}
-  </div>;
+  </div></>;
 }
 
 export function isCallEvent(event: TraceEvent): boolean {

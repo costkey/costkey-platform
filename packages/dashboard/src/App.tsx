@@ -288,6 +288,7 @@ function AppShell() {
     { to: "/agents", label: "Agents", icon: "agent" as PrototypeIconName },
     { to: "/traces", label: "Traces", icon: "trace" as PrototypeIconName },
     { to: "/quality", label: "Quality", icon: "quality" as PrototypeIconName },
+    { to: "/budgets", label: "Budgets", icon: "shield" as PrototypeIconName },
   ], []);
 
   function navSection(pathname: string): string {

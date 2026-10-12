@@ -23,13 +23,13 @@ export function Pills<T extends string>({ options, value, onChange, label }: { o
   );
 }
 
-function BoardPanel({ title, subtitle, total, totalLabel, controls, children, className = "" }: { title: string; subtitle: string; total?: ReactNode; totalLabel?: string; controls?: ReactNode; children: ReactNode; className?: string }) {
+function BoardPanel({ title, subtitle, total, totalLabel, controls, children, className = "" }: { title: string; subtitle?: string; total?: ReactNode; totalLabel?: string; controls?: ReactNode; children: ReactNode; className?: string }) {
   return (
     <section className={`ck-panel ck-board-panel ${className}`}>
       <header className="ck-board-head">
         <div className="min-w-0">
           <h2 className="ck-board-title">{title}</h2>
-          <p className="ck-board-sub">{subtitle}</p>
+          {subtitle && <p className="ck-board-sub">{subtitle}</p>}
         </div>
         {total != null && <div className="ck-board-total"><strong>{total}</strong>{totalLabel && <span>{totalLabel}</span>}</div>}
       </header>
@@ -80,23 +80,29 @@ export function CostByModel({ board, totalCost, money }: { board: OverviewBoard 
   const rows = all.length > MODEL_ROWS + 1 ? all.slice(0, MODEL_ROWS) : all;
   const rest = all.slice(rows.length);
   const restCost = rest.some((row) => row.cost != null) ? rest.reduce((sum, row) => sum + (row.cost ?? 0), 0) : null;
+  const spent = all.reduce((sum, row) => sum + (row.cost ?? 0), 0);
+  const share = (cost: number | null) => spent > 0 && cost != null ? cost / spent * 100 : 0;
   return (
-    <BoardPanel title="Cost by model" subtitle="Spend and usage by model" total={totalCost} totalLabel="Total cost">
+    <BoardPanel title="Cost by model" subtitle="Each bar is the model's share of spend" total={totalCost} totalLabel="Total cost">
       {all.length === 0 ? <BoardEmpty>No model calls in this period.</BoardEmpty> : (
         <div className="ck-board-table-wrap">
-          <table className="ck-board-table">
+          <table className="ck-board-table ck-board-models">
             <thead>
-              <tr><th>Model</th><th className="numeric">Usage</th><th className="numeric" title="Share of input tokens read from cache">Cache hit</th><th className="numeric">Cost</th></tr>
+              <tr><th>Model</th><th className="numeric">Usage</th><th className="numeric hide-narrow" title="Share of input tokens read from cache">Cache hit</th><th className="numeric">Cost</th></tr>
             </thead>
             <tbody>
               {rows.map((row) => {
                 const usage = callUsage({ provider: row.provider ?? "", model: row.model, input_tokens: row.input, output_tokens: row.output, cache_read_tokens: row.cacheRead, cache_creation_tokens: row.cacheWrite });
                 const tokens = (row.input ?? 0) > 0 || (row.output ?? 0) > 0;
+                const part = share(row.cost);
                 return (
                   <tr key={`${row.provider}:${row.model}`} className="ck-row-link">
-                    <td className="ck-board-model-cell"><Link className="ck-board-link ck-stretch-link ck-board-model" to={modelHref(row.provider, row.model)}><ProviderLogo provider={row.provider} size={14} /><span title={`${providerName(row.provider ?? "")} · ${row.model}`}>{row.model}</span></Link></td>
+                    <td className="ck-board-model-cell">
+                      <Link className="ck-board-link ck-stretch-link ck-board-model" to={modelHref(row.provider, row.model)}><ProviderLogo provider={row.provider} size={14} /><span title={`${providerName(row.provider ?? "")} · ${row.model}`}>{row.model}</span></Link>
+                      <span className="ck-board-share" title={`${part < 1 && part > 0 ? "<1" : Math.round(part)}% of spend`}><i style={{ width: `${part}%` }} /></span>
+                    </td>
                     <td className="numeric" title={tokens ? `${compactNumber(usage.inputTokens)} in, ${compactNumber(usage.outputTokens)} out` : undefined}>{tokens ? `${compactNumber((usage.inputTokens ?? 0) + (usage.outputTokens ?? 0))} tokens` : <span className="ck-board-units">{billedUnitsText(row.units) || "No usage reported"}</span>}</td>
-                    <td className="numeric">{formatHitRate(usage.cacheHitRate)}</td>
+                    <td className="numeric hide-narrow">{formatHitRate(usage.cacheHitRate)}</td>
                     <td className="numeric ck-board-cost">{row.cost == null ? (row.unpriced > 0 ? "Unpriced" : "—") : money(row.cost)}</td>
                   </tr>
                 );
@@ -104,7 +110,7 @@ export function CostByModel({ board, totalCost, money }: { board: OverviewBoard 
               {rest.length > 0 && <tr className="ck-board-other">
                 <td>{rest.length} other model{rest.length === 1 ? "" : "s"}</td>
                 <td className="numeric">{rest.reduce((sum, row) => sum + row.calls, 0).toLocaleString("en-US")} calls</td>
-                <td className="numeric" />
+                <td className="numeric hide-narrow" />
                 <td className="numeric ck-board-cost">{money(restCost)}</td>
               </tr>}
             </tbody>
@@ -119,49 +125,53 @@ export function CostByModel({ board, totalCost, money }: { board: OverviewBoard 
 
 type UsageKind = "agents" | "workflows";
 
+/** Tokens and cost per agent or workflow. One switch picks the grouping; each row shows both measures. */
 export function UsageByAgent({ board, money }: { board: OverviewBoard | null; money: (value: number | null | undefined) => string }) {
-  const [mode, setMode] = useState<"usage" | "cost">("usage");
   const [picked, setKind] = useState<UsageKind | null>(null);
   const kind: UsageKind = picked ?? ((board?.agents.length ?? 0) === 0 && (board?.workflows?.length ?? 0) > 0 ? "workflows" : "agents");
   const owners = (kind === "agents" ? board?.agents : board?.workflows) ?? [];
   const tokensOf = (owner: OverviewBoardUsage) => owner.input + owner.output;
-  const value = (owner: OverviewBoardUsage) => mode === "usage" ? tokensOf(owner) : owner.cost ?? 0;
+  const totalTokens = owners.reduce((sum, owner) => sum + tokensOf(owner), 0);
+  // Bars show tokens; with no tokens at all (speech, images) they show cost.
+  const byTokens = totalTokens > 0;
+  const value = (owner: OverviewBoardUsage) => byTokens ? tokensOf(owner) : owner.cost ?? 0;
   const rows = [...owners].sort((a, b) => value(b) - value(a) || (b.cost ?? 0) - (a.cost ?? 0)).slice(0, 6);
   const max = Math.max(...rows.map(value), 0);
-  const total = owners.reduce((sum, owner) => sum + value(owner), 0);
+  const totalCost = owners.some((owner) => owner.cost != null) ? owners.reduce((sum, owner) => sum + (owner.cost ?? 0), 0) : null;
   const otherUnits = billedUnitsText(sumUnits(owners.map((owner) => owner.units)));
-  const totalText = owners.length === 0 ? undefined : mode === "cost" ? money(total) : total > 0 ? compactNumber(total) : otherUnits || "0";
   return (
     <BoardPanel
-      title={kind === "agents" ? "Usage by agent" : "Usage by workflow"}
-      subtitle={kind === "agents" ? "Grouped by agent" : "Grouped by workflow"}
-      total={totalText}
-      totalLabel={mode === "cost" ? "Total cost" : total > 0 ? (otherUnits ? `Tokens, + ${otherUnits}` : "Total tokens") : "Billed usage"}
-      controls={<div className="ck-board-control-row"><Pills label="Measure" value={mode} onChange={setMode} options={[{ value: "usage", label: "Usage" }, { value: "cost", label: "Cost" }]} /><Pills label="Group" value={kind} onChange={setKind} options={[{ value: "agents", label: "Agents" }, { value: "workflows", label: "Workflows" }]} /></div>}
+      title="Usage"
+      subtitle={kind === "agents" ? "Tokens and cost per agent" : "Tokens and cost per workflow"}
+      total={owners.length === 0 ? undefined : money(totalCost)}
+      totalLabel={byTokens ? `${compactNumber(totalTokens)} tokens${otherUnits ? `, ${otherUnits}` : ""}` : otherUnits || "Total cost"}
+      controls={<Pills label="Group by" value={kind} onChange={setKind} options={[{ value: "agents", label: "Agents" }, { value: "workflows", label: "Workflows" }]} />}
     >
       {rows.length === 0 ? <BoardEmpty>{kind === "agents" ? "No agent runs in this period." : "No workflow runs in this period."}</BoardEmpty> : <>
         <ul className="ck-board-bars">
           {rows.map((owner) => {
-            const amount = value(owner);
-            const width = max > 0 ? amount / max * 100 : 0;
+            const width = max > 0 ? value(owner) / max * 100 : 0;
             const tokens = tokensOf(owner);
             const units = billedUnitsText(owner.units);
-            const shown = mode === "cost" ? money(owner.cost) : tokens > 0 ? compactNumber(tokens) : units || "0";
+            const usage = [tokens > 0 ? `${compactNumber(tokens)} tokens` : null, units || null].filter(Boolean).join(", ");
             return (
               <li key={owner.name}><Link className="ck-board-link" to={ownerHref(kind, owner.name)}>
-                <div className="ck-board-bar-line"><span className="ck-board-bar-name" title={owner.name}>{owner.name}</span><span className="ck-board-bar-value">{shown}{mode === "usage" && tokens > 0 && units && <small>+ {units}</small>}</span></div>
-                <div className="ck-board-track" title={mode === "usage" && tokens > 0 ? `${compactNumber(owner.input)} input, ${compactNumber(owner.output)} output` : undefined}>
-                  {mode === "usage" && tokens > 0
-                    ? <span className="ck-board-fill-split" style={{ width: `${width}%` }}><i className="input" style={{ flexGrow: owner.input }} /><i className="output" style={{ flexGrow: owner.output }} /></span>
-                    : <span className="ck-board-fill" style={{ width: `${width}%` }} />}
+                <div className="ck-board-bar-line"><span className="ck-board-bar-name" title={owner.name}>{owner.name}</span><span className="ck-board-bar-value">{money(owner.cost)}</span></div>
+                <div className="ck-board-track-row">
+                  <div className="ck-board-track" title={tokens > 0 ? `${compactNumber(owner.input)} input, ${compactNumber(owner.output)} output` : undefined}>
+                    {byTokens && tokens > 0
+                      ? <span className="ck-board-fill-split" style={{ width: `${width}%` }}><i className="input" style={{ flexGrow: owner.input }} /><i className="output" style={{ flexGrow: owner.output }} /></span>
+                      : <span className="ck-board-fill" style={{ width: `${width}%` }} />}
+                  </div>
+                  {usage && <small>{usage}</small>}
                 </div>
               </Link></li>
             );
           })}
         </ul>
-        {mode === "usage"
-          ? <div className="ck-board-legend"><span><i className="swatch input" />Input tokens</span><span><i className="swatch output" />Output tokens</span>{otherUnits && <span>Bars show tokens; other units are listed.</span>}</div>
-          : <div className="ck-board-legend"><span>Cost is not split by input and output.</span></div>}
+        {byTokens
+          ? <div className="ck-board-legend"><span><i className="swatch input" />Input tokens</span><span><i className="swatch output" />Output tokens</span></div>
+          : <div className="ck-board-legend"><span>Bars show cost.</span></div>}
       </>}
     </BoardPanel>
   );

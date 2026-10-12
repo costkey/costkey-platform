@@ -14,7 +14,7 @@ describe("run status", () => {
   });
 
   it("never calls a run with no model calls price pending", () => {
-    expect(runStatus({ execution_state: "completed", unpriced_count: 0, call_count: 0, accounting_state: "no_calls" }, null)).toMatchObject({ tone: "good", label: "Complete" });
+    expect(runStatus({ execution_state: "completed", unpriced_count: 0, call_count: 0, accounting_state: "no_calls" }, null)).toMatchObject({ tone: "good", label: "Succeeded" });
   });
 
   it("explains price pending on hover", () => {

@@ -195,7 +195,7 @@ export function SpanInspector({ node, currency, fx }: { node: RunTreeSpanNode; c
   const content = Object.entries(span.attributes ?? {}).filter(([key]) => CONTENT_KEYS.has(key));
   const duration = Number.isFinite(node.endMs) && Number.isFinite(node.startMs) ? node.endMs - node.startMs : null;
   const tone = span.status === "ok" ? "good" : span.status === "error" ? "critical" : "neutral";
-  const statusLabel = span.status === "ok" ? "Completed" : span.status === "error" ? "Failed" : span.status === "cancelled" ? "Cancelled" : "Running";
+  const statusLabel = span.status === "ok" ? "Succeeded" : span.status === "error" ? "Failed" : span.status === "cancelled" ? "Cancelled" : "Running";
   return (
     <Panel className="ck-inspector">
       <div className="ck-inspector-call">

@@ -139,7 +139,7 @@ function ModelsTable({ models, money }: { models: UserDetail["models"]; money: M
 function RunStatus({ run }: { run: UserRun }) {
   if (run.retry?.retried) return <StatusPill tone="warn">Retried</StatusPill>;
   if (run.failed) return <StatusPill tone="critical">Failed</StatusPill>;
-  return <StatusPill tone="good">Done</StatusPill>;
+  return <StatusPill tone="good">Succeeded</StatusPill>;
 }
 
 function RunsTable({ runs, money }: { runs: UserRun[]; money: Money }) {

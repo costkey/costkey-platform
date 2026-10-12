@@ -4488,7 +4488,14 @@ textarea[aria-invalid="true"] {
 .ck-board-bar-line { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 6px; font-size: 13px; }
 .ck-board-bar-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ck-ink); }
 .ck-board-bar-value { flex: 0 0 auto; color: var(--ck-ink); font-variant-numeric: tabular-nums lining-nums; }
-.ck-board-bar-value small { margin-left: 8px; font-size: 12px; color: var(--ck-slate); }
+.ck-board-bar-value small { margin-right: 10px; font-size: 12px; color: var(--ck-slate); }
+.ck-board-track-row { display: flex; align-items: center; gap: 10px; }
+.ck-board-track-row .ck-board-track { flex: 1 1 auto; min-width: 40px; }
+.ck-board-track-row small { flex: 0 0 auto; font-size: 12px; color: var(--ck-slate); font-variant-numeric: tabular-nums lining-nums; }
+/* A model's share of spend, under its name. */
+.ck-board-models td.ck-board-model-cell { padding-bottom: 7px; }
+.ck-board-share { display: block; height: 3px; margin: 6px 0 0 22px; border-radius: 2px; background: var(--ck-soft); overflow: hidden; }
+.ck-board-share i { display: block; height: 100%; min-width: 1px; border-radius: 2px; background: var(--ck-chart); }
 .ck-board-track { height: 8px; border-radius: 4px; background: var(--ck-soft); overflow: hidden; }
 .ck-board-fill { display: block; height: 100%; min-width: 2px; border-radius: 4px; background: var(--ck-chart); }
 .ck-board-fill-split { display: flex; gap: 2px; height: 100%; min-width: 4px; }
@@ -4528,9 +4535,8 @@ textarea[aria-invalid="true"] {
   .ck-board-head, .ck-board-controls { padding-left: 16px; padding-right: 16px; }
   .ck-board-body { padding: 14px 16px 16px; }
   .ck-board-table-wrap { margin: 0 -16px; }
-  /* Phones scroll the table sideways instead of squeezing model names. */
-  .ck-board-table td.ck-board-model-cell { width: auto; max-width: none; }
-  .ck-board-model > span { max-width: 140px; }
+  /* Phones drop the cache column so usage and cost stay in view. */
+  .ck-board-table .hide-narrow { display: none; }
   .ck-board-table th:first-child, .ck-board-table td:first-child { padding-left: 16px; }
   .ck-board-table th:last-child, .ck-board-table td:last-child { padding-right: 16px; }
 }

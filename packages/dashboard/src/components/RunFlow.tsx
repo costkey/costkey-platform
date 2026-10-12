@@ -60,11 +60,11 @@ export function runStatus(trace: Pick<Trace, "execution_state" | "unpriced_count
   if (execution === "failed" || execution === "error") return retry?.willRetry ? { tone: "critical", label: "Failed, will retry", title: retry.errorType ?? undefined } : { tone: "critical", label: "Failed" };
   if (execution === "running" || execution === "in_progress" || execution === "started") return { tone: "neutral", label: "Running" };
   // A run with no model calls has nothing to price.
-  if (trace.accounting_state === "no_calls" || Number(trace.call_count ?? 1) === 0) return { tone: "good", label: "Complete" };
+  if (trace.accounting_state === "no_calls" || Number(trace.call_count ?? 1) === 0) return { tone: "good", label: "Succeeded" };
   if ((trace.unpriced_count ?? 0) > 0) return cost == null
     ? { tone: "neutral", label: "Price pending", title: PRICE_PENDING_HINT }
     : { tone: "warn", label: "Partly priced", title: PRICE_PENDING_HINT };
-  return { tone: "good", label: "Complete" };
+  return { tone: "good", label: "Succeeded" };
 }
 
 /** The status pill, with the later attempt linked when a retry completed the work. */

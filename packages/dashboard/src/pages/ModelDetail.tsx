@@ -61,7 +61,7 @@ function callUsageText(call: ModelRecentCall): string {
 
 function CallStatus({ call }: { call: ModelRecentCall }) {
   const { lifecycleState, errorType, statusCode } = call.status;
-  if (!call.failed) return <StatusPill tone="good">Done</StatusPill>;
+  if (!call.failed) return <StatusPill tone="good">Succeeded</StatusPill>;
   const reason = errorType ?? (statusCode != null && statusCode >= 400 ? `HTTP ${statusCode}` : null);
   return <>
     {lifecycleState === "cancelled" ? <StatusPill tone="warn">Cancelled</StatusPill> : <StatusPill tone="critical">Failed</StatusPill>}

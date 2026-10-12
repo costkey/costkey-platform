@@ -62,7 +62,7 @@ function batchStatus(execution: Execution): { tone: "good" | "warn" | "critical"
   if (state === "cancelled" || state === "canceled") return { tone: "neutral", label: "Cancelled" };
   if (state === "running" || state === "in_progress" || state === "started") return { tone: "neutral", label: "Running" };
   if (execution.unpriced_count > 0) return { tone: "warn", label: "Partly priced" };
-  if (state === "completed" || state === "complete") return { tone: "good", label: "Complete" };
+  if (state === "completed" || state === "complete") return { tone: "good", label: "Succeeded" };
   return { tone: "neutral", label: "Recorded" };
 }
 

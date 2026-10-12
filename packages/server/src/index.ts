@@ -5,7 +5,8 @@ import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import type pg from "pg";
-import { ensureQualityCheckSchema, getPool, initDatabase } from "./db.js";
+import { ensureDailyAggregateSchema, ensureQualityCheckSchema, getPool, initDatabase } from "./db.js";
+import { ensureSsoSchema } from "./sso/provision.js";
 import { createIngestRouter, loadCallGraphCache } from "./ingest.js";
 import { createAuthRouter, authMiddleware } from "./auth.js";
 import { createSsoRouter, ssoSessionMiddleware } from "./sso/router.js"; // single sign-on
@@ -33,6 +34,7 @@ import { createSubscriptionRouter } from "./subscription.js";
 import { refreshAllFindings } from "./findings.js";
 import { reconcileDailyCostAggregates } from "./accounting.js";
 import { startQualityCheckWorker } from "./quality-checks/worker.js";
+import { startEmptyRunSweeper } from "./empty-runs.js";
 import { seedDemoQualityChecks } from "./quality-checks/seed.js";
 import { basePath } from "./public-url.js";
 
@@ -300,6 +302,9 @@ export function createApp(options: AppOptions = {}): Express & AppRuntime {
       await ensurePlatformSchema(pool);
       await ensurePolicySchema(pool);
       await ensureQualityCheckSchema(pool);
+      // Every table exists from the first boot; nothing is created on first use.
+      await ensureSsoSchema(pool);
+      await ensureDailyAggregateSchema(pool);
       console.log("[costkey] Database ready");
       await loadCallGraphCache(pool);
       // Demo data is opt-in and never runs in production. Existing customer
@@ -352,6 +357,7 @@ export function createApp(options: AppOptions = {}): Express & AppRuntime {
         hourlyNotifications.unref();
         schedulerHandles.push(periodic, dailyRetention, hourlyNotifications);
         schedulerHandles.push(startQualityCheckWorker(pool));
+        schedulerHandles.push(startEmptyRunSweeper(pool));
         // Generate findings even when nobody opens the console. Ingest also
         // schedules a one-second project-local refresh; this startup pass
         // covers existing activity and the interval handles quiet projects.

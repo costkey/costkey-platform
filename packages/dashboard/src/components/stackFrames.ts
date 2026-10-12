@@ -4,6 +4,18 @@ export interface StackFrame {
   fileName?: string | null;
   lineNumber?: number | null;
   columnNumber?: number | null;
+  /** The source line (in-app frames only, when the SDK could read the file). */
+  contextLine?: string | null;
+  preContext?: string[] | null;
+  postContext?: string[] | null;
+}
+
+/** One line of a frame's source, numbered as in the file. */
+export interface CodeLine {
+  number: number | null;
+  text: string;
+  /** The line that made the call. */
+  isCall: boolean;
 }
 
 export interface FrameView {
@@ -16,6 +28,29 @@ export interface FrameView {
   packageName: string | null;
   /** The frame that names the call (the app's own code that made it). */
   isCallSite: boolean;
+  /** The app's own code: not an installed package. */
+  isInApp: boolean;
+  /** The frame's source, the call line with the lines around it, when recorded. */
+  code: CodeLine[] | null;
+}
+
+function textLines(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((line): line is string => typeof line === "string") : [];
+}
+
+/** The recorded source around a frame's line, numbered, or null when none was sent. */
+export function frameCode(frame: StackFrame): CodeLine[] | null {
+  if (typeof frame.contextLine !== "string") return null;
+  const line = frame.lineNumber == null ? null : Number(frame.lineNumber);
+  const known = line != null && Number.isFinite(line) && line > 0 ? line : null;
+  const pre = textLines(frame.preContext);
+  const post = textLines(frame.postContext);
+  const at = (offset: number): number | null => (known == null || known + offset < 1 ? null : known + offset);
+  return [
+    ...pre.map((text, index) => ({ number: at(index - pre.length), text, isCall: false })),
+    { number: known, text: frame.contextLine, isCall: true },
+    ...post.map((text, index) => ({ number: at(index + 1), text, isCall: false })),
+  ];
 }
 
 const INSTALLED = /(?:^|[\\/])(?:site-packages|dist-packages|node_modules)[\\/]/;
@@ -45,7 +80,7 @@ function same(a: string | null | undefined, b: string | null | undefined): boole
   return Boolean(a && b && (a === b || a.endsWith(`/${b}`) || b.endsWith(`/${a}`)));
 }
 
-/** Frames as rows: function first, a short location, installed packages marked, the call site highlighted. */
+/** Frames as rows: function first, a short location, installed packages marked, the call site found, source attached. */
 export function frameViews(frames: StackFrame[], callSite: { functionName?: string | null; file?: string | null; line?: number | null }): FrameView[] {
   let highlighted = false;
   return frames.map((frame) => {
@@ -62,6 +97,14 @@ export function frameViews(frames: StackFrame[], callSite: { functionName?: stri
       fullLocation: file ? `${file}${suffix}` : null,
       packageName: file && INSTALLED.test(file) ? packageName : null,
       isCallSite: matches,
+      isInApp: Boolean(file) && !INSTALLED.test(file!),
+      code: frameCode(frame),
     };
   });
+}
+
+/** The frame whose code opens by default: the first in-app frame with recorded source. */
+export function defaultOpenFrame(views: FrameView[]): number | null {
+  const index = views.findIndex((view) => view.isInApp && view.code !== null);
+  return index === -1 ? null : index;
 }

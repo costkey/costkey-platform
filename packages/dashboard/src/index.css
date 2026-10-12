@@ -4658,17 +4658,31 @@ textarea[aria-invalid="true"] {
 }
 
 /* Call stack: one frame per row; paths truncate at the start, never wrap. */
-.ck-callstack { display: grid; gap: 0; margin: 8px 0 0; padding: 0; list-style: none; }
-.ck-callstack li { display: grid; gap: 2px; min-width: 0; margin: 0 -10px; padding: 7px 10px; border-radius: 8px; }
-.ck-callstack li + li { margin-top: 2px; }
-.ck-callstack-fn { display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--ck-ink); font-family: var(--font-mono); font-size: 12.5px; font-weight: 500; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.ck-callstack-path { overflow: hidden; color: var(--ck-slate); font-family: var(--font-mono); font-size: 11.5px; white-space: nowrap; text-overflow: ellipsis; direction: rtl; text-align: left; }
+.ck-callstack { display: grid; gap: 2px; margin: 8px 0 0; padding: 0; list-style: none; }
+.ck-callstack li { min-width: 0; margin: 0 -10px; }
+.ck-callstack-row { display: flex; align-items: baseline; gap: 12px; width: 100%; min-width: 0; margin: 0; padding: 6px 10px; border: 0; border-radius: 8px; background: none; color: inherit; font: inherit; text-align: left; }
+button.ck-callstack-row { cursor: pointer; }
+button.ck-callstack-row:hover { background: var(--ck-soft); }
+button.ck-callstack-row:focus-visible { outline: 2px solid var(--ck-focus); outline-offset: -2px; }
+.ck-callstack-chevron { flex: 0 0 auto; align-self: center; width: 6px; height: 6px; margin: 0 2px 0 -2px; border-right: 1.5px solid var(--ck-slate); border-bottom: 1.5px solid var(--ck-slate); transform: rotate(-45deg); transition: transform var(--ck-motion) var(--ck-ease); }
+.ck-callstack li.is-open .ck-callstack-chevron { transform: rotate(45deg); }
+.ck-callstack-row:not(.has-code) { padding-left: 24px; }
+.ck-callstack-fn { display: flex; flex: 0 1 auto; align-items: center; gap: 8px; min-width: 0; max-width: 55%; color: var(--ck-ink); font-family: var(--font-mono); font-size: 12.5px; font-weight: 500; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.ck-callstack-path { flex: 1 1 0; min-width: 0; overflow: hidden; color: var(--ck-slate); font-family: var(--font-mono); font-size: 11.5px; white-space: nowrap; text-overflow: ellipsis; direction: rtl; text-align: right; }
 .ck-callstack-path bdi, .ck-path-value bdi { direction: ltr; unicode-bidi: isolate; }
 .ck-callstack li.is-installed .ck-callstack-fn, .ck-callstack li.is-installed .ck-callstack-path { opacity: 0.6; }
-.ck-callstack li.is-call-site { background: var(--ck-hover, #dce8ee); }
-.ck-callstack-package, .ck-callstack-mark { flex: 0 0 auto; padding: 0 6px; border-radius: 5px; background: var(--ck-paper); color: var(--ck-slate); font: 500 10.5px var(--font); font-style: normal; }
-.ck-callstack-mark { background: var(--ck-raised); color: var(--ck-ink); }
+.ck-callstack-package { flex: 0 0 auto; padding: 0 6px; border-radius: 5px; background: var(--ck-paper); color: var(--ck-slate); font: 500 10.5px var(--font); font-style: normal; }
 .ck-callstack-toggle { margin-top: 8px; min-height: 0; padding: 4px 0; }
+.ck-code { margin: 2px 10px 8px; overflow-x: auto; border: 1px solid var(--ck-rule); border-radius: 8px; background: var(--ck-raised); }
+.ck-code-table { min-width: 100%; border-collapse: collapse; font-family: var(--font-mono); font-size: 12px; line-height: 20px; }
+.ck-code-table td { padding: 0; vertical-align: top; }
+.ck-code-num { position: sticky; left: 0; width: 1px; padding: 0 10px 0 12px !important; border-right: 1px solid var(--ck-rule); background: var(--ck-soft); color: var(--ck-slate); text-align: right; white-space: nowrap; user-select: none; }
+.ck-code-text { padding: 0 14px 0 12px !important; color: var(--ck-slate); white-space: pre; }
+.ck-code-table tr:first-child td { padding-top: 6px !important; }
+.ck-code-table tr:last-child td { padding-bottom: 6px !important; }
+.ck-code-table tr.is-call td { background: var(--ck-accent-soft); }
+.ck-code-table tr.is-call .ck-code-num { box-shadow: inset 3px 0 0 var(--ck-lamp); color: var(--ck-ink); }
+.ck-code-table tr.is-call .ck-code-text { color: var(--ck-ink); font-weight: 500; }
 .ck-inspector .ck-definition-list dd.mono { font-family: var(--font-mono); font-size: 12.5px; }
 .ck-path-value { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; direction: rtl; font-family: var(--font-mono); font-size: 12.5px !important; }
 .ck-inspector-value-note { display: block; margin-top: 2px; color: var(--ck-slate); font-size: 11.5px; }

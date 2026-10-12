@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { CircleAlert } from "lucide-react";
 import { Link } from "react-router-dom";
 import { getEvent, getTrace, type EventRow, type Trace, type TraceEvent, type TraceSpan, type UsageComponent } from "../api";
@@ -14,7 +14,7 @@ import type { PrototypeState } from "./PrototypeState";
 import { ProviderLabel, ProviderLogo } from "./ProviderLogo";
 import { callCostText, callFailure, isNoCharge } from "./callOutcome";
 import { runCallSites, runLabel, siteLocation } from "./runCallSites";
-import { frameViews, shortenPath, type StackFrame } from "./stackFrames";
+import { defaultOpenFrame, frameViews, shortenPath, type CodeLine, type StackFrame } from "./stackFrames";
 import { CallContent } from "./CallContent";
 import { modelHref } from "./links";
 import { billedUnitsText, cachedNote, cacheWriteText, callUsage, formatHitRate, formatTokenCount, hasTokens, reasoningNote, sumUnits, sumUsage, type CallUsage } from "./tokenUsage";
@@ -396,24 +396,54 @@ function SourceTab({ detail, frames, canReadContent }: { detail: EventRow | null
     <div><dt>Feature label</dt><dd>{attribution === "Explicit" ? "Set in code" : attribution === "Mapped" ? "From a mapping" : attribution === "Inferred" ? "Inferred" : <span className="ck-muted-value">Not set</span>}</dd></div>
   </dl></div>
   {frameRows.length > 0
-    ? <CallStack frames={frameRows} callSite={{ functionName: detail?.bl_function, file: detail?.bl_file, line: detail?.bl_line == null ? null : Number(detail.bl_line) }} />
+    ? <CallStack key={String(detail?.id ?? "")} frames={frameRows} callSite={{ functionName: detail?.bl_function, file: detail?.bl_file, line: detail?.bl_line == null ? null : Number(detail.bl_line) }} />
     : <div className="ck-inspector-section"><p className="ck-inspector-note">No stack was recorded for this call. Its cost is unaffected.</p></div>}</>;
 }
 
 const STACK_PREVIEW = 8;
 
-/** The call stack, one frame per row: function, short location, installed packages dimmed, the call site marked. */
-function CallStack({ frames, callSite }: { frames: StackFrame[]; callSite: { functionName?: string | null; file?: string | null; line?: number | null } }) {
+/** The call stack, one compact row per frame. Frames with recorded source open to show it; the first in-app one starts open. */
+export function CallStack({ frames, callSite }: { frames: StackFrame[]; callSite: { functionName?: string | null; file?: string | null; line?: number | null } }) {
   const [showAll, setShowAll] = useState(false);
-  const views = frameViews(frames, callSite);
+  const views = useMemo(() => frameViews(frames, callSite), [frames, callSite.functionName, callSite.file, callSite.line]);
+  const [open, setOpen] = useState<Set<number>>(() => {
+    const first = defaultOpenFrame(views);
+    return new Set(first === null ? [] : [first]);
+  });
   const shown = showAll ? views : views.slice(0, STACK_PREVIEW);
+  function toggle(index: number): void {
+    setOpen((current) => {
+      const next = new Set(current);
+      if (next.has(index)) next.delete(index); else next.add(index);
+      return next;
+    });
+  }
   return <div className="ck-inspector-section">
     <div className="ck-inspector-section-title"><span>Call stack</span><span className="ck-muted-value">{views.length} frame{views.length === 1 ? "" : "s"}</span></div>
-    <ol className="ck-callstack">{shown.map((frame, index) => <li key={index} className={`${frame.packageName ? "is-installed" : ""} ${frame.isCallSite ? "is-call-site" : ""}`}>
-      <span className="ck-callstack-fn">{frame.functionName}{frame.packageName && <em className="ck-callstack-package">{frame.packageName}</em>}{frame.isCallSite && <em className="ck-callstack-mark">Made this call</em>}</span>
-      {frame.location && <span className="ck-callstack-path" title={frame.fullLocation ?? undefined}><bdi>{frame.location}</bdi></span>}
-    </li>)}</ol>
+    <ol className="ck-callstack">{shown.map((frame, index) => {
+      const expanded = frame.code !== null && open.has(index);
+      const row = <>
+        <span className="ck-callstack-fn">{frame.functionName}{frame.packageName && <em className="ck-callstack-package">{frame.packageName}</em>}</span>
+        {frame.location && <span className="ck-callstack-path" title={frame.fullLocation ?? undefined}><bdi>{frame.location}</bdi></span>}
+      </>;
+      return <li key={index} className={`${frame.packageName ? "is-installed" : ""} ${expanded ? "is-open" : ""}`}>
+        {frame.code
+          ? <button className="ck-callstack-row has-code" type="button" aria-expanded={expanded} onClick={() => toggle(index)}><span className="ck-callstack-chevron" aria-hidden="true" />{row}</button>
+          : <div className="ck-callstack-row">{row}</div>}
+        {expanded && frame.code && <CodeBlock lines={frame.code} label={frame.location ?? frame.functionName} />}
+      </li>;
+    })}</ol>
     {views.length > STACK_PREVIEW && <button className="ck-button ck-button-quiet ck-callstack-toggle" type="button" aria-expanded={showAll} onClick={() => setShowAll((value) => !value)}>{showAll ? "Show fewer frames" : `Show all ${views.length} frames`}</button>}
+  </div>;
+}
+
+/** Source lines with a line-number gutter, the call line marked, like a diff view. */
+export function CodeBlock({ lines, label }: { lines: CodeLine[]; label: string }) {
+  return <div className="ck-code" role="group" aria-label={`Source of ${label}`}>
+    <table className="ck-code-table"><tbody>{lines.map((line, index) => <tr key={index} className={line.isCall ? "is-call" : undefined} aria-current={line.isCall ? "true" : undefined}>
+      <td className="ck-code-num">{line.number ?? ""}</td>
+      <td className="ck-code-text">{line.text || " "}</td>
+    </tr>)}</tbody></table>
   </div>;
 }
 

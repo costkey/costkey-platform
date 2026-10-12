@@ -357,3 +357,34 @@ describe("OpenAI Agents trace exports", () => {
     assert.equal(isAgentsTraceExport({ telemetry: { v: 1, request: { url: "https://api.openai.com/v1/chat/completions" } } }), false);
   });
 });
+
+describe("calls that got no response", () => {
+  const tts = (error: { name: string }) => extractCall(telemetryFor({
+    url: "https://api.elevenlabs.io/v1/text-to-speech/tvK7HkPwv1Xe3WDiVGCz/with-timestamps",
+    requestBody: { text: "a".repeat(907), model_id: "eleven_multilingual_v2" },
+    status: null,
+    error,
+    durationMs: 10083,
+  }))!;
+
+  it("bills ElevenLabs text-to-speech for its text when the response timed out", () => {
+    const call = tts({ name: "ReadTimeout" });
+    assert.deepEqual(call.usage?.nativeUnits, { characters: 907 });
+    assert.equal(call.model, "eleven_multilingual_v2");
+    assert.deepEqual(call.outcome, { lifecycle: "failed", errorType: "ReadTimeout" });
+  });
+
+  it("does not bill a request that never reached the provider", () => {
+    assert.equal(tts({ name: "ConnectError" }).usage, null);
+  });
+
+  it("leaves token-billed providers without usage when nothing came back", () => {
+    const call = extractCall(telemetryFor({
+      url: "https://api.openai.com/v1/chat/completions",
+      requestBody: { model: "gpt-5", messages: [{ role: "user", content: "hi" }] },
+      status: null,
+      error: { name: "ReadTimeout" },
+    }))!;
+    assert.equal(call.usage, null);
+  });
+});

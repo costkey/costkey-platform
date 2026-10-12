@@ -19,6 +19,7 @@ import { applyCallTelemetry, hasCallTelemetry, type AppliedTelemetry } from "./t
 import { expandLiveKitEvent, isLiveKitTelemetry, LiveKitPayloadError } from "./telemetry/livekit.js";
 import { projectCustomExtractors } from "./telemetry/custom-providers.js";
 import { callGraphFromUpload } from "./telemetry/callgraph.js";
+import { assembleStreamBody, streamEvents } from "./telemetry/stream-assembly.js";
 import { stripOtelContent } from "./telemetry/otel.js";
 import type { ServerExtractor } from "./telemetry/types.js";
 
@@ -924,6 +925,19 @@ export function createIngestRouter(pool: pg.Pool): Router {
                   : null;
                 if (ctx && ctx["release"] === undefined) ctx["release"] = release;
                 else if (!ctx && (rawType === undefined || rawType === "call")) rawEvent["context"] = { release };
+              }
+              // A streamed response arrives as its events; store it assembled
+              // into the provider's non-streaming shape (before redaction, so a
+              // secret split across deltas is redacted whole). Content only:
+              // usage and cost already came from the telemetry envelope.
+              for (const key of ["responseBody", "response_body"]) {
+                if (allowBody && streamEvents(rawEvent[key])) {
+                  rawEvent[key] = assembleStreamBody(rawEvent[key], {
+                    provider: typeof rawEvent["provider"] === "string" ? rawEvent["provider"] : null,
+                    url: typeof rawEvent["url"] === "string" ? rawEvent["url"] : null,
+                    model: typeof rawEvent["model"] === "string" ? rawEvent["model"] : null,
+                  });
+                }
               }
               // Enforce the setting again at the persistence boundary. This keeps
               // direct router mounts and a failed/missing privacy middleware from

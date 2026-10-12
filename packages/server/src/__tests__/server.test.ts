@@ -1628,14 +1628,9 @@ describe("truncateBody", () => {
     assert.equal(result, JSON.stringify(body));
   });
 
-  it("200KB body gets truncated to ~100KB", () => {
-    const bigContent = "x".repeat(200_000);
-    const body = { content: bigContent };
-    const result = truncateBody(body);
-    assert.ok(result);
-    assert.ok(Buffer.byteLength(result, "utf8") <= 100_000);
-    assert.ok(result.includes("[TRUNCATED]"));
-    assert.doesNotThrow(() => JSON.parse(result));
+  it("a 200KB body is stored whole", () => {
+    const body = { content: "x".repeat(200_000) };
+    assert.equal(truncateBody(body), JSON.stringify(body));
   });
 
   it("null body returns null", () => {
@@ -1650,44 +1645,12 @@ describe("truncateBody", () => {
     assert.equal(truncateBody(""), null);
   });
 
-  it("truncated body uses a valid JSON envelope with a preview", () => {
-    const body = { data: "y".repeat(200_000) };
-    const result = truncateBody(body);
-    assert.ok(result);
-    const parsed = JSON.parse(result);
-    assert.equal(parsed.__costkey_truncated__, true);
-    assert.equal(parsed.original_bytes, Buffer.byteLength(JSON.stringify(body), "utf8"));
-    assert.equal(parsed.notice, "[TRUNCATED]");
-    assert.ok(parsed.preview.startsWith('{"data":"yyyy'));
-  });
-
-  it("keeps truncated unicode bodies valid and within the byte limit", () => {
-    const body = { content: "🛋️".repeat(80_000) };
-    const result = truncateBody(body);
-    assert.ok(result);
-    assert.ok(Buffer.byteLength(result, "utf8") <= 100_000);
-    assert.doesNotThrow(() => JSON.parse(result));
-  });
-
-  it("accounts for JSON escape expansion in the preview envelope", () => {
-    const body = { content: '\\"'.repeat(100_000) };
-    const result = truncateBody(body);
-    assert.ok(result);
-    assert.ok(Buffer.byteLength(result, "utf8") <= 100_000);
-    const parsed = JSON.parse(result);
-    assert.equal(parsed.__costkey_truncated__, true);
-    assert.ok(parsed.preview.length > 0);
-  });
-
-  it("body at exactly MAX_BODY_BYTES passes through", () => {
-    // Build a body whose JSON is exactly 100_000 bytes
-    // JSON.stringify adds overhead, so we need to account for that
-    const overhead = JSON.stringify({ d: "" }).length; // {"d":""}
-    const body = { d: "a".repeat(100_000 - overhead) };
-    const result = truncateBody(body);
-    assert.ok(result);
-    assert.equal(result.length, 100_000);
-    assert.ok(!result.includes("[TRUNCATED]"));
+  it("unicode and escape-heavy bodies are stored whole and stay valid JSON", () => {
+    for (const body of [{ content: "🛋️".repeat(80_000) }, { content: '\\"'.repeat(100_000) }]) {
+      const result = truncateBody(body);
+      assert.equal(result, JSON.stringify(body));
+      assert.deepEqual(JSON.parse(result!), body);
+    }
   });
 });
 
@@ -1818,7 +1781,7 @@ describe("large request ingestion", () => {
       const response = await fetch(`${baseUrl}/api/v1/events`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ data: "x".repeat(12 * 1024 * 1024) }),
+        body: JSON.stringify({ data: "x".repeat(64 * 1024 * 1024) }),
       });
       assert.equal(response.status, 413);
       assert.deepEqual(await response.json(), { error: "Request body too large" });
@@ -1854,16 +1817,16 @@ describe("large request ingestion", () => {
     assert.match(logs[0], /POST \/api\/v1\/events \(512\/2048 bytes\)/);
   });
 
-  it("rejects ingest bodies over 12MB and unrelated bodies over 5MB", async () => {
+  it("rejects ingest bodies over 64MB and unrelated bodies over 5MB", async () => {
     await withServer((app) => {
       configureRequestParsing(app);
       app.use(requestParseErrorHandler);
       app.post("/api/v1/events", (_req, res) => res.sendStatus(202));
       app.post("/other", (_req, res) => res.sendStatus(200));
     }, async (baseUrl) => {
-      const over12Mb = JSON.stringify({ data: "x".repeat(12 * 1024 * 1024) });
+      const over64Mb = JSON.stringify({ data: "x".repeat(64 * 1024 * 1024) });
       const ingestResponse = await fetch(`${baseUrl}/api/v1/events`, {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: over12Mb,
+        method: "POST", headers: { "Content-Type": "application/json" }, body: over64Mb,
       });
       assert.equal(ingestResponse.status, 413);
 

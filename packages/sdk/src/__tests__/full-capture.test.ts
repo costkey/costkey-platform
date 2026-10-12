@@ -10,6 +10,7 @@ import { CostKey } from "../index.js";
 import { SpanTracker } from "../integrations/shared.js";
 import { json, settle, startHarness, type Harness } from "./integrations/harness.js";
 import type { CostKeyTelemetryEvent } from "../types.js";
+import { wireBody } from "./wireBody";
 
 type Event = Record<string, any>;
 
@@ -112,7 +113,7 @@ describe("transport batching by size", () => {
   function stubIngest(statuses: number[] = []) {
     const bodies: string[] = [];
     globalThis.fetch = vi.fn(async (_input: unknown, init?: RequestInit) => {
-      bodies.push(String(init?.body));
+      bodies.push(wireBody(init));
       return new Response("{}", { status: statuses.shift() ?? 202 });
     }) as unknown as typeof fetch;
     return bodies;
@@ -188,5 +189,17 @@ describe("transport batching by size", () => {
     expect(batches.flat()).toEqual(["s0", "s1", "s2", "s3", "s4", "s5", "s6"]);
     for (const batch of batches) expect(batch.length).toBeLessThanOrEqual(3);
     expect(JSON.parse(bodies[0]!)).toMatchObject({ sdkVersion: expect.any(String) });
+  });
+});
+
+describe("gzip deliveries", () => {
+  it("gzips a large batch and the server can read it back whole", async () => {
+    const { gzipBody } = await import("../transport");
+    const body = JSON.stringify({ events: [{ id: "e1", requestBody: { instructions: "You are Dash. ".repeat(40_000) } }] });
+    const packed = await gzipBody(body);
+    expect(packed).not.toBeNull();
+    expect(packed!.length).toBeLessThan(body.length / 20);
+    expect(wireBody({ body: packed!, headers: { "Content-Encoding": "gzip" } })).toBe(body);
+    expect(await gzipBody("{}")).toBeNull();
   });
 });

@@ -3,6 +3,7 @@ import { createServer, type Server } from "node:http";
 import { CostKey } from "../index.js";
 import { addCaptureTarget } from "../providers/registry.js";
 import { isStreamingRequest } from "../fetch-patch.js";
+import { wireBody } from "./wireBody";
 
 type Event = Record<string, unknown>;
 
@@ -34,7 +35,7 @@ describe("agent spans", () => {
     globalThis.fetch = async (input, init) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
       if (url === "https://costkey.dev/api/v1/events") {
-        const body = JSON.parse(String(init?.body)) as { events: Event[] };
+        const body = JSON.parse(wireBody(init)) as { events: Event[] };
         events.push(...body.events);
         return new Response(JSON.stringify({ accepted: body.events.length }), { status: 202 });
       }

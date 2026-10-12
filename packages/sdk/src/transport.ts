@@ -138,14 +138,17 @@ export class Transport {
       const timeout = setTimeout(() => controller.abort(), 15_000);
 
       try {
+        const headers: Record<string, string> = {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.options.authKey}`,
+          "User-Agent": `costkey-sdk/${SDK_VERSION}`,
+        };
+        const packed = await gzipBody(body);
+        if (packed) headers["Content-Encoding"] = "gzip";
         const response = await withoutOtelTracing(() => fetch(this.options.endpoint, {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${this.options.authKey}`,
-            "User-Agent": `costkey-sdk/${SDK_VERSION}`,
-          },
-          body,
+          headers,
+          body: packed ?? body,
           signal: controller.signal,
         }));
 
@@ -231,5 +234,19 @@ function withoutOtelTracing<T>(fn: () => Promise<T>): Promise<T> {
     return context.with(context.active().setValue(OTEL_SUPPRESS_TRACING, true), fn);
   } catch {
     return fn();
+  }
+}
+
+/** Bodies past this size go gzipped; prompts compress several times over. */
+export const GZIP_MIN_BYTES = 1024;
+
+/** The body gzipped, or null where the runtime has no CompressionStream (it is then sent as is). */
+export async function gzipBody(body: string): Promise<Uint8Array | null> {
+  if (body.length <= GZIP_MIN_BYTES || typeof CompressionStream === "undefined" || typeof Blob === "undefined") return null;
+  try {
+    const stream = new Blob([body]).stream().pipeThrough(new CompressionStream("gzip"));
+    return new Uint8Array(await new Response(stream).arrayBuffer());
+  } catch {
+    return null;
   }
 }

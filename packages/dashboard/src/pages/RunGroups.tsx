@@ -15,6 +15,7 @@ import { useAuth } from "../contexts/useAuth";
 import { formatDuration } from "../utils";
 import { useInsightScope, useScopedLoad } from "./useInsightScope";
 import { ProviderLabel } from "../components/ProviderLogo";
+import { ScopeBudgetCard } from "../components/ScopeBudget";
 
 function money(value: number | null | undefined, currency: string, fx?: ReportingFx | null): string {
   return value == null ? "Unpriced" : formatReportedAmount(value, currency, fx);
@@ -336,6 +337,7 @@ function GroupDetailPage({ kind }: { kind: GroupKind }) {
         <MetricCard icon="clock" label="p95 run time" value={agent?.p95Ms == null ? "—" : formatDuration(agent.p95Ms)} detail={agent?.avgSteps != null ? [agent.avgSteps > 0 ? `${agent.avgSteps.toFixed(1)} steps` : null, (agent.avgTools ?? 0) > 0 ? `${(agent.avgTools ?? 0).toFixed(1)} tools per run` : null].filter(Boolean).join(" · ") || undefined : undefined} loading={loading && !data} />
         <MetricCard icon="model" label="Cache hit rate" value={formatHitRate(usage?.cacheHitRate)} detail={cacheDetail(usage, currency, fx)} loading={loading && !data} />
       </div>
+      <ScopeBudgetCard projectId={projectId} dimension={kind} name={name} />
       {openRun && data && !runListed && projectId && <Panel title="Run" className="ck-run-panel"><InlineRun projectId={projectId} traceId={openRun} currency={currency} fx={fx} initialCallId={callId} onCallChange={changeCall} /></Panel>}
       <Panel title="Runs" subtitle={data && data.runs.length > 0 ? "Select a run to see its steps, tools and calls." : undefined}>{loading && !data ? <LoadingRows count={5} columns={6} /> : (data?.runs.length ?? 0) === 0 ? <EmptyPanel title="No runs in this period" /> : <div {...runsHold.bind}><AgentRunsTable runs={data!.runs} fresh={freshRuns} projectId={projectId!} openRun={openRun} onToggle={toggleRun} currency={currency} fx={fx} callId={callId} onCallChange={changeCall} /></div>}</Panel>
       <Panel title="Models" subtitle={usage?.reasoningTokens ? `${formatTokenCount(usage.outputTokens)} output tokens, ${formatTokenCount(usage.reasoningTokens)} of them reasoning` : undefined}>{loading && !data ? <LoadingRows count={2} columns={5} /> : (data?.models.length ?? 0) === 0 ? <EmptyPanel title="No model calls" /> : <ModelUsageTable models={data!.models} currency={currency} fx={fx} />}{(data?.subagents.length ?? 0) > 0 && <p className="ck-table-note">Hands off to {data!.subagents.map((agent) => `${agent.name} (${agent.runs})`).join(", ")}</p>}</Panel>

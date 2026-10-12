@@ -41,15 +41,15 @@ function BoardEmpty({ children }: { children: ReactNode }) {
 
 /* ── KPI cards ─────────────────────────────────────────────────────── */
 
-export function KpiCard({ label, value, current, previous, previousLabel, higherIsBetter, loading }: { label: string; value: string; current: number | null; previous: number | null; previousLabel: string; higherIsBetter: boolean; loading?: boolean }) {
+export function KpiCard({ label, value, current, previous, previousLabel, higherIsBetter, loading, fact }: { label: string; value: string; current: number | null; previous: number | null; previousLabel: string; higherIsBetter: boolean; loading?: boolean; /** Shown when there's nothing earlier to compare with. */ fact?: ReactNode }) {
   const delta = kpiDelta(current, previous, higherIsBetter);
   return (
     <article className="ck-metric-card ck-board-kpi">
       <div className="ck-board-kpi-label">{label}</div>
       {loading ? <div className="ck-skeleton ck-skeleton-metric" /> : <div className="ck-board-kpi-value">{value}</div>}
-      {!loading && (
+      {!loading && (delta.kind !== "none" || fact) && (
         <div className="ck-board-delta">
-          {delta.kind === "none" ? <span>No previous value to compare</span>
+          {delta.kind === "none" ? <span>{fact}</span>
             : delta.kind === "same" ? <span>Same as previous {previousLabel}</span>
               : <>
                 <span className={delta.good ? "ck-board-delta-good" : "ck-board-delta-bad"}>

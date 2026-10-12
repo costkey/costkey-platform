@@ -87,6 +87,8 @@ export interface EventRow {
   cache_read_tokens?: number | null;
   cache_creation_tokens?: number | null;
   image_output_tokens?: number | null;
+  lifecycle_state?: string | null;
+  lifecycle_error_type?: string | null;
   cost_usd: number | null;
   cost_basis?: "reported" | "estimated" | "unknown" | null;
   cost_source?: string | null;
@@ -333,6 +335,10 @@ export interface TraceEvent {
   cache_creation_tokens?: number | null;
   /** What cache hits saved on this call in USD; null when its price can't be checked. */
   cache_saved_usd?: number | null;
+  /** How the call ended: "failed" or "cancelled" with an error name such as ReadTimeout or http_429. */
+  lifecycle_state?: string | null;
+  lifecycle_error_type?: string | null;
+  lifecycle_at?: string | null;
   cost_usd: number | null;
   duration_ms: number;
   streaming: number;

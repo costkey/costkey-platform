@@ -135,3 +135,43 @@ export function callUsageLine(usage: CallUsage): string {
   ];
   return parts.filter(Boolean).join(" · ");
 }
+
+const UNIT_WORDS: Array<[string, (value: string, raw: number) => string]> = [
+  ["characters", (value) => `${value} characters`],
+  ["audioSeconds", (value) => `${value} s audio`],
+  ["searchQueries", (value, raw) => `${value} ${raw === 1 ? "search" : "searches"}`],
+  ["webSearchRequests", (value, raw) => `${value} web ${raw === 1 ? "search" : "searches"}`],
+  ["pages", (value, raw) => `${value} ${raw === 1 ? "page" : "pages"}`],
+  ["images", (value, raw) => `${value} ${raw === 1 ? "image" : "images"}`],
+  ["credits", (value, raw) => `${value} ${raw === 1 ? "credit" : "credits"}`],
+  ["requests", (value, raw) => `${value} ${raw === 1 ? "request" : "requests"}`],
+];
+
+/** What a non-token call was billed for, in its own units: "1,791 characters", "312 s audio". Empty for token calls. */
+export function billedUnitsText(units: Record<string, number> | null | undefined): string {
+  if (!units) return "";
+  const parts: string[] = [];
+  for (const [key, words] of UNIT_WORDS) {
+    const raw = Number(units[key]);
+    if (!Number.isFinite(raw) || raw <= 0) continue;
+    parts.push(words(Math.round(raw).toLocaleString(), raw));
+  }
+  return parts.join(" · ");
+}
+
+/** Billed units summed over calls. */
+export function sumUnits(list: Array<Record<string, number> | null | undefined>): Record<string, number> {
+  const total: Record<string, number> = {};
+  for (const units of list) {
+    for (const [key, value] of Object.entries(units ?? {})) {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) total[key] = (total[key] ?? 0) + parsed;
+    }
+  }
+  return total;
+}
+
+/** A call reported token counts. */
+export function hasTokens(usage: TokenUsage): boolean {
+  return (usage.inputTokens ?? 0) > 0 || (usage.outputTokens ?? 0) > 0;
+}

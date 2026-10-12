@@ -9,7 +9,10 @@ import { RunQualityChecks } from "./RunQualityChecks";
 import { buildRunTree, defaultCollapsed, flattenRunTree, type RunTreeNode, type RunTreeSpanNode } from "./runTreeModel";
 import type { PrototypeState } from "./PrototypeState";
 import { ProviderLabel } from "./ProviderLogo";
-import { cachedNote, cacheWriteText, callUsage, formatHitRate, formatTokenCount, reasoningNote, sumUsage, type CallUsage } from "./tokenUsage";
+import { callCostText, callFailure, isNoCharge } from "./callOutcome";
+import { runCallSites, runLabel, siteLocation } from "./runCallSites";
+import { frameViews, shortenPath, type StackFrame } from "./stackFrames";
+import { billedUnitsText, cachedNote, cacheWriteText, callUsage, formatHitRate, formatTokenCount, hasTokens, reasoningNote, sumUnits, sumUsage, type CallUsage } from "./tokenUsage";
 
 /**
  * One run's whole flow, shared by the run page and the inline run on the
@@ -62,19 +65,26 @@ export interface RunModel {
   eventStartMs: number;
   eventSpan: number;
   usage: CallUsage;
+  /** Calls that failed or were cancelled. */
+  failedCalls: number;
 }
 
 export function runModel(trace: RunDetail, traceId: string, explicitState: PrototypeState | string = "default"): RunModel {
   const summary = trace.summary;
   const rawEvents = (trace.events ?? []).filter(isCallEvent);
   const events = explicitState === "partial" ? rawEvents.map((event, index) => index === 2 ? { ...event, cost_usd: null, cost_basis: "unknown" as const } : event) : rawEvents;
+  const eventsTotal = events.reduce<number>((sum, event) => sum + (event.cost_usd == null ? 0 : Number(event.cost_usd) || 0), 0);
+  // A failed call without a price cost nothing: it isn't unpriced.
+  const unpricedCalls = events.filter((event) => event.cost_usd == null && !isNoCharge(event)).length;
   const knownCost = explicitState === "partial"
-    ? events.reduce<number>((sum, event) => sum + (event.cost_usd == null ? 0 : Number(event.cost_usd) || 0), 0)
-    : summary.known_cost !== undefined
-      ? (summary.known_cost == null ? null : Number(summary.known_cost) || 0)
-      : events.reduce<number>((sum, event) => sum + (event.cost_usd == null ? 0 : Number(event.cost_usd) || 0), 0);
-  const unpriced = explicitState === "partial" ? Math.max(1, events.filter((event) => event.cost_usd == null).length) : summary.unpriced_count == null
-    ? events.filter((event) => event.cost_usd == null).length
+    ? eventsTotal
+    : events.length > 0 && unpricedCalls === 0
+      ? eventsTotal
+      : summary.known_cost !== undefined
+        ? (summary.known_cost == null ? null : Number(summary.known_cost) || 0)
+        : eventsTotal;
+  const unpriced = explicitState === "partial" ? Math.max(1, unpricedCalls) : events.length > 0 || summary.unpriced_count == null
+    ? unpricedCalls
     : Number(summary.unpriced_count) || 0;
   const start = String(summary.started_at ?? events[0]?.timestamp ?? "");
   const end = String(summary.ended_at ?? events[events.length - 1]?.timestamp ?? "");
@@ -95,21 +105,29 @@ export function runModel(trace: RunDetail, traceId: string, explicitState: Proto
     status: runStatus({ execution_state: executionState, unpriced_count: unpriced }, knownCost),
     mostExpensive, traceName: String(summary.trace_name ?? traceId), eventStartMs, eventSpan,
     usage: sumUsage(events.map(callUsage)),
+    failedCalls: events.filter((event) => callFailure(event) != null).length,
   };
 }
 
-/** Cost, time, calls, tokens and status across the top of a run. */
+/** Cost, time, calls, usage and status across the top of a run. Token items only when calls reported tokens; other billed units beside them. */
 export function RunSummaryStrip({ model, currency, fx, className = "" }: { model: RunModel; currency: string; fx?: ReportingFx | null; className?: string }) {
   const { usage } = model;
+  const tokens = hasTokens(usage);
+  const units = billedUnitsText(sumUnits(model.events.map((event) => event.native_units)));
   const inputMeta = [cachedNote(usage), usage.cacheHitRate != null ? `${formatHitRate(usage.cacheHitRate)} hit rate` : ""].filter(Boolean).join(" · ");
-  return <div className={`ck-summary-strip ck-run-summary ${className}`}>
-    <div className="ck-summary-item"><div className="prototype-summary-label">Cost</div><div className="ck-summary-value">{model.knownCost == null ? "Unpriced" : formatReportedAmount(model.knownCost, currency, fx)}</div>{model.unpriced > 0 ? <div className="ck-summary-meta">{`${model.unpriced} of ${model.events.length} calls unpriced`}</div> : model.usage.cacheSavings != null && model.usage.cacheSavings > 0 ? <div className="ck-summary-meta">{formatReportedAmount(model.usage.cacheSavings, currency, fx)} saved by cache</div> : null}</div>
-    <div className="ck-summary-item"><div className="prototype-summary-label">Duration</div><div className="ck-summary-value">{Number.isFinite(model.elapsed) && model.elapsed >= 0 ? formatDuration(model.elapsed) : "Unknown"}</div></div>
-    <div className="ck-summary-item"><div className="prototype-summary-label">Calls</div><div className="ck-summary-value">{model.events.length.toLocaleString()}</div><div className="ck-summary-meta"><ProviderLabel provider={[...new Set(model.events.map((event) => event.provider).filter(Boolean))].join(",")} size={13} /></div></div>
-    <div className="ck-summary-item"><div className="prototype-summary-label">Input tokens</div><div className="ck-summary-value">{formatTokenCount(usage.inputTokens)}</div>{inputMeta && <div className="ck-summary-meta">{inputMeta}</div>}</div>
-    <div className="ck-summary-item"><div className="prototype-summary-label">Output tokens</div><div className="ck-summary-value">{formatTokenCount(usage.outputTokens)}</div>{reasoningNote(usage) && <div className="ck-summary-meta">{reasoningNote(usage)}</div>}</div>
-    <div className="ck-summary-item"><div className="prototype-summary-label">Status</div><div className="ck-summary-value"><StatusPill tone={model.status.tone}>{model.status.label}</StatusPill></div>{model.accountingState !== "complete" && <div className="ck-summary-meta">{model.accountingState === "updating" ? "Cost still updating" : "Some prices missing"}</div>}</div>
-  </div>;
+  const items: ReactNode[] = [
+    <div className="ck-summary-item" key="cost"><div className="prototype-summary-label">Cost</div><div className="ck-summary-value">{model.knownCost == null ? "Unpriced" : formatReportedAmount(model.knownCost, currency, fx)}</div>{model.unpriced > 0 ? <div className="ck-summary-meta">{`${model.unpriced} of ${model.events.length} calls unpriced`}</div> : model.usage.cacheSavings != null && model.usage.cacheSavings > 0 ? <div className="ck-summary-meta">{formatReportedAmount(model.usage.cacheSavings, currency, fx)} saved by cache</div> : null}</div>,
+    <div className="ck-summary-item" key="duration"><div className="prototype-summary-label">Duration</div><div className="ck-summary-value">{Number.isFinite(model.elapsed) && model.elapsed >= 0 ? formatDuration(model.elapsed) : "Unknown"}</div></div>,
+    <div className="ck-summary-item" key="calls"><div className="prototype-summary-label">Calls</div><div className="ck-summary-value">{model.events.length.toLocaleString()}</div><div className="ck-summary-meta"><ProviderLabel provider={[...new Set(model.events.map((event) => event.provider).filter(Boolean))].join(",")} size={13} /></div></div>,
+  ];
+  if (tokens || !units) {
+    items.push(<div className="ck-summary-item" key="input"><div className="prototype-summary-label">Input tokens</div><div className="ck-summary-value">{formatTokenCount(usage.inputTokens)}</div>{inputMeta && <div className="ck-summary-meta">{inputMeta}</div>}</div>);
+    items.push(<div className="ck-summary-item" key="output"><div className="prototype-summary-label">Output tokens</div><div className="ck-summary-value">{formatTokenCount(usage.outputTokens)}</div>{(reasoningNote(usage) || (tokens && units)) && <div className="ck-summary-meta">{[reasoningNote(usage), tokens && units ? `+ ${units}` : ""].filter(Boolean).join(" · ")}</div>}</div>);
+  } else {
+    items.push(<div className="ck-summary-item ck-summary-wide" key="usage"><div className="prototype-summary-label">Billed for</div><div className="ck-summary-value">{units}</div></div>);
+  }
+  items.push(<div className="ck-summary-item" key="status"><div className="prototype-summary-label">Status</div><div className="ck-summary-value"><StatusPill tone={model.status.tone}>{model.status.label}</StatusPill></div>{model.failedCalls > 0 ? <div className="ck-summary-meta ck-tone-critical-text">{model.failedCalls} of {model.events.length} call{model.events.length === 1 ? "" : "s"} failed</div> : model.accountingState !== "complete" && model.unpriced > 0 && <div className="ck-summary-meta">{model.accountingState === "updating" ? "Cost still updating" : "Some prices missing"}</div>}</div>);
+  return <div className={`ck-summary-strip ck-run-summary ${className}`} data-items={items.length}>{items}</div>;
 }
 
 /** Input with cache, output with reasoning, and what the cache saved. */
@@ -172,7 +190,7 @@ export function RunFlow({ projectId, traceId, model, role, currency, fx, explici
       ? <SpanInspector node={selectedSpan} currency={currency} fx={fx} />
       : selected
         ? <CallInspector projectId={projectId} event={selected} role={role} currency={currency} fx={fx} initialTab={requestedTab} prototypeVariant={explicitState} forceError={explicitState === "child-error"} />
-        : <RootInspector projectId={projectId} traceId={traceId} openChecks={openChecks} summary={model.summary} context={events[0]?.context ?? null} knownCost={model.knownCost} unpriced={model.unpriced} usageComponents={model.usageComponents} callEvents={events} mostExpensive={model.mostExpensive} usage={model.usage} currency={currency} fx={fx} initialTab={requestedTab} />}
+        : <RootInspector projectId={projectId} traceId={traceId} openChecks={openChecks} summary={model.summary} context={events[0]?.context ?? null} knownCost={model.knownCost} unpriced={model.unpriced} usageComponents={model.usageComponents} callEvents={events} mostExpensive={model.mostExpensive} usage={model.usage} currency={currency} fx={fx} initialTab={requestedTab} onSelectCall={selectEvent} />}
   </div>;
 }
 
@@ -252,11 +270,12 @@ export function CallInspector({ projectId, event, role, currency, fx, initialTab
   const context = parseJson(detail?.context ?? event.context);
   const frames = parseJson(detail?.call_site_frames ?? event.call_site_frames);
   const cost = detail?.cost_usd ?? event.cost_usd;
+  const failure = callFailure(event);
 
   return <Panel className="ck-inspector" title="Call">
     <div className="ck-tabs" role="tablist" aria-label="Call detail"><button className={`ck-tab ${tab === "content" ? "active" : ""}`} role="tab" aria-selected={tab === "content"} type="button" onClick={() => setTab("content")}>Content</button><button className={`ck-tab ${tab === "cost" ? "active" : ""}`} role="tab" aria-selected={tab === "cost"} type="button" onClick={() => setTab("cost")}>Cost &amp; usage</button><button className={`ck-tab ${tab === "source" ? "active" : ""}`} role="tab" aria-selected={tab === "source"} type="button" onClick={() => setTab("source")}>Source</button><button className={`ck-tab ${tab === "context" ? "active" : ""}`} role="tab" aria-selected={tab === "context"} type="button" onClick={() => setTab("context")}>Context</button></div>
       <div className="ck-inspector-body">
-      <div className="ck-inspector-call"><div><div className="ck-inspector-heading">{eventDisplayName({ ...event, bl_function: detail?.bl_function ?? event.bl_function })}</div><div className="ck-inspector-subheading"><ProviderLabel provider={event.provider} size={13} /> · {event.model || "Model not recorded"} · {formatAbsoluteDate(event.timestamp)}</div></div><strong className="ck-inspector-cost">{cost == null ? "Unpriced" : formatReportedAmount(Number(cost), currency, fx)}</strong></div>
+      <div className="ck-inspector-call"><div><div className="ck-inspector-heading">{eventDisplayName({ ...event, bl_function: detail?.bl_function ?? event.bl_function })}</div><div className="ck-inspector-subheading"><ProviderLabel provider={event.provider} size={13} /> · {event.model || "Model not recorded"} · {formatAbsoluteDate(event.timestamp)}</div></div><div className="ck-inspector-outcome">{failure && <StatusPill tone="critical">{failure.label}</StatusPill>}<strong className="ck-inspector-cost">{callCostText({ ...event, cost_usd: cost }, (value) => formatReportedAmount(value, currency, fx))}</strong></div></div>{failure?.reason && <div className="ck-inspector-failure" role="status">{failure.reason}</div>}
       {loading && <div style={{ marginTop: 18 }}><LoadingRows count={3} columns={2} /></div>}
       {detailError && <div className="ck-alert" role="alert" style={{ marginTop: 16 }}><CircleAlert size={14} /><div><strong>Couldn’t load this call’s details.</strong> Its cost and timing are still accurate.</div></div>}
       {!loading && tab === "content" && <ContentTab canReadContent={canReadContent} input={content} output={output} contentStatus={prototypeVariant === "expired" ? "expired" : prototypeVariant === "uncaptured" ? "not_available" : prototypeVariant === "redacted" ? "redacted" : prototypeVariant === "long-content" ? "too_long" : prototypeVariant === "restricted" ? "restricted" : detail?.content_status ?? event.content_status} />}
@@ -289,7 +308,8 @@ function ContentTab({ canReadContent, input, output, contentStatus }: { canReadC
 function InspectorBlock({ title, value }: { title: string; value: string }) { return <div className="ck-inspector-section"><div className="ck-inspector-section-title"><span>{title}</span><button className="ck-button ck-button-quiet" style={{ minHeight: 0, padding: 0 }} type="button" onClick={() => void navigator.clipboard.writeText(value)}><Copy size={11} /> Copy</button></div><pre className="ck-inspector-pre">{value}</pre></div>; }
 
 function CostTab({ event, detail, cost, currency, fx }: { event: TraceEvent; detail: EventRow | null; cost: number | null | undefined; currency: string; fx?: ReportingFx | null }) {
-  const requestedModel = event.request_model ?? detail?.request_model;
+  const usedModel = event.model || detail?.model || null;
+  const requestedModel = event.request_model ?? detail?.request_model ?? null;
   const basis = event.cost_basis ?? detail?.cost_basis;
   const source = event.cost_source ?? detail?.cost_source;
   const usage = callUsage({
@@ -300,17 +320,60 @@ function CostTab({ event, detail, cost, currency, fx }: { event: TraceEvent; det
     cache_read_tokens: event.cache_read_tokens ?? detail?.cache_read_tokens ?? null,
     cache_creation_tokens: event.cache_creation_tokens ?? detail?.cache_creation_tokens ?? null,
   });
-  const nativeUsage = event.unit_value == null ? "Tokens below" : `${Number(event.unit_value).toLocaleString()} ${event.unit_kind || event.unit || "units"}`;
-  return <><div className="ck-inspector-section"><div className="ck-inspector-section-title"><span>How this was priced</span></div><div className="ck-inspector-grid"><InspectorValue label="Cost" value={cost == null ? "Unpriced" : formatReportedAmount(Number(cost), currency, fx)} /><InspectorValue label="Price from" value={basis === "reported" ? "Reported by the provider" : basis === "estimated" ? "Estimated from list prices" : "Not known"} /><InspectorValue label="Provider" value={<ProviderLabel provider={event.provider} />} /><InspectorValue label="Model used" value={event.model || "Not recorded"} /><InspectorValue label="Model requested" value={requestedModel || "Not recorded"} /><InspectorValue label="Rate card" value={source || "Not recorded"} /><InspectorValue label="Usage" value={nativeUsage} /><InspectorValue label="Duration" value={formatDuration(Number(event.duration_ms) || 0)} /></div></div><TokenUsageSection usage={usage} currency={currency} fx={fx} />{cost == null && <div className="ck-inspector-section"><div className="ck-inspector-restricted">We don’t have a price for this call yet, so it isn’t counted as $0.</div></div>}</>;
+  const tokens = hasTokens(usage);
+  const units = billedUnitsText(event.native_units);
+  const billed = units || (tokens ? `${formatTokenCount((usage.inputTokens ?? 0) + (usage.outputTokens ?? 0))} tokens` : event.unit_value != null ? `${Number(event.unit_value).toLocaleString()} ${event.unit_kind || event.unit || "units"}` : null);
+  // request_model is stored only when it differs from the model used.
+  const requested = requestedModel && requestedModel !== usedModel
+    ? <>{requestedModel}<span className="ck-inspector-value-note">Served by {usedModel ?? "another model"}</span></>
+    : usedModel ? <span className="ck-muted-value">Same as used</span> : "—";
+  return <><div className="ck-inspector-section"><div className="ck-inspector-section-title"><span>How this was priced</span></div><div className="ck-inspector-grid">
+    <InspectorValue label="Cost" value={callCostText({ ...event, cost_usd: cost }, (value) => formatReportedAmount(value, currency, fx))} />
+    <InspectorValue label="Price from" value={basis === "reported" ? "Reported by the provider" : basis === "estimated" ? "Estimated from list prices" : <span className="ck-muted-value">Not known</span>} />
+    <InspectorValue label="Provider" value={<ProviderLabel provider={event.provider} />} />
+    <InspectorValue label="Model used" value={usedModel ?? <span className="ck-muted-value">Not recorded</span>} />
+    <InspectorValue label="Model requested" value={requested} />
+    <InspectorValue label="Rate card" value={source || <span className="ck-muted-value">Not recorded</span>} />
+    <InspectorValue label="Billed for" value={billed ?? <span className="ck-muted-value">Not reported</span>} />
+    <InspectorValue label="Duration" value={formatDuration(Number(event.duration_ms) || 0)} />
+  </div></div>
+  {tokens && <TokenUsageSection usage={usage} currency={currency} fx={fx} />}
+  {cost == null && !isNoCharge(event) && <div className="ck-inspector-section"><div className="ck-inspector-restricted">We don’t have a price for this call yet, so it isn’t counted as $0.</div></div>}
+  {cost == null && isNoCharge(event) && <div className="ck-inspector-section"><div className="ck-inspector-note">This call failed before the provider charged for it, so it counts as no charge.</div></div>}</>;
 }
 
 function InspectorValue({ label, value }: { label: string; value: ReactNode }) { return <div><div className="ck-inspector-key">{label}</div><div className="ck-inspector-value">{value}</div></div>; }
 
 function SourceTab({ detail, frames, canReadContent }: { detail: EventRow | null; frames: unknown; canReadContent: boolean }) {
   if (!canReadContent) return <div className="ck-inspector-section"><div className="ck-inspector-restricted"><strong>Source is hidden for your role.</strong><br />Viewers don’t see file and function locations.</div></div>;
-  const frameRows = Array.isArray(frames) ? frames as Array<Record<string, unknown>> : [];
+  const frameRows = Array.isArray(frames) ? frames as StackFrame[] : [];
   const attribution = sourceAttributionStatus(detail ? { featureSource: detail.feature_source, featureMappingId: detail.feature_mapping_id, functionName: detail.bl_function, fileName: detail.bl_file } : null);
-  return <><div className="ck-inspector-section"><div className="ck-inspector-section-title"><span>Where in your code</span></div><div className="ck-inspector-grid"><InspectorValue label="Function" value={detail?.bl_function || "Not recorded"} /><InspectorValue label="File" value={detail?.bl_file || "Not recorded"} /><InspectorValue label="Line" value={detail?.bl_line == null ? "—" : String(detail.bl_line)} /><InspectorValue label="Feature label" value={attribution === "Explicit" ? "Set in code" : attribution === "Mapped" ? "From a mapping" : attribution === "Inferred" ? "Inferred" : attribution === "Recorded location" ? "Not set" : "Not recorded"} /></div></div>{frameRows.length > 0 && <div className="ck-inspector-section"><div className="ck-inspector-section-title"><span>Call stack</span></div><pre className="ck-inspector-pre">{frameRows.slice(0, 8).map((frame, index) => `${index + 1}. ${String(frame["functionName"] ?? "anonymous")} · ${String(frame["fileName"] ?? "file unavailable")}${frame["lineNumber"] ? `:${String(frame["lineNumber"])}` : ""}`).join("\n")}</pre></div>}{frameRows.length === 0 && <div className="ck-inspector-section"><div className="ck-inspector-restricted">No stack was recorded for this call. Its cost is unaffected.</div></div>}</>;
+  const location = detail?.bl_file ? shortenPath(detail.bl_file).short : null;
+  return <><div className="ck-inspector-section"><div className="ck-inspector-section-title"><span>Where in your code</span></div><dl className="ck-definition-list">
+    <div><dt>Function</dt><dd className="mono">{detail?.bl_function || <span className="ck-muted-value">Not recorded</span>}</dd></div>
+    <div><dt>File</dt><dd className="ck-path-value" title={detail?.bl_file ?? undefined}>{location ? <bdi>{location}{detail?.bl_line == null ? "" : `:${detail.bl_line}`}</bdi> : <span className="ck-muted-value">Not recorded</span>}</dd></div>
+    <div><dt>Feature label</dt><dd>{attribution === "Explicit" ? "Set in code" : attribution === "Mapped" ? "From a mapping" : attribution === "Inferred" ? "Inferred" : <span className="ck-muted-value">Not set</span>}</dd></div>
+  </dl></div>
+  {frameRows.length > 0
+    ? <CallStack frames={frameRows} callSite={{ functionName: detail?.bl_function, file: detail?.bl_file, line: detail?.bl_line == null ? null : Number(detail.bl_line) }} />
+    : <div className="ck-inspector-section"><p className="ck-inspector-note">No stack was recorded for this call. Its cost is unaffected.</p></div>}</>;
+}
+
+const STACK_PREVIEW = 8;
+
+/** The call stack, one frame per row: function, short location, installed packages dimmed, the call site marked. */
+function CallStack({ frames, callSite }: { frames: StackFrame[]; callSite: { functionName?: string | null; file?: string | null; line?: number | null } }) {
+  const [showAll, setShowAll] = useState(false);
+  const views = frameViews(frames, callSite);
+  const shown = showAll ? views : views.slice(0, STACK_PREVIEW);
+  return <div className="ck-inspector-section">
+    <div className="ck-inspector-section-title"><span>Call stack</span><span className="ck-muted-value">{views.length} frame{views.length === 1 ? "" : "s"}</span></div>
+    <ol className="ck-callstack">{shown.map((frame, index) => <li key={index} className={`${frame.packageName ? "is-installed" : ""} ${frame.isCallSite ? "is-call-site" : ""}`}>
+      <span className="ck-callstack-fn">{frame.functionName}{frame.packageName && <em className="ck-callstack-package">{frame.packageName}</em>}{frame.isCallSite && <em className="ck-callstack-mark">Made this call</em>}</span>
+      {frame.location && <span className="ck-callstack-path" title={frame.fullLocation ?? undefined}><bdi>{frame.location}</bdi></span>}
+    </li>)}</ol>
+    {views.length > STACK_PREVIEW && <button className="ck-button ck-button-quiet ck-callstack-toggle" type="button" aria-expanded={showAll} onClick={() => setShowAll((value) => !value)}>{showAll ? "Show fewer frames" : `Show all ${views.length} frames`}</button>}
+  </div>;
 }
 
 export function ContextTab({ context }: { context: unknown }) {
@@ -318,12 +381,50 @@ export function ContextTab({ context }: { context: unknown }) {
   return <div className="ck-inspector-section"><div className="ck-inspector-section-title"><span>Labels from your app</span></div><pre className="ck-inspector-pre">{jsonText(context)}</pre><p className="ck-table-note" style={{ paddingLeft: 0, paddingRight: 0, borderTop: 0 }}>Shown exactly as your app sent them.</p></div>;
 }
 
-export function RootInspector({ projectId, traceId, openChecks = false, summary, context, knownCost, unpriced, usageComponents, callEvents, mostExpensive, usage, currency, fx, initialTab = "content" }: { projectId: string; traceId: string; openChecks?: boolean; summary: Record<string, unknown>; context: unknown; knownCost: number | null; unpriced: number; usageComponents?: UsageComponent[]; callEvents?: TraceEvent[]; mostExpensive?: TraceEvent | null; usage?: CallUsage; currency: string; fx?: ReportingFx | null; initialTab?: InspectorTab }) {
+export function RootInspector({ projectId, traceId, openChecks = false, summary, context, knownCost, unpriced, usageComponents, callEvents, mostExpensive, usage, currency, fx, initialTab = "content", onSelectCall }: { projectId: string; traceId: string; openChecks?: boolean; summary: Record<string, unknown>; context: unknown; knownCost: number | null; unpriced: number; usageComponents?: UsageComponent[]; callEvents?: TraceEvent[]; mostExpensive?: TraceEvent | null; usage?: CallUsage; onSelectCall?: (eventId: string) => void; currency: string; fx?: ReportingFx | null; initialTab?: InspectorTab }) {
   const [tab, setTab] = useState<InspectorTab | "checks">(openChecks ? "checks" : initialTab === "content" ? "cost" : initialTab);
   const callCount = Number(summary.call_count ?? callEvents?.length ?? 0) || 0;
-  return <Panel className="ck-inspector"><div className="ck-inspector-call"><div><div className="ck-inspector-heading">This run</div><div className="ck-inspector-subheading">{callCount.toLocaleString()} call{callCount === 1 ? "" : "s"} · {String(summary.operation_name ?? summary.trace_name ?? "Unnamed run")}</div></div></div><div className="ck-tabs" role="tablist" aria-label="Run detail"><button className={`ck-tab ${tab === "cost" ? "active" : ""}`} role="tab" aria-selected={tab === "cost"} type="button" onClick={() => setTab("cost")}>Cost &amp; usage</button><button className={`ck-tab ${tab === "source" ? "active" : ""}`} role="tab" aria-selected={tab === "source"} type="button" onClick={() => setTab("source")}>Source</button><button className={`ck-tab ${tab === "context" ? "active" : ""}`} role="tab" aria-selected={tab === "context"} type="button" onClick={() => setTab("context")}>Context</button><button className={`ck-tab ${tab === "checks" ? "active" : ""}`} role="tab" aria-selected={tab === "checks"} type="button" onClick={() => setTab("checks")}>Checks</button></div><div className="ck-inspector-body">{tab === "cost" && <><CostRootSummary knownCost={knownCost} unpriced={unpriced} mostExpensive={mostExpensive} usageComponents={usageComponents} usage={usage} currency={currency} fx={fx} /></>}{tab === "source" && <div className="ck-inspector-section"><h3>Where in your code</h3><p className="ck-panel-subtitle">Select a call to see its file and function. Missing locations don’t affect cost.</p><div className="ck-definition-list"><div><span>Feature label</span><strong>{summary.feature_source ? String(summary.feature_source) : "Not set"}</strong></div><div><span>Release</span><strong>{summary.release ? String(summary.release) : "Not recorded"}</strong></div></div></div>}{tab === "context" && <ContextTab context={context} />}{tab === "checks" && <RunQualityChecks projectId={projectId} traceId={traceId} />}</div></Panel>;
+  return <Panel className="ck-inspector"><div className="ck-inspector-call"><div><div className="ck-inspector-heading">This run</div><div className="ck-inspector-subheading">{callCount.toLocaleString()} call{callCount === 1 ? "" : "s"} · {String(summary.operation_name ?? summary.trace_name ?? "Unnamed run")}</div></div></div><div className="ck-tabs" role="tablist" aria-label="Run detail"><button className={`ck-tab ${tab === "cost" ? "active" : ""}`} role="tab" aria-selected={tab === "cost"} type="button" onClick={() => setTab("cost")}>Cost &amp; usage</button><button className={`ck-tab ${tab === "source" ? "active" : ""}`} role="tab" aria-selected={tab === "source"} type="button" onClick={() => setTab("source")}>Source</button><button className={`ck-tab ${tab === "context" ? "active" : ""}`} role="tab" aria-selected={tab === "context"} type="button" onClick={() => setTab("context")}>Context</button><button className={`ck-tab ${tab === "checks" ? "active" : ""}`} role="tab" aria-selected={tab === "checks"} type="button" onClick={() => setTab("checks")}>Checks</button></div><div className="ck-inspector-body">{tab === "cost" && <><CostRootSummary knownCost={knownCost} unpriced={unpriced} mostExpensive={mostExpensive} usageComponents={usageComponents} usage={usage} currency={currency} fx={fx} /></>}{tab === "source" && <RunSourceTab summary={summary} events={callEvents ?? []} currency={currency} fx={fx} onSelectCall={onSelectCall} />}{tab === "context" && <ContextTab context={context} />}{tab === "checks" && <RunQualityChecks projectId={projectId} traceId={traceId} />}</div></Panel>;
 }
 
 function CostRootSummary({ knownCost, unpriced, mostExpensive, usageComponents, usage, currency, fx }: { knownCost: number | null; unpriced: number; mostExpensive?: TraceEvent | null; usageComponents?: UsageComponent[]; usage?: CallUsage; currency: string; fx?: ReportingFx | null }) {
   return <div className="ck-inspector-body"><div className="ck-inspector-section"><div className="ck-definition-list"><div><span>Cost</span><strong>{knownCost == null ? "Unpriced" : formatReportedAmount(knownCost, currency, fx)}</strong></div><div><span>Pricing</span><strong>{unpriced > 0 ? `${unpriced} unpriced` : "All calls priced"}</strong></div><div><span>Currency</span><strong>{currency}</strong></div></div></div>{usage && <TokenUsageSection usage={usage} currency={currency} fx={fx} />}{mostExpensive && <div className="ck-inspector-section"><div className="ck-inspector-section-title"><span>Most expensive call</span></div><div className="ck-component-row"><span>{eventDisplayName(mostExpensive)}</span><span>{mostExpensive.cost_usd == null ? "Unpriced" : formatReportedAmount(Number(mostExpensive.cost_usd), currency, fx)}</span></div></div>}{usageComponents && usageComponents.length > 0 && <div className="ck-inspector-section"><div className="ck-inspector-section-title"><span>Usage reported separately</span></div><div className="ck-component-list">{usageComponents.map((component) => { const amount = component.amount == null ? "Unpriced" : component.currency && component.currency !== "USD" ? formatCurrencyAmount(component.amount, component.currency) : formatReportedAmount(component.amount, currency, fx); return <div className="ck-component-row" key={component.id}><span><ProviderLabel provider={component.provider} size={13} /> · {component.model || "Model not recorded"}</span><span>{component.unit_value == null ? "Usage not reported" : `${Number(component.unit_value).toLocaleString()} ${component.unit_kind || component.unit || "units"}`} · {amount}</span></div>; })}</div></div>}</div>;
+}
+
+/** A value, or a muted "Not recorded" when there is none. */
+function Recorded({ value }: { value: string | null }) {
+  return value ? <>{value}</> : <span className="ck-muted-value">Not recorded</span>;
+}
+
+/** Where the run's money went in code: each call site with its calls and cost. */
+function RunSourceTab({ summary, events, currency, fx, onSelectCall }: { summary: Record<string, unknown>; events: TraceEvent[]; currency: string; fx?: ReportingFx | null; onSelectCall?: (eventId: string) => void }) {
+  const sites = runCallSites(events);
+  const feature = runLabel(summary, events, "feature");
+  const release = runLabel(summary, events, "release");
+  return <>
+    <div className="ck-inspector-section">
+      <dl className="ck-definition-list">
+        <div><dt>Feature</dt><dd><Recorded value={feature} /></dd></div>
+        <div><dt>Release</dt><dd><Recorded value={release} /></dd></div>
+      </dl>
+    </div>
+    <div className="ck-inspector-section">
+      <div className="ck-inspector-section-title"><span>Where the money went</span></div>
+      {sites.length === 0
+        ? <p className="ck-inspector-note ck-callsite-empty">No call in this run recorded where it ran in your code. Its cost is unaffected.</p>
+        : <ul className="ck-callsite-list">{sites.map((site) => <li key={site.key}>
+          <button className="ck-callsite" type="button" onClick={() => onSelectCall?.(site.firstCallId)}>
+            <span className="ck-callsite-main">
+              <span className="ck-callsite-fn">{site.functionName ?? "Unnamed function"}</span>
+              {siteLocation(site) && <span className="ck-callsite-file">{siteLocation(site)}</span>}
+              <span className="ck-callsite-model"><ProviderLabel provider={site.provider} size={12} /> · {site.model ?? "Model not recorded"}</span>
+            </span>
+            <span className="ck-callsite-numbers">
+              <strong>{site.cost == null ? (site.unpriced > 0 ? "Unpriced" : "No charge") : formatReportedAmount(site.cost, currency, fx)}</strong>
+              <span>{site.calls.toLocaleString()} call{site.calls === 1 ? "" : "s"}{site.unpriced > 0 && site.cost != null ? `, ${site.unpriced} unpriced` : ""}</span>
+            </span>
+          </button>
+        </li>)}</ul>}
+    </div>
+  </>;
 }

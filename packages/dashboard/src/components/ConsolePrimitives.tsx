@@ -163,7 +163,8 @@ export function StatusPill({ tone = "neutral", children, icon }: { tone?: Tone; 
 /** Period-over-period change in words ("12.4% lower than last month"). */
 export function Delta({ value, comparison = "the previous period" }: { value: number | null | undefined; comparison?: string }) {
   if (value == null || !Number.isFinite(Number(value))) {
-    return <span className="ck-delta ck-delta-neutral">No earlier period to compare</span>;
+    // Nothing earlier to compare with: say nothing rather than filler.
+    return null;
   }
   const numeric = Number(value);
   if (Math.abs(numeric) < 0.05) {

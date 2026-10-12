@@ -83,3 +83,13 @@ describe("run usage", () => {
     expect(formatTokenCount(45_200)).toBe("45.2k");
   });
 });
+
+describe("billed units", () => {
+  it("names non-token usage in its own units", async () => {
+    const { billedUnitsText, sumUnits } = await import("./tokenUsage");
+    expect(billedUnitsText({ characters: 907 })).toBe("907 characters");
+    expect(billedUnitsText(sumUnits([{ characters: 1_791 }, { characters: 907, audioSeconds: 312.4 }]))).toBe("2,698 characters · 312 s audio");
+    expect(billedUnitsText({ searchQueries: 1 })).toBe("1 search");
+    expect(billedUnitsText({ cacheCreation1hTokens: 50 })).toBe("");
+  });
+});

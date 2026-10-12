@@ -299,3 +299,34 @@ test("a call's cache savings are only counted when its stored cost checks out", 
     setPriceCatalog(previousCatalog);
   }
 });
+
+test("a failed call without a price is no charge, not an unpriced call", { skip: !connectionString }, async () => {
+  const pool = new pg.Pool({ connectionString });
+  const suffix = randomBytes(6).toString("hex");
+  const orgId = `org_failed_${suffix}`;
+  const projectId = `project_failed_${suffix}`;
+  try {
+    await initDatabase();
+    await pool.query("INSERT INTO orgs(id,name,slug) VALUES ($1,'Failed',$2)", [orgId, `failed-${suffix}`]);
+    await pool.query("INSERT INTO projects(id,name,org_id,auth_key) VALUES ($1,'Failed',$2,$3)", [projectId, orgId, `key_${suffix}`]);
+    const at = new Date(Date.now() - 10 * 60_000).toISOString();
+    const call = (id: string, cost: number | null, lifecycle: string | null, errorType: string | null) => pool.query(
+      `INSERT INTO events (id, project_id, timestamp, provider, model, cost_usd, duration_ms, status_code, trace_id, trace_name, lifecycle_state, lifecycle_error_type, context)
+       VALUES ($1,$2,$3,'elevenlabs','eleven_multilingual_v2',$4,10100,NULL,'t1','tts',$5,$6,'{}'::jsonb)`,
+      [id, projectId, at, cost, lifecycle, errorType],
+    );
+    await call("ok", 0.159, "completed", null);
+    await call("timeout", null, "failed", "ReadTimeout");
+    const params = [projectId, new Date(Date.now() - 3_600_000).toISOString(), new Date(Date.now() + 60_000).toISOString(), null];
+    const runs = await pool.query(`WITH ${RUNS_CTE} SELECT unpriced, cost FROM run_rows`, params);
+    assert.equal(runs.rows[0].unpriced, 0);
+    assert.ok(Math.abs(Number(runs.rows[0].cost) - 0.159) < 1e-9);
+    const groups = await pool.query(`WITH ${RUNS_CTE} SELECT ${GROUP_COLUMNS} FROM run_rows`, params);
+    assert.equal(groups.rows[0].partly_priced_runs, 0, "the run is fully priced");
+  } finally {
+    await pool.query("DELETE FROM events WHERE project_id = $1", [projectId]).catch(() => undefined);
+    await pool.query("DELETE FROM projects WHERE id = $1", [projectId]).catch(() => undefined);
+    await pool.query("DELETE FROM orgs WHERE id = $1", [orgId]).catch(() => undefined);
+    await pool.end();
+  }
+});

@@ -1,4 +1,5 @@
 import type { TraceEvent, TraceSpan } from "../api";
+import { callFailure, isNoCharge } from "./callOutcome";
 
 export interface RunTreeSpanNode {
   type: "span";
@@ -10,6 +11,8 @@ export interface RunTreeSpanNode {
   cost: number | null;
   unpriced: number;
   calls: number;
+  /** Calls beneath this span that failed or were cancelled. */
+  failed: number;
   startMs: number;
   endMs: number;
 }
@@ -42,7 +45,7 @@ export function buildRunTree(spans: TraceSpan[], events: TraceEvent[]): RunTreeN
     const start = time(span.started_at);
     const end = time(span.ended_at);
     nodes.set(span.id, {
-      type: "span", id: span.id, span, depth: 0, children: [], cost: null, unpriced: 0, calls: 0,
+      type: "span", id: span.id, span, depth: 0, children: [], cost: null, unpriced: 0, calls: 0, failed: 0,
       startMs: start, endMs: Number.isFinite(end) ? end : start,
     });
   }
@@ -91,15 +94,20 @@ export function buildRunTree(spans: TraceSpan[], events: TraceEvent[]): RunTreeN
       let cost: number | null = null;
       let unpriced = 0;
       let calls = 0;
+      let failed = 0;
       for (const child of node.children) {
         if (child.type === "call") {
           calls += 1;
-          if (child.event.cost_usd == null) unpriced += 1;
+          if (callFailure(child.event)) failed += 1;
+          // A failed call without a price cost nothing; it isn't unpriced.
+          if (isNoCharge(child.event)) cost = cost ?? 0;
+          else if (child.event.cost_usd == null) unpriced += 1;
           else cost = (cost ?? 0) + Number(child.event.cost_usd);
           if (Number.isFinite(child.endMs)) node.endMs = Number.isFinite(node.endMs) ? Math.max(node.endMs, child.endMs) : child.endMs;
         } else {
           calls += child.calls;
           unpriced += child.unpriced;
+          failed += child.failed;
           if (child.cost != null) cost = (cost ?? 0) + child.cost;
           if (Number.isFinite(child.endMs)) node.endMs = Number.isFinite(node.endMs) ? Math.max(node.endMs, child.endMs) : child.endMs;
         }
@@ -107,6 +115,7 @@ export function buildRunTree(spans: TraceSpan[], events: TraceEvent[]): RunTreeN
       node.cost = cost;
       node.unpriced = unpriced;
       node.calls = calls;
+      node.failed = failed;
     }
   };
   finish(roots, 0);

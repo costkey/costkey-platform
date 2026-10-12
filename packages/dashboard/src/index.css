@@ -4614,3 +4614,62 @@ textarea[aria-invalid="true"] {
   .ck-runs-expandable th:not(:last-child), .ck-runs-expandable td:not(:last-child) { padding-right: 8px; }
   .ck-runs-expandable .ck-run-expanded > td { padding: 0; }
 }
+
+/* Failed and cancelled calls: a pill and the reason, never just "Unpriced". */
+.ck-inspector-outcome { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
+.ck-inspector-failure { margin: 12px 20px 0; padding: 10px 12px; border-radius: 8px; background: #faeae6; color: var(--ck-critical, #a33d32); font-size: 13px; font-weight: 500; }
+.ck-inspector-body .ck-inspector-failure { margin: 12px 0 0; }
+.ck-inspector-note { padding: 10px 12px; border-radius: 10px; background: var(--ck-paper); color: var(--ck-slate); font-size: 13px; line-height: 1.5; }
+.ck-wf-title .ck-wf-name-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ck-wf-sub .ck-status-pill { padding: 0 7px; font-size: 11px; vertical-align: 1px; }
+.ck-wf-sub .ck-status-pill svg { width: 11px; height: 11px; }
+.ck-wf-cost.is-muted { color: var(--ck-slate); font-weight: 500; }
+
+/* Run source tab: call sites line up on the inspector's 20px inset. */
+.ck-muted-value { color: var(--ck-slate); font-weight: 400; }
+.ck-callsite-list { display: grid; gap: 0; margin: 8px 0 0; padding: 0; list-style: none; }
+.ck-callsite { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; width: 100%; padding: 10px 0; border: 0; border-top: 1px solid var(--ck-rule, var(--ck-border)); background: none; color: var(--ck-ink); font: inherit; text-align: left; cursor: pointer; }
+.ck-callsite-list li:first-child .ck-callsite { border-top: 0; padding-top: 4px; }
+.ck-callsite:hover .ck-callsite-fn { text-decoration: underline; }
+.ck-callsite:focus-visible { outline: 2px solid var(--ck-focus, #476d9c); outline-offset: 2px; border-radius: 4px; }
+.ck-callsite-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ck-callsite-fn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); font-size: 12.5px; font-weight: 500; }
+.ck-callsite-file { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ck-slate); font-family: var(--font-mono); font-size: 12px; }
+.ck-callsite-model { color: var(--ck-slate); font-size: 12px; }
+.ck-callsite-numbers { display: flex; flex: 0 0 auto; flex-direction: column; align-items: flex-end; gap: 2px; font-variant-numeric: tabular-nums; }
+.ck-callsite-numbers strong { font-size: 13px; font-weight: 600; }
+.ck-callsite-numbers span { color: var(--ck-slate); font-size: 12px; }
+.ck-callsite-empty { margin: 8px 0 0; }
+/* Five items when a run is billed in units rather than tokens; the usage item spans two columns. */
+.ck-summary-strip.ck-run-summary[data-items="5"] { grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(0, 2fr) minmax(0, 1fr); }
+@media (max-width: 1100px) {
+  .ck-summary-strip.ck-run-summary[data-items="5"] { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .ck-run-summary[data-items="5"] .ck-summary-wide { grid-column: span 2; }
+  .ck-run-summary[data-items="5"] .ck-summary-item:nth-child(3n) { border-right: 1px solid var(--ck-border); }
+  .ck-run-summary[data-items="5"] .ck-summary-item:nth-child(3), .ck-run-summary[data-items="5"] .ck-summary-item:last-child { border-right: 0; }
+}
+@media (max-width: 767px) {
+  .ck-summary-strip.ck-run-summary[data-items="5"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ck-run-summary[data-items="5"] .ck-summary-wide { grid-column: 1 / -1; border-right: 0; }
+  .ck-run-summary[data-items="5"] .ck-summary-item:nth-child(3) { border-right: 1px solid var(--ck-border); }
+  .ck-run-summary[data-items="5"] .ck-summary-item:nth-child(2n) { border-right: 1px solid var(--ck-border); }
+  .ck-run-summary[data-items="5"] .ck-summary-item:nth-child(2), .ck-run-summary[data-items="5"] .ck-summary-item:last-child { border-right: 0; }
+  .ck-run-summary[data-items="5"] .ck-summary-item:nth-last-child(-n + 2) { border-bottom: 1px solid var(--ck-border); }
+  .ck-run-summary[data-items="5"] .ck-summary-item:last-child { border-bottom: 0; }
+}
+
+/* Call stack: one frame per row; paths truncate at the start, never wrap. */
+.ck-callstack { display: grid; gap: 0; margin: 8px 0 0; padding: 0; list-style: none; }
+.ck-callstack li { display: grid; gap: 2px; min-width: 0; margin: 0 -10px; padding: 7px 10px; border-radius: 8px; }
+.ck-callstack li + li { margin-top: 2px; }
+.ck-callstack-fn { display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--ck-ink); font-family: var(--font-mono); font-size: 12.5px; font-weight: 500; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.ck-callstack-path { overflow: hidden; color: var(--ck-slate); font-family: var(--font-mono); font-size: 11.5px; white-space: nowrap; text-overflow: ellipsis; direction: rtl; text-align: left; }
+.ck-callstack-path bdi, .ck-path-value bdi { direction: ltr; unicode-bidi: isolate; }
+.ck-callstack li.is-installed .ck-callstack-fn, .ck-callstack li.is-installed .ck-callstack-path { opacity: 0.6; }
+.ck-callstack li.is-call-site { background: var(--ck-hover, #dce8ee); }
+.ck-callstack-package, .ck-callstack-mark { flex: 0 0 auto; padding: 0 6px; border-radius: 5px; background: var(--ck-paper); color: var(--ck-slate); font: 500 10.5px var(--font); font-style: normal; }
+.ck-callstack-mark { background: var(--ck-raised); color: var(--ck-ink); }
+.ck-callstack-toggle { margin-top: 8px; min-height: 0; padding: 4px 0; }
+.ck-inspector .ck-definition-list dd.mono { font-family: var(--font-mono); font-size: 12.5px; }
+.ck-path-value { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; direction: rtl; font-family: var(--font-mono); font-size: 12.5px !important; }
+.ck-inspector-value-note { display: block; margin-top: 2px; color: var(--ck-slate); font-size: 11.5px; }

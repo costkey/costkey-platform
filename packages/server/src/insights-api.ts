@@ -52,7 +52,9 @@ export const RUNS_CTE = `
            ${PROMPT_TOKENS_SQL("e")} AS prompt_tokens,
            ${OUTPUT_TOKENS_SQL("e")} AS completion_tokens,
            ${CACHE_REPORTED_SQL("e")} AS cache_reported,
-           e.request_model, e.url, e.cost_basis, e.cost_source, e.pricing_id, e.image_output_tokens, e.native_units
+           e.request_model, e.url, e.cost_basis, e.cost_source, e.pricing_id, e.image_output_tokens, e.native_units,
+           e.lifecycle_state, e.lifecycle_error_type,
+           (COALESCE(e.lifecycle_state, '') IN ('failed', 'cancelled') OR COALESCE(e.status_code, 200) >= 400) AS call_failed
     FROM events e
     WHERE e.project_id = $1 AND COALESCE(e.event_type, 'call') = 'call' AND e.trace_id IS NOT NULL
       AND e.timestamp >= $2 AND e.timestamp < $3
@@ -61,7 +63,8 @@ export const RUNS_CTE = `
   runs AS (
     SELECT trace_id, MAX(trace_name) AS trace_name,
            SUM(cost_usd) AS cost, COUNT(*)::int AS calls,
-           COUNT(*) FILTER (WHERE cost_usd IS NULL)::int AS unpriced,
+           -- A failed call without a price cost nothing; it isn't unpriced.
+           COUNT(*) FILTER (WHERE cost_usd IS NULL AND NOT call_failed)::int AS unpriced,
            MIN(timestamp) AS started_at,
            MAX(timestamp + COALESCE(duration_ms, 0) * INTERVAL '1 millisecond') AS ended_at,
            BOOL_OR(COALESCE(status_code, 200) >= 400) AS failed_call,

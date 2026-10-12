@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import type { MouseEvent as ReactMouseEvent, ReactNode, RefObject } from "react";
+import { useEffect, useState } from "react";
+import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import type { BoardBucketUnit, OverviewBoard } from "../api";
 import { formatDuration } from "../utils";
 import { ProviderLogo } from "./ProviderLogo";
@@ -142,20 +142,24 @@ export function UsageByAgent({ board, money }: { board: OverviewBoard | null; mo
 
 /* ── Line chart ────────────────────────────────────────────────────── */
 
-function useWidth<T extends HTMLElement>(fallback = 520): [RefObject<T | null>, number] {
-  const ref = useRef<T | null>(null);
+/** The element's width, kept current. A callback ref, so it also measures an element that
+ * mounts after the first render (a chart that replaces its loading state). */
+function useWidth<T extends HTMLElement>(fallback = 520): [(element: T | null) => void, number] {
+  const [element, setElement] = useState<T | null>(null);
   const [width, setWidth] = useState(fallback);
   useEffect(() => {
-    const element = ref.current;
-    if (!element || typeof ResizeObserver === "undefined") return;
+    if (!element) return;
+    const measured = Math.round(element.getBoundingClientRect().width);
+    if (measured > 0) setWidth(measured);
+    if (typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver((entries) => {
       const next = Math.round(entries[0]?.contentRect.width ?? 0);
       if (next > 0) setWidth(next);
     });
     observer.observe(element);
     return () => observer.disconnect();
-  }, []);
-  return [ref, width];
+  }, [element]);
+  return [setElement, width];
 }
 
 interface ChartSeries { key: string; label: string; color: string; values: Array<number | null> }

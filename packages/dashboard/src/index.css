@@ -845,6 +845,13 @@ textarea {
 .ck-content-grid.ck-grid-top {
   align-items: start;
 }
+/* Stacked sections on a page: a panel and the grid or panel after it. */
+.ck-main-inner > .ck-panel + .ck-panel,
+.ck-main-inner > .ck-panel + .ck-content-grid,
+.ck-main-inner > .ck-content-grid + .ck-panel,
+.ck-main-inner > .ck-content-grid + .ck-content-grid {
+  margin-top: 16px;
+}
 .ck-stack {
   gap: 16px;
   display: flex;
@@ -4135,7 +4142,8 @@ body {
 .ck-traces-table td { padding-top: 12px; padding-bottom: 12px; }
 .ck-traces-table .muted { margin-top: 2px; }
 .ck-table-sort { border: 0; background: transparent; padding: 0; color: inherit; font: inherit; cursor: pointer; }
-.ck-pagination { font-size: 13px; }
+.ck-pagination { font-size: 13px; gap: 8px 12px; flex-wrap: wrap; padding: 12px 16px; border-top: 1px solid var(--ck-rule); }
+.ck-pagination > div { flex-wrap: wrap; }
 .ck-trace-search { min-width: 300px; }
 .ck-saved-view-select .ck-select { min-width: 150px; min-height: 40px; }
 @media (max-width: 767px) { .ck-trace-search { min-width: 0; flex: 1 1 100%; } }
@@ -4395,7 +4403,7 @@ textarea[aria-invalid="true"] {
 .ck-wf-row:hover { background: #f7f8f7; }
 .ck-wf-row.selected { background: var(--ck-hover, #dce8ee); }
 .ck-wf-row.is-error .ck-wf-title { color: var(--ck-critical, #a33d32); }
-.ck-wf-axis { padding-top: 7px; padding-bottom: 5px; border-top: 0; cursor: default; color: var(--ck-slate); font-size: 11.5px; }
+.ck-wf-axis { padding-top: 7px; padding-bottom: 9px; border-top: 0; cursor: default; color: var(--ck-slate); font-size: 11.5px; }
 .ck-wf-axis:hover { background: transparent; }
 .ck-wf-ticks { position: relative; height: 14px; }
 .ck-wf-ticks i { position: absolute; top: 0; font-style: normal; white-space: nowrap; transform: translateX(-50%); }

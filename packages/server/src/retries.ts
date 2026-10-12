@@ -1,5 +1,5 @@
 import type pg from "pg";
-import { WORK_ID_SQL } from "./insights-api.js";
+import { WORK_ID_SQL, retryExpected } from "./insights-api.js";
 
 /**
  * Attempts of one work item. A job that raises a retryable error runs again
@@ -15,18 +15,18 @@ export interface RunRetry {
   retried: boolean;
   succeededBy: string | null;
   succeededOnAttempt: number | null;
-  /** Failed with a retryable error and no later attempt has completed yet. */
+  /** Failed with a retryable error a few minutes ago, and no later attempt has completed yet. */
   willRetry: boolean;
   errorType: string | null;
 }
 
-interface Attempt { traceId: string; workId: string; startedAt: number; state: string; errorType: string | null }
+interface Attempt { traceId: string; workId: string; startedAt: number; endedAt?: number | null; state: string; errorType: string | null }
 
 const FAILED = new Set(["failed", "error"]);
 const RUNNING = new Set(["started", "running", "in_progress"]);
 
 /** Resolve attempts for a set of runs, from the attempts of the same work items. */
-export function resolveRetries(traceIds: string[], attempts: Attempt[]): Map<string, RunRetry> {
+export function resolveRetries(traceIds: string[], attempts: Attempt[], now = Date.now()): Map<string, RunRetry> {
   const byWork = new Map<string, Attempt[]>();
   for (const attempt of attempts) byWork.set(attempt.workId, [...(byWork.get(attempt.workId) ?? []), attempt]);
   for (const list of byWork.values()) list.sort((a, b) => a.startedAt - b.startedAt || a.traceId.localeCompare(b.traceId));
@@ -45,7 +45,7 @@ export function resolveRetries(traceIds: string[], attempts: Attempt[]): Map<str
       retried: Boolean(later),
       succeededBy: later?.traceId ?? null,
       succeededOnAttempt: later ? list.indexOf(later) + 1 : null,
-      willRetry: failed && !later && /retry/i.test(own.errorType ?? ""),
+      willRetry: failed && !later && retryExpected(own.errorType, own.endedAt ?? own.startedAt, 0, now),
       errorType: own.errorType,
     });
   }
@@ -79,7 +79,7 @@ export async function loadRetries(pool: pg.Pool | pg.PoolClient, projectId: stri
      SELECT a.trace_id, a.work_id, a.started_at,
             CASE WHEN COALESCE(t.state, '') IN ('failed', 'error') OR COALESCE(s.failed, FALSE) THEN 'failed'
                  ELSE COALESCE(t.state, 'unknown') END AS state,
-            t.error_type
+            t.error_type, t.ended_at
      FROM attempts a
      LEFT JOIN traces t ON t.project_id = $1 AND t.id = a.trace_id
      LEFT JOIN LATERAL (
@@ -91,6 +91,7 @@ export async function loadRetries(pool: pg.Pool | pg.PoolClient, projectId: stri
     traceId: String(row.trace_id),
     workId: String(row.work_id),
     startedAt: row.started_at ? new Date(row.started_at as string).getTime() : 0,
+    endedAt: row.ended_at ? new Date(row.ended_at as string).getTime() : null,
     state: String(row.state ?? "unknown").toLowerCase(),
     errorType: row.error_type == null ? null : String(row.error_type),
   }));

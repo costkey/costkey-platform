@@ -439,6 +439,19 @@ export async function loadOverviewBoard(pool: pg.Pool, projectId: string, window
   };
 }
 
+/** How long after a retryable failure a retry is still expected. Queues retry within
+ * minutes; past this, a run with no later attempt simply failed. */
+export const RETRY_WAIT_MS = 15 * 60_000;
+
+/** A run that raised a retryable error (by its name) is waiting for a retry only shortly
+ * after it ended. A queue can drop the retry, so "will retry" is never shown for good. */
+export function retryExpected(errorType: string | null, startedAt: unknown, durationMs: number | null = null, now = Date.now()): boolean {
+  if (!/retry/i.test(errorType ?? "")) return false;
+  const started = startedAt instanceof Date ? startedAt.getTime() : typeof startedAt === "string" || typeof startedAt === "number" ? new Date(startedAt).getTime() : NaN;
+  if (!Number.isFinite(started)) return false;
+  return now - (started + (durationMs ?? 0)) < RETRY_WAIT_MS;
+}
+
 /** How a run relates to other attempts of the same work item. */
 export function retryInfo(row: Record<string, unknown>): { workId: string | null; attempt: number; retried: boolean; succeededBy: string | null; succeededOnAttempt: number | null; willRetry: boolean; errorType: string | null } {
   const errorType = row.error_type == null ? null : String(row.error_type);
@@ -449,8 +462,7 @@ export function retryInfo(row: Record<string, unknown>): { workId: string | null
     retried,
     succeededBy: retried && row.retried_by != null ? String(row.retried_by) : null,
     succeededOnAttempt: retried ? number(row.retried_on_attempt) : null,
-    // A job that raised a retryable error will run again.
-    willRetry: !retried && Boolean(row.failed) && /retry/i.test(errorType ?? ""),
+    willRetry: !retried && Boolean(row.failed) && retryExpected(errorType, row.started_at, number(row.duration_ms)),
     errorType,
   };
 }
@@ -535,10 +547,10 @@ async function loadGroupDetail(pool: pg.Pool, req: Request, kind: "agent" | "wor
     ),
     pool.query(
       `${scoped}
-       SELECT s.name, COUNT(*)::int AS runs
+       SELECT s.name, COUNT(DISTINCT s.trace_id)::int AS runs
        FROM spans s
        WHERE s.project_id = $1 AND s.kind = 'agent' AND s.parent_span_id IS NOT NULL
-         AND s.trace_id IN (SELECT trace_id FROM agent_runs)
+         AND s.trace_id IN (SELECT trace_id FROM agent_runs)${kind === "agent" ? " AND s.name <> $5" : ""}
        GROUP BY s.name ORDER BY COUNT(*) DESC LIMIT 20`,
       params,
     ),

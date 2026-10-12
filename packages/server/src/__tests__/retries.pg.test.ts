@@ -16,12 +16,15 @@ test("a failed attempt that a later attempt completed is retried, not failed", (
     { traceId: "b1", workId: "w2", startedAt: 1_000, state: "failed", errorType: "RetryableWorkError" },
     { traceId: "c1", workId: "w3", startedAt: 1_000, state: "failed", errorType: "ValueError" },
   ];
-  const retries = resolveRetries(["a1", "a2", "b1", "c1"], attempts);
+  const retries = resolveRetries(["a1", "a2", "b1", "c1"], attempts, 5_000);
   assert.deepEqual(retries.get("a1"), { workId: "w1", attempt: 1, attempts: 2, retried: true, succeededBy: "a2", succeededOnAttempt: 2, willRetry: false, errorType: "RetryableWorkError" });
   assert.equal(retries.get("a2")?.attempt, 2);
   assert.equal(retries.get("a2")?.retried, false);
   assert.equal(retries.get("b1")?.willRetry, true, "a retryable error with no later success yet will retry");
   assert.equal(retries.get("c1")?.willRetry, false);
+  // A queue can drop the retry: long after the failure with no later attempt, the run simply failed.
+  const later = resolveRetries(["b1"], attempts, 1_000 + 16 * 60_000);
+  assert.equal(later.get("b1")?.willRetry, false);
 });
 
 test("runs, failure counts and the runs list group attempts of one work item", { skip: !connectionString }, async () => {

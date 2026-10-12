@@ -126,15 +126,76 @@ describe("Bedrock event streams through fetch", () => {
     globalThis.fetch = originalFetch;
   });
 
-  function patchWith(body: Uint8Array) {
+  function patchWith(body: Uint8Array, captureBody = false) {
     globalThis.fetch = vi.fn(async () => new Response(sliced(body, 7), {
       status: 200,
       headers: { "content-type": "application/vnd.amazon.eventstream", "x-amzn-requestid": "req-1" },
     }));
     const mock = createMockTransport();
     events = mock.events;
-    patchFetch({ transport: mock.transport, projectId: "bedrock", captureBody: false, beforeSend: null, defaultContext: {}, debug: false });
+    patchFetch({ transport: mock.transport, projectId: "bedrock", captureBody, beforeSend: null, defaultContext: {}, debug: false });
   }
+
+  it("with capture on, sends every message's decoded payload whole and the bytes through unchanged", async () => {
+    const converse = join(
+      event("messageStart", { role: "assistant" }),
+      event("contentBlockDelta", { contentBlockIndex: 0, delta: { text: "Hello" } }),
+      event("contentBlockDelta", { contentBlockIndex: 0, delta: { text: " world" } }),
+      event("messageStop", { stopReason: "end_turn" }),
+      event("metadata", { usage: { inputTokens: 5, outputTokens: 2, totalTokens: 7 }, metrics: { latencyMs: 80 } }),
+    );
+    patchWith(converse, true);
+    const response = await globalThis.fetch(
+      "https://bedrock-runtime.us-east-1.amazonaws.com/model/amazon.nova-lite-v1%3A0/converse-stream",
+      { method: "POST", body: JSON.stringify({ messages: [{ role: "user", content: [{ text: "hi" }] }] }) },
+    );
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(converse);
+    await flushPendingCaptures();
+    expect(events[0]?.["responseBody"]).toEqual({
+      __costkey_stream__: [
+        { role: "assistant" },
+        { contentBlockIndex: 0, delta: { text: "Hello" } },
+        { contentBlockIndex: 0, delta: { text: " world" } },
+        { stopReason: "end_turn" },
+        { usage: { inputTokens: 5, outputTokens: 2, totalTokens: 7 }, metrics: { latencyMs: 80 } },
+      ],
+    });
+
+    unpatchFetch();
+    const invoke = join(
+      chunk({ type: "message_start", message: { id: "msg_1", usage: { input_tokens: 5, output_tokens: 1 } } }),
+      chunk({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Hi" } }),
+      chunk({ type: "message_stop" }),
+    );
+    patchWith(invoke, true);
+    const invoked = await globalThis.fetch(
+      "https://bedrock-runtime.us-west-2.amazonaws.com/model/anthropic.claude-3-haiku-20240307-v1%3A0/invoke-with-response-stream",
+      { method: "POST", body: JSON.stringify({ anthropic_version: "bedrock-2023-05-31", max_tokens: 10, messages: [] }) },
+    );
+    expect(new Uint8Array(await invoked.arrayBuffer())).toEqual(invoke);
+    await flushPendingCaptures();
+    // The base64 `bytes` field is decoded to the model's own JSON.
+    expect(events[0]?.["responseBody"]).toEqual({
+      __costkey_stream__: [
+        { bytes: { type: "message_start", message: { id: "msg_1", usage: { input_tokens: 5, output_tokens: 1 } } }, p: "abcdefgh" },
+        { bytes: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Hi" } }, p: "abcdefgh" },
+        { bytes: { type: "message_stop" }, p: "abcdefgh" },
+      ],
+    });
+  });
+
+  it("with capture off, sends no responseBody for an event stream", async () => {
+    const body = join(event("contentBlockDelta", { contentBlockIndex: 0, delta: { text: "secret answer" } }));
+    patchWith(body);
+    const response = await globalThis.fetch(
+      "https://bedrock-runtime.us-east-1.amazonaws.com/model/x/converse-stream",
+      { method: "POST", body: "{}" },
+    );
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(body);
+    await flushPendingCaptures();
+    expect(events[0]?.["responseBody"]).toBeNull();
+    expect(JSON.stringify(events[0])).not.toContain("secret answer");
+  });
 
   it("records converse-stream usage from the metadata event and passes bytes through", async () => {
     const body = join(
@@ -408,7 +469,11 @@ describe("CostKey.instrumentBedrockClient", () => {
     await flushPendingCaptures();
 
     expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({ streaming: true, responseBody: null });
+    // Capture is on: every event's payload is sent whole, in order.
+    expect(events[0]).toMatchObject({
+      streaming: true,
+      responseBody: { __costkey_stream__: streamEvents.map((item) => Object.values(item)[0]) },
+    });
     const stream = (events[0]?.["telemetry"] as Record<string, any>)["stream"];
     expect(stream["format"]).toBe("aws-eventstream");
     expect(stream["chunkCount"]).toBe(5);

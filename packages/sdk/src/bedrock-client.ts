@@ -1,5 +1,5 @@
 import type { EventContext } from "./types.js";
-import { isCaptureActive, recordObservedCall } from "./fetch-patch.js";
+import { STREAM_CONTENT_KEY, isCaptureActive, isContentCaptureActive, recordObservedCall } from "./fetch-patch.js";
 import { captureCallSite } from "./stack.js";
 import { getCallContext, withContext } from "./context.js";
 import {
@@ -26,8 +26,9 @@ import {
  * status and headers (including x-amzn-bedrock-*-token-count), and the
  * deserialized output as a skeleton. ConverseStream /
  * InvokeModelWithResponseStream event streams are passed through and their
- * events recorded as chunks. No AWS SDK import is needed; the client is
- * duck-typed.
+ * events recorded as chunks; with content capture on, every event's payload
+ * is also sent whole as `responseBody: {"__costkey_stream__": [...]}`. No AWS
+ * SDK import is needed; the client is duck-typed.
  */
 
 type Handler = (args: Record<string, unknown>) => Promise<Record<string, unknown>>;
@@ -135,6 +136,7 @@ const recordBedrockCall: Middleware = (next, handlerContext) => async (args) => 
     response: TelemetryResponse | null,
     stream: CallTelemetry["stream"],
     error: unknown,
+    responseContent?: unknown,
   ): void => {
     const durationMs = round(performance.now() - startTime);
     recordObservedCall({
@@ -151,6 +153,7 @@ const recordBedrockCall: Middleware = (next, handlerContext) => async (args) => 
       method: request.method,
       callSite: caller?.callSite ?? null,
       context,
+      ...(responseContent === undefined ? {} : { responseContent }),
     });
   };
 
@@ -191,8 +194,14 @@ const recordBedrockCall: Middleware = (next, handlerContext) => async (args) => 
       const source = output?.[streamKey];
       if (output && isAsyncIterable(source)) {
         const recorder = new StreamRecorder("aws-eventstream", startTime);
-        output[streamKey] = observeStream(source, recorder, (error) => {
-          report({ ...responseBase, body: null, bytes: null }, recorder.telemetry(), error);
+        const content: unknown[] | null = isContentCaptureActive() ? [] : null;
+        output[streamKey] = observeStream(source, recorder, content, (error) => {
+          report(
+            { ...responseBase, body: null, bytes: null },
+            recorder.telemetry(),
+            error,
+            content ? { [STREAM_CONTENT_KEY]: content } : undefined,
+          );
         });
       } else {
         report({ ...responseBase, body: null, bytes: null }, null, null);
@@ -222,12 +231,14 @@ function outputSkeleton(output: Record<string, unknown> | null): unknown {
 }
 
 /**
- * Pass every stream event through unchanged and record it as a chunk; report
- * once when the caller finishes, stops early or the stream fails.
+ * Pass every stream event through unchanged and record it as a chunk (and,
+ * with content capture on, its payload whole); report once when the caller
+ * finishes, stops early or the stream fails.
  */
 async function* observeStream(
   source: AsyncIterable<unknown>,
   recorder: StreamRecorder,
+  content: unknown[] | null,
   onEnd: (error: unknown) => void,
 ): AsyncGenerator<unknown, void, undefined> {
   let failure: unknown = null;
@@ -235,7 +246,9 @@ async function* observeStream(
     for await (const event of source) {
       try {
         recorder.arrived();
-        recorder.record(streamEventChunk(event));
+        const chunk = streamEventChunk(event);
+        recorder.record(chunk);
+        if (content) content.push(...streamEventPayloads(chunk));
       } catch {
         // Skip an event that can't be read.
       }
@@ -264,6 +277,16 @@ function streamEventChunk(event: unknown): unknown {
   const result: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(record)) result[key] = decodeBytesField(value);
   return result;
+}
+
+/**
+ * Content capture: the payload of an SDK stream event, the same element the
+ * fetch path sends for the event-stream message (`{ contentBlockDelta: p }` → p).
+ */
+function streamEventPayloads(chunk: unknown): unknown[] {
+  const record = asRecord(chunk);
+  if (!record) return chunk === undefined ? [] : [chunk];
+  return Object.values(record).filter((value) => value !== undefined);
 }
 
 function bedrockOperation(request: unknown, commandName: unknown): Operation | null {

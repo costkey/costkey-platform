@@ -8,7 +8,7 @@ import type {
 } from "./types.js";
 import { findCaptureTarget, injectStreamUsage, type CaptureTarget } from "./providers/registry.js";
 import { captureCallSite } from "./stack.js";
-import { EventStreamDecoder, eventStreamChunk } from "./eventstream.js";
+import { EventStreamDecoder, eventStreamChunk, eventStreamPayload } from "./eventstream.js";
 import { getCallContext, importContext } from "./context.js";
 import { Transport } from "./transport.js";
 import { randomBytes } from "node:crypto";
@@ -32,6 +32,8 @@ import {
 } from "./telemetry.js";
 
 const TRACE_HEADER = "x-costkey-trace-id";
+/** Captured streamed responses: `{"__costkey_stream__": [every event, in order]}`. */
+export const STREAM_CONTENT_KEY = "__costkey_stream__";
 const TRACE_NAME_HEADER = "x-costkey-trace-name";
 const CONTEXT_HEADER = "x-costkey-context";
 
@@ -355,6 +357,8 @@ async function recordFullResponse(
 /**
  * Pass the body through unchanged while recording it: stream records as
  * skeletons (with timing), or only the byte count for an unsized binary body.
+ * With content capture on, every JSON event of a stream is also kept whole,
+ * in order, and sent as `responseBody: {"__costkey_stream__": [...]}`.
  * The call is recorded once, when the body ends, fails or is cancelled.
  */
 function observeBody(
@@ -370,8 +374,14 @@ function observeBody(
   const recorder = format ? new StreamRecorder(format, base.startTime) : null;
   const eventDecoder = format === "aws-eventstream" ? new EventStreamDecoder() : null;
   const textDecoder = new TextDecoder();
+  // Content capture: SSE events with an `event:` name become {event, data}.
+  const content: unknown[] | null = recorder && base.captureBody ? [] : null;
   const parser = recorder && format && format !== "aws-eventstream"
-    ? new TextStreamParser(format, (record) => recorder.record(record))
+    ? new TextStreamParser(
+      format,
+      (record) => recorder.record(record),
+      content ? (record, event) => content.push(event ? { event, data: record } : record) : null,
+    )
     : null;
   let bytes = 0;
   let recorded = false;
@@ -403,7 +413,7 @@ function observeBody(
         stream: recorder ? recorder.telemetry() : null,
         error: telemetryError(error),
         durationMs: performance.now() - base.startTime,
-        contentResponseBody: null,
+        contentResponseBody: content ? { [STREAM_CONTENT_KEY]: content } : null,
         completed,
       });
     } catch {
@@ -429,7 +439,13 @@ function observeBody(
           if (recorder) {
             recorder.arrived();
             if (eventDecoder) {
-              for (const message of eventDecoder.push(value)) recorder.record(eventStreamChunk(message));
+              for (const message of eventDecoder.push(value)) {
+                recorder.record(eventStreamChunk(message));
+                if (content) {
+                  const payload = eventStreamPayload(message);
+                  if (payload !== undefined) content.push(payload);
+                }
+              }
             } else if (parser) {
               parser.push(textDecoder.decode(value, { stream: true }));
             }
@@ -555,6 +571,11 @@ export interface ObservedCall {
 /** Whether the SDK is initialized with a DSN and can record calls. */
 export function isCaptureActive(): boolean {
   return isPatched && activeOptions !== null;
+}
+
+/** Whether content capture (requestBody/responseBody) is on right now. */
+export function isContentCaptureActive(): boolean {
+  return activeOptions !== null && isPatched && shouldCaptureBody(activeOptions);
 }
 
 /** Record a call observed outside fetch through the same event pipeline. */

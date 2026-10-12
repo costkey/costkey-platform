@@ -344,6 +344,12 @@ instruction text. Body capture adds the scrubbed `requestBody` and
 truncated (only image and binary bytes are replaced by a size note). Large
 events are split across ingest requests of at most 8 MB each, and an event
 bigger than that is sent on its own.
+A streamed response (SSE, NDJSON, a streamed JSON array or an AWS event
+stream) is captured as every event in order:
+`responseBody: {"__costkey_stream__": [...]}`. An SSE event with an `event:`
+name is `{"event": "<name>", "data": <json>}`, otherwise the parsed JSON
+itself; non-JSON data such as `[DONE]` is dropped. The caller's stream is
+passed through unchanged.
 
 ## Supported Providers
 
@@ -455,6 +461,14 @@ example `@ai-sdk/amazon-bedrock`) need no setup.
 | `CostKey.exportContext()` / `exportContextHeaders()` | Explicit allowlisted cross-process carrier. |
 | `CostKey.shutdown()` | Flush and restore original fetch. |
 | `CostKey.instrumentBedrockClient(client)` | Record calls from an AWS SDK v3 `BedrockRuntimeClient`. |
+
+## 0.7.4
+
+- With body capture on, streamed responses are captured too: every event of
+  an SSE, NDJSON, streamed JSON array or Bedrock event stream (through fetch
+  or `instrumentBedrockClient`) is sent in order, uncapped and scrubbed, as
+  `responseBody: {"__costkey_stream__": [...]}`. Named SSE events become
+  `{"event": "<name>", "data": <json>}`. With capture off nothing changes.
 
 ## 0.7.3
 

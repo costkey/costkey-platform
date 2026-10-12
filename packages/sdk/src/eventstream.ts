@@ -165,3 +165,18 @@ export function eventStreamChunk(message: EventStreamMessage): unknown {
   }
   return { [key]: payload };
 }
+
+/**
+ * One event-stream message for content capture: its JSON payload with a
+ * base64 `bytes` field decoded to the model's own JSON. Undefined when the
+ * payload is empty or not JSON.
+ */
+export function eventStreamPayload(message: EventStreamMessage): unknown {
+  const text = utf8.decode(message.payload);
+  if (text.length === 0) return undefined;
+  try {
+    return decodeBytesField(JSON.parse(text) as unknown);
+  } catch {
+    return undefined;
+  }
+}

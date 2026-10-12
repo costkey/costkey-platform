@@ -55,6 +55,13 @@ test("runs, failure counts and the runs list group attempts of one work item", {
     await run("t2", "w1", 2, "completed", null);
     // Work item 2 failed for good.
     await run("t3", "w2", 10, "failed", "ValueError");
+    // Work item 3 failed after its call; the retry found nothing left to do and made no call.
+    await run("t4", "w3", 20, "failed", "RetryableWorkError");
+    await pool.query(
+      `INSERT INTO traces (id, project_id, trace_name, state, started_at, ended_at, context)
+       VALUES ('t5',$1,'credit-card-process-activity','completed',$2,$3,$4)`,
+      [projectId, at(25), at(25.1), JSON.stringify({ work_id: "w3" })],
+    );
 
     const params = [projectId, at(-60), new Date(Date.now() + 60_000).toISOString(), null];
     const rows = await pool.query(`WITH ${RUNS_CTE} SELECT trace_id, failed, retried, retried_by, retried_on_attempt, attempt, work_id, error_type FROM run_rows ORDER BY trace_id`, params);
@@ -64,11 +71,14 @@ test("runs, failure counts and the runs list group attempts of one work item", {
     assert.deepEqual(retryInfo(byTrace.get("t1")), { workId: "w1", attempt: 1, retried: true, succeededBy: "t2", succeededOnAttempt: 2, willRetry: false, errorType: "RetryableWorkError" });
     assert.equal(byTrace.get("t2").attempt, 2);
     assert.equal(byTrace.get("t3").failed, true);
+    assert.equal(byTrace.get("t4").retried, true, "a retry with no calls still completes the work item");
+    assert.equal(byTrace.get("t4").retried_by, "t5");
+    assert.equal(byTrace.get("t4").retried_on_attempt, 2);
 
     const groups = await pool.query(`WITH ${RUNS_CTE} SELECT ${GROUP_COLUMNS} FROM run_rows`, params);
-    assert.equal(groups.rows[0].runs, 3);
+    assert.equal(groups.rows[0].runs, 4);
     assert.equal(groups.rows[0].failed_runs, 1, "only the work item whose last attempt failed counts");
-    assert.equal(groups.rows[0].retried_runs, 1);
+    assert.equal(groups.rows[0].retried_runs, 2);
 
     const retries = await loadRetries(pool, projectId, ["t1", "t3"]);
     assert.equal(retries.get("t1")?.succeededBy, "t2");

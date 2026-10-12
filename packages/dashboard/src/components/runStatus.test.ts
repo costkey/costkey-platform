@@ -4,8 +4,8 @@ import { runStatus } from "./RunFlow";
 const retry = { workId: "w1", attempt: 1, retried: true, succeededBy: "t2", succeededOnAttempt: 2, willRetry: false, errorType: "RetryableWorkError" };
 
 describe("run status", () => {
-  it("calls a failed attempt that a later one completed Retried, with where it succeeded", () => {
-    expect(runStatus({ execution_state: "failed", unpriced_count: 0, call_count: 1, retry }, 0.01)).toMatchObject({ tone: "warn", label: "Retried", succeededBy: "t2", succeededOnAttempt: 2 });
+  it("shows a failed attempt that a later one completed as the work's outcome, Succeeded, with where it finished", () => {
+    expect(runStatus({ execution_state: "failed", unpriced_count: 0, call_count: 1, retry }, 0.01)).toMatchObject({ tone: "good", label: "Succeeded", succeededBy: "t2", succeededOnAttempt: 2 });
   });
 
   it("never promises a retry: a failed attempt with no later one is Failed", () => {

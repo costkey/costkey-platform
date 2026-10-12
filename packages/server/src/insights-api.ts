@@ -107,9 +107,19 @@ export const RUNS_CTE = `
     LEFT JOIN shape sh ON sh.trace_id = r.trace_id
     LEFT JOIN traces t ON t.project_id = $1 AND t.id = r.trace_id
   ),
-  -- Attempts of one work item (context.work_id) are separate runs. A failed
-  -- attempt that a later attempt completed is "retried", not failed: failure
-  -- counts only the work item's last attempt.
+  -- Attempts of one work item (context.work_id) are separate runs. A retry
+  -- that found nothing left to do has no calls, so attempts come from the
+  -- run list and from the runs table.
+  attempts AS (
+    SELECT trace_id, work_id, started_at, raw_failed AS failed, FALSE AS running FROM run_base WHERE work_id IS NOT NULL
+    UNION ALL
+    SELECT t.id, ${WORK_ID_SQL("t")}, COALESCE(t.started_at, t.created_at), t.state IN ('failed', 'error'), t.state IN ('started', 'running', 'in_progress')
+    FROM traces t
+    WHERE t.project_id = $1 AND ${WORK_ID_SQL("t")} IN (SELECT work_id FROM run_base WHERE work_id IS NOT NULL)
+      AND t.id NOT IN (SELECT trace_id FROM run_base)
+  ),
+  -- A failed attempt that a later attempt completed is "retried", not failed:
+  -- failure counts only the work item's last attempt.
   run_rows AS (
     SELECT b.*,
            (b.raw_failed AND later.trace_id IS NOT NULL) AS retried,
@@ -117,14 +127,14 @@ export const RUNS_CTE = `
            later.trace_id AS retried_by,
            later.attempt AS retried_on_attempt,
            CASE WHEN b.work_id IS NULL THEN 1
-                ELSE (SELECT COUNT(*) FROM run_base o WHERE o.work_id = b.work_id AND (o.started_at, o.trace_id) <= (b.started_at, b.trace_id))::int END AS attempt
+                ELSE (SELECT COUNT(*) FROM attempts o WHERE o.work_id = b.work_id AND (o.started_at, o.trace_id) <= (b.started_at, b.trace_id))::int END AS attempt
     FROM run_base b
     LEFT JOIN LATERAL (
       SELECT o.trace_id,
-             (SELECT COUNT(*) FROM run_base p WHERE p.work_id = o.work_id AND (p.started_at, p.trace_id) <= (o.started_at, o.trace_id))::int AS attempt
-      FROM run_base o
+             (SELECT COUNT(*) FROM attempts p WHERE p.work_id = o.work_id AND (p.started_at, p.trace_id) <= (o.started_at, o.trace_id))::int AS attempt
+      FROM attempts o
       WHERE b.raw_failed AND b.work_id IS NOT NULL AND o.work_id = b.work_id
-        AND (o.started_at, o.trace_id) > (b.started_at, b.trace_id) AND NOT o.raw_failed
+        AND (o.started_at, o.trace_id) > (b.started_at, b.trace_id) AND NOT o.failed AND NOT o.running
       ORDER BY o.started_at, o.trace_id LIMIT 1
     ) later ON TRUE
   )`;

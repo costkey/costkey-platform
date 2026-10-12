@@ -3,7 +3,7 @@ import { ArrowLeft, ArrowRight, ChevronDown, ChevronRight } from "lucide-react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { getAgentDetail, getWorkflowDetail, getAgents, getTabModels, getWorkflows, type AgentDetail, type AgentRun, type InsightScope, type RunGroup, type TokenUsage } from "../api";
 import { currentRouterPath } from "../basePath";
-import { RunFlow, runModel, RunStatusPill, RunSummaryStrip, useRunDetail } from "../components/RunFlow";
+import { RunFlow, runModel, RunSummaryStrip, useRunDetail } from "../components/RunFlow";
 import { LiveStatus } from "../components/LiveStatus";
 import { UserId } from "../components/UserId";
 import { modelHref, ownerHref, toolHref, userHref } from "../components/links";
@@ -166,7 +166,7 @@ function AgentRunsTable({ runs, fresh, projectId, openRun, onToggle, currency, f
           <td className="numeric">{run.durationMs == null ? "—" : formatDuration(run.durationMs)}</td>
           <td className="hide-mobile">{run.userId ? <UserId id={run.userId} to={userHref(run.userId)} linkClassName="ck-table-link" /> : "—"}</td>
           <td>{run.retry?.retried
-            ? <RunStatusPill status={{ tone: "warn", label: "Retried", title: `This attempt failed; the work item succeeded on attempt ${run.retry.succeededOnAttempt ?? 2}.`, succeededBy: run.retry.succeededBy, succeededOnAttempt: run.retry.succeededOnAttempt }} showLink={false} />
+            ? <span title={`This attempt failed${run.retry.errorType ? ` (${run.retry.errorType})` : ""}; attempt ${run.retry.succeededOnAttempt ?? 2} finished the work.`}><StatusPill tone="good">Succeeded</StatusPill></span>
             : run.failed ? <span title={run.retry?.errorType ? `The run raised ${run.retry.errorType}.` : undefined}><StatusPill tone="critical">Failed</StatusPill></span> : <StatusPill tone="good">Succeeded</StatusPill>}</td>
         </tr>
         {open && <tr className="ck-run-expanded"><td colSpan={columns}><InlineRun projectId={projectId} traceId={run.traceId} currency={currency} fx={fx} initialCallId={callId} onCallChange={onCallChange} /></td></tr>}

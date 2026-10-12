@@ -57,7 +57,8 @@ export const PRICE_PENDING_HINT = "This model has no price yet. Set one in Setti
 export function runStatus(trace: Pick<Trace, "execution_state" | "unpriced_count" | "call_count" | "accounting_state" | "retry">, cost: number | null): RunStatusView {
   const execution = String(trace.execution_state ?? "").toLowerCase();
   const retry = trace.retry;
-  if (retry?.retried) return { tone: "warn", label: "Retried", title: `This attempt failed${retry.errorType ? ` (${retry.errorType})` : ""}; the work item succeeded on attempt ${retry.succeededOnAttempt ?? 2}.`, succeededBy: retry.succeededBy, succeededOnAttempt: retry.succeededOnAttempt };
+  // The work item's outcome at a glance; the attempts are a detail inside the run.
+  if (retry?.retried) return { tone: "good", label: "Succeeded", title: `This attempt failed${retry.errorType ? ` (${retry.errorType})` : ""}; attempt ${retry.succeededOnAttempt ?? 2} finished the work.`, succeededBy: retry.succeededBy, succeededOnAttempt: retry.succeededOnAttempt };
   // CostKey sees attempts, not the queue: a retry is shown once it happens, never promised.
   if (execution === "failed" || execution === "error") return { tone: "critical", label: "Failed", title: retry?.errorType ? `The run raised ${retry.errorType}.` : undefined };
   if (execution === "running" || execution === "in_progress" || execution === "started") return { tone: "neutral", label: "Running" };
@@ -73,7 +74,7 @@ export function runStatus(trace: Pick<Trace, "execution_state" | "unpriced_count
 export function RunStatusPill({ status, showLink = true }: { status: RunStatusView; showLink?: boolean }) {
   return <span className="ck-run-status" title={status.title}>
     <StatusPill tone={status.tone}>{status.label}</StatusPill>
-    {showLink && status.succeededBy && <Link className="ck-run-status-link" to={`/traces/${encodeURIComponent(status.succeededBy)}`} onClick={(event) => event.stopPropagation()}>Succeeded on attempt {status.succeededOnAttempt ?? 2}</Link>}
+    {showLink && status.succeededBy && <Link className="ck-run-status-link" to={`/traces/${encodeURIComponent(status.succeededBy)}`} onClick={(event) => event.stopPropagation()}>After a retry: attempt {status.succeededOnAttempt ?? 2}</Link>}
   </span>;
 }
 

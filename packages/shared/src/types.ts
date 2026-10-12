@@ -61,6 +61,12 @@ export interface StackFrame {
   fileName: string | null;
   lineNumber: number | null;
   columnNumber: number | null;
+  /** The source line of the frame (in-app frames only, when the SDK could read it). */
+  contextLine?: string;
+  /** Up to 3 source lines before contextLine. */
+  preContext?: string[];
+  /** Up to 3 source lines after contextLine. */
+  postContext?: string[];
 }
 
 /** User-provided context via withContext() or manual tags */

@@ -102,11 +102,48 @@ function frameOf(value: unknown): StackFrame | null {
     const raw = record[key] ?? record[alt];
     return typeof raw === "number" && Number.isFinite(raw) ? raw : null;
   };
-  return {
+  const frame: StackFrame = {
     functionName: text("functionName", "function_name"),
     fileName: text("fileName", "file_name"),
     lineNumber: number("lineNumber", "line_number"),
     columnNumber: number("columnNumber", "column_number"),
+  };
+  const contextLine = record["contextLine"] ?? record["context_line"];
+  if (typeof contextLine === "string") {
+    frame.contextLine = clipSourceLine(contextLine);
+    frame.preContext = sourceLines(record["preContext"] ?? record["pre_context"], "last");
+    frame.postContext = sourceLines(record["postContext"] ?? record["post_context"], "first");
+  }
+  return frame;
+}
+
+/** Source context limits: a few lines either side, each line capped. */
+export const SOURCE_CONTEXT_LINES = 3;
+export const MAX_SOURCE_LINE_CHARS = 500;
+
+function clipSourceLine(line: string): string {
+  return line.replace(/\r?\n$/, "").slice(0, MAX_SOURCE_LINE_CHARS);
+}
+
+/** Context lines sent by an SDK: strings only, the nearest few kept. */
+function sourceLines(value: unknown, keep: "first" | "last"): string[] {
+  if (!Array.isArray(value)) return [];
+  const lines = value.filter((line): line is string => typeof line === "string").map(clipSourceLine);
+  return keep === "last" ? lines.slice(-SOURCE_CONTEXT_LINES) : lines.slice(0, SOURCE_CONTEXT_LINES);
+}
+
+/** The context of a 1-based line in a file's text, or null when out of range. */
+export function sourceContextAt(
+  text: string,
+  lineNumber: number,
+): Pick<StackFrame, "contextLine" | "preContext" | "postContext"> | null {
+  const lines = text.split("\n");
+  if (!Number.isInteger(lineNumber) || lineNumber < 1 || lineNumber > lines.length) return null;
+  const idx = lineNumber - 1;
+  return {
+    contextLine: clipSourceLine(lines[idx]!.replace(/\r$/, "")),
+    preContext: lines.slice(Math.max(0, idx - SOURCE_CONTEXT_LINES), idx).map((l) => clipSourceLine(l.replace(/\r$/, ""))),
+    postContext: lines.slice(idx + 1, idx + 1 + SOURCE_CONTEXT_LINES).map((l) => clipSourceLine(l.replace(/\r$/, ""))),
   };
 }
 

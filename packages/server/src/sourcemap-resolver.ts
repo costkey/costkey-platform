@@ -5,6 +5,7 @@
 import { SourceMapConsumer } from "source-map";
 import type pg from "pg";
 import type { StackFrame } from "@costkey/shared";
+import { sourceContextAt } from "./telemetry/callsite.js";
 
 /** Initialize WASM for source-map library — call once at startup */
 export async function initSourceMaps(): Promise<void> {
@@ -114,12 +115,25 @@ async function translateWithMaps(
 
       if (pos.source) {
         wasTranslated = true;
-        return {
+        // The SDK's context (if any) is the minified line; replace it with
+        // the original source when the map embeds it, else drop it.
+        const out: StackFrame = {
           functionName: pos.name ?? frame.functionName,
           fileName: pos.source,
           lineNumber: pos.line,
           columnNumber: pos.column,
         };
+        if (pos.line != null) {
+          let content: string | null = null;
+          try {
+            content = consumer.sourceContentFor(pos.source, true);
+          } catch {
+            content = null;
+          }
+          const context = content ? sourceContextAt(content, pos.line) : null;
+          if (context) Object.assign(out, context);
+        }
+        return out;
       }
 
       return frame;

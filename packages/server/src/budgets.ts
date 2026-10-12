@@ -24,6 +24,7 @@ import { createPostgresObservedUsageSource, DEFAULT_PROVIDER_CAPABILITY_REGISTRY
 import { PostgresReservationStore } from "./reservation.js";
 import { dispatchEnforcementNotification, dispatchFindingNotification, dispatchPolicyWarning, dispatchWebhook, isSafeWebhookUrl } from "./notifications.js";
 import { publicAppUrl } from "./public-url.js";
+import { policyForecast, registerBudgetViewRoutes } from "./budget-views.js";
 export { ensurePolicySchema } from "./policy-storage.js";
 
 // F06/DX09 pre-call enforcement is exposed from its own module so platform
@@ -621,6 +622,14 @@ async function publicPolicyWithUsage(pool: pg.Pool, row: Record<string, unknown>
   return { ...publicPolicy(row), usage };
 }
 
+/** A policy with its usage and where it is heading by the end of its period. */
+async function policyWithForecast(pool: pg.Pool, row: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const serialized = await publicPolicyWithUsage(pool, row);
+  // Legacy rules have no canonical window to forecast.
+  if (row["window_kind"] === undefined) return serialized;
+  return { ...serialized, forecast: await policyForecast(pool, row, serialized) };
+}
+
 function scopedEventWhere(projectId: string, scope: PolicyScope): { sql: string; params: unknown[] } {
   const params: unknown[] = [projectId];
   const clauses = ["project_id = $1", ...policyScopeClauses(scope, params)];
@@ -977,6 +986,8 @@ export function createBudgetsRouter(pool: pg.Pool): Router {
     }
   };
 
+  registerBudgetViewRoutes(router, pool, { ensureProjectInOrg, timezoneFor: (projectId) => workspaceTimezoneForProject(pool, projectId) });
+
   // Canonical F06 policy list. Legacy /budget/rules remains available for
   // migration, but admission reads this table so the visible policy and the
   // server decision have one source of truth.
@@ -1010,7 +1021,7 @@ export function createBudgetsRouter(pool: pg.Pool): Router {
       }
       const seen = new Set(canonicalRows.map((row) => String(row.id ?? row.policy_id ?? "")));
       const rows = [...canonicalRows, ...legacyRows.filter((row) => !seen.has(String(row.id ?? row.rule_id ?? "")))];
-      const policies = await Promise.all(rows.map((row) => publicPolicyWithUsage(pool, row)));
+      const policies = await Promise.all(rows.map((row) => policyWithForecast(pool, row)));
       res.json({ policies });
     } catch (err) {
       console.error("[costkey] GET policies error:", err);
@@ -1127,7 +1138,7 @@ export function createBudgetsRouter(pool: pg.Pool): Router {
       }
       const row = await ensurePolicyInOrg(policyId, user.orgId);
       if (!row || String(row.project_id) !== id) { res.status(404).json({ error: "Policy not found" }); return; }
-      const serialized = await publicPolicyWithUsage(pool, row);
+      const serialized = await policyWithForecast(pool, row);
       res.json({ policy: serialized, capability: serialized["capability"] ?? null });
     } catch (err) {
       console.error("[costkey] GET policy error:", err);

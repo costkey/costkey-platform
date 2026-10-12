@@ -1,6 +1,6 @@
 import { appUrl } from "../basePath";
 import type { ReactNode } from "react";
-import { ArrowDown, ArrowUp, Minus, RefreshCw } from "lucide-react";
+import { ArrowDown, ArrowUp, Minus, RefreshCw, X } from "lucide-react";
 import { PrototypeIcon, type PrototypeIconName } from "./PrototypeIcon";
 
 export type Tone = "good" | "warn" | "critical" | "info" | "neutral";
@@ -16,11 +16,11 @@ export function Illustration({ name, width = 200, className = "" }: { name: Illu
 const STATUS_ICON: Record<Tone, PrototypeIconName> = { good: "check", warn: "alert", critical: "pause", info: "info", neutral: "info" };
 
 /** One-line scoped status ("All tracked projects are within budget."). Always an icon and words. */
-export function StatusLine({ tone = "good", children, right }: { tone?: Tone; children: ReactNode; right?: ReactNode }) {
+export function StatusLine({ tone = "good", children, right, onDismiss }: { tone?: Tone; children: ReactNode; right?: ReactNode; /** Shows a close button at the right edge. */ onDismiss?: () => void }) {
   return (
-    <div className={`ck-status-line ck-status-line-${tone}`} role="status">
+    <div className={`ck-status-line ck-status-line-${tone} ${onDismiss ? "is-dismissible" : ""}`} role="status">
       <span className="ck-status-line-text"><PrototypeIcon name={STATUS_ICON[tone]} size={16} />{children}</span>
-      {right && <span className="ck-status-line-right">{right}</span>}
+      {(right || onDismiss) && <span className="ck-status-line-right">{right}{onDismiss && <button className="ck-status-line-close" type="button" aria-label="Dismiss this message" onClick={onDismiss}><X size={14} aria-hidden="true" /></button>}</span>}
     </div>
   );
 }

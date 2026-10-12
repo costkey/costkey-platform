@@ -330,3 +330,47 @@ test("a failed call without a price is no charge, not an unpriced call", { skip:
     await pool.end();
   }
 });
+
+test("the board lists every model whatever it bills, and its costs add up to the spend total", { skip: !connectionString }, async () => {
+  const pool = new pg.Pool({ connectionString });
+  const suffix = randomBytes(6).toString("hex");
+  const orgId = `org_units_${suffix}`;
+  const projectId = `project_units_${suffix}`;
+  try {
+    await initDatabase();
+    await ensurePlatformSchema(pool);
+    await pool.query("INSERT INTO orgs(id,name,slug) VALUES ($1,'Units',$2)", [orgId, `units-${suffix}`]);
+    await pool.query("INSERT INTO projects(id,name,org_id,auth_key) VALUES ($1,'Units',$2,$3)", [projectId, orgId, `key_${suffix}`]);
+    const at = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
+    const call = (id: string, trace: string, traceName: string, provider: string, model: string, cost: number, tokens: [number | null, number | null], units: Record<string, number> | null) => pool.query(
+      `INSERT INTO events (id, project_id, timestamp, provider, model, cost_usd, duration_ms, status_code, trace_id, trace_name, input_tokens, output_tokens, native_units, context)
+       VALUES ($1,$2,$3,$4,$5,$6,500,200,$7,$8,$9,$10,$11,'{}'::jsonb)`,
+      [id, projectId, at(10), provider, model, cost, trace, traceName, ...tokens, units ? JSON.stringify(units) : null],
+    );
+    await call("llm", "t1", "summarize", "openai", "gpt-6-luna", 0.1665, [4_000, 300], null);
+    // A text-to-speech workflow that bills only characters.
+    await call("tts1", "t2", "generated-media-synthesize-next", "elevenlabs", "eleven_multilingual_v2", 0.159, [null, null], { characters: 1_791 });
+    await call("tts2", "t3", "generated-media-synthesize-next", "elevenlabs", "eleven_multilingual_v2", 0.163, [null, null], { characters: 907 });
+
+    const board = await loadOverviewBoard(pool, projectId, { from: at(60), to: new Date(Date.now() + 60_000).toISOString(), environment: null }, "UTC");
+    const byModel = new Map(board.models.map((row) => [row.model, row]));
+    assert.ok(byModel.has("gpt-6-luna"));
+    const tts = byModel.get("eleven_multilingual_v2");
+    assert.ok(tts, "a characters-billed model is listed");
+    assert.equal(tts.provider, "elevenlabs");
+    assert.equal(tts.input, null, "no token counts for a characters model");
+    assert.deepEqual(tts.units, { characters: 2_698 });
+    const total = board.models.reduce((sum, row) => sum + (row.cost ?? 0), 0);
+    const charges = await pool.query("SELECT SUM(cost_usd) AS cost FROM events WHERE project_id = $1", [projectId]);
+    assert.ok(Math.abs(total - Number(charges.rows[0].cost)) < 1e-9, "model costs add up to the spend total");
+    assert.deepEqual(board.units.current, { characters: 2_698 });
+    const workflow = board.workflows.find((row) => row.name === "generated-media-synthesize-next");
+    assert.equal(workflow?.runs, 2, "a characters-only workflow still appears in usage");
+    assert.deepEqual(workflow?.units, { characters: 2_698 });
+  } finally {
+    await pool.query("DELETE FROM events WHERE project_id = $1", [projectId]).catch(() => undefined);
+    await pool.query("DELETE FROM projects WHERE id = $1", [projectId]).catch(() => undefined);
+    await pool.query("DELETE FROM orgs WHERE id = $1", [orgId]).catch(() => undefined);
+    await pool.end();
+  }
+});

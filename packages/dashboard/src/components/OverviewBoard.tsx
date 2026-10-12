@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
 import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
-import type { BoardBucketUnit, OverviewBoard } from "../api";
+import type { BoardBucketUnit, OverviewBoard, OverviewBoardUsage } from "../api";
 import { formatDuration } from "../utils";
 import { ProviderLogo } from "./ProviderLogo";
+import { providerName } from "./consoleFormatters";
+import { billedUnitsText, sumUnits } from "./tokenUsage";
 import { alignSeries, bucketLabel, compactNumber, formatScore, kpiDelta, niceCeiling, signedPercent, tickIndexes } from "./overviewBoardModel";
 
 /** Validated categorical order for series on the light raised surface. */
@@ -41,12 +43,13 @@ function BoardEmpty({ children }: { children: ReactNode }) {
 
 /* ── KPI cards ─────────────────────────────────────────────────────── */
 
-export function KpiCard({ label, value, current, previous, previousLabel, higherIsBetter, loading, fact }: { label: string; value: string; current: number | null; previous: number | null; previousLabel: string; higherIsBetter: boolean; loading?: boolean; /** Shown when there's nothing earlier to compare with. */ fact?: ReactNode }) {
+export function KpiCard({ label, value, current, previous, previousLabel, higherIsBetter, loading, fact, note }: { label: string; value: string; current: number | null; previous: number | null; previousLabel: string; higherIsBetter: boolean; loading?: boolean; /** Shown when there's nothing earlier to compare with. */ fact?: ReactNode; /** A second line under the value, e.g. other billed units. */ note?: ReactNode }) {
   const delta = kpiDelta(current, previous, higherIsBetter);
   return (
     <article className="ck-metric-card ck-board-kpi">
       <div className="ck-board-kpi-label">{label}</div>
       {loading ? <div className="ck-skeleton ck-skeleton-metric" /> : <div className="ck-board-kpi-value">{value}</div>}
+      {!loading && note && <div className="ck-board-kpi-note">{note}</div>}
       {!loading && (delta.kind !== "none" || fact) && (
         <div className="ck-board-delta">
           {delta.kind === "none" ? <span>{fact}</span>
@@ -65,30 +68,52 @@ export function KpiCard({ label, value, current, previous, previousLabel, higher
 
 /* ── Cost by model ─────────────────────────────────────────────────── */
 
-export function CostByModel({ board, totalCost }: { board: OverviewBoard | null; totalCost: string }) {
-  // Calls with no token counts (speech, search) still count in the total cost.
-  const rows = (board?.models ?? []).filter((row) => [row.input, row.output, row.cacheRead, row.cacheWrite].some((value) => value != null)).slice(0, 8);
+const MODEL_ROWS = 7;
+
+/** Tokens in and out for a token model, or what else it bills ("2,698 characters"). */
+function modelUsage(row: { input: number | null; output: number | null; units?: Record<string, number> }): { tokens: boolean; text: string } {
+  const tokens = (row.input ?? 0) > 0 || (row.output ?? 0) > 0;
+  return { tokens, text: tokens ? "" : billedUnitsText(row.units) || "No usage reported" };
+}
+
+export function CostByModel({ board, totalCost, money }: { board: OverviewBoard | null; totalCost: string; money: (value: number | null | undefined) => string }) {
+  // Every model with calls counts, whatever it bills, so the costs add up to the total.
+  const all = board?.models ?? [];
+  const rows = all.length > MODEL_ROWS + 1 ? all.slice(0, MODEL_ROWS) : all;
+  const rest = all.slice(rows.length);
+  const restCost = rest.some((row) => row.cost != null) ? rest.reduce((sum, row) => sum + (row.cost ?? 0), 0) : null;
   const hasCache = rows.some((row) => row.cacheRead != null || row.cacheWrite != null);
+  const usageColumns = hasCache ? 3 : 2;
   return (
-    <BoardPanel title="Cost by model" subtitle="Token consumption by model" total={totalCost} totalLabel="Total cost">
-      {rows.length === 0 ? <BoardEmpty>No model calls in this period.</BoardEmpty> : (
+    <BoardPanel title="Cost by model" subtitle="Spend and usage by model" total={totalCost} totalLabel="Total cost">
+      {all.length === 0 ? <BoardEmpty>No model calls in this period.</BoardEmpty> : (
         <div className="ck-board-table-wrap">
           <table className="ck-board-table">
             <thead>
               <tr>
                 <th>Model</th>
-                {hasCache ? <><th className="numeric">Input</th><th className="numeric">Output</th><th className="numeric">Cache read</th><th className="numeric">Cache write</th></>
-                  : <><th className="numeric">Calls</th><th className="numeric">Input</th><th className="numeric">Output</th></>}
+                <th className="numeric">Input</th><th className="numeric">Output</th>{hasCache && <th className="numeric">Cached</th>}
+                <th className="numeric">Cost</th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((row) => (
-                <tr key={`${row.provider}:${row.model}`}>
-                  <td className="ck-board-model-cell"><span className="ck-board-model"><ProviderLogo provider={row.provider} size={14} /><span title={row.model}>{row.model}</span></span></td>
-                  {hasCache ? <><td className="numeric">{compactNumber(row.input)}</td><td className="numeric">{compactNumber(row.output)}</td><td className="numeric">{compactNumber(row.cacheRead)}</td><td className="numeric">{compactNumber(row.cacheWrite)}</td></>
-                    : <><td className="numeric">{compactNumber(row.calls)}</td><td className="numeric">{compactNumber(row.input)}</td><td className="numeric">{compactNumber(row.output)}</td></>}
-                </tr>
-              ))}
+              {rows.map((row) => {
+                const usage = modelUsage(row);
+                return (
+                  <tr key={`${row.provider}:${row.model}`}>
+                    <td className="ck-board-model-cell"><span className="ck-board-model"><ProviderLogo provider={row.provider} size={14} /><span title={`${providerName(row.provider ?? "")} · ${row.model}`}>{row.model}</span></span></td>
+                    {usage.tokens
+                      ? <><td className="numeric">{compactNumber(row.input)}</td><td className="numeric">{compactNumber(row.output)}</td>{hasCache && <td className="numeric">{compactNumber(row.cacheRead)}</td>}</>
+                      : <td className="numeric ck-board-units" colSpan={usageColumns}>{usage.text}</td>}
+                    <td className="numeric ck-board-cost">{row.cost == null ? (row.unpriced > 0 ? "Unpriced" : "—") : money(row.cost)}</td>
+                  </tr>
+                );
+              })}
+              {rest.length > 0 && <tr className="ck-board-other">
+                <td>{rest.length} other model{rest.length === 1 ? "" : "s"}</td>
+                <td className="numeric" colSpan={usageColumns}>{rest.reduce((sum, row) => sum + row.calls, 0).toLocaleString("en-US")} calls</td>
+                <td className="numeric ck-board-cost">{money(restCost)}</td>
+              </tr>}
             </tbody>
           </table>
         </div>
@@ -97,43 +122,52 @@ export function CostByModel({ board, totalCost }: { board: OverviewBoard | null;
   );
 }
 
-/* ── Usage by agent ────────────────────────────────────────────────── */
+/* ── Usage by agent or workflow ────────────────────────────────────── */
+
+type UsageKind = "agents" | "workflows";
 
 export function UsageByAgent({ board, money }: { board: OverviewBoard | null; money: (value: number | null | undefined) => string }) {
-  const [mode, setMode] = useState<"tokens" | "cost">("tokens");
-  const agents = board?.agents ?? [];
-  const value = (agent: OverviewBoard["agents"][number]) => mode === "tokens" ? agent.input + agent.output : agent.cost ?? 0;
-  const rows = [...agents].sort((a, b) => value(b) - value(a)).slice(0, 6);
+  const [mode, setMode] = useState<"usage" | "cost">("usage");
+  const [picked, setKind] = useState<UsageKind | null>(null);
+  const kind: UsageKind = picked ?? ((board?.agents.length ?? 0) === 0 && (board?.workflows?.length ?? 0) > 0 ? "workflows" : "agents");
+  const owners = (kind === "agents" ? board?.agents : board?.workflows) ?? [];
+  const tokensOf = (owner: OverviewBoardUsage) => owner.input + owner.output;
+  const value = (owner: OverviewBoardUsage) => mode === "usage" ? tokensOf(owner) : owner.cost ?? 0;
+  const rows = [...owners].sort((a, b) => value(b) - value(a) || (b.cost ?? 0) - (a.cost ?? 0)).slice(0, 6);
   const max = Math.max(...rows.map(value), 0);
-  const total = agents.reduce((sum, agent) => sum + value(agent), 0);
+  const total = owners.reduce((sum, owner) => sum + value(owner), 0);
+  const otherUnits = billedUnitsText(sumUnits(owners.map((owner) => owner.units)));
+  const totalText = owners.length === 0 ? undefined : mode === "cost" ? money(total) : total > 0 ? compactNumber(total) : otherUnits || "0";
   return (
     <BoardPanel
-      title="Usage by agent"
-      subtitle="Grouped by agent"
-      total={agents.length === 0 ? undefined : mode === "tokens" ? compactNumber(total) : money(total)}
-      totalLabel={mode === "tokens" ? "Total tokens" : "Total cost"}
-      controls={<Pills label="Measure" value={mode} onChange={setMode} options={[{ value: "tokens", label: "Tokens" }, { value: "cost", label: "Cost" }]} />}
+      title={kind === "agents" ? "Usage by agent" : "Usage by workflow"}
+      subtitle={kind === "agents" ? "Grouped by agent" : "Grouped by workflow"}
+      total={totalText}
+      totalLabel={mode === "cost" ? "Total cost" : total > 0 ? (otherUnits ? `Tokens, + ${otherUnits}` : "Total tokens") : "Billed usage"}
+      controls={<div className="ck-board-control-row"><Pills label="Measure" value={mode} onChange={setMode} options={[{ value: "usage", label: "Usage" }, { value: "cost", label: "Cost" }]} /><Pills label="Group" value={kind} onChange={setKind} options={[{ value: "agents", label: "Agents" }, { value: "workflows", label: "Workflows" }]} /></div>}
     >
-      {rows.length === 0 ? <BoardEmpty>No agent runs in this period.</BoardEmpty> : <>
+      {rows.length === 0 ? <BoardEmpty>{kind === "agents" ? "No agent runs in this period." : "No workflow runs in this period."}</BoardEmpty> : <>
         <ul className="ck-board-bars">
-          {rows.map((agent) => {
-            const amount = value(agent);
+          {rows.map((owner) => {
+            const amount = value(owner);
             const width = max > 0 ? amount / max * 100 : 0;
-            const tokens = agent.input + agent.output;
+            const tokens = tokensOf(owner);
+            const units = billedUnitsText(owner.units);
+            const shown = mode === "cost" ? money(owner.cost) : tokens > 0 ? compactNumber(tokens) : units || "0";
             return (
-              <li key={agent.name}>
-                <div className="ck-board-bar-line"><span className="ck-board-bar-name" title={agent.name}>{agent.name}</span><span className="ck-board-bar-value">{mode === "tokens" ? compactNumber(amount) : money(agent.cost)}</span></div>
-                <div className="ck-board-track" title={mode === "tokens" ? `${compactNumber(agent.input)} input, ${compactNumber(agent.output)} output` : undefined}>
-                  {mode === "tokens" && tokens > 0
-                    ? <span className="ck-board-fill-split" style={{ width: `${width}%` }}><i className="input" style={{ flexGrow: agent.input }} /><i className="output" style={{ flexGrow: agent.output }} /></span>
+              <li key={owner.name}>
+                <div className="ck-board-bar-line"><span className="ck-board-bar-name" title={owner.name}>{owner.name}</span><span className="ck-board-bar-value">{shown}{mode === "usage" && tokens > 0 && units && <small>+ {units}</small>}</span></div>
+                <div className="ck-board-track" title={mode === "usage" && tokens > 0 ? `${compactNumber(owner.input)} input, ${compactNumber(owner.output)} output` : undefined}>
+                  {mode === "usage" && tokens > 0
+                    ? <span className="ck-board-fill-split" style={{ width: `${width}%` }}><i className="input" style={{ flexGrow: owner.input }} /><i className="output" style={{ flexGrow: owner.output }} /></span>
                     : <span className="ck-board-fill" style={{ width: `${width}%` }} />}
                 </div>
               </li>
             );
           })}
         </ul>
-        {mode === "tokens"
-          ? <div className="ck-board-legend"><span><i className="swatch input" />Input</span><span><i className="swatch output" />Output</span></div>
+        {mode === "usage"
+          ? <div className="ck-board-legend"><span><i className="swatch input" />Input tokens</span><span><i className="swatch output" />Output tokens</span>{otherUnits && <span>Bars show tokens; other units are listed.</span>}</div>
           : <div className="ck-board-legend"><span>Cost is not split by input and output.</span></div>}
       </>}
     </BoardPanel>

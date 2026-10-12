@@ -4,7 +4,7 @@ import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom"
 import { getAgentDetail, getAgents, getBudgetPolicies, getTabModels, getWorkflows, type AgentDetail, type AgentRun, type BudgetPolicy, type InsightScope, type RunGroup, type TokenUsage } from "../api";
 import { currentRouterPath } from "../basePath";
 import { RunFlow, runModel, RunSummaryStrip, useRunDetail } from "../components/RunFlow";
-import { formatHitRate, formatTokenCount } from "../components/tokenUsage";
+import { billedUnitsText, formatHitRate, formatTokenCount } from "../components/tokenUsage";
 import { EmptyPanel, LoadingRows, MetricCard, PageHeader, Panel, StatusPill } from "../components/ConsolePrimitives";
 import { formatDateTime, formatReportedAmount, periodDates, type ReportingFx } from "../components/consoleFormatters";
 import { useAuth } from "../contexts/useAuth";
@@ -105,12 +105,13 @@ function ModelsView({ kind, projectId, scope, scopeKey, currency, fx }: { kind: 
   if (models.length === 0) return <EmptyPanel title="No model calls in this period" />;
   const total = models.reduce((sum, model) => sum + (model.cost ?? 0), 0);
   return <div className="ck-table-wrap"><table className="ck-table">
-    <thead><tr><th>Model</th><th className="numeric">Spend</th><th className="numeric">Share</th><th className="numeric">Calls</th><th className="numeric hide-mobile">Per call</th><th className="numeric hide-mobile" title="Share of input tokens read from cache">Cache hit</th><th className="numeric hide-mobile" title="Output tokens spent on reasoning">Reasoning</th><th className="numeric hide-mobile" title="Saved against the uncached input price">Saved by cache</th><th className="hide-mobile">{kind === "agent" ? "Agents" : "Workflows"}</th></tr></thead>
+    <thead><tr><th>Model</th><th className="numeric">Spend</th><th className="numeric">Share</th><th className="numeric">Calls</th><th className="numeric hide-mobile" title="Tokens in and out, or the units the model bills">Usage</th><th className="numeric hide-mobile">Per call</th><th className="numeric hide-mobile" title="Share of input tokens read from cache">Cache hit</th><th className="numeric hide-mobile" title="Output tokens spent on reasoning">Reasoning</th><th className="numeric hide-mobile" title="Saved against the uncached input price">Saved by cache</th><th className="hide-mobile">{kind === "agent" ? "Agents" : "Workflows"}</th></tr></thead>
     <tbody>{models.map((model) => <tr key={`${model.provider}/${model.model}`}>
       <td className="primary-cell">{model.model}<small className="ck-table-sub"><ProviderLabel provider={model.provider} size={12} /></small></td>
       <td className="numeric">{money(model.cost, currency, fx)}</td>
       <td className="numeric">{model.cost != null && total > 0 ? `${Math.round(model.cost / total * 100)}%` : "—"}</td>
       <td className="numeric">{model.calls.toLocaleString()}</td>
+      <td className="numeric hide-mobile">{(model.usage?.inputTokens ?? 0) + (model.usage?.outputTokens ?? 0) > 0 ? `${formatTokenCount((model.usage?.inputTokens ?? 0) + (model.usage?.outputTokens ?? 0))} tokens` : billedUnitsText(model.units) || "—"}</td>
       <td className="numeric hide-mobile">{model.cost != null && model.calls > 0 ? money(model.cost / model.calls, currency, fx) : "—"}</td>
       <td className="numeric hide-mobile">{formatHitRate(model.usage?.cacheHitRate)}</td>
       <td className="numeric hide-mobile">{formatTokenCount(model.usage?.reasoningTokens)}</td>
@@ -251,12 +252,12 @@ function cacheDetail(usage: TokenUsage | undefined, currency: string, fx?: Repor
 
 function ModelUsageTable({ models, currency, fx }: { models: AgentDetail["models"]; currency: string; fx?: ReportingFx | null }) {
   return <div className="ck-table-wrap"><table className="ck-table">
-    <thead><tr><th>Model</th><th className="numeric">Calls</th><th className="numeric">Spend</th><th className="numeric hide-mobile" title="Input tokens, cache included">Input</th><th className="numeric" title="Share of input tokens read from cache">Cache hit</th><th className="numeric hide-mobile">Cached</th><th className="numeric hide-mobile" title="Output tokens spent on reasoning">Reasoning</th><th className="numeric hide-mobile" title="Saved against the uncached input price">Saved by cache</th></tr></thead>
+    <thead><tr><th>Model</th><th className="numeric">Calls</th><th className="numeric">Spend</th><th className="numeric hide-mobile" title="Input tokens with cache, or the units the model bills">Usage</th><th className="numeric" title="Share of input tokens read from cache">Cache hit</th><th className="numeric hide-mobile">Cached</th><th className="numeric hide-mobile" title="Output tokens spent on reasoning">Reasoning</th><th className="numeric hide-mobile" title="Saved against the uncached input price">Saved by cache</th></tr></thead>
     <tbody>{models.map((model) => <tr key={`${model.provider}/${model.model}`}>
       <td className="primary-cell">{model.model}<small className="ck-table-sub"><ProviderLabel provider={model.provider} size={12} /></small></td>
       <td className="numeric">{model.calls.toLocaleString()}</td>
       <td className="numeric">{money(model.cost, currency, fx)}</td>
-      <td className="numeric hide-mobile">{formatTokenCount(model.usage?.inputTokens)}</td>
+      <td className="numeric hide-mobile">{model.usage?.inputTokens ? formatTokenCount(model.usage.inputTokens) : billedUnitsText(model.units) || "—"}</td>
       <td className="numeric">{formatHitRate(model.usage?.cacheHitRate)}</td>
       <td className="numeric hide-mobile">{formatTokenCount(model.usage?.cacheReadTokens)}</td>
       <td className="numeric hide-mobile">{formatTokenCount(model.usage?.reasoningTokens)}</td>

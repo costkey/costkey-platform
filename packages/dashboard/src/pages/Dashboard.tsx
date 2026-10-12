@@ -26,6 +26,8 @@ import {
   type Tone,
 } from "../components/ConsolePrimitives";
 import { PrototypeIcon } from "../components/PrototypeIcon";
+import { billedUnitsText } from "../components/tokenUsage";
+import { allClearDismissed, dismissAllClear } from "../components/allClear";
 import { formatDateTime, formatReportedAmount, parsePeriod, periodDates, periodLabel } from "../components/consoleFormatters";
 import { prototypeRole, prototypeState, PrototypeStateNotice, PrototypeStatePanel } from "../components/PrototypeState";
 import { BoardSkeleton, CostByModel, KpiCard, LatencyPanel, RunVolume, ScoresPanel, UsageByAgent } from "../components/OverviewBoard";
@@ -168,7 +170,7 @@ function monthlyBudget(policies: BudgetPolicySummary[]): BudgetPolicySummary | n
 
 function OverviewLoadingState(): ReactNode {
   return <>
-    <div className="ck-board-kpis">{["Agent runs", "Model cost", "Tokens", "Avg score"].map((label) => <KpiCard key={label} label={label} value="" current={null} previous={null} previousLabel="" higherIsBetter loading />)}</div>
+    <div className="ck-board-kpis">{["Agent runs", "Model cost", "Usage", "Avg score"].map((label) => <KpiCard key={label} label={label} value="" current={null} previous={null} previousLabel="" higherIsBetter loading />)}</div>
     <div className="ck-board-row ck-board-row-3"><BoardSkeleton /><BoardSkeleton /><BoardSkeleton /></div>
     <div className="ck-board-row ck-board-row-2"><BoardSkeleton /><BoardSkeleton /></div>
   </>;
@@ -182,6 +184,10 @@ export default function Dashboard() {
   const { currentProjectId, projects, org, workspaceSettings, setCurrentProjectId } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
   const projectId = currentProjectId ?? projects[0]?.id ?? null;
+  const workspaceZone = workspaceSettings?.timezone ?? org?.timezone ?? undefined;
+  const [allClearHidden, setAllClearHidden] = useState<Record<string, boolean>>({});
+  const allClearIsHidden = projectId ? allClearHidden[projectId] ?? allClearDismissed(projectId, new Date(), workspaceZone) : false;
+  const hideAllClear = () => { if (!projectId) return; dismissAllClear(projectId, new Date(), workspaceZone); setAllClearHidden((current) => ({ ...current, [projectId]: true })); };
   const project = projects.find((item) => item.id === projectId);
   const timezone = workspaceSettings?.timezone ?? org?.timezone;
   const reportingCurrency = workspaceSettings?.reportingCurrency ?? "USD";
@@ -289,6 +295,8 @@ export default function Dashboard() {
     previous: board ? hasAgents ? board.runs.previous.agentRuns : board.runs.previous.runs : 0,
   };
   const currentTokens = overviewTokens(overview);
+  // Speech, audio, images and searches bill in their own units; they count as usage too.
+  const otherUnits = billedUnitsText(board?.units?.current);
   const previousTokens = overviewTokens(previousOverview);
   const finding = activeFindings[0];
   const findingHref = finding ? `/finding?id=${encodeURIComponent(finding.id)}&project=${encodeURIComponent(projectId ?? "")}` : "";
@@ -311,16 +319,17 @@ export default function Dashboard() {
       
       {!["partial", "stale", "error", "healthy"].includes(explicitState) && <PrototypeStateNotice state={explicitState} family="overview" role={prototypeRole(searchParams, "viewer")} />}
       {(explicitState === "error" || resource.error) && <div className="ck-alert ck-alert-error" role="alert"><AlertCircle size={15} aria-hidden="true" /><div><strong>Couldn’t refresh everything.</strong> Showing the latest numbers we have. <button type="button" className="ck-button ck-button-quiet ck-inline-button" onClick={() => setDataVersion((value) => value + 1)}>Try again</button></div></div>}
-      {!resource.loading && <StatusLine tone={status.tone} right={status.right}>{status.text}</StatusLine>}
+      {/* The all-clear can be dismissed for the month; a warning always shows. */}
+      {!resource.loading && !(status.tone === "good" && allClearIsHidden) && <StatusLine tone={status.tone} right={status.right} onDismiss={status.tone === "good" ? hideAllClear : undefined}>{status.text}</StatusLine>}
       {resource.loading ? <OverviewLoadingState /> : <>
         <div className="ck-board-kpis">
           <KpiCard label={runsKpi.label} value={board ? runsKpi.current.toLocaleString("en-US") : "—"} current={board ? runsKpi.current : null} previous={board ? runsKpi.previous : null} previousLabel={runsKpi.previous.toLocaleString("en-US")} higherIsBetter />
           <KpiCard label="Model cost" value={money(currentCost)} current={currentCost} previous={previousCost} previousLabel={money(previousCost)} higherIsBetter={false} />
-          <KpiCard label="Tokens" value={compactNumber(currentTokens)} current={currentTokens} previous={previousTokens} previousLabel={compactNumber(previousTokens)} higherIsBetter={false} />
+          <KpiCard label="Usage" value={currentTokens ? `${compactNumber(currentTokens)} tokens` : otherUnits || compactNumber(currentTokens)} current={currentTokens} previous={previousTokens} previousLabel={compactNumber(previousTokens)} higherIsBetter={false} note={currentTokens && otherUnits ? `+ ${otherUnits}` : undefined} />
           <KpiCard label="Avg score" value={formatScore(board?.scores.current.avg)} current={board?.scores.current.avg ?? null} previous={board?.scores.previous.avg ?? null} previousLabel={formatScore(board?.scores.previous.avg)} higherIsBetter />
         </div>
         <div className="ck-board-row ck-board-row-3">
-          <CostByModel board={board} totalCost={money(currentCost)} />
+          <CostByModel board={board} totalCost={money(currentCost)} money={money} />
           <UsageByAgent board={board} money={money} />
           <ScoresPanel board={board} />
         </div>

@@ -3,6 +3,7 @@ import type pg from "pg";
 import { requireAuth } from "./auth.js";
 import { orgScope } from "./middleware.js";
 import { workspaceTimezone } from "./quality-api.js";
+import { chargesCte, scopeClauses } from "./charge-cohort.js";
 import {
   CACHE_REPORTED_SQL, CACHE_WRITE_SQL, OUTPUT_TOKENS_SQL, PROMPT_TOKENS_SQL, SAVINGS_COLUMNS, SAVINGS_ROW_LIMIT,
   sumCacheSavings, USAGE_SUM_COLUMNS, usageFrom, type TokenUsage,
@@ -177,6 +178,27 @@ const SCORED_CTE = `
     FROM scored GROUP BY name
   )`;
 
+/** Units a provider bills besides tokens, as ingest stores them in events.native_units. */
+export const BILLED_UNITS = ["characters", "audioSeconds", "images", "searchQueries", "webSearchRequests", "pages", "credits", "requests"] as const;
+
+/** Sum of billed native units per group. `alias.native_units` must be in scope. */
+const UNIT_ROWS = (alias: string) => `
+  CROSS JOIN LATERAL jsonb_each_text(CASE WHEN jsonb_typeof(${alias}.native_units) = 'object' THEN ${alias}.native_units ELSE '{}'::jsonb END) u
+  WHERE u.key = ANY(ARRAY['${BILLED_UNITS.join("','")}']) AND u.value ~ '^[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$'`;
+
+type Units = Record<string, number>;
+
+function unitsByKey(rows: Array<Record<string, unknown>>, keyOf: (row: Record<string, unknown>) => string): Map<string, Units> {
+  const map = new Map<string, Units>();
+  for (const row of rows) {
+    const key = keyOf(row);
+    const units = map.get(key) ?? {};
+    units[String(row.unit)] = (units[String(row.unit)] ?? 0) + (number(row.total) ?? 0);
+    map.set(key, units);
+  }
+  return map;
+}
+
 /** Local bucket label for a timestamp. Params: $5 bucket unit, $6 timezone. */
 const BUCKET = (column: string) => `to_char(date_trunc($5::text, ${column} AT TIME ZONE $6::text), 'YYYY-MM-DD"T"HH24:MI')`;
 
@@ -196,6 +218,38 @@ export async function loadOverviewBoard(pool: pg.Pool, projectId: string, window
            COUNT(*) FILTER (WHERE c.unit_scale)::int AS count,
            COUNT(*)::int AS all_count
     FROM scored s JOIN checks c ON c.name = s.name`;
+  // Cost per model comes from the same charges the Overview's spend total
+  // counts, so the table adds up to that total whatever the model bills.
+  const chargeParams: unknown[] = [projectId];
+  const chargeClauses = scopeClauses({ from: window.from, to: window.to, environment: window.environment ?? undefined }, chargeParams, "c");
+  const eventFilter = `e.project_id = $1 AND COALESCE(e.event_type, 'call') = 'call'
+    AND e.timestamp >= $2 AND e.timestamp < $3
+    AND ($4::text IS NULL OR COALESCE(NULLIF(e.context->>'environment', ''), '(unassigned)') = $4)`;
+  const unitTotals = `SELECT u.key AS unit, SUM(u.value::float) AS total FROM events e ${UNIT_ROWS("e")} AND ${eventFilter} GROUP BY 1`;
+  const [modelCosts, modelUnits, unitsNow, unitsBefore, ownerUnits] = await Promise.all([
+    pool.query(
+      `${chargesCte()}
+       SELECT c.provider, COALESCE(c.model, 'unknown') AS model, COUNT(*)::int AS charges,
+              SUM(c.cost_usd) FILTER (WHERE c.cost_usd IS NOT NULL) AS cost,
+              COUNT(*) FILTER (WHERE c.cost_usd IS NULL)::int AS unpriced
+       FROM charges c WHERE ${chargeClauses.join(" AND ")}
+       GROUP BY 1, 2`,
+      chargeParams,
+    ),
+    pool.query(`SELECT e.provider, COALESCE(e.model, e.request_model, 'unknown') AS model, u.key AS unit, SUM(u.value::float) AS total
+       FROM events e ${UNIT_ROWS("e")} AND ${eventFilter} GROUP BY 1, 2, 3`, params),
+    pool.query(unitTotals, params),
+    pool.query(unitTotals, previousParams),
+    pool.query(
+      `WITH ${RUNS_CTE}
+       SELECT CASE WHEN r.root_kind = 'agent' THEN 'agents' ELSE 'workflows' END AS kind,
+              CASE WHEN r.root_kind = 'agent' THEN r.root_name ELSE ${WORKFLOW_NAME.replaceAll("root_kind", "r.root_kind").replaceAll("root_name", "r.root_name").replaceAll("group_name", "r.group_name").replaceAll("trace_name", "r.trace_name")} END AS name,
+              u.key AS unit, SUM(u.value::float) AS total
+       FROM run_rows r JOIN calls c ON c.trace_id = r.trace_id ${UNIT_ROWS("c")}
+       GROUP BY 1, 2, 3`,
+      params,
+    ),
+  ]);
   const [runsNow, runsBefore, scoresNow, scoresBefore, checks, scoreSeries, buckets, models, agents, volume, tools, latency] = await Promise.all([
     pool.query(runCounts, params),
     pool.query(runCounts, previousParams),
@@ -220,15 +274,12 @@ export async function loadOverviewBoard(pool: pg.Pool, projectId: string, window
     pool.query(
       `SELECT e.provider, COALESCE(e.model, e.request_model, 'unknown') AS model, COUNT(*)::int AS calls,
               SUM(e.input_tokens)::bigint AS input, SUM(e.output_tokens)::bigint AS output,
-              SUM(e.cache_read_tokens)::bigint AS cache_read, SUM(e.cache_creation_tokens)::bigint AS cache_write,
-              SUM(e.cost_usd) AS cost, COUNT(*) FILTER (WHERE e.cost_usd IS NULL)::int AS unpriced
+              SUM(e.cache_read_tokens)::bigint AS cache_read, SUM(e.cache_creation_tokens)::bigint AS cache_write
        FROM events e
        WHERE e.project_id = $1 AND COALESCE(e.event_type, 'call') = 'call'
          AND e.timestamp >= $2 AND e.timestamp < $3
          AND ($4::text IS NULL OR COALESCE(NULLIF(e.context->>'environment', ''), '(unassigned)') = $4)
-       GROUP BY 1, 2
-       ORDER BY SUM(e.cost_usd) DESC NULLS LAST, COUNT(*) DESC
-       LIMIT 20`,
+       GROUP BY 1, 2`,
       params,
     ),
     pool.query(
@@ -287,6 +338,20 @@ export async function loadOverviewBoard(pool: pg.Pool, projectId: string, window
     ),
   ]);
 
+  const workflowUsage = await pool.query(
+    `WITH ${RUNS_CTE}
+     SELECT ${WORKFLOW_NAME.replaceAll("root_kind", "r.root_kind").replaceAll("root_name", "r.root_name").replaceAll("group_name", "r.group_name").replaceAll("trace_name", "r.trace_name")} AS name,
+            COUNT(DISTINCT r.trace_id)::int AS runs,
+            COALESCE(SUM(c.input_tokens), 0)::bigint AS input, COALESCE(SUM(c.output_tokens), 0)::bigint AS output,
+            SUM(c.cost_usd) AS cost, COUNT(*) FILTER (WHERE c.cost_usd IS NULL AND NOT c.call_failed)::int AS unpriced
+     FROM run_rows r JOIN calls c ON c.trace_id = r.trace_id
+     WHERE r.root_kind IS DISTINCT FROM 'agent'
+     GROUP BY 1
+     ORDER BY SUM(c.cost_usd) DESC NULLS LAST, COUNT(*) DESC
+     LIMIT 20`,
+    params,
+  );
+  const ownerUnitMap = unitsByKey(ownerUnits.rows, (unit) => `${String(unit.kind)}\u0000${String(unit.name)}`);
   const counts = (row: Record<string, unknown> | undefined) => ({ runs: number(row?.runs) ?? 0, agentRuns: number(row?.agent_runs) ?? 0 });
   const scoreTotal = (row: Record<string, unknown> | undefined) => ({ avg: number(row?.avg), count: number(row?.count) ?? 0, allCount: number(row?.all_count) ?? 0 });
   const series = new Map<string, Array<{ bucket: string; avg: number | null; count: number }>>();
@@ -321,14 +386,19 @@ export async function loadOverviewBoard(pool: pg.Pool, projectId: string, window
         unitScale: Boolean(row.unit_scale), series: series.get(String(row.name)) ?? [],
       })),
     },
-    models: (models.rows as Array<Record<string, unknown>>).map((row) => ({
-      provider: row.provider == null ? null : String(row.provider), model: String(row.model), calls: number(row.calls) ?? 0,
-      input: number(row.input), output: number(row.output), cacheRead: number(row.cache_read), cacheWrite: number(row.cache_write),
-      cost: number(row.cost), unpriced: number(row.unpriced) ?? 0,
-    })),
+    // Every model with calls or charges in the period, whatever it bills:
+    // tokens, characters, audio seconds, images or searches.
+    models: boardModels(models.rows, modelCosts.rows, modelUnits.rows),
+    units: { current: unitsByKey(unitsNow.rows, () => "").get("") ?? {}, previous: unitsByKey(unitsBefore.rows, () => "").get("") ?? {} },
     agents: (agents.rows as Array<Record<string, unknown>>).map((row) => ({
       name: String(row.name), runs: number(row.runs) ?? 0, input: number(row.input) ?? 0, output: number(row.output) ?? 0,
       cost: number(row.cost), unpriced: number(row.unpriced) ?? 0,
+      units: ownerUnitMap.get(`agents\u0000${String(row.name)}`) ?? {},
+    })),
+    workflows: (workflowUsage.rows as Array<Record<string, unknown>>).map((row) => ({
+      name: String(row.name), runs: number(row.runs) ?? 0, input: number(row.input) ?? 0, output: number(row.output) ?? 0,
+      cost: number(row.cost), unpriced: number(row.unpriced) ?? 0,
+      units: ownerUnitMap.get(`workflows\u0000${String(row.name)}`) ?? {},
     })),
     volume: {
       agents: volumeKind("agents"),
@@ -347,6 +417,34 @@ function modelKey(row: Record<string, unknown>): string {
 /** A model row's savings: null when it had no cache hits or one couldn't be checked. */
 function savingsFor(savings: { byKey: Map<string, number | null> }, row: Record<string, unknown>): number | null {
   return savings.byKey.get(modelKey(row)) ?? null;
+}
+
+/** Board model rows: charges give cost, calls give tokens and billed units. Sorted by cost. */
+function boardModels(tokenRows: Array<Record<string, unknown>>, costRows: Array<Record<string, unknown>>, unitRows: Array<Record<string, unknown>>) {
+  const key = (row: Record<string, unknown>) => `${row.provider == null ? "" : String(row.provider)}\u0000${String(row.model)}`;
+  const units = unitsByKey(unitRows, key);
+  const rows = new Map<string, { provider: string | null; model: string; calls: number; input: number | null; output: number | null; cacheRead: number | null; cacheWrite: number | null; cost: number | null; unpriced: number; units: Units }>();
+  const row = (source: Record<string, unknown>) => {
+    const id = key(source);
+    const existing = rows.get(id) ?? { provider: source.provider == null ? null : String(source.provider), model: String(source.model), calls: 0, input: null, output: null, cacheRead: null, cacheWrite: null, cost: null, unpriced: 0, units: units.get(id) ?? {} };
+    rows.set(id, existing);
+    return existing;
+  };
+  for (const source of tokenRows) {
+    const target = row(source);
+    target.calls = number(source.calls) ?? 0;
+    target.input = number(source.input);
+    target.output = number(source.output);
+    target.cacheRead = number(source.cache_read);
+    target.cacheWrite = number(source.cache_write);
+  }
+  for (const source of costRows) {
+    const target = row(source);
+    target.cost = number(source.cost);
+    target.unpriced = number(source.unpriced) ?? 0;
+    if (target.calls === 0) target.calls = number(source.charges) ?? 0;
+  }
+  return [...rows.values()].sort((a, b) => (b.cost ?? -1) - (a.cost ?? -1) || b.calls - a.calls || a.model.localeCompare(b.model));
 }
 
 function fail(res: Response, label: string, error: unknown): void {
@@ -399,7 +497,7 @@ export function createInsightsRouter(pool: pg.Pool): Router {
     const params = [req.params["projectId"], window.from, window.to, window.environment, req.params["name"]];
     const scoped = `WITH ${RUNS_CTE}, agent_runs AS (SELECT * FROM run_rows WHERE root_kind = 'agent' AND root_name = $5)`;
     try {
-      const [summary, runs, tools, models, subagents, cacheHits] = await Promise.all([
+      const [summary, runs, tools, models, subagents, cacheHits, modelUnits] = await Promise.all([
         pool.query(`${scoped} SELECT $5::text AS name, ${GROUP_COLUMNS} FROM agent_runs`, params),
         pool.query(
           `${scoped}
@@ -444,7 +542,15 @@ export function createInsightsRouter(pool: pg.Pool): Router {
            LIMIT ${SAVINGS_ROW_LIMIT + 1}`,
           params,
         ),
+        pool.query(
+          `${scoped}
+           SELECT COALESCE(cl.model, 'unknown') AS model, cl.provider, u.key AS unit, SUM(u.value::float) AS total
+           FROM calls cl ${UNIT_ROWS("cl")} AND cl.trace_id IN (SELECT trace_id FROM agent_runs)
+           GROUP BY 1, 2, 3`,
+          params,
+        ),
       ]);
+      const unitsByModel = unitsByKey(modelUnits.rows, modelKey);
       const savings = sumCacheSavings(cacheHits.rows, modelKey);
       const agent = groupRow(summary.rows[0] ?? { name: req.params["name"] });
       (agent.usage as TokenUsage).cacheSavings = savings.total;
@@ -460,6 +566,7 @@ export function createInsightsRouter(pool: pg.Pool): Router {
         models: models.rows.map((row) => ({
           model: row.model, provider: row.provider, calls: number(row.calls) ?? 0, cost: number(row.cost),
           usage: { ...usageFrom(row), cacheSavings: savingsFor(savings, row) },
+          units: unitsByModel.get(modelKey(row)) ?? {},
         })),
         subagents: subagents.rows.map((row) => ({ name: row.name, runs: number(row.runs) ?? 0 })),
       });
@@ -505,9 +612,18 @@ export function createInsightsRouter(pool: pg.Pool): Router {
         params,
       );
       const savings = sumCacheSavings(cacheHits.rows, modelKey);
+      const modelUnits = await pool.query(
+        `WITH ${RUNS_CTE}, ${scopedRuns}
+         SELECT COALESCE(c.model, 'unknown') AS model, c.provider, u.key AS unit, SUM(u.value::float) AS total
+         FROM calls c ${UNIT_ROWS("c")} AND c.trace_id IN (SELECT trace_id FROM scoped)
+         GROUP BY 1, 2, 3`,
+        params,
+      );
+      const unitsByModel = unitsByKey(modelUnits.rows, modelKey);
       res.json({ models: result.rows.map((row) => ({
         model: row.model, provider: row.provider, calls: number(row.calls) ?? 0, runs: number(row.runs) ?? 0, cost: number(row.cost), topOwners: row.top_owners ?? [],
         usage: { ...usageFrom(row), cacheSavings: savingsFor(savings, row) },
+        units: unitsByModel.get(modelKey(row)) ?? {},
       })) });
     } catch (error) { fail(res, "Models", error); }
   });

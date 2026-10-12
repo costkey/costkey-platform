@@ -1028,7 +1028,7 @@ export interface AgentDetail {
   agent: RunGroup;
   runs: AgentRun[];
   tools: Array<{ name: string; calls: number; avgMs: number | null; failed: number; cost: number | null }>;
-  models: Array<{ model: string; provider: string; calls: number; cost: number | null; usage?: TokenUsage }>;
+  models: Array<{ model: string; provider: string; calls: number; cost: number | null; usage?: TokenUsage; units?: Record<string, number> }>;
   subagents: Array<{ name: string; runs: number }>;
 }
 
@@ -1075,6 +1075,8 @@ export interface TabModel {
   cost: number | null;
   topOwners: string[];
   usage?: TokenUsage;
+  /** Characters, audio seconds, images or searches, for models that bill them. */
+  units?: Record<string, number>;
 }
 
 export function getTabModels(projectId: string, kind: "agent" | "workflow", scope: InsightScope): Promise<{ models: TabModel[] }> {
@@ -1120,6 +1122,8 @@ export interface OverviewBoardLatency {
 
 export interface OverviewBoardCount { name: string; runs: number; calls: number }
 
+export interface OverviewBoardUsage { name: string; runs: number; input: number; output: number; cost: number | null; unpriced: number; units?: Record<string, number> }
+
 /** The Overview board: runs, scores, model tokens, agent usage, volume and latency for one window and the one before it. */
 export interface OverviewBoard {
   window: { from: string; to: string; environment: string | null; timezone: string; bucket: BoardBucketUnit };
@@ -1131,8 +1135,12 @@ export interface OverviewBoard {
     previous: { avg: number | null; count: number; allCount: number };
     checks: Array<{ name: string; avg: number | null; count: number; runs: number; unitScale: boolean; series: Array<{ bucket: string; avg: number | null; count: number }> }>;
   };
-  models: Array<{ provider: string | null; model: string; calls: number; input: number | null; output: number | null; cacheRead: number | null; cacheWrite: number | null; cost: number | null; unpriced: number }>;
-  agents: Array<{ name: string; runs: number; input: number; output: number; cost: number | null; unpriced: number }>;
+  /** Every model with calls in the period, whatever it bills; `units` holds characters, audio seconds, images or searches. */
+  models: Array<{ provider: string | null; model: string; calls: number; input: number | null; output: number | null; cacheRead: number | null; cacheWrite: number | null; cost: number | null; unpriced: number; units?: Record<string, number> }>;
+  /** Billed units other than tokens, for this period and the one before. */
+  units?: { current: Record<string, number>; previous: Record<string, number> };
+  agents: OverviewBoardUsage[];
+  workflows?: OverviewBoardUsage[];
   volume: { agents: OverviewBoardCount[]; workflows: OverviewBoardCount[]; tools: OverviewBoardCount[] };
   latency: { agents: OverviewBoardLatency; workflows: OverviewBoardLatency; tools: OverviewBoardLatency };
 }

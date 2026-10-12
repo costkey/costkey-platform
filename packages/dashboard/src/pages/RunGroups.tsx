@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useRef } from "react";
 import { ArrowLeft, ArrowRight, ChevronDown, ChevronRight } from "lucide-react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
-import { getAgentDetail, getWorkflowDetail, getAgents, getBudgetPolicies, getTabModels, getWorkflows, type AgentDetail, type AgentRun, type BudgetPolicy, type InsightScope, type RunGroup, type TokenUsage } from "../api";
+import { getAgentDetail, getWorkflowDetail, getAgents, getTabModels, getWorkflows, type AgentDetail, type AgentRun, type InsightScope, type RunGroup, type TokenUsage } from "../api";
 import { currentRouterPath } from "../basePath";
 import { RunFlow, runModel, RunStatusPill, RunSummaryStrip, useRunDetail } from "../components/RunFlow";
 import { LiveStatus } from "../components/LiveStatus";
@@ -10,12 +10,12 @@ import { modelHref, ownerHref, toolHref, userHref } from "../components/links";
 import { useNewIds, usePointerHold } from "../hooks/useLiveQuery";
 import { billedUnitsText, formatHitRate, formatTokenCount } from "../components/tokenUsage";
 import { EmptyPanel, LoadingRows, MetricCard, PageHeader, Panel, StatusPill } from "../components/ConsolePrimitives";
-import { formatDateTime, formatReportedAmount, periodDates, type ReportingFx } from "../components/consoleFormatters";
+import { formatDateTime, formatReportedAmount, type ReportingFx } from "../components/consoleFormatters";
 import { useAuth } from "../contexts/useAuth";
 import { formatDuration } from "../utils";
 import { useInsightScope, useScopedLoad } from "./useInsightScope";
 import { ProviderLabel } from "../components/ProviderLogo";
-import { ScopeBudgetCard } from "../components/ScopeBudget";
+import { GroupBudgets, ScopeBudgetCard } from "../components/ScopeBudget";
 
 function money(value: number | null | undefined, currency: string, fx?: ReportingFx | null): string {
   return value == null ? "Unpriced" : formatReportedAmount(value, currency, fx);
@@ -58,49 +58,12 @@ function GroupTable({ groups, label, kind, showShape, currency, fx }: { groups: 
 }
 
 type GroupKind = "agent" | "workflow";
-type View = "runs" | "models" | "budgets" | "forecast";
+type View = "runs" | "models" | "budgets";
 const VIEWS: Array<{ id: View; label: string }> = [
   { id: "runs", label: "Runs" },
   { id: "models", label: "By model" },
   { id: "budgets", label: "Budgets" },
-  { id: "forecast", label: "Forecast" },
 ];
-
-function scopeValues(policy: BudgetPolicy, key: GroupKind): string[] {
-  const value = policy.scope?.[key];
-  return value == null ? [] : Array.isArray(value) ? value : [value];
-}
-
-function windowWords(window: string): string {
-  return ({ calendar_month: "per month", calendar_day: "per day", calendar_minute: "per minute", per_trace: "per run", per_execution: "per batch", per_call: "per call" } as Record<string, string>)[window] ?? window;
-}
-
-function policyAmount(policy: BudgetPolicy, value: number | null | undefined, currency: string, fx?: ReportingFx | null): string {
-  if (value == null) return "—";
-  return policy.unit === "money" ? formatReportedAmount(value, policy.currency ?? currency, fx) : `${value.toLocaleString()} ${policy.unit}`;
-}
-
-function BudgetsView({ kind, projectId, currency, fx }: { kind: GroupKind; projectId: string; currency: string; fx?: ReportingFx | null }) {
-  const { data, error, loading } = useScopedLoad(`budgets|${projectId}`, () => getBudgetPolicies(projectId));
-  const policies = (data?.policies ?? []).filter((policy) => policy.status !== "archived" && scopeValues(policy, kind).length > 0);
-  if (error && !data) return <EmptyPanel title="Couldn’t load budgets" body={error} />;
-  if (loading && !data) return <LoadingRows count={4} columns={5} />;
-  if (policies.length === 0) return <EmptyPanel title={kind === "agent" ? "No agent budgets" : "No workflow budgets"} action={<Link className="ck-button ck-button-primary" to={`/policy-edit?scopeDimension=${kind}`}>New budget</Link>} />;
-  return <div className="ck-table-wrap"><table className="ck-table">
-    <thead><tr><th>Budget</th><th>Covers</th><th className="numeric">Limit</th><th className="numeric">Used</th><th>When reached</th></tr></thead>
-    <tbody>{policies.map((policy) => {
-      const used = policy.usage?.observed ?? null;
-      const ratio = used != null && policy.allowance > 0 ? used / policy.allowance : null;
-      return <tr key={policy.id}>
-        <td className="primary-cell"><Link className="ck-table-link" to={`/policy?id=${encodeURIComponent(policy.id)}&project=${encodeURIComponent(projectId)}`}>{policy.name || "Budget"}</Link>{policy.status === "paused" && <small className="ck-table-sub">Paused</small>}</td>
-        <td>{scopeValues(policy, kind).join(", ")}</td>
-        <td className="numeric">{policyAmount(policy, policy.allowance, currency, fx)}<small className="ck-table-sub">{windowWords(policy.window)}</small></td>
-        <td className="numeric">{policyAmount(policy, used, currency, fx)}{ratio != null && <small className="ck-table-sub">{Math.round(ratio * 100)}%</small>}</td>
-        <td>{policy.mode === "enforce" ? <StatusPill tone="critical" icon="pause">Stop calls</StatusPill> : <StatusPill tone="neutral" icon="bell">Alert</StatusPill>}</td>
-      </tr>;
-    })}</tbody>
-  </table></div>;
-}
 
 function ModelsView({ kind, projectId, scope, scopeKey, currency, fx }: { kind: GroupKind; projectId: string; scope: InsightScope; scopeKey: string; currency: string; fx?: ReportingFx | null }) {
   const { data, error, loading } = useScopedLoad(`models|${kind}|${scopeKey}`, () => getTabModels(projectId, kind, scope));
@@ -126,43 +89,8 @@ function ModelsView({ kind, projectId, scope, scopeKey, currency, fx }: { kind: 
   </table></div>;
 }
 
-/** Month to date and where each one lands at this pace, against its monthly budget. */
-function ForecastView({ kind, projectId, currency, fx, timezone }: { kind: GroupKind; projectId: string; currency: string; fx?: ReportingFx | null; timezone?: string }) {
-  const month = periodDates("mtd", timezone);
-  const key = `forecast|${kind}|${projectId}|${month.from}`;
-  const { data, error, loading } = useScopedLoad(key, () => Promise.all([
-    kind === "agent" ? getAgents(projectId, month).then((result) => result.agents) : getWorkflows(projectId, month).then((result) => result.workflows),
-    getBudgetPolicies(projectId).then((result) => result.policies).catch(() => [] as BudgetPolicy[]),
-  ]));
-  if (error && !data) return <EmptyPanel title="Couldn’t load the forecast" body={error} />;
-  if (loading && !data) return <LoadingRows count={5} columns={4} />;
-  const [groups, policies] = data ?? [[], []];
-  const now = new Date();
-  const start = new Date(month.from).getTime();
-  const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-  const elapsedDays = Math.max(1, (now.getTime() - start) / (24 * 60 * 60 * 1000));
-  const budgetFor = (name: string) => policies.find((policy) => policy.status === "active" && policy.unit === "money" && policy.window === "calendar_month" && scopeValues(policy, kind).length === 1 && scopeValues(policy, kind)[0] === name);
-  if (groups.length === 0) return <EmptyPanel title="No spend this month yet" />;
-  return <div className="ck-table-wrap"><table className="ck-table">
-    <thead><tr><th>{kind === "agent" ? "Agent" : "Workflow"}</th><th className="numeric">Month to date</th><th className="numeric">Month-end at this pace</th><th className="numeric">Monthly budget</th><th /></tr></thead>
-    <tbody>{groups.map((group) => {
-      const projected = group.cost == null ? null : group.cost / elapsedDays * daysInMonth;
-      const budget = budgetFor(group.name);
-      const over = budget && projected != null && projected > budget.allowance;
-      return <tr key={group.name}>
-        <td className="primary-cell"><Link className="ck-table-link" to={ownerHref(kind, group.name)}>{group.name}</Link></td>
-        <td className="numeric">{money(group.cost, currency, fx)}</td>
-        <td className="numeric">{money(projected, currency, fx)}</td>
-        <td className="numeric">{budget ? policyAmount(budget, budget.allowance, currency, fx) : <Link className="ck-table-link" to={`/policy-edit?scopeDimension=${kind}&scopeValue=${encodeURIComponent(group.name)}`}>Set budget</Link>}</td>
-        <td>{budget && (over ? <StatusPill tone="warn">Over budget</StatusPill> : <StatusPill tone="good">Within budget</StatusPill>)}</td>
-      </tr>;
-    })}</tbody>
-  </table></div>;
-}
-
 function RunGroupsPage({ kind }: { kind: GroupKind }) {
   const { projectId, scope, scopeKey, currency, fx, toolbar } = useInsightScope();
-  const { workspaceSettings, org } = useAuth();
   const [params, setParams] = useSearchParams();
   const view = (VIEWS.find((item) => item.id === params.get("view"))?.id ?? "runs") as View;
   const { data, error, loading, status: liveStatus, updatedAt, refresh } = useScopedLoad(projectId ? `${kind}|${scopeKey}` : null, () => kind === "agent"
@@ -171,7 +99,7 @@ function RunGroupsPage({ kind }: { kind: GroupKind }) {
   const groups = data ?? [];
   const title = kind === "agent" ? "Agents" : "Workflows";
   const setView = (next: View) => setParams((current) => { if (next === "runs") current.delete("view"); else current.set("view", next); return current; });
-  const headerAction = view === "budgets" && projectId ? <Link className="ck-button ck-button-primary" to={`/policy-edit?scopeDimension=${kind}`}>New budget</Link> : view === "forecast" ? undefined : <><LiveStatus status={liveStatus} updatedAt={updatedAt} onRefresh={refresh} />{toolbar}</>;
+  const headerAction = view === "budgets" ? undefined : <><LiveStatus status={liveStatus} updatedAt={updatedAt} onRefresh={refresh} />{toolbar}</>;
   return <div className="ck-main-inner">
     <PageHeader title={title} actions={headerAction} />
     <div className="ck-tabs ck-page-tabs" role="tablist" aria-label={`${title} views`}>{VIEWS.map((item) => <button key={item.id} className={`ck-tab ${view === item.id ? "active" : ""}`} role="tab" aria-selected={view === item.id} type="button" onClick={() => setView(item.id)}>{item.label}</button>)}</div>
@@ -183,8 +111,7 @@ function RunGroupsPage({ kind }: { kind: GroupKind }) {
     </div>}
     {view !== "runs" && projectId && <Panel key={view} className="ck-view">
       {view === "models" && <ModelsView kind={kind} projectId={projectId} scope={scope} scopeKey={scopeKey} currency={currency} fx={fx} />}
-      {view === "budgets" && <BudgetsView kind={kind} projectId={projectId} currency={currency} fx={fx} />}
-      {view === "forecast" && <ForecastView kind={kind} projectId={projectId} currency={currency} fx={fx} timezone={workspaceSettings?.timezone ?? org?.timezone ?? undefined} />}
+      {view === "budgets" && <GroupBudgets kind={kind} projectId={projectId} currency={currency} fx={fx} />}
     </Panel>}
     {view === "budgets" && <p className="ck-table-note"><Link className="ck-table-link" to="/alerting">Where alerts go</Link></p>}
   </div>;

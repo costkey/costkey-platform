@@ -1,5 +1,5 @@
 import { type ReactNode, useEffect, useState } from "react";
-import { CircleAlert, Copy } from "lucide-react";
+import { CircleAlert } from "lucide-react";
 import { Link } from "react-router-dom";
 import { getEvent, getTrace, type EventRow, type Trace, type TraceEvent, type TraceSpan, type UsageComponent } from "../api";
 import { EmptyPanel, LoadingRows, Panel, StatusPill } from "./ConsolePrimitives";
@@ -14,6 +14,7 @@ import { ProviderLabel } from "./ProviderLogo";
 import { callCostText, callFailure, isNoCharge } from "./callOutcome";
 import { runCallSites, runLabel, siteLocation } from "./runCallSites";
 import { frameViews, shortenPath, type StackFrame } from "./stackFrames";
+import { CallContent } from "./CallContent";
 import { billedUnitsText, cachedNote, cacheWriteText, callUsage, formatHitRate, formatTokenCount, hasTokens, reasoningNote, sumUnits, sumUsage, type CallUsage } from "./tokenUsage";
 
 /**
@@ -298,13 +299,13 @@ export function CallInspector({ projectId, event, role, currency, fx, initialTab
   const cost = detail?.cost_usd ?? event.cost_usd;
   const failure = callFailure(event);
 
-  return <Panel className="ck-inspector" title="Call">
+  return <Panel className="ck-inspector ck-call-inspector" title="Call">
     <div className="ck-tabs" role="tablist" aria-label="Call detail"><button className={`ck-tab ${tab === "content" ? "active" : ""}`} role="tab" aria-selected={tab === "content"} type="button" onClick={() => setTab("content")}>Content</button><button className={`ck-tab ${tab === "cost" ? "active" : ""}`} role="tab" aria-selected={tab === "cost"} type="button" onClick={() => setTab("cost")}>Cost &amp; usage</button><button className={`ck-tab ${tab === "source" ? "active" : ""}`} role="tab" aria-selected={tab === "source"} type="button" onClick={() => setTab("source")}>Source</button><button className={`ck-tab ${tab === "context" ? "active" : ""}`} role="tab" aria-selected={tab === "context"} type="button" onClick={() => setTab("context")}>Context</button></div>
       <div className="ck-inspector-body">
       <div className="ck-inspector-call"><div><div className="ck-inspector-heading">{eventDisplayName({ ...event, bl_function: detail?.bl_function ?? event.bl_function })}</div><div className="ck-inspector-subheading"><ProviderLabel provider={event.provider} size={13} /> · {event.model || "Model not recorded"} · {formatAbsoluteDate(event.timestamp)}</div></div><div className="ck-inspector-outcome">{failure && <StatusPill tone="critical">{failure.label}</StatusPill>}<strong className="ck-inspector-cost">{callCostText({ ...event, cost_usd: cost }, (value) => formatReportedAmount(value, currency, fx))}</strong></div></div>{failure?.reason && <div className="ck-inspector-failure" role="status">{failure.reason}</div>}
       {loading && <div style={{ marginTop: 18 }}><LoadingRows count={3} columns={2} /></div>}
       {detailError && <div className="ck-alert" role="alert" style={{ marginTop: 16 }}><CircleAlert size={14} /><div><strong>Couldn’t load this call’s details.</strong> Its cost and timing are still accurate.</div></div>}
-      {!loading && tab === "content" && <ContentTab canReadContent={canReadContent} input={content} output={output} contentStatus={prototypeVariant === "expired" ? "expired" : prototypeVariant === "uncaptured" ? "not_available" : prototypeVariant === "redacted" ? "redacted" : prototypeVariant === "long-content" ? "too_long" : prototypeVariant === "restricted" ? "restricted" : detail?.content_status ?? event.content_status} />}
+      {!loading && tab === "content" && <ContentTab canReadContent={canReadContent} provider={event.provider} model={event.model} canManageCapture={role === "owner" || role === "admin"} input={content} output={output} contentStatus={prototypeVariant === "expired" ? "expired" : prototypeVariant === "uncaptured" ? "not_available" : prototypeVariant === "redacted" ? "redacted" : prototypeVariant === "long-content" ? "too_long" : prototypeVariant === "restricted" ? "restricted" : detail?.content_status ?? event.content_status} />}
       {!loading && tab === "cost" && <CostTab event={event} detail={detail} cost={cost} currency={currency} fx={fx} />}
       {!loading && tab === "source" && <SourceTab detail={prototypeVariant === "missing-source" ? null : detail} frames={prototypeVariant === "missing-source" ? [] : frames} canReadContent={canReadContent} />}
       {!loading && tab === "context" && <ContextTab context={context} />}
@@ -312,26 +313,11 @@ export function CallInspector({ projectId, event, role, currency, fx, initialTab
   </Panel>;
 }
 
-function ContentTab({ canReadContent, input, output, contentStatus }: { canReadContent: boolean; input: unknown; output: unknown; contentStatus?: string | null }) {
-  if (!canReadContent || contentStatus === "restricted") return <div className="ck-inspector-section"><div className="ck-inspector-restricted"><strong>Prompts and responses are hidden for your role.</strong><br />Viewers see cost and usage. Ask an Owner or Admin if you need more access.</div></div>;
-  if (!input && !output) {
-    const message = contentStatus === "metadata_only"
-      ? { title: "Prompts aren’t captured", body: "This project records cost and usage only. You can turn on text capture in Settings." }
-      : contentStatus === "redacted"
-        ? { title: "Content removed", body: "This call’s prompt and response were deleted for privacy. Its cost and usage remain." }
-        : contentStatus === "expired"
-          ? { title: "Content expired", body: "Prompts are kept for a limited time and this one has expired. Its cost and usage remain." }
-            : contentStatus === "not_available"
-              ? { title: "No content for this call", body: "The provider didn’t return a prompt or response we could capture." }
-              : contentStatus === "too_long"
-                ? { title: "Too long to show here", body: "The content is stored, but it’s too large to display inline." }
-            : { title: "No content for this call", body: "There’s no prompt or response stored for this call. Its cost and usage are still here." };
-    return <div className="ck-inspector-section"><EmptyPanel title={message.title} body={message.body} /></div>;
-  }
-  return <><InspectorBlock title="Input" value={jsonText(input) || "Not captured"} /><InspectorBlock title="Output" value={jsonText(output) || "Not captured"} /></>;
+function ContentTab({ canReadContent, input, output, contentStatus, provider, model, canManageCapture }: { canReadContent: boolean; input: unknown; output: unknown; contentStatus?: string | null; provider?: string | null; model?: string | null; canManageCapture: boolean }) {
+  // System prompt, conversation, configuration and output, read per provider shape.
+  return <CallContent input={input} output={output} provider={provider} model={model} contentStatus={contentStatus} canReadContent={canReadContent} canManageCapture={canManageCapture} />;
 }
 
-function InspectorBlock({ title, value }: { title: string; value: string }) { return <div className="ck-inspector-section"><div className="ck-inspector-section-title"><span>{title}</span><button className="ck-button ck-button-quiet" style={{ minHeight: 0, padding: 0 }} type="button" onClick={() => void navigator.clipboard.writeText(value)}><Copy size={11} /> Copy</button></div><pre className="ck-inspector-pre">{value}</pre></div>; }
 
 function CostTab({ event, detail, cost, currency, fx }: { event: TraceEvent; detail: EventRow | null; cost: number | null | undefined; currency: string; fx?: ReportingFx | null }) {
   const usedModel = event.model || detail?.model || null;

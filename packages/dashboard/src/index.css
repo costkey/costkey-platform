@@ -4721,3 +4721,8 @@ textarea[aria-invalid="true"] {
   .ck-ingest-status { justify-content: center; padding: 8px 0; }
   .ck-ingest-status span { display: none; }
 }
+
+/* The call inspector keeps a sensible height and scrolls inside, so a long prompt never makes the page endless. */
+@media (min-width: 901px) {
+  .ck-call-inspector .ck-inspector-body { max-height: min(78vh, 900px); overflow-y: auto; overscroll-behavior: contain; }
+}

@@ -3,7 +3,13 @@ import assert from "node:assert/strict";
 import pg from "pg";
 import { randomBytes } from "node:crypto";
 import { initDatabase } from "../db.js";
-import { boardBucket, GROUP_COLUMNS, loadOverviewBoard, previousWindow, RUNS_CTE } from "../insights-api.js";
+import { ensurePlatformSchema } from "../platform-storage.js";
+import express from "express";
+import { boardBucket, createInsightsRouter, GROUP_COLUMNS, loadOverviewBoard, previousWindow, RUNS_CTE } from "../insights-api.js";
+import { getPriceCatalog, PriceCatalog, setPriceCatalog } from "../price-catalog/catalog.js";
+import { costFromRates } from "../price-catalog/compute.js";
+import { computeCost } from "../pricing.js";
+import { callCacheSavings, sumCacheSavings, type TokenUsage } from "../token-usage.js";
 
 const connectionString = process.env["ACCOUNTING_TEST_DATABASE_URL"];
 
@@ -156,5 +162,140 @@ test("the overview board reads runs, scores, model tokens, agents, tools and lat
     await pool.query("DELETE FROM projects WHERE id = $1", [projectId]).catch(() => undefined);
     await pool.query("DELETE FROM orgs WHERE id = $1", [orgId]).catch(() => undefined);
     await pool.end();
+  }
+});
+
+test("agents and models report cache reads, hit rate, reasoning and checked cache savings", { skip: !connectionString }, async () => {
+  const pool = new pg.Pool({ connectionString });
+  const suffix = randomBytes(6).toString("hex");
+  const orgId = `org_cache_${suffix}`;
+  const projectId = `project_cache_${suffix}`;
+  const previousCatalog = getPriceCatalog();
+  const gpt = { id: `price_gpt_${suffix}`, source: "litellm" as const, provider: "openai", model: "gpt-4o", sourceKey: "gpt-4o", mode: "chat", effectiveFrom: "2020-01-01T00:00:00.000Z", effectiveTo: null, rates: { input: 2.5e-6, output: 1e-5, cacheRead: 1.25e-6 } };
+  setPriceCatalog(new PriceCatalog([gpt]));
+  const app = express();
+  app.use((req, _res, next) => { (req as any).user = { id: `owner-${suffix}`, orgId, role: "owner" }; next(); });
+  app.use(createInsightsRouter(pool));
+  const server = await new Promise<ReturnType<typeof app.listen>>((resolve) => { const listening = app.listen(0, "127.0.0.1", () => resolve(listening)); });
+  try {
+    await initDatabase();
+    await ensurePlatformSchema(pool);
+    await pool.query("INSERT INTO orgs(id,name,slug) VALUES ($1,'Cache',$2)", [orgId, `cache-${suffix}`]);
+    await pool.query("INSERT INTO projects(id,name,org_id,auth_key) VALUES ($1,'Cache',$2,$3)", [projectId, orgId, `key_${suffix}`]);
+    const at = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
+    const span = (id: string, trace: string) => pool.query(
+      `INSERT INTO spans (id, project_id, trace_id, parent_span_id, kind, name, status, started_at, ended_at)
+       VALUES ($1,$2,$3,NULL,'agent','dash','ok',$4,$5)`,
+      [id, projectId, trace, at(12), at(8)],
+    );
+    const call = (id: string, trace: string, provider: string, model: string, tokens: { input: number; output: number; cacheRead?: number | null; cacheWrite?: number | null; reasoning?: number | null }, price: { cost: number | null; basis: string; source: string | null; pricingId?: string | null }) => pool.query(
+      `INSERT INTO events (id, project_id, timestamp, provider, model, cost_usd, cost_basis, cost_source, pricing_id, duration_ms, status_code,
+                           trace_id, trace_name, span_id, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, reasoning_tokens, context)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,500,200,$10,'dash',$11,$12,$13,$14,$15,$16,'{}'::jsonb)`,
+      [id, projectId, at(10), provider, model, price.cost, price.basis, price.source, price.pricingId ?? null, trace, `a_${trace}`,
+        tokens.input, tokens.output, tokens.cacheRead ?? null, tokens.cacheWrite ?? null, tokens.reasoning ?? null],
+    );
+    const claude = "claude-sonnet-4-5-20250929";
+    await span("a_t1", "t1");
+    // Anthropic: cache reads and writes sit beside the input count.
+    await call("c1", "t1", "anthropic", claude, { input: 1_000, output: 200, cacheRead: 3_000, cacheWrite: 500 },
+      { cost: computeCost(claude, 1_000, 200, 3_000, 500, "anthropic"), basis: "estimated", source: "pricing_table" });
+    // OpenAI: cached tokens are part of the input count; reasoning is part of output.
+    await call("c2", "t1", "openai", "gpt-4o", { input: 2_000, output: 300, cacheRead: 1_000, reasoning: 100 },
+      { cost: costFromRates(gpt.rates, { inputTokens: 2_000, outputTokens: 300, cacheReadTokens: 1_000 }, "openai", "gpt-4o"), basis: "estimated", source: "catalog:litellm", pricingId: gpt.id });
+    await span("a_t2", "t2");
+    // Gemini reports thinking beside output, and no cache field at all.
+    await call("c3", "t2", "google", "gemini-2.5-flash", { input: 500, output: 100, reasoning: 50 }, { cost: 0.001, basis: "estimated", source: "pricing_table" });
+
+    const range = `from=${encodeURIComponent(at(60))}&to=${encodeURIComponent(new Date(Date.now() + 60_000).toISOString())}`;
+    const baseUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    const detail = async () => {
+      const response = await fetch(`${baseUrl}/api/v1/projects/${projectId}/agents/dash?${range}`);
+      assert.equal(response.status, 200);
+      return await response.json() as { agent: { usage: TokenUsage }; runs: Array<{ traceId: string; usage: TokenUsage }>; models: Array<{ model: string; usage: TokenUsage }> };
+    };
+    const close = (actual: number | null | undefined, expected: number, label: string) => assert.ok(actual != null && Math.abs(actual - expected) < 1e-9, `${label}: ${actual} != ${expected}`);
+
+    let body = await detail();
+    const usage = body.agent.usage;
+    assert.equal(usage.inputTokens, 7_000, "input counts the whole prompt, Anthropic cache included");
+    assert.equal(usage.cacheReadTokens, 4_000);
+    assert.equal(usage.cacheWriteTokens, 500);
+    close(usage.cacheHitRate, 4_000 / 7_000, "agent hit rate");
+    assert.equal(usage.outputTokens, 650, "Gemini thinking adds to output; OpenAI reasoning is already in it");
+    assert.equal(usage.reasoningTokens, 150);
+    // Saved: 3,000 reads at $3 - $0.30 per 1M, and 1,000 at $2.50 - $1.25 per 1M.
+    close(usage.cacheSavings, 3_000 * 2.7e-6 + 1_000 * 1.25e-6, "agent savings");
+
+    const t1 = body.runs.find((run) => run.traceId === "t1")!.usage;
+    const t2 = body.runs.find((run) => run.traceId === "t2")!.usage;
+    assert.deepEqual([t1.inputTokens, t1.cacheReadTokens, t1.outputTokens, t1.reasoningTokens], [6_500, 4_000, 500, 100]);
+    assert.equal(t2.cacheHitRate, null, "a run with no cache fields has no hit rate, not 0%");
+    assert.equal(t2.cacheReadTokens, null);
+
+    const byModel = new Map(body.models.map((model) => [model.model, model.usage]));
+    close(byModel.get(claude)?.cacheHitRate, 3_000 / 4_500, "claude hit rate");
+    close(byModel.get(claude)?.cacheSavings, 3_000 * 2.7e-6, "claude savings");
+    close(byModel.get("gpt-4o")?.cacheHitRate, 0.5, "gpt-4o hit rate");
+    close(byModel.get("gpt-4o")?.cacheSavings, 1_000 * 1.25e-6, "gpt-4o savings");
+    assert.equal(byModel.get("gemini-2.5-flash")?.cacheHitRate, null);
+    assert.equal(byModel.get("gemini-2.5-flash")?.cacheSavings, null);
+    assert.equal(byModel.get("gemini-2.5-flash")?.reasoningTokens, 50);
+
+    // A provider-reported price has no list-price counterfactual: that model's
+    // savings, and the agent's total, are no longer shown.
+    await span("a_t3", "t3");
+    await call("c4", "t3", "anthropic", claude, { input: 100, output: 10, cacheRead: 900 }, { cost: 0.0005, basis: "reported", source: "provider" });
+    body = await detail();
+    assert.equal(body.agent.usage.cacheSavings, null);
+    assert.equal(new Map(body.models.map((model) => [model.model, model.usage])).get(claude)?.cacheSavings, null);
+    close(new Map(body.models.map((model) => [model.model, model.usage])).get("gpt-4o")?.cacheSavings, 1_000 * 1.25e-6, "gpt-4o savings unaffected");
+
+    // The By model tab carries the same breakdown.
+    const modelsResponse = await fetch(`${baseUrl}/api/v1/projects/${projectId}/insights/models?kind=agent&${range}`);
+    const models = await modelsResponse.json() as { models: Array<{ model: string; usage: TokenUsage }> };
+    const gptRow = models.models.find((model) => model.model === "gpt-4o")!;
+    assert.deepEqual([gptRow.usage.inputTokens, gptRow.usage.cacheReadTokens, gptRow.usage.reasoningTokens], [2_000, 1_000, 100]);
+    close(gptRow.usage.cacheSavings, 1_000 * 1.25e-6, "tab model savings");
+
+    // Workflows and agents lists carry the totals too.
+    const agentsResponse = await fetch(`${baseUrl}/api/v1/projects/${projectId}/agents?${range}`);
+    const agents = await agentsResponse.json() as { agents: Array<{ name: string; usage: TokenUsage }> };
+    assert.equal(agents.agents[0]?.usage.cacheReadTokens, 4_900);
+  } finally {
+    setPriceCatalog(previousCatalog);
+    await new Promise((resolve) => server.close(resolve));
+    for (const table of ["spans", "events"]) await pool.query(`DELETE FROM ${table} WHERE project_id = $1`, [projectId]).catch(() => undefined);
+    await pool.query("DELETE FROM projects WHERE id = $1", [projectId]).catch(() => undefined);
+    await pool.query("DELETE FROM orgs WHERE id = $1", [orgId]).catch(() => undefined);
+    await pool.end();
+  }
+});
+
+test("a call's cache savings are only counted when its stored cost checks out", () => {
+  const previousCatalog = getPriceCatalog();
+  const rates = { input: 3e-6, output: 1.5e-5, cacheRead: 3e-7, cacheWrite: 3.75e-6, longContext: [{ threshold: 200_000, input: 6e-6, output: 2.25e-5, cacheRead: 6e-7 }] };
+  setPriceCatalog(new PriceCatalog([{ id: "p1", source: "litellm", provider: "anthropic", model: "claude-x", sourceKey: "claude-x", mode: "chat", effectiveFrom: "2020-01-01T00:00:00.000Z", effectiveTo: null, rates }]));
+  try {
+    const base = { provider: "anthropic", model: "claude-x", cost_basis: "estimated", cost_source: "catalog:litellm", pricing_id: "p1", input_tokens: 1_000, output_tokens: 100, cache_read_tokens: 10_000 };
+    const charged = costFromRates(rates, { inputTokens: 1_000, outputTokens: 100, cacheReadTokens: 10_000 }, "anthropic", "claude-x")!;
+    assert.ok(Math.abs(callCacheSavings({ ...base, cost_usd: charged })! - 10_000 * 2.7e-6) < 1e-12);
+    // Over the long-context threshold the tier's rates apply to both sides.
+    const big = { ...base, input_tokens: 150_000, cache_read_tokens: 100_000 };
+    const bigCharged = costFromRates(rates, { inputTokens: 150_000, outputTokens: 100, cacheReadTokens: 100_000 }, "anthropic", "claude-x")!;
+    assert.ok(Math.abs(callCacheSavings({ ...big, cost_usd: bigCharged })! - 100_000 * 5.4e-6) < 1e-12);
+    assert.equal(callCacheSavings({ ...base, cost_usd: charged * 1.1 }), null, "a cost the rates don't reproduce");
+    assert.equal(callCacheSavings({ ...base, pricing_id: "gone", cost_usd: charged }), null, "a price version we no longer have");
+    assert.equal(callCacheSavings({ ...base, cost_source: "project_price", cost_usd: charged }), null);
+    assert.equal(callCacheSavings({ ...base, cost_basis: "reported", cost_usd: charged }), null);
+    assert.equal(callCacheSavings({ ...base, cache_read_tokens: 0, cost_usd: charged }), 0, "no cache hits saved nothing");
+    // The built-in table: OpenAI cached tokens are part of the input count.
+    const openai = { provider: "openai", model: "gpt-4o", cost_basis: "estimated", cost_source: "pricing_table", input_tokens: 4_000, output_tokens: 100, cache_read_tokens: 2_000 };
+    assert.ok(Math.abs(callCacheSavings({ ...openai, cost_usd: computeCost("gpt-4o", 4_000, 100, 2_000, null, "openai") })! - 2_000 * 1.25e-6) < 1e-12);
+    const totals = sumCacheSavings([{ ...openai, cost_usd: computeCost("gpt-4o", 4_000, 100, 2_000, null, "openai") }, { ...base, cost_usd: charged }]);
+    assert.ok(Math.abs(totals.total! - (2_000 * 1.25e-6 + 10_000 * 2.7e-6)) < 1e-12);
+    assert.equal(sumCacheSavings([]).total, null, "no cache hits, nothing to show");
+  } finally {
+    setPriceCatalog(previousCatalog);
   }
 });

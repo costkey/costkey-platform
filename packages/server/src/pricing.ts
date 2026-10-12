@@ -245,23 +245,11 @@ export function computeCost(
         output: pricing.output * 2, cacheRead: (pricing.cacheRead ?? 0) * 2 };
     }
   }
-  // DeepSeek's direct API: prompt_tokens includes cache hits (billed at the
-  // cache-hit rate) and misses (ordinary input). SDK 0.6 reported the misses
-  // as cache creation; they are never a separate charge.
-  const isDeepSeekDirect = provider === "deepseek"
-    || (!provider && !lowerModel.includes("/") && lowerModel.includes("deepseek-v4"));
+  const isDeepSeekDirect = isDeepSeekDirectCall(model, provider);
   let cost = 0;
 
   if (inputTokens != null) {
-    // Google reports promptTokenCount as the full prompt, with cached content
-    // included as a separately-priced subset. OpenRouter follows the same
-    // convention for prompt_tokens_details. Anthropic's input_tokens already
-    // excludes cache reads, so only adjust these two providers/model families.
-    const cacheIncludedInInput = provider === "google"
-      || provider === "openai"
-      || provider === "openrouter"
-      || lowerModel.includes("gemini");
-    const includedCacheTokens = cacheIncludedInInput
+    const includedCacheTokens = tableCacheIncludedInInput(model, provider) && !isDeepSeekDirect
       ? (effectivePricing.cacheRead != null ? (cacheReadTokens ?? 0) : 0)
         + (provider === "openrouter" && effectivePricing.cacheWrite != null ? (cacheCreationTokens ?? 0) : 0)
       : isDeepSeekDirect
@@ -285,6 +273,32 @@ export function computeCost(
   }
 
   return Math.round(cost * 1_000_000_000_000) / 1_000_000_000_000;
+}
+
+/**
+ * DeepSeek's direct API: prompt_tokens includes cache hits (billed at the
+ * cache-hit rate) and misses (ordinary input). SDK 0.6 reported the misses
+ * as cache creation; they are never a separate charge.
+ */
+function isDeepSeekDirectCall(model: string, provider?: string | null): boolean {
+  const lowerModel = model.toLowerCase();
+  return provider === "deepseek"
+    || (!provider && !lowerModel.includes("/") && lowerModel.includes("deepseek-v4"));
+}
+
+/**
+ * Whether the built-in table treats a call's input count as already holding
+ * its cache reads. Google reports promptTokenCount as the full prompt, with
+ * cached content included as a separately-priced subset; OpenAI, OpenRouter
+ * and DeepSeek's direct API do the same. Anthropic's input_tokens excludes
+ * cache reads.
+ */
+export function tableCacheIncludedInInput(model: string, provider?: string | null): boolean {
+  return provider === "google"
+    || provider === "openai"
+    || provider === "openrouter"
+    || model.toLowerCase().includes("gemini")
+    || isDeepSeekDirectCall(model, provider);
 }
 
 export function findPricing(model: string): ModelPricing | null {

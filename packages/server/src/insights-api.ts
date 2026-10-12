@@ -3,6 +3,10 @@ import type pg from "pg";
 import { requireAuth } from "./auth.js";
 import { orgScope } from "./middleware.js";
 import { workspaceTimezone } from "./quality-api.js";
+import {
+  CACHE_REPORTED_SQL, CACHE_WRITE_SQL, OUTPUT_TOKENS_SQL, PROMPT_TOKENS_SQL, SAVINGS_COLUMNS, SAVINGS_ROW_LIMIT,
+  sumCacheSavings, USAGE_SUM_COLUMNS, usageFrom, type TokenUsage,
+} from "./token-usage.js";
 
 /**
  * Workflows, Agents and Errors: runs grouped the way people think about
@@ -43,7 +47,12 @@ export const RUNS_CTE = `
   calls AS (
     SELECT e.id, e.trace_id, e.trace_name, e.cost_usd, e.duration_ms, e.status_code, e.timestamp, e.parent_event_id,
            e.model, e.provider, e.span_id, e.context, e.group_kind, e.group_name,
-           e.input_tokens, e.output_tokens
+           e.input_tokens, e.output_tokens, e.reasoning_tokens, e.cache_read_tokens, e.cache_creation_tokens,
+           ${CACHE_WRITE_SQL("e")} AS cache_write_tokens,
+           ${PROMPT_TOKENS_SQL("e")} AS prompt_tokens,
+           ${OUTPUT_TOKENS_SQL("e")} AS completion_tokens,
+           ${CACHE_REPORTED_SQL("e")} AS cache_reported,
+           e.request_model, e.url, e.cost_basis, e.cost_source, e.pricing_id, e.image_output_tokens, e.native_units
     FROM events e
     WHERE e.project_id = $1 AND COALESCE(e.event_type, 'call') = 'call' AND e.trace_id IS NOT NULL
       AND e.timestamp >= $2 AND e.timestamp < $3
@@ -57,7 +66,10 @@ export const RUNS_CTE = `
            MAX(timestamp + COALESCE(duration_ms, 0) * INTERVAL '1 millisecond') AS ended_at,
            BOOL_OR(COALESCE(status_code, 200) >= 400) AS failed_call,
            MAX(COALESCE(context->>'userId', context->>'user_id', context->>'customer', context->>'customerId')) AS user_id,
-           MAX(group_kind) AS group_kind, MAX(group_name) AS group_name
+           MAX(group_kind) AS group_kind, MAX(group_name) AS group_name,
+           SUM(prompt_tokens)::bigint AS prompt_tokens, SUM(cache_read_tokens)::bigint AS cache_read_tokens,
+           SUM(cache_write_tokens)::bigint AS cache_write_tokens, SUM(completion_tokens)::bigint AS completion_tokens,
+           SUM(reasoning_tokens)::bigint AS reasoning_tokens, BOOL_OR(cache_reported) AS cache_reported
     FROM calls GROUP BY trace_id
   ),
   roots AS (
@@ -99,7 +111,8 @@ export const GROUP_COLUMNS = `
   COUNT(*) FILTER (WHERE failed)::int AS failed_runs,
   AVG(steps)::float AS avg_steps,
   AVG(tools)::float AS avg_tools,
-  MAX(started_at) AS last_run`;
+  MAX(started_at) AS last_run,
+  ${USAGE_SUM_COLUMNS()}`;
 
 function number(value: unknown): number | null {
   if (value == null) return null;
@@ -122,6 +135,7 @@ function groupRow(row: Record<string, unknown>): Record<string, unknown> {
     avgSteps: number(row.avg_steps),
     avgTools: number(row.avg_tools),
     lastRun: row.last_run,
+    usage: usageFrom(row),
   };
 }
 
@@ -322,6 +336,16 @@ export async function loadOverviewBoard(pool: pg.Pool, projectId: string, window
   };
 }
 
+/** Cache savings are kept per provider and model. */
+function modelKey(row: Record<string, unknown>): string {
+  return `${String(row.provider ?? "")}\u0000${String(row.model ?? "unknown")}`;
+}
+
+/** A model row's savings: null when it had no cache hits or one couldn't be checked. */
+function savingsFor(savings: { byKey: Map<string, number | null> }, row: Record<string, unknown>): number | null {
+  return savings.byKey.get(modelKey(row)) ?? null;
+}
+
 function fail(res: Response, label: string, error: unknown): void {
   console.error(`[costkey] ${label} error:`, error);
   res.status(500).json({ error: `Couldn't load ${label.toLowerCase()}` });
@@ -372,11 +396,12 @@ export function createInsightsRouter(pool: pg.Pool): Router {
     const params = [req.params["projectId"], window.from, window.to, window.environment, req.params["name"]];
     const scoped = `WITH ${RUNS_CTE}, agent_runs AS (SELECT * FROM run_rows WHERE root_kind = 'agent' AND root_name = $5)`;
     try {
-      const [summary, runs, tools, models, subagents] = await Promise.all([
+      const [summary, runs, tools, models, subagents, cacheHits] = await Promise.all([
         pool.query(`${scoped} SELECT $5::text AS name, ${GROUP_COLUMNS} FROM agent_runs`, params),
         pool.query(
           `${scoped}
-           SELECT trace_id, started_at, cost, unpriced, calls, steps, tools, failed, duration_ms, user_id
+           SELECT trace_id, started_at, cost, unpriced, calls, steps, tools, failed, duration_ms, user_id,
+                  prompt_tokens, cache_read_tokens, cache_write_tokens, completion_tokens, reasoning_tokens, cache_reported
            FROM agent_runs ORDER BY started_at DESC LIMIT 50`,
           params,
         ),
@@ -394,7 +419,8 @@ export function createInsightsRouter(pool: pg.Pool): Router {
         ),
         pool.query(
           `${scoped}
-           SELECT COALESCE(cl.model, 'unknown') AS model, cl.provider, COUNT(*)::int AS calls, SUM(cl.cost_usd) AS cost
+           SELECT COALESCE(cl.model, 'unknown') AS model, cl.provider, COUNT(*)::int AS calls, SUM(cl.cost_usd) AS cost,
+                  ${USAGE_SUM_COLUMNS("cl.")}
            FROM calls cl WHERE cl.trace_id IN (SELECT trace_id FROM agent_runs)
            GROUP BY 1, 2 ORDER BY SUM(cl.cost_usd) DESC NULLS LAST LIMIT 20`,
           params,
@@ -408,16 +434,30 @@ export function createInsightsRouter(pool: pg.Pool): Router {
            GROUP BY s.name ORDER BY COUNT(*) DESC LIMIT 20`,
           params,
         ),
+        pool.query(
+          `${scoped}
+           SELECT ${SAVINGS_COLUMNS("cl")}
+           FROM calls cl WHERE cl.trace_id IN (SELECT trace_id FROM agent_runs) AND cl.cache_read_tokens > 0
+           LIMIT ${SAVINGS_ROW_LIMIT + 1}`,
+          params,
+        ),
       ]);
+      const savings = sumCacheSavings(cacheHits.rows, modelKey);
+      const agent = groupRow(summary.rows[0] ?? { name: req.params["name"] });
+      (agent.usage as TokenUsage).cacheSavings = savings.total;
       res.json({
-        agent: groupRow(summary.rows[0] ?? { name: req.params["name"] }),
+        agent,
         runs: runs.rows.map((row) => ({
           traceId: row.trace_id, startedAt: row.started_at, cost: row.unpriced > 0 && row.cost == null ? null : number(row.cost),
           unpriced: number(row.unpriced) ?? 0, calls: number(row.calls) ?? 0, steps: number(row.steps) ?? 0,
           tools: number(row.tools) ?? 0, failed: Boolean(row.failed), durationMs: number(row.duration_ms), userId: row.user_id ?? null,
+          usage: usageFrom(row),
         })),
         tools: tools.rows.map((row) => ({ name: row.name, calls: number(row.calls) ?? 0, avgMs: number(row.avg_ms), failed: number(row.failed) ?? 0, cost: number(row.cost) })),
-        models: models.rows.map((row) => ({ model: row.model, provider: row.provider, calls: number(row.calls) ?? 0, cost: number(row.cost) })),
+        models: models.rows.map((row) => ({
+          model: row.model, provider: row.provider, calls: number(row.calls) ?? 0, cost: number(row.cost),
+          usage: { ...usageFrom(row), cacheSavings: savingsFor(savings, row) },
+        })),
         subagents: subagents.rows.map((row) => ({ name: row.name, runs: number(row.runs) ?? 0 })),
       });
     } catch (error) { fail(res, "Agent", error); }
@@ -427,30 +467,45 @@ export function createInsightsRouter(pool: pg.Pool): Router {
   router.get("/api/v1/projects/:projectId/insights/models", async (req: Request, res: Response) => {
     const window = windowFrom(req);
     const agents = req.query["kind"] === "agent";
-    try {
-      const result = await pool.query(
-        `WITH ${RUNS_CTE},
+    const params = [req.params["projectId"], window.from, window.to, window.environment];
+    const scopedRuns = `
          scoped AS (
            SELECT trace_id,
-                  ${agents
-                    ? "root_name"
-                    : "COALESCE(CASE WHEN root_kind = 'workflow' THEN root_name END, NULLIF(group_name, ''), NULLIF(trace_name, ''), root_name, 'Unnamed')"} AS owner
+                  ${agents ? "root_name" : WORKFLOW_NAME} AS owner
            FROM run_rows
            WHERE ${agents ? "root_kind = 'agent'" : "root_kind IS DISTINCT FROM 'agent'"}
-         ),
+         )`;
+    try {
+      const result = await pool.query(
+        `WITH ${RUNS_CTE}, ${scopedRuns},
          by_owner AS (
            SELECT COALESCE(c.model, 'unknown') AS model, c.provider, s.owner,
-                  COUNT(*)::int AS calls, SUM(c.cost_usd) AS cost, COUNT(DISTINCT c.trace_id)::int AS runs
+                  COUNT(*)::int AS calls, SUM(c.cost_usd) AS cost, COUNT(DISTINCT c.trace_id)::int AS runs,
+                  SUM(c.prompt_tokens) AS prompt_tokens, SUM(c.cache_read_tokens) AS cache_read_tokens,
+                  SUM(c.cache_write_tokens) AS cache_write_tokens, SUM(c.completion_tokens) AS completion_tokens,
+                  SUM(c.reasoning_tokens) AS reasoning_tokens, BOOL_OR(c.cache_reported) AS cache_reported
            FROM calls c JOIN scoped s ON s.trace_id = c.trace_id
            GROUP BY 1, 2, 3
          )
          SELECT model, provider, SUM(calls)::int AS calls, SUM(runs)::int AS runs, SUM(cost) AS cost,
-                (ARRAY_AGG(owner ORDER BY cost DESC NULLS LAST))[1:3] AS top_owners
+                (ARRAY_AGG(owner ORDER BY cost DESC NULLS LAST))[1:3] AS top_owners,
+                ${USAGE_SUM_COLUMNS()}
          FROM by_owner GROUP BY model, provider
          ORDER BY SUM(cost) DESC NULLS LAST LIMIT 100`,
-        [req.params["projectId"], window.from, window.to, window.environment],
+        params,
       );
-      res.json({ models: result.rows.map((row) => ({ model: row.model, provider: row.provider, calls: number(row.calls) ?? 0, runs: number(row.runs) ?? 0, cost: number(row.cost), topOwners: row.top_owners ?? [] })) });
+      const cacheHits = await pool.query(
+        `WITH ${RUNS_CTE}, ${scopedRuns}
+         SELECT ${SAVINGS_COLUMNS("c")}
+         FROM calls c WHERE c.trace_id IN (SELECT trace_id FROM scoped) AND c.cache_read_tokens > 0
+         LIMIT ${SAVINGS_ROW_LIMIT + 1}`,
+        params,
+      );
+      const savings = sumCacheSavings(cacheHits.rows, modelKey);
+      res.json({ models: result.rows.map((row) => ({
+        model: row.model, provider: row.provider, calls: number(row.calls) ?? 0, runs: number(row.runs) ?? 0, cost: number(row.cost), topOwners: row.top_owners ?? [],
+        usage: { ...usageFrom(row), cacheSavings: savingsFor(savings, row) },
+      })) });
     } catch (error) { fail(res, "Models", error); }
   });
 

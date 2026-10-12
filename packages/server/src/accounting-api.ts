@@ -48,6 +48,7 @@ import {
   type ChargeScope,
   type ScopeValues,
 } from "./charge-cohort.js";
+import { callCacheSavings } from "./token-usage.js";
 
 type ScopeDimension = "feature" | "function" | "customer" | "model" | "provider" | "context";
 type ExplorerSort = "newest" | "cost_desc" | "duration_desc" | "calls_desc";
@@ -1419,7 +1420,7 @@ export function createAccountingRouter(pool: pg.Pool): Router {
                 feature_mapping_action_id, feature_original,
                 call_site_raw, call_site_frames, bl_function, bl_file, bl_line,
                 context, metadata, system_prompt, request_body, response_body,
-                span_id, native_units
+                span_id, native_units, url AS pricing_url
          FROM events
          WHERE project_id = $1 AND trace_id = $2
            AND COALESCE(event_type, 'call') = 'call'
@@ -1477,7 +1478,11 @@ export function createAccountingRouter(pool: pg.Pool): Router {
       res.json({
         traceId,
         summary,
-        events: events.rows.map((row) => exposeEvent(row as Record<string, unknown>, restricted)),
+        events: events.rows.map((row) => {
+          // What cache hits saved on this call, when its price can be checked.
+          const { pricing_url: url, ...call } = row as Record<string, unknown>;
+          return exposeEvent({ ...call, cache_saved_usd: callCacheSavings({ ...call, url }) }, restricted);
+        }),
         lifecycleEvents: lifecycleEvents.rows.map((row) => exposeEvent(row as Record<string, unknown>, restricted)),
         usageComponents,
         spans: spans.rows.map((row) => exposeSpan(row as Record<string, unknown>, restricted)),

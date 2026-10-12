@@ -136,10 +136,10 @@ describe("Bedrock event streams through fetch", () => {
     patchFetch({ transport: mock.transport, projectId: "bedrock", captureBody, beforeSend: null, defaultContext: {}, debug: false });
   }
 
-  it("with capture on, sends every message's decoded payload whole and the bytes through unchanged", async () => {
+  it("with capture on, sends every message keyed by event type, padding dropped, and the bytes through unchanged", async () => {
     const converse = join(
       event("messageStart", { role: "assistant" }),
-      event("contentBlockDelta", { contentBlockIndex: 0, delta: { text: "Hello" } }),
+      event("contentBlockDelta", { contentBlockIndex: 0, delta: { text: "Hello" }, p: "abcdefghij" }),
       event("contentBlockDelta", { contentBlockIndex: 0, delta: { text: " world" } }),
       event("messageStop", { stopReason: "end_turn" }),
       event("metadata", { usage: { inputTokens: 5, outputTokens: 2, totalTokens: 7 }, metrics: { latencyMs: 80 } }),
@@ -153,11 +153,11 @@ describe("Bedrock event streams through fetch", () => {
     await flushPendingCaptures();
     expect(events[0]?.["responseBody"]).toEqual({
       __costkey_stream__: [
-        { role: "assistant" },
-        { contentBlockIndex: 0, delta: { text: "Hello" } },
-        { contentBlockIndex: 0, delta: { text: " world" } },
-        { stopReason: "end_turn" },
-        { usage: { inputTokens: 5, outputTokens: 2, totalTokens: 7 }, metrics: { latencyMs: 80 } },
+        { messageStart: { role: "assistant" } },
+        { contentBlockDelta: { contentBlockIndex: 0, delta: { text: "Hello" } } },
+        { contentBlockDelta: { contentBlockIndex: 0, delta: { text: " world" } } },
+        { messageStop: { stopReason: "end_turn" } },
+        { metadata: { usage: { inputTokens: 5, outputTokens: 2, totalTokens: 7 }, metrics: { latencyMs: 80 } } },
       ],
     });
 
@@ -174,13 +174,17 @@ describe("Bedrock event streams through fetch", () => {
     );
     expect(new Uint8Array(await invoked.arrayBuffer())).toEqual(invoke);
     await flushPendingCaptures();
-    // The base64 `bytes` field is decoded to the model's own JSON.
+    // The base64 `bytes` field is decoded to the model's own JSON; `p` padding is dropped.
     expect(events[0]?.["responseBody"]).toEqual({
       __costkey_stream__: [
-        { bytes: { type: "message_start", message: { id: "msg_1", usage: { input_tokens: 5, output_tokens: 1 } } }, p: "abcdefgh" },
-        { bytes: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Hi" } }, p: "abcdefgh" },
-        { bytes: { type: "message_stop" }, p: "abcdefgh" },
+        { chunk: { bytes: { type: "message_start", message: { id: "msg_1", usage: { input_tokens: 5, output_tokens: 1 } } } } },
+        { chunk: { bytes: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Hi" } } } },
+        { chunk: { bytes: { type: "message_stop" } } },
       ],
+    });
+    // The skeleton telemetry still sees the padding field.
+    expect((events[0]?.["telemetry"] as Record<string, any>)["stream"]["chunks"][2]).toEqual({
+      chunk: { bytes: { type: "message_stop" }, p: { $s: 8 } },
     });
   });
 
@@ -472,7 +476,7 @@ describe("CostKey.instrumentBedrockClient", () => {
     // Capture is on: every event's payload is sent whole, in order.
     expect(events[0]).toMatchObject({
       streaming: true,
-      responseBody: { __costkey_stream__: streamEvents.map((item) => Object.values(item)[0]) },
+      responseBody: { __costkey_stream__: streamEvents },
     });
     const stream = (events[0]?.["telemetry"] as Record<string, any>)["stream"];
     expect(stream["format"]).toBe("aws-eventstream");
@@ -508,6 +512,12 @@ describe("CostKey.instrumentBedrockClient", () => {
     expect(stream["chunks"]).toEqual([
       { chunk: { bytes: { type: "message_start", message: { usage: { input_tokens: 70, output_tokens: 1 } } } } },
     ]);
+    // Content: the events the caller read, keyed by event type with `bytes` decoded.
+    expect(events[0]?.["responseBody"]).toEqual({
+      __costkey_stream__: [
+        { chunk: { bytes: { type: "message_start", message: { usage: { input_tokens: 70, output_tokens: 1 } } } } },
+      ],
+    });
   });
 
   it("records a failed call and rethrows the provider error", async () => {

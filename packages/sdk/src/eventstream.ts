@@ -145,13 +145,6 @@ function decodeHeaders(bytes: Uint8Array): Record<string, EventStreamHeaderValue
  * Exceptions are keyed by their exception type. This is framing only.
  */
 export function eventStreamChunk(message: EventStreamMessage): unknown {
-  const messageType = message.headers[":message-type"];
-  const name = messageType === "exception"
-    ? message.headers[":exception-type"]
-    : messageType === "error"
-      ? message.headers[":error-code"]
-      : message.headers[":event-type"];
-  const key = typeof name === "string" && name ? name : String(messageType ?? "event");
   const text = utf8.decode(message.payload);
   let payload: unknown;
   if (text.length === 0) {
@@ -163,20 +156,40 @@ export function eventStreamChunk(message: EventStreamMessage): unknown {
       payload = text;
     }
   }
-  return { [key]: payload };
+  return { [eventStreamKey(message)]: payload };
 }
 
 /**
- * One event-stream message for content capture: its JSON payload with a
- * base64 `bytes` field decoded to the model's own JSON. Undefined when the
- * payload is empty or not JSON.
+ * One event-stream message for content capture, keyed by event type the way
+ * botocore and the AWS SDK deliver it: `{"contentBlockDelta": {...}}`,
+ * `{"chunk": {"bytes": <decoded model JSON>}}`. The `p` padding field is
+ * dropped. Undefined when the payload is empty or not JSON.
  */
-export function eventStreamPayload(message: EventStreamMessage): unknown {
+export function eventStreamContent(message: EventStreamMessage): Record<string, unknown> | undefined {
   const text = utf8.decode(message.payload);
   if (text.length === 0) return undefined;
+  let payload: unknown;
   try {
-    return decodeBytesField(JSON.parse(text) as unknown);
+    payload = JSON.parse(text) as unknown;
   } catch {
     return undefined;
   }
+  return { [eventStreamKey(message)]: withoutPadding(decodeBytesField(payload)) };
+}
+
+/** Drop the `p` padding field Bedrock adds to stream payloads (it carries no content). */
+export function withoutPadding(payload: unknown): unknown {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload) || !("p" in payload)) return payload;
+  const { p: _padding, ...rest } = payload as Record<string, unknown>;
+  return rest;
+}
+
+function eventStreamKey(message: EventStreamMessage): string {
+  const messageType = message.headers[":message-type"];
+  const name = messageType === "exception"
+    ? message.headers[":exception-type"]
+    : messageType === "error"
+      ? message.headers[":error-code"]
+      : message.headers[":event-type"];
+  return typeof name === "string" && name ? name : String(messageType ?? "event");
 }

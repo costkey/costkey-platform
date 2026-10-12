@@ -348,8 +348,11 @@ A streamed response (SSE, NDJSON, a streamed JSON array or an AWS event
 stream) is captured as every event in order:
 `responseBody: {"__costkey_stream__": [...]}`. An SSE event with an `event:`
 name is `{"event": "<name>", "data": <json>}`, otherwise the parsed JSON
-itself; non-JSON data such as `[DONE]` is dropped. The caller's stream is
-passed through unchanged.
+itself; non-JSON data such as `[DONE]` is dropped. A Bedrock event is keyed by
+its event type, as botocore delivers it: `{"contentBlockDelta": {...}}`, or
+`{"chunk": {"bytes": <decoded model JSON>}}` for invoke-with-response-stream
+(the `p` padding field is dropped). The caller's stream is passed through
+unchanged.
 
 ## Supported Providers
 
@@ -468,7 +471,9 @@ example `@ai-sdk/amazon-bedrock`) need no setup.
   an SSE, NDJSON, streamed JSON array or Bedrock event stream (through fetch
   or `instrumentBedrockClient`) is sent in order, uncapped and scrubbed, as
   `responseBody: {"__costkey_stream__": [...]}`. Named SSE events become
-  `{"event": "<name>", "data": <json>}`. With capture off nothing changes.
+  `{"event": "<name>", "data": <json>}`; Bedrock events are keyed by event
+  type (`{"contentBlockDelta": {...}}`, `{"chunk": {"bytes": <json>}}`). With
+  capture off nothing changes.
 
 ## 0.7.3
 

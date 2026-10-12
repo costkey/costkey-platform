@@ -1,6 +1,7 @@
 import type { EventContext } from "./types.js";
 import { STREAM_CONTENT_KEY, isCaptureActive, isContentCaptureActive, recordObservedCall } from "./fetch-patch.js";
 import { captureCallSite } from "./stack.js";
+import { withoutPadding } from "./eventstream.js";
 import { getCallContext, withContext } from "./context.js";
 import {
   StreamRecorder,
@@ -248,7 +249,7 @@ async function* observeStream(
         recorder.arrived();
         const chunk = streamEventChunk(event);
         recorder.record(chunk);
-        if (content) content.push(...streamEventPayloads(chunk));
+        if (content) content.push(streamEventContent(chunk));
       } catch {
         // Skip an event that can't be read.
       }
@@ -280,13 +281,18 @@ function streamEventChunk(event: unknown): unknown {
 }
 
 /**
- * Content capture: the payload of an SDK stream event, the same element the
- * fetch path sends for the event-stream message (`{ contentBlockDelta: p }` → p).
+ * Content capture: the SDK stream event keyed by event type, the same element
+ * the fetch path sends (`{"contentBlockDelta": {...}}`, `{"chunk": {"bytes": <JSON>}}`),
+ * without undefined members or the `p` padding field.
  */
-function streamEventPayloads(chunk: unknown): unknown[] {
+function streamEventContent(chunk: unknown): unknown {
   const record = asRecord(chunk);
-  if (!record) return chunk === undefined ? [] : [chunk];
-  return Object.values(record).filter((value) => value !== undefined);
+  if (!record) return chunk;
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(record)) {
+    if (value !== undefined) result[key] = withoutPadding(value);
+  }
+  return result;
 }
 
 function bedrockOperation(request: unknown, commandName: unknown): Operation | null {

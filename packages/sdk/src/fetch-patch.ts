@@ -8,7 +8,7 @@ import type {
 } from "./types.js";
 import { findCaptureTarget, injectStreamUsage, type CaptureTarget } from "./providers/registry.js";
 import { captureCallSite } from "./stack.js";
-import { EventStreamDecoder, eventStreamChunk, eventStreamPayload } from "./eventstream.js";
+import { EventStreamDecoder, eventStreamChunk, eventStreamContent } from "./eventstream.js";
 import { getCallContext, importContext } from "./context.js";
 import { Transport } from "./transport.js";
 import { randomBytes } from "node:crypto";
@@ -442,8 +442,8 @@ function observeBody(
               for (const message of eventDecoder.push(value)) {
                 recorder.record(eventStreamChunk(message));
                 if (content) {
-                  const payload = eventStreamPayload(message);
-                  if (payload !== undefined) content.push(payload);
+                  const element = eventStreamContent(message);
+                  if (element !== undefined) content.push(element);
                 }
               }
             } else if (parser) {

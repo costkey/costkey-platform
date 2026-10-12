@@ -20,7 +20,143 @@ export function captureCallSite(): CallSite | null {
     Error.stackTraceLimit = limit;
   }
   if (!raw) return null;
-  return { raw, frames: parseStack(raw) };
+  const frames = parseStack(raw);
+  addSourceContext(frames);
+  return { raw, frames };
+}
+
+// Source context: the call line and a few lines around it, for the first
+// in-app frames. Node only; a no-op wherever there is no filesystem.
+export const MAX_CONTEXT_FRAMES = 8;
+const CONTEXT_LINES = 3;
+const MAX_LINE_CHARS = 500;
+const MAX_FILE_BYTES = 2 * 1024 * 1024;
+
+type FsLike = {
+  readFileSync(path: string, encoding: "utf8"): string;
+  statSync(path: string): { isFile(): boolean; size: number };
+};
+
+let fsModule: FsLike | null | undefined;
+function nodeFs(): FsLike | null {
+  if (fsModule !== undefined) return fsModule;
+  fsModule = null;
+  try {
+    const g = globalThis as { process?: { versions?: { node?: string }; getBuiltinModule?: (id: string) => unknown }; EdgeRuntime?: unknown };
+    if (typeof g.EdgeRuntime === "string" || !g.process?.versions?.node) return fsModule;
+    const fs = g.process.getBuiltinModule?.("node:fs") as FsLike | undefined;
+    if (fs && typeof fs.readFileSync === "function" && typeof fs.statSync === "function") fsModule = fs;
+  } catch {
+    fsModule = null;
+  }
+  return fsModule;
+}
+
+/** Test hook: swap the filesystem (null disables source context). */
+export function __setSourceFsForTests(fs: FsLike | null | undefined): void {
+  fsModule = fs;
+  fileCache.clear();
+}
+
+const OWN_DIR = (() => {
+  try {
+    const path = toPath(import.meta.url);
+    return path ? path.slice(0, path.lastIndexOf("/") + 1) : null;
+  } catch {
+    return null;
+  }
+})();
+
+function toPath(fileName: string): string | null {
+  if (fileName.startsWith("file://")) {
+    try {
+      return decodeURIComponent(new URL(fileName).pathname);
+    } catch {
+      return null;
+    }
+  }
+  return fileName;
+}
+
+/** True for the application's own files: absolute, not dependencies, not CostKey. */
+export function isInAppFile(fileName: string | null): boolean {
+  if (!fileName) return false;
+  const path = toPath(fileName);
+  if (!path || !path.startsWith("/") && !/^[A-Za-z]:[\\/]/.test(path)) return false;
+  const norm = path.replace(/\\/g, "/");
+  if (norm.includes("/node_modules/")) return false;
+  if (OWN_DIR && norm.startsWith(OWN_DIR) && !norm.slice(OWN_DIR.length).startsWith("__tests__/")) return false;
+  return true;
+}
+
+const fileCache = new Map<string, string[] | null>();
+const FILE_CACHE_LIMIT = 200;
+
+function readLines(fs: FsLike, path: string): string[] | null {
+  if (fileCache.has(path)) return fileCache.get(path)!;
+  let lines: string[] | null = null;
+  try {
+    const stat = fs.statSync(path);
+    if (stat.isFile() && stat.size <= MAX_FILE_BYTES) lines = fs.readFileSync(path, "utf8").split("\n");
+  } catch {
+    lines = null;
+  }
+  if (fileCache.size >= FILE_CACHE_LIMIT) fileCache.clear();
+  fileCache.set(path, lines);
+  return lines;
+}
+
+// Source lines can hold hardcoded secrets. Redact the common shapes before
+// they leave the process: provider keys and tokens, URL credentials and query
+// strings, and string literals assigned to secret-looking names.
+const TOKEN =
+  /sk-ant-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9_-]{20,}|AIza[A-Za-z0-9_-]{30,}|eyJ[A-Za-z0-9_-]{20,}(?:\.[A-Za-z0-9_-]*){0,2}|xox[bpras]-[A-Za-z0-9-]{20,}|gh[pousr]_[A-Za-z0-9]{30,}|(?<=Bearer )[A-Za-z0-9._-]{20,}/g;
+const URL_USERINFO = /(:\/\/)[^/\s'"`@]+@/g;
+const URL_QUERY = /(:\/\/[^\s'"`?#]*\?)[^\s'"`#]*/g;
+const QUERY_SECRET = /([?&](?:key|api[_-]?key|token|access[_-]?token|secret|sig|signature|password|auth)=)[^&\s'"`#]+/gi;
+const SECRET_ASSIGN =
+  /((?:api[_-]?key|secret(?:[_-]?key)?|token|access[_-]?token|refresh[_-]?token|password|passwd|credential|authorization|private[_-]?key)['"]?\s*[:=]\s*)(['"`])(?:(?!\2).)+\2/gi;
+
+export function scrubSourceLine(line: string): string {
+  return line
+    .replace(TOKEN, "[REDACTED]")
+    .replace(URL_USERINFO, "$1[REDACTED]@")
+    .replace(URL_QUERY, "$1[REDACTED]")
+    .replace(QUERY_SECRET, "$1[REDACTED]")
+    .replace(SECRET_ASSIGN, (_m, prefix: string, quote: string) => `${prefix}${quote}[REDACTED]${quote}`);
+}
+
+function clip(line: string): string {
+  const cut = line.replace(/\r$/, "").slice(0, MAX_LINE_CHARS);
+  try {
+    return scrubSourceLine(cut);
+  } catch {
+    return cut;
+  }
+}
+
+/** Attach source lines to the first in-app frames. Never throws. */
+export function addSourceContext(frames: StackFrame[]): void {
+  const fs = nodeFs();
+  if (!fs) return;
+  let seen = 0;
+  for (const frame of frames) {
+    if (seen >= MAX_CONTEXT_FRAMES) break;
+    try {
+      if (!isInAppFile(frame.fileName)) continue;
+      seen++;
+      const lineNumber = frame.lineNumber;
+      if (!lineNumber || lineNumber < 1) continue;
+      const lines = readLines(fs, toPath(frame.fileName!)!);
+      if (!lines || lineNumber > lines.length) continue;
+      const idx = lineNumber - 1;
+      frame.contextLine = clip(lines[idx]);
+      frame.preContext = lines.slice(Math.max(0, idx - CONTEXT_LINES), idx).map(clip);
+      frame.postContext = lines.slice(idx + 1, idx + 1 + CONTEXT_LINES).map(clip);
+    } catch {
+      continue;
+    }
+  }
 }
 
 /**

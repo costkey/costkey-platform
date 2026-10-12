@@ -98,6 +98,10 @@ export interface StackFrame {
   fileName: string | null;
   lineNumber: number | null;
   columnNumber: number | null;
+  /** Source context, only on in-app frames whose file could be read (Node only). */
+  contextLine?: string;
+  preContext?: string[];
+  postContext?: string[];
 }
 
 /** User-provided context via withContext() or manual tags */

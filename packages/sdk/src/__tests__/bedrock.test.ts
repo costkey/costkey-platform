@@ -198,7 +198,10 @@ describe("Bedrock event streams through fetch", () => {
     expect(new Uint8Array(await response.arrayBuffer())).toEqual(body);
     await flushPendingCaptures();
     expect(events[0]?.["responseBody"]).toBeNull();
-    expect(JSON.stringify(events[0])).not.toContain("secret answer");
+    // The call site carries this test's own source lines, which spell the
+    // fixture text; the response itself must not appear anywhere else.
+    const { callSite: _callSite, ...rest } = events[0] ?? {};
+    expect(JSON.stringify(rest)).not.toContain("secret answer");
   });
 
   it("records converse-stream usage from the metadata event and passes bytes through", async () => {

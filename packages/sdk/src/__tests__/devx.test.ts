@@ -225,7 +225,10 @@ describe("CostKey developer experience", () => {
     expect(calls[0]?.["requestBody"]).toBeNull();
     expect(calls[0]?.["responseBody"]).toBeNull();
     expect(JSON.stringify(calls[0])).not.toContain("delayed-url-secret");
-    expect(JSON.stringify(calls[0])).not.toContain("private-before-config");
+    // The call site carries this test's own source lines, which spell the
+    // fixture prompt; the request itself must not appear anywhere else.
+    const { callSite: _callSite, ...firstCall } = calls[0] ?? {};
+    expect(JSON.stringify(firstCall)).not.toContain("private-before-config");
 
     releaseConfig(new Response(JSON.stringify(runtimeConfig("delayed-config", "text", true)), {
       status: 200,

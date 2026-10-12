@@ -4675,7 +4675,7 @@ textarea[aria-invalid="true"] {
 .ck-inspector-value-note { display: block; margin-top: 2px; color: var(--ck-slate); font-size: 11.5px; }
 
 /* Overview: every model's cost, whatever it bills. */
-.ck-board-table td.ck-board-units { color: var(--ck-slate); }
+.ck-board-table .ck-board-units { color: var(--ck-slate); }
 .ck-board-table td.ck-board-cost { color: var(--ck-ink); font-weight: 500; }
 .ck-board-table tr.ck-board-other td { color: var(--ck-slate); }
 .ck-board-control-row { display: flex; flex-wrap: wrap; gap: 8px; }

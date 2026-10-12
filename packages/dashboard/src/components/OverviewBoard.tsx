@@ -6,7 +6,7 @@ import { ProviderLogo } from "./ProviderLogo";
 import { providerName } from "./consoleFormatters";
 import { Link } from "react-router-dom";
 import { checkHref, modelHref, ownerHref, toolHref } from "./links";
-import { billedUnitsText, sumUnits } from "./tokenUsage";
+import { billedUnitsText, callUsage, formatHitRate, sumUnits } from "./tokenUsage";
 import { alignSeries, bucketLabel, compactNumber, formatScore, kpiDelta, niceCeiling, signedPercent, tickIndexes } from "./overviewBoardModel";
 
 /** Validated categorical order for series on the light raised surface. */
@@ -74,48 +74,37 @@ export function KpiCard({ label, value, current, previous, previousLabel, higher
 
 const MODEL_ROWS = 7;
 
-/** Tokens in and out for a token model, or what else it bills ("2,698 characters"). */
-function modelUsage(row: { input: number | null; output: number | null; units?: Record<string, number> }): { tokens: boolean; text: string } {
-  const tokens = (row.input ?? 0) > 0 || (row.output ?? 0) > 0;
-  return { tokens, text: tokens ? "" : billedUnitsText(row.units) || "No usage reported" };
-}
-
 export function CostByModel({ board, totalCost, money }: { board: OverviewBoard | null; totalCost: string; money: (value: number | null | undefined) => string }) {
-  // Every model with calls counts, whatever it bills, so the costs add up to the total.
+  // Every model with calls counts, whatever it bills, so the costs add up to the total. Rows come sorted by cost.
   const all = board?.models ?? [];
   const rows = all.length > MODEL_ROWS + 1 ? all.slice(0, MODEL_ROWS) : all;
   const rest = all.slice(rows.length);
   const restCost = rest.some((row) => row.cost != null) ? rest.reduce((sum, row) => sum + (row.cost ?? 0), 0) : null;
-  const hasCache = rows.some((row) => row.cacheRead != null || row.cacheWrite != null);
-  const usageColumns = hasCache ? 3 : 2;
   return (
     <BoardPanel title="Cost by model" subtitle="Spend and usage by model" total={totalCost} totalLabel="Total cost">
       {all.length === 0 ? <BoardEmpty>No model calls in this period.</BoardEmpty> : (
         <div className="ck-board-table-wrap">
           <table className="ck-board-table">
             <thead>
-              <tr>
-                <th>Model</th>
-                <th className="numeric">Input</th><th className="numeric">Output</th>{hasCache && <th className="numeric">Cached</th>}
-                <th className="numeric">Cost</th>
-              </tr>
+              <tr><th>Model</th><th className="numeric">Usage</th><th className="numeric" title="Share of input tokens read from cache">Cache hit</th><th className="numeric">Cost</th></tr>
             </thead>
             <tbody>
               {rows.map((row) => {
-                const usage = modelUsage(row);
+                const usage = callUsage({ provider: row.provider ?? "", model: row.model, input_tokens: row.input, output_tokens: row.output, cache_read_tokens: row.cacheRead, cache_creation_tokens: row.cacheWrite });
+                const tokens = (row.input ?? 0) > 0 || (row.output ?? 0) > 0;
                 return (
                   <tr key={`${row.provider}:${row.model}`} className="ck-row-link">
                     <td className="ck-board-model-cell"><Link className="ck-board-link ck-stretch-link ck-board-model" to={modelHref(row.provider, row.model)}><ProviderLogo provider={row.provider} size={14} /><span title={`${providerName(row.provider ?? "")} · ${row.model}`}>{row.model}</span></Link></td>
-                    {usage.tokens
-                      ? <><td className="numeric">{compactNumber(row.input)}</td><td className="numeric">{compactNumber(row.output)}</td>{hasCache && <td className="numeric">{compactNumber(row.cacheRead)}</td>}</>
-                      : <td className="numeric ck-board-units" colSpan={usageColumns}>{usage.text}</td>}
+                    <td className="numeric" title={tokens ? `${compactNumber(usage.inputTokens)} in, ${compactNumber(usage.outputTokens)} out` : undefined}>{tokens ? `${compactNumber((usage.inputTokens ?? 0) + (usage.outputTokens ?? 0))} tokens` : <span className="ck-board-units">{billedUnitsText(row.units) || "No usage reported"}</span>}</td>
+                    <td className="numeric">{formatHitRate(usage.cacheHitRate)}</td>
                     <td className="numeric ck-board-cost">{row.cost == null ? (row.unpriced > 0 ? "Unpriced" : "—") : money(row.cost)}</td>
                   </tr>
                 );
               })}
               {rest.length > 0 && <tr className="ck-board-other">
                 <td>{rest.length} other model{rest.length === 1 ? "" : "s"}</td>
-                <td className="numeric" colSpan={usageColumns}>{rest.reduce((sum, row) => sum + row.calls, 0).toLocaleString("en-US")} calls</td>
+                <td className="numeric">{rest.reduce((sum, row) => sum + row.calls, 0).toLocaleString("en-US")} calls</td>
+                <td className="numeric" />
                 <td className="numeric ck-board-cost">{money(restCost)}</td>
               </tr>}
             </tbody>

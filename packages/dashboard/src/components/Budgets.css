@@ -86,9 +86,11 @@
 .ck-spend-head-right { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; justify-content: flex-end; }
 .ck-spend-glance { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
 .ck-spend-glance .ck-text-link { white-space: nowrap; }
-.ck-spend-chart .bar { fill: var(--ck-chart); }
-.ck-spend-chart .bar.is-hover { fill: var(--ck-dusk); }
-.ck-spend-chart .bar.is-over { fill: var(--ck-critical); }
+.ck-spend-chart .spend-line { fill: none; stroke: var(--ck-chart); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.ck-spend-chart .spend-area { fill: var(--ck-chart); opacity: 0.08; }
+.ck-spend-chart .spend-point { fill: var(--ck-chart); stroke: var(--ck-raised); stroke-width: 1.5; }
+.ck-spend-chart .spend-point.is-over { fill: var(--ck-critical); }
+.ck-board-legend i.swatch.dot { border-radius: 50%; }
 .ck-spend-chart .budget-line { stroke: var(--ck-warn); stroke-width: 1.5; stroke-dasharray: 5 4; fill: none; }
 .ck-board-legend i.dash { width: 14px; height: 0; border-top: 2px dashed var(--ck-warn); background: none; }
 .ck-spend-note { margin: 0; font-size: 12px; color: var(--ck-slate); }

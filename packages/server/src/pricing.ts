@@ -6,6 +6,7 @@
  * legacy entries remain estimates. These are standard API rates;
  * batch, priority, long-context, and provider-reseller rates may differ.
  */
+import { repairTruncatedEnvelope } from "./body-trim.js";
 import { filterFrames, findBusinessLogicFrame, findBusinessLogicFrameWithGraph, getFilterContext, callGraphCache } from "./ingest.js";
 interface ModelPricing {
   input: number;
@@ -606,6 +607,35 @@ async function backfillFrames(pool: import("pg").Pool): Promise<void> {
   // the previous revision ingesting until the new one serves).
   await runOnce(pool, "rebuild_callsite_stats_v16", async () => {
     await rebuildCallSiteStats(pool);
+  });
+
+  // Bodies over the size limit were stored as a raw text slice the console
+  // could not read. Turn each back into JSON, cut at the last complete value.
+  await runOnce(pool, "repair_truncated_bodies_v1", async () => {
+    let repaired = 0;
+    let after = "";
+    for (;;) {
+      const batch = await pool.query<{ id: string; project_id: string; request_body: unknown; response_body: unknown }>(
+        `SELECT id, project_id, request_body, response_body FROM events
+          WHERE (request_body->>'__costkey_truncated__' = 'true' OR response_body->>'__costkey_truncated__' = 'true')
+            AND id > $1 ORDER BY id LIMIT 200`,
+        [after],
+      );
+      if (batch.rows.length === 0) break;
+      for (const row of batch.rows) {
+        after = row.id;
+        const request = repairTruncatedEnvelope(row.request_body);
+        const response = repairTruncatedEnvelope(row.response_body);
+        if (!request && !response) continue;
+        await pool.query(
+          `UPDATE events SET request_body = COALESCE($3::jsonb, request_body), response_body = COALESCE($4::jsonb, response_body)
+            WHERE project_id = $1 AND id = $2`,
+          [row.project_id, row.id, request ? JSON.stringify(request) : null, response ? JSON.stringify(response) : null],
+        );
+        repaired++;
+      }
+    }
+    console.log(`[costkey] Repaired ${repaired} cut-off request or response bodies`);
   });
 }
 

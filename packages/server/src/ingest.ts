@@ -673,40 +673,10 @@ export async function loadCallGraphCache(pool: import("pg").Pool): Promise<void>
   console.log(`[costkey] Loaded ${cgResult.rows.length} call graphs`);
 }
 
-/** Max stored body size (100KB). Truncates large prompts/completions to avoid DB bloat. */
-const MAX_BODY_BYTES = 100_000;
-
+/** A request or response body as stored: whole. Nothing is cut. */
 export function truncateBody(body: unknown): string | null {
   if (!body) return null;
-  const json = JSON.stringify(body);
-  const originalBytes = Buffer.byteLength(json, "utf8");
-  if (originalBytes <= MAX_BODY_BYTES) return json;
-
-  // JSONB rejects a raw slice because it can end in the middle of a string,
-  // object, or UTF-8 sequence. Store the slice as a string inside a valid
-  // envelope so one large prompt cannot abort the entire ingest transaction.
-  const envelope = {
-    __costkey_truncated__: true,
-    original_bytes: originalBytes,
-    notice: "[TRUNCATED]",
-    preview: "",
-  };
-  const emptyEnvelopeBytes = Buffer.byteLength(JSON.stringify(envelope), "utf8");
-  let previewBytes = Math.max(0, MAX_BODY_BYTES - emptyEnvelopeBytes);
-  const source = Buffer.from(json, "utf8");
-  let result = "";
-
-  // JSON escaping can expand the preview, so tighten it until the serialized
-  // envelope respects the byte limit. This normally completes in one pass.
-  do {
-    envelope.preview = source.subarray(0, previewBytes).toString("utf8");
-    result = JSON.stringify(envelope);
-    const excess = Buffer.byteLength(result, "utf8") - MAX_BODY_BYTES;
-    if (excess <= 0) break;
-    previewBytes = Math.max(0, previewBytes - excess);
-  } while (previewBytes > 0);
-
-  return result;
+  return JSON.stringify(body);
 }
 
 /** Store only the provider route; query strings commonly carry API keys. */

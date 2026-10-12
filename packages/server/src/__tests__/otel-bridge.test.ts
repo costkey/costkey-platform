@@ -308,18 +308,19 @@ describe("OTel bridge: span ingest", () => {
     assert.deepEqual(normalized.spanAttributes, { query_count: 3 });
   });
 
-  it("caps raw attributes so the mapping keys always survive", () => {
+  it("keeps raw attributes whole, mapping keys first", () => {
     const otel: Record<string, unknown> = {};
     for (let i = 0; i < 200; i += 1) otel[`custom.attribute.${i}`] = "v".repeat(60);
     otel["huge"] = "x".repeat(5_000);
     otel["gen_ai.operation.name"] = "execute_tool";
     otel["gen_ai.tool.name"] = "fetch_page";
     otel["gen_ai.usage.input_tokens"] = 12;
-    const capped = capOtelAttributes(otel);
-    assert.ok(JSON.stringify(capped).length <= 4_096);
-    assert.equal(capped["gen_ai.tool.name"], "fetch_page");
-    assert.equal(capped["gen_ai.usage.input_tokens"], 12);
-    assert.equal(capped["huge"], undefined);
+    const kept = capOtelAttributes(otel);
+    assert.equal(Object.keys(kept)[0], "gen_ai.operation.name", "mapping keys come first");
+    assert.equal(kept["gen_ai.tool.name"], "fetch_page");
+    assert.equal(kept["gen_ai.usage.input_tokens"], 12);
+    assert.equal(kept["huge"], "x".repeat(5_000), "nothing is cut");
+    assert.equal(Object.keys(kept).length, Object.keys(otel).length);
 
     const normalized = normalizeAccountingEvent(bridgeSpan(otel));
     assert.equal(normalized.spanKind, "tool");

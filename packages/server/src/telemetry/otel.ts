@@ -256,14 +256,12 @@ const PRIORITY_KEYS = new Set<string>([
   ...MODEL_KEYS, ...PROVIDER_KEYS, ...AGENT_NAME_KEYS, ...TOOL_NAME_KEYS,
 ]);
 
-const MAX_OTEL_BYTES = 4_096;
-const MAX_OTEL_VALUE_BYTES = 1_024;
-
 /**
- * The raw OTel attributes, capped so they fit on a span: mapping and usage
- * keys first, then the rest in order, skipping any single oversized value.
+ * The raw OTel attributes, mapping and usage keys first, then the rest in
+ * order. Kept whole (prompts and completions included) unless a caller asks
+ * for a byte limit.
  */
-export function capOtelAttributes(attributes: Record<string, unknown>, maxBytes = MAX_OTEL_BYTES): Record<string, unknown> {
+export function capOtelAttributes(attributes: Record<string, unknown>, maxBytes = Number.POSITIVE_INFINITY): Record<string, unknown> {
   const keys = Object.keys(attributes);
   const rank = (key: string): number => PRIORITY_KEYS.has(key) ? 0 : key.startsWith("gen_ai.usage.") || key.startsWith("llm.token_count.") ? 1 : 2;
   const ordered = keys.map((key, index) => ({ key, index })).sort((x, y) => rank(x.key) - rank(y.key) || x.index - y.index);
@@ -271,7 +269,7 @@ export function capOtelAttributes(attributes: Record<string, unknown>, maxBytes 
   let size = 2;
   for (const { key } of ordered) {
     const encoded = JSON.stringify(attributes[key] ?? null);
-    if (encoded === undefined || encoded.length > MAX_OTEL_VALUE_BYTES) continue;
+    if (encoded === undefined) continue;
     const length = JSON.stringify(key).length + encoded.length + 2;
     if (size + length > maxBytes) continue;
     result[key] = attributes[key];

@@ -488,29 +488,11 @@ function normalizeSpanStatus(value: unknown): SpanStatus {
   return "running";
 }
 
-const MAX_SPAN_ATTRIBUTES_BYTES = 8_192;
-const MAX_OTEL_ATTRIBUTE_BYTES = 4_608;
-
-/** Keep span attributes small and flat enough to store on every span. */
+/** A span's attributes, whole: a tool's or agent's input and output are kept as sent. */
 function spanAttributes(value: unknown): Record<string, unknown> | null {
   const raw = objectValue(value);
-  const entries = Object.entries(raw).filter(([key]) => /^[A-Za-z0-9_.:-]{1,64}$/.test(key));
-  if (entries.length === 0) return null;
-  const result: Record<string, unknown> = {};
-  let size = 2;
-  for (const [key, item] of entries) {
-    const encoded = JSON.stringify(item ?? null);
-    if (encoded === undefined) continue;
-    // Raw OTel attributes arrive already capped (capOtelAttributes) and get a larger share.
-    const itemLimit = key === "otel" ? MAX_OTEL_ATTRIBUTE_BYTES : 2_048;
-    const clipped = encoded.length > itemLimit && typeof item === "string" ? item.slice(0, 2_000) : item;
-    const length = key.length + Math.min(encoded.length, itemLimit) + 4;
-    if (size + length > MAX_SPAN_ATTRIBUTES_BYTES) break;
-    if (encoded.length > itemLimit && typeof item !== "string") continue;
-    result[key] = clipped;
-    size += length;
-  }
-  return Object.keys(result).length > 0 ? result : null;
+  const entries = Object.entries(raw).filter(([key, item]) => /^[A-Za-z0-9_.:-]{1,64}$/.test(key) && JSON.stringify(item ?? null) !== undefined);
+  return entries.length > 0 ? Object.fromEntries(entries) : null;
 }
 
 export function stableGroupId(projectId: string, name: string, kind: string): string {

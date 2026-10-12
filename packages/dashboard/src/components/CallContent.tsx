@@ -91,8 +91,22 @@ export function CallContent({ input, output, provider, model, contentStatus, can
       </button>}
     </div>
     {raw && <p className="ck-cc-note">We could not recognise this format, so here is the raw JSON.</p>}
+    {trimNote(input, "request") ?? trimNote(output, "response")}
     {raw || showRaw ? <RawView input={input} output={output} /> : <StructuredView content={content} hasInput={!isEmpty(input)} hasOutput={!isEmpty(output)} />}
   </div>;
+}
+
+/** Bodies over the 100 KB CostKey stores are trimmed; say what was left out. */
+function trimNote(body: unknown, what: "request" | "response") {
+  const note = body && typeof body === "object" ? (body as Record<string, unknown>)["__costkey_trimmed__"] as { original_bytes?: number; tools_left_out?: number; strings_shortened?: number; cut_at_end?: boolean } | undefined : undefined;
+  if (!note || typeof note !== "object") return null;
+  const size = note.original_bytes ? ` was ${formatBytes(note.original_bytes)},` : "";
+  const parts = [
+    note.tools_left_out ? `${note.tools_left_out} tool ${note.tools_left_out === 1 ? "schema was" : "schemas were"} left out` : null,
+    note.strings_shortened ? `${note.strings_shortened} long ${note.strings_shortened === 1 ? "text was" : "texts were"} shortened` : null,
+    note.cut_at_end ? "the end was cut off" : null,
+  ].filter(Boolean);
+  return <p className="ck-cc-note">This {what}{size} over the 100 KB CostKey keeps, so {parts.length > 0 ? parts.join(" and ") : "part of it was left out"}.</p>;
 }
 
 function StructuredView({ content, hasInput, hasOutput }: { content: CallContentModel; hasInput: boolean; hasOutput: boolean }) {

@@ -291,6 +291,7 @@ function AppShell() {
     { to: "/agents", label: "Agents", icon: "agent" as PrototypeIconName },
     { to: "/traces", label: "Traces", icon: "trace" as PrototypeIconName },
     { to: "/users", label: "Users", icon: "users" as PrototypeIconName },
+    { to: "/costs", label: "Costs", icon: "cost" as PrototypeIconName },
     { to: "/quality", label: "Quality", icon: "quality" as PrototypeIconName },
     { to: "/budgets", label: "Budgets", icon: "shield" as PrototypeIconName },
   ], []);
@@ -303,7 +304,7 @@ function AppShell() {
     if (pathname.startsWith("/executions") || pathname.startsWith("/group")) return "/workflows";
     if (pathname.startsWith("/quality")) return "/quality";
     if (pathname.startsWith("/users")) return "/users";
-    if (pathname.startsWith("/models") || pathname.startsWith("/costs") || pathname.startsWith("/contributor")) return "/models";
+    if (pathname.startsWith("/models") || pathname.startsWith("/costs") || pathname.startsWith("/contributor")) return "/costs";
     if (pathname.startsWith("/forecast")) return "/forecast";
     if (pathname.startsWith("/budgets") || pathname.startsWith("/policy")) return "/budgets";
     if (pathname.startsWith("/alerting")) return "/alerting";

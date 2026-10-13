@@ -20,11 +20,11 @@ import { Router as createRouter } from "express";
 import type pg from "pg";
 import { Resend } from "resend";
 import { requireAuth } from "./auth.js";
-import { createPostgresObservedUsageSource, DEFAULT_PROVIDER_CAPABILITY_REGISTRY, isIdentityWindow, normalizeScopeValue, normalizeSpendingPolicy, perCallUsageSummary, POLICY_SCOPE_KEYS, POLICY_SCOPE_MAX_VALUE_LENGTH, POLICY_SCOPE_MAX_VALUES, policyScopeClauses, policyWindowKey, scopeValues, type AdmissionRequest, type PolicyCurrency, type PolicyMode, type PolicyScope, type PolicyUnit, type PolicyWindow, type SpendingPolicy } from "./admission.js";
+import { createPostgresObservedUsageSource, DEFAULT_PROVIDER_CAPABILITY_REGISTRY, isIdentityWindow, normalizeScopeValue, normalizeSpendingPolicy, perCallUsageSummary, POLICY_SCOPE_KEYS, POLICY_SCOPE_MAX_VALUE_LENGTH, POLICY_SCOPE_MAX_VALUES, policyScopeClauses, policyWindowBounds, policyWindowKey, scopeValues, type AdmissionRequest, type PolicyCurrency, type PolicyMode, type PolicyScope, type PolicyUnit, type PolicyWindow, type SpendingPolicy } from "./admission.js";
 import { PostgresReservationStore } from "./reservation.js";
 import { dispatchEnforcementNotification, dispatchFindingNotification, dispatchPolicyWarning, dispatchWebhook, isSafeWebhookUrl } from "./notifications.js";
 import { publicAppUrl } from "./public-url.js";
-import { policyForecast, registerBudgetViewRoutes } from "./budget-views.js";
+import { policyForecast, registerBudgetViewRoutes, scopedRecorded } from "./budget-views.js";
 export { ensurePolicySchema } from "./policy-storage.js";
 
 // F06/DX09 pre-call enforcement is exposed from its own module so platform
@@ -594,7 +594,16 @@ async function publicPolicyWithUsage(pool: pg.Pool, row: Record<string, unknown>
         );
     const settled = Number(result.rows[0]?.settled);
     const reserved = Number(result.rows[0]?.reserved);
-    const observed = Number(result.rows[0]?.observed);
+    // Spend in the period is what the recorded calls add up to; the SDK's
+    // pre-call checks only see calls made through an enforcing client.
+    let observed = Number(result.rows[0]?.observed);
+    try {
+      const bounds = policyWindowBounds(policy, new Date());
+      const recorded = bounds.from ? await scopedRecorded(pool, row, bounds.from, new Date()) : null;
+      if (recorded != null && Number.isFinite(recorded)) observed = Math.max(Number.isFinite(observed) ? observed : 0, recorded - (Number.isFinite(settled) ? settled : 0));
+    } catch (error) {
+      if ((error as { code?: string })?.code !== "42P01") throw error;
+    }
     const knownSettled = Number.isFinite(settled) ? settled : null;
     const knownReserved = Number.isFinite(reserved) ? reserved : null;
     const knownObserved = Number.isFinite(observed) ? observed : null;

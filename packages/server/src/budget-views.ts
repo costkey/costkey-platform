@@ -51,6 +51,34 @@ export function projectToPeriodEnd(input: { used: number; ratePerMs: number; now
 }
 
 /** The spending rate per millisecond over the last seven days in a policy's scope. */
+/**
+ * What a budget's scope actually used between two moments, from the calls
+ * recorded: the source of truth, whether or not an SDK checked the budget
+ * before each call. Null when an INR budget has no exchange rate.
+ */
+export async function scopedRecorded(pool: pg.Pool, row: Record<string, unknown>, from: Date, to: Date): Promise<number | null> {
+  const policy = normalizeSpendingPolicy(row);
+  const params: unknown[] = [policy.projectId];
+  const clauses = ["e.project_id = $1", "COALESCE(e.event_type, 'call') = 'call'", ...policyScopeClauses(policy.scope, params, "e")];
+  params.push(from.toISOString());
+  clauses.push(`e.timestamp >= $${params.length}`);
+  params.push(to.toISOString());
+  clauses.push(`e.timestamp < $${params.length}`);
+  const quantity = policy.unit === "calls"
+    ? "COUNT(*)::double precision"
+    : policy.unit === "tokens"
+      ? "COALESCE(SUM(COALESCE(e.total_tokens, e.input_tokens + e.output_tokens)), 0)::double precision"
+      : "COALESCE(SUM(e.cost_usd), 0)::double precision";
+  const result = await pool.query(`SELECT ${quantity} AS quantity FROM events e WHERE ${clauses.join(" AND ")}`, params);
+  let value = Number(result.rows[0]?.quantity) || 0;
+  if (policy.unit === "money" && policy.currency === "INR") {
+    const rate = policy.usdToPolicyCurrency ?? null;
+    if (rate == null || !(rate > 0)) return null;
+    value *= rate;
+  }
+  return value;
+}
+
 async function scopedPace(pool: pg.Pool, row: Record<string, unknown>, now: Date): Promise<number | null> {
   const policy = normalizeSpendingPolicy(row);
   const params: unknown[] = [policy.projectId];

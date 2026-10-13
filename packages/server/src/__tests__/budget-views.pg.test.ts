@@ -88,6 +88,11 @@ test("budget list statuses, scope names and the daily spend series", { skip: !co
     const over = await create({ name: "over", allowance: 4, scope: { feature: "answer" }, mode: "enforce" });
     const paused = await create({ name: "paused", allowance: 1, scope: { agent: "support-agent" }, status: "paused" });
     const perRun = await create({ name: "per run", allowance: 1, window: "per_trace", scope: { workflow: "nightly-import" } });
+    // An agent's calls count toward its budget whether or not an SDK checked
+    // the budget before each one (no observations were ever recorded here).
+    const agentBudget = await create({ name: "agent", allowance: 20, scope: { agent: "support-agent" } });
+    // A call after the budget exists: no SDK checked the budget for it.
+    await insert("agent-2", new Date(), "claude-sonnet", 3, "support-agent", { agent: "support-agent" });
     const list = await getJson("/policies");
     assert.equal(list.status, 200);
     const byId = new Map((list.body.policies as Array<Record<string, any>>).map((policy) => [policy.id, policy]));
@@ -99,6 +104,7 @@ test("budget list statuses, scope names and the daily spend series", { skip: !co
     assert.equal(byId.get(over)?.forecast.health, "over");
     assert.equal(byId.get(over)?.usage.observed, 5);
     assert.equal(byId.get(paused)?.forecast.health, "paused");
+    assert.equal(byId.get(agentBudget)?.usage.observed, 4, "calls after the budget was created count, not only SDK-checked ones");
     assert.equal(byId.get(perRun)?.forecast.health, "no_data");
     assert.equal(byId.get(perRun)?.forecast.periodEnd, null);
     const single = await getJson(`/policies/${over}`);
@@ -111,7 +117,7 @@ test("budget list statuses, scope names and the daily spend series", { skip: !co
     assert.deepEqual(names.body.names.workflow, ["chat", "nightly-import"]);
     assert.deepEqual(names.body.names.feature, ["answer", "search"]);
     assert.deepEqual(names.body.names.customer, ["globex", "acme"]);
-    assert.deepEqual(names.body.names.model, ["gpt-4o-mini", "gpt-4o", "claude-sonnet"]);
+    assert.deepEqual(names.body.names.model, ["gpt-4o-mini", "claude-sonnet", "gpt-4o"]);
     assert.equal((await getJson("/scope-names", { "x-org": otherOrgId })).status, 404);
 
     // Daily spend in the workspace time zone (IST): 1 Mar has 1, 2 Mar has 2 plus an unpriced call.

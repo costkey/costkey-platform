@@ -234,6 +234,8 @@ export interface CostKeySpanEvent {
   errorType?: string;
   attributes?: Record<string, unknown>;
   context: EventContext;
+  /** Where the span was opened (raw stack). */
+  callSite?: CallSite | null;
 }
 export type ExecutionLifecycle = TraceLifecycle;
 

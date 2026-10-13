@@ -1,6 +1,8 @@
 import { randomBytes } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { rawErrorName } from "./telemetry.js";
+import { captureCallSite } from "./stack.js";
+import type { CallSite } from "./types.js";
 import type {
   ContextCarrier,
   EventContext,
@@ -75,6 +77,8 @@ export interface SpanRecord {
   input?: unknown;
   output?: unknown;
   context: EventContext;
+  /** Where the span was opened, raw; the server attributes calls made inside it with no code of their own to it. */
+  callSite?: CallSite | null;
 }
 
 type SpanEmitter = (record: SpanRecord) => void;
@@ -353,6 +357,7 @@ export function startSpan<T>(
     name,
     startedAt,
     context,
+    callSite: safeCallSite(),
   };
   emitSpan({ ...base, status: "running", attributes: { ...attributes }, input: options.input });
 
@@ -744,3 +749,11 @@ const CONTEXT_ALIASES: Record<string, keyof EventContext> = {
   span_id: "spanId",
   user_id: "userId",
 };
+
+function safeCallSite(): CallSite | null {
+  try {
+    return captureCallSite();
+  } catch {
+    return null;
+  }
+}

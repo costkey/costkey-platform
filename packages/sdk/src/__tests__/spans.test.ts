@@ -82,6 +82,10 @@ describe("agent spans", () => {
     expect(toolEnd?.["parentSpanId"]).toBe(stepEnd?.["id"]);
     expect(agentEnd?.["parentSpanId"]).toBeUndefined();
     expect((agentEnd?.["attributes"] as Event)["model"]).toBe("gpt-6-sol");
+    // Each span says where it was opened, raw, so the server can attribute
+    // calls a framework makes on its own task to that code.
+    const agentSite = agentEnd?.["callSite"] as { frames: Array<{ fileName?: string }> } | undefined;
+    expect(agentSite?.frames.some((frame) => frame.fileName?.endsWith("spans.test.ts"))).toBe(true);
 
     // Outside a run, the agent span started one: every event shares its trace.
     const traceIds = new Set([...spans, ...calls].map((event) => event["traceId"] ?? (event["context"] as Event)["traceId"]));

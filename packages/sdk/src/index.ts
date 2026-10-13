@@ -483,6 +483,7 @@ function buildSpanEvent(
     ...(record.durationMs !== undefined ? { durationMs: record.durationMs } : {}),
     ...(record.errorName ? { errorName: record.errorName, errorType: record.errorName } : {}),
     ...(Object.keys(attributes).length > 0 ? { attributes } : {}),
+    ...(record.callSite ? { callSite: record.callSite } : {}),
     context: { ...currentDefaultContext, ...record.context },
   };
 }

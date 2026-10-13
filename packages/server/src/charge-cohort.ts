@@ -111,7 +111,7 @@ export function chargesCte(): string {
              e.timestamp, e.provider, e.model, e.request_model, e.pricing_id,
              e.cost_usd, e.cost_basis, e.cost_source, e.cost_currency,
              e.duration_ms, e.trace_id, e.trace_name, e.context,
-             (to_jsonb(e)->>'release') AS release, e.context->>'service' AS service,
+             e.release AS release, e.context->>'service' AS service,
              e.feature_source, e.feature_mapping_id, e.feature_mapping_action_id, e.feature_original,
              e.execution_id, e.group_id, e.group_name, e.group_kind,
              e.phase, e.case_id, e.bl_file, e.bl_function, e.bl_line,
@@ -163,7 +163,7 @@ export function chargesCte(): string {
              FALSE AS no_charge
       FROM usage_components u
       LEFT JOIN LATERAL (
-        SELECT e.trace_name, e.context, (to_jsonb(e)->>'release') AS release, e.feature_source, e.feature_mapping_id,
+        SELECT e.trace_name, e.context, e.release AS release, e.feature_source, e.feature_mapping_id,
                e.feature_mapping_action_id, e.feature_original,
                e.execution_id, e.group_id,
                e.group_name, e.group_kind, e.case_id,

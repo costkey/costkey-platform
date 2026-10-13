@@ -13,7 +13,9 @@ export function getPool(): pg.Pool {
   if (!pool) {
     pool = new pg.Pool({
       connectionString: DATABASE_URL,
-      max: 20,
+      // Small Postgres tiers allow ~25 connections, and a rollout runs two
+      // revisions at once: 10 each leaves room. COSTKEY_DB_POOL_SIZE raises it.
+      max: Math.max(1, Number(process.env["COSTKEY_DB_POOL_SIZE"]) || 10),
       idleTimeoutMillis: 30000,
       connectionTimeoutMillis: 5000,
     });

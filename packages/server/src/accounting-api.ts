@@ -666,7 +666,7 @@ function traceCte(): string {
              MAX(e.context->>'environment') AS environment,
              MAX(e.context->>'customer') AS customer,
              MAX(e.context->>'service') AS service,
-             MAX(to_jsonb(e)->>'release') AS release,
+             MAX(e.release) AS release,
              MAX(e.bl_file) AS bl_file,
              MAX(e.bl_function) AS bl_function,
              MAX(e.execution_id) AS execution_id,

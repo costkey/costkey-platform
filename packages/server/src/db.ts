@@ -606,6 +606,8 @@ export async function initDatabase(): Promise<void> {
       PRIMARY KEY (project_id, id)
     );
     CREATE INDEX IF NOT EXISTS idx_spans_trace ON spans(project_id, trace_id);
+    -- Where the span was opened (filtered frames); calls with no code of their own take it.
+    ALTER TABLE spans ADD COLUMN IF NOT EXISTS call_site_frames JSONB;
     CREATE INDEX IF NOT EXISTS idx_spans_project_started ON spans(project_id, started_at DESC);
     ALTER TABLE events ADD COLUMN IF NOT EXISTS span_id TEXT;
     ALTER TABLE events ADD COLUMN IF NOT EXISTS sdk_version TEXT;

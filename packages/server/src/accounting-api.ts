@@ -1,4 +1,7 @@
 import type { Request, Response, Router } from "express";
+import { scopeSite } from "./scope-site.js";
+import { findBusinessLogicFrame } from "./ingest.js";
+import type { StackFrame } from "@costkey/shared";
 import { Router as createRouter } from "express";
 import type pg from "pg";
 import { randomBytes } from "node:crypto";
@@ -1174,8 +1177,17 @@ export function createAccountingRouter(pool: pg.Pool): Router {
       if (result.rows.length === 0) { res.status(404).json({ error: "Event not found" }); return; }
       const sourceRestricted = !await sourceAccessAllowed(pool, String(req.params["projectId"]), user(req).role);
       const row = result.rows[0] as Record<string, unknown>;
+      // A call with no code of its own (made on a framework's task) shows the
+      // code that opened the span it ran in.
+      let scope: Awaited<ReturnType<typeof scopeSite>> = null;
+      const frames = Array.isArray(row["call_site_frames"]) ? row["call_site_frames"] as StackFrame[] : [];
+      if (!sourceRestricted && !findBusinessLogicFrame(frames)) scope = await scopeSite(pool, String(req.params["projectId"]), row["span_id"] as string | null);
       // How its cost adds up: each component at its rate, from the price it was charged at.
-      res.json({ event: { ...exposeEvent(row, sourceRestricted), cost_breakdown: callCostBreakdown(row) } });
+      res.json({ event: {
+        ...exposeEvent(row, sourceRestricted),
+        cost_breakdown: callCostBreakdown(row),
+        scope_site: scope ? { span_id: scope.spanId, kind: scope.kind, name: scope.name, frames: scope.frames } : null,
+      } });
     } catch (err) {
       console.error("[costkey] Accounting event detail error:", err);
       res.status(500).json({ error: "Failed to fetch event" });

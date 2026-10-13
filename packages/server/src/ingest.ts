@@ -1,4 +1,5 @@
 import type { Router } from "express";
+import { attributeCallsToSpan, firstLine, scopeSite, storeSpanSite } from "./scope-site.js";
 import { Router as createRouter } from "express";
 import type pg from "pg";
 import type { CostKeyEvent, TransportPayload, StackFrame } from "@costkey/shared";
@@ -970,6 +971,11 @@ export function createIngestRouter(pool: pg.Pool): Router {
                   if (typeof rawEvent[key] === "string") rawEvent[key] = trustedEventTimestamp(rawEvent[key]);
                 }
                 await recordAccountingEvent(client, projectId, rawEvent);
+                // Where the span was opened: calls inside it with no code of their own take it.
+                const spanSite = (rawEvent["callSite"] ?? rawEvent["call_site"]) as { frames?: unknown } | undefined;
+                if (accounting.spanId && spanSite && await storeSpanSite(client, projectId, accounting.spanId, spanSite.frames)) {
+                  await attributeCallsToSpan(client, projectId, accounting.spanId);
+                }
                 return;
               }
               if (accounting.eventType === "score") {
@@ -1060,6 +1066,16 @@ export function createIngestRouter(pool: pg.Pool): Router {
                   blLine = best.lineNumber ?? null;
                 }
 
+              }
+              // A call with no code of its own (made on a framework's task)
+              // takes the code that opened the span it ran in.
+              if (!blFunction && allowSource && accounting.eventType === "call" && accounting.spanId) {
+                const scope = await scopeSite(client, projectId, accounting.spanId);
+                if (scope) {
+                  blFunction = firstLine(scope.frame.functionName);
+                  blFile = scope.frame.fileName ?? null;
+                  blLine = scope.frame.lineNumber ?? null;
+                }
               }
 
               // Reusable mappings supply only missing business meaning. Explicit

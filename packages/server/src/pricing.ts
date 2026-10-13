@@ -7,6 +7,7 @@
  * batch, priority, long-context, and provider-reseller rates may differ.
  */
 import { repairTruncatedEnvelope } from "./body-trim.js";
+import { scopeSite } from "./scope-site.js";
 import { filterFrames, findBusinessLogicFrame, findBusinessLogicFrameWithGraph, getFilterContext, callGraphCache } from "./ingest.js";
 interface ModelPricing {
   input: number;
@@ -671,7 +672,7 @@ async function rebuildCallSiteStats(pool: import("pg").Pool): Promise<void> {
 
   // Re-backfill ALL bl_ fields using the canonical algorithm (with graph when available)
   const needBl = await pool.query(`
-    SELECT id, project_id, call_site_frames FROM events
+    SELECT id, project_id, span_id, call_site_frames FROM events
     WHERE call_site_frames IS NOT NULL
       AND call_site_frames != '[]'::jsonb
       AND jsonb_array_length(call_site_frames) > 0
@@ -690,13 +691,15 @@ async function rebuildCallSiteStats(pool: import("pg").Pool): Promise<void> {
     const best = graph
       ? findBusinessLogicFrameWithGraph(filtered, graph, filterCtx)
       : findBusinessLogicFrame(filtered, filterCtx);
-    // No business-logic frame (a stack of frameworks only) clears the old name.
-    const fn = best ? (best.functionName ?? "").split("\n")[0].trim() || null : null;
+    // No business-logic frame (a stack of frameworks only): the code that
+    // opened the span the call ran in, else the old name is cleared.
+    const chosen = best ?? (await scopeSite(pool, row.project_id, row.span_id))?.frame ?? null;
+    const fn = chosen ? (chosen.functionName ?? "").split("\n")[0].trim() || null : null;
     await pool.query(
       `UPDATE events SET bl_function = $1, bl_file = $2, bl_line = $3
         WHERE project_id = $4 AND id = $5
           AND (bl_function IS DISTINCT FROM $1 OR bl_file IS DISTINCT FROM $2 OR bl_line IS DISTINCT FROM $3)`,
-      [fn, best?.fileName ?? null, best?.lineNumber ?? null, row.project_id, row.id],
+      [fn, chosen?.fileName ?? null, chosen?.lineNumber ?? null, row.project_id, row.id],
     );
   }
   if (needBl.rows.length > 0) {

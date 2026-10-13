@@ -9,7 +9,7 @@ import { RunTree, SpanInspector } from "./RunTree";
 import { RunQualityChecks } from "./RunQualityChecks";
 import { RunTimeline } from "./RunTimeline";
 import { useLiveQuery, type LiveQuery } from "../hooks/useLiveQuery";
-import { buildRunTree, defaultCollapsed, flattenRunTree, type RunTreeNode, type RunTreeSpanNode } from "./runTreeModel";
+import { buildRunTree, defaultCollapsed, flattenRunTree, SPAN_KIND_LABEL, type RunTreeNode, type RunTreeSpanNode } from "./runTreeModel";
 import type { PrototypeState } from "./PrototypeState";
 import { ProviderLabel, ProviderLogo } from "./ProviderLogo";
 import { callCostText, callFailure, isNoCharge } from "./callOutcome";
@@ -390,14 +390,19 @@ function SourceTab({ detail, frames, canReadContent }: { detail: EventRow | null
   const frameRows = Array.isArray(frames) ? frames as StackFrame[] : [];
   const attribution = sourceAttributionStatus(detail ? { featureSource: detail.feature_source, featureMappingId: detail.feature_mapping_id, functionName: detail.bl_function, fileName: detail.bl_file } : null);
   const location = detail?.bl_file ? shortenPath(detail.bl_file).short : null;
+  const scope = detail?.scope_site && Array.isArray(detail.scope_site.frames) && detail.scope_site.frames.length > 0 ? detail.scope_site : null;
   return <><div className="ck-inspector-section"><div className="ck-inspector-section-title"><span>Where in your code</span></div><dl className="ck-definition-list">
     <div><dt>Function</dt><dd className="mono">{detail?.bl_function || <span className="ck-muted-value">Not recorded</span>}</dd></div>
     <div><dt>File</dt><dd className="ck-path-value" title={detail?.bl_file ?? undefined}>{location ? <bdi>{location}{detail?.bl_line == null ? "" : `:${detail.bl_line}`}</bdi> : <span className="ck-muted-value">Not recorded</span>}</dd></div>
     <div><dt>Feature label</dt><dd>{attribution === "Explicit" ? "Set in code" : attribution === "Mapped" ? "From a mapping" : attribution === "Inferred" ? "Inferred" : <span className="ck-muted-value">Not set</span>}</dd></div>
   </dl></div>
-  {frameRows.length > 0
-    ? <CallStack key={String(detail?.id ?? "")} frames={frameRows} callSite={{ functionName: detail?.bl_function, file: detail?.bl_file, line: detail?.bl_line == null ? null : Number(detail.bl_line) }} />
-    : <div className="ck-inspector-section"><p className="ck-inspector-note">No stack was recorded for this call. Its cost is unaffected.</p></div>}</>;
+  {scope
+    // The call ran on a framework's own task: show the code that opened its agent or step.
+    ? <><div className="ck-inspector-section"><p className="ck-inspector-note">Made by the framework inside {SPAN_KIND_LABEL[scope.kind]?.toLowerCase() ?? "span"} <strong>{scope.name}</strong>. This is the code that started it.</p></div>
+      <CallStack key={`scope:${String(detail?.id ?? "")}`} frames={scope.frames} callSite={{ functionName: detail?.bl_function, file: detail?.bl_file, line: detail?.bl_line == null ? null : Number(detail.bl_line) }} /></>
+    : frameRows.length > 0
+      ? <CallStack key={String(detail?.id ?? "")} frames={frameRows} callSite={{ functionName: detail?.bl_function, file: detail?.bl_file, line: detail?.bl_line == null ? null : Number(detail.bl_line) }} />
+      : <div className="ck-inspector-section"><p className="ck-inspector-note">No stack was recorded for this call. Its cost is unaffected.</p></div>}</>;
 }
 
 const STACK_PREVIEW = 8;

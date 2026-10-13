@@ -72,6 +72,8 @@ export interface CallSite {
 export interface EventRow {
   /** How its cost adds up, line by line (call detail only). */
   cost_breakdown?: import("./modelDetailApi").CallCostBreakdown | null;
+  /** For a call with no code of its own: the span it ran in and the code that opened it. */
+  scope_site?: { span_id: string; kind: string; name: string; frames: import("./components/stackFrames").StackFrame[] } | null;
   id: string;
   timestamp: string;
   trace_id?: string | null;

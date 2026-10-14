@@ -71,6 +71,8 @@ interface ExplorerScope {
   environment?: ScopeValues;
   feature?: ScopeValues;
   function?: ScopeValues;
+  file?: ScopeValues;
+  functionName?: ScopeValues;
   customer?: ScopeValues;
   service?: ScopeValues;
   release?: ScopeValues;
@@ -206,6 +208,8 @@ function readExplorerScope(req: Request): ExplorerScope {
     environment: queryValues(req.query["environment"]),
     feature: queryValues(req.query["feature"]),
     function: queryValues(req.query["function"] ?? req.query["fn"]),
+    file: queryValues(req.query["file"]),
+    functionName: queryValues(req.query["functionName"]),
     customer: queryValues(req.query["customer"]),
     service: queryValues(req.query["service"] ?? req.query["route"]),
     release: queryValues(req.query["release"]),
@@ -219,6 +223,13 @@ function readExplorerScope(req: Request): ExplorerScope {
     contextKey: value(req.query["contextKey"]),
     contextValue: queryValues(req.query["contextValue"]),
   };
+}
+
+/** Source-location filters are not available without source access. */
+function dropSourceFilters(scope: Pick<ChargeScope, "function" | "file" | "functionName">): void {
+  scope.function = undefined;
+  scope.file = undefined;
+  scope.functionName = undefined;
 }
 
 async function workspaceTimezone(pool: pg.Pool, projectId: string): Promise<string> {
@@ -1117,6 +1128,8 @@ export function createAccountingRouter(pool: pg.Pool): Router {
       const eventScope: ChargeScope = {
         ...scope,
         function: restricted ? undefined : scope.function,
+        file: restricted ? undefined : scope.file,
+        functionName: restricted ? undefined : scope.functionName,
         groupBy: restricted && scope.groupBy === "function" ? undefined : scope.groupBy,
         groupValue: restricted && scope.groupBy === "function" ? undefined : scope.groupValue,
         searchSource: !restricted,
@@ -1138,6 +1151,11 @@ export function createAccountingRouter(pool: pg.Pool): Router {
       if (lifecycles) {
         params.push(Array.isArray(lifecycles) ? lifecycles : [lifecycles]);
         clauses.push(`e.lifecycle_state = ANY($${params.length}::text[])`);
+      }
+      // A failed call, as the console shows it: a failed or cancelled
+      // lifecycle, or an HTTP error from the provider.
+      if (value(req.query["outcome"]) === "failed") {
+        clauses.push("(COALESCE(e.lifecycle_state, '') IN ('failed', 'cancelled', 'canceled') OR COALESCE(e.status_code, 200) >= 400)");
       }
       const accountingStates = queryValues(req.query["accounting"]);
       if (accountingStates) {
@@ -1209,7 +1227,7 @@ export function createAccountingRouter(pool: pg.Pool): Router {
       const timezone = await workspaceTimezone(pool, projectId);
       const scope: ChargeScope = { ...readExplorerScope(req), from, to, timezone, groupBy: undefined, groupValue: undefined };
       const restricted = !await sourceAccessAllowed(pool, projectId, user(req).role);
-      if (restricted) scope.function = undefined;
+      if (restricted) dropSourceFilters(scope);
       scope.searchSource = !restricted;
       const params: unknown[] = [projectId];
       const clauses = scopeClauses(scope, params, "c");
@@ -1325,7 +1343,7 @@ export function createAccountingRouter(pool: pg.Pool): Router {
       const projectId = req.params["projectId"] as string;
       const restricted = !await sourceAccessAllowed(pool, projectId, user(req).role);
       const scope = readExplorerScope(req);
-      if (restricted) scope.function = undefined;
+      if (restricted) dropSourceFilters(scope);
       if (restricted && scope.groupBy === "function") { scope.groupBy = undefined; scope.groupValue = undefined; }
       scope.searchSource = !restricted;
       if (scope.contextKey && !SAFE_CONTEXT_KEYS.has(scope.contextKey)) {
@@ -1355,7 +1373,7 @@ export function createAccountingRouter(pool: pg.Pool): Router {
       const scope = readExplorerScope(req);
       scope.timezone = await workspaceTimezone(pool, projectId);
       const restricted = !await sourceAccessAllowed(pool, projectId, user(req).role);
-      if (restricted) scope.function = undefined;
+      if (restricted) dropSourceFilters(scope);
       if (restricted && scope.groupBy === "function") { scope.groupBy = undefined; scope.groupValue = undefined; }
       scope.searchSource = !restricted;
       const sort = explorerSort(req.query["sort"], "traces");
@@ -1370,6 +1388,23 @@ export function createAccountingRouter(pool: pg.Pool): Router {
         const statusItems = Array.isArray(statuses) ? statuses : [statuses];
         params.push(statusItems);
         clauses.push(`tb.execution_state = ANY($${params.length}::text[])`);
+      }
+      // A run that went wrong, whether or not it reported its own end: it
+      // ended failed, a span in it errored, or a call failed and no retry of
+      // that call succeeded. `status` alone only sees reported run endings.
+      if (value(req.query["outcome"]) === "failed") {
+        clauses.push(`(tb.execution_state IN ('failed', 'error') OR tb.span_error OR EXISTS (
+          SELECT 1 FROM events fe
+          WHERE fe.project_id = tb.project_id AND fe.trace_id = tb.trace_id
+            AND COALESCE(fe.event_type, 'call') = 'call'
+            AND (COALESCE(fe.lifecycle_state, '') IN ('failed', 'cancelled', 'canceled') OR COALESCE(fe.status_code, 200) >= 400)
+            AND NOT EXISTS (
+              SELECT 1 FROM events re
+              WHERE re.project_id = fe.project_id AND re.trace_id = fe.trace_id AND re.parent_event_id = fe.id
+                AND COALESCE(re.lifecycle_state, '') NOT IN ('failed', 'cancelled', 'canceled')
+                AND COALESCE(re.status_code, 200) < 400
+            )
+        ))`);
       }
       const accountingStates = queryValues(req.query["accounting"]);
       if (accountingStates) {
@@ -1807,7 +1842,7 @@ export function createAccountingRouter(pool: pg.Pool): Router {
       const groupId = req.params["groupId"] as string;
       const scope = readExplorerScope(req);
       const restricted = !await sourceAccessAllowed(pool, projectId, user(req).role);
-      if (restricted) scope.function = undefined;
+      if (restricted) dropSourceFilters(scope);
       const limit = Math.min(Math.max(number(req.query["limit"], 50), 1), 100);
       const offset = Math.max(number(req.query["offset"], 0), 0);
       const params: unknown[] = [projectId, groupId];
@@ -1932,7 +1967,7 @@ export function createAccountingRouter(pool: pg.Pool): Router {
       const scope = readExplorerScope(req);
       scope.timezone = await workspaceTimezone(pool, projectId);
       const restricted = !await sourceAccessAllowed(pool, projectId, user(req).role);
-      if (restricted) scope.function = undefined;
+      if (restricted) dropSourceFilters(scope);
       if (restricted && scope.groupBy === "function") { scope.groupBy = undefined; scope.groupValue = undefined; }
       scope.searchSource = !restricted;
       const groupBy = scope.groupBy ?? "feature";
@@ -2154,7 +2189,7 @@ export function createAccountingRouter(pool: pg.Pool): Router {
       const contributor = req.params["contributor"] as string;
       const scope = readExplorerScope(req);
       const restricted = sourceRestricted;
-      if (restricted) scope.function = undefined;
+      if (restricted) dropSourceFilters(scope);
       if (restricted && scope.groupBy === "function") { scope.groupBy = undefined; scope.groupValue = undefined; }
       scope.searchSource = !restricted;
       const filterScope: ChargeScope = { ...scope, groupBy: dimension, groupValue: contributor };
@@ -2519,7 +2554,7 @@ export function createAccountingRouter(pool: pg.Pool): Router {
   async function forecastScope(req: Request): Promise<ForecastScope> {
     const scope = readExplorerScope(req);
     const restricted = !await sourceAccessAllowed(pool, String(req.params["projectId"]), user(req).role);
-    if (restricted) scope.function = undefined;
+    if (restricted) dropSourceFilters(scope);
     if (restricted && scope.groupBy === "function") { scope.groupBy = undefined; scope.groupValue = undefined; }
     scope.searchSource = !restricted;
     const groupBy = scope.groupBy;
@@ -2631,7 +2666,7 @@ export function createAccountingRouter(pool: pg.Pool): Router {
         return;
       }
       const restricted = !await sourceAccessAllowed(pool, req.params["projectId"] as string, user(req).role);
-      if (restricted) scope.function = undefined;
+      if (restricted) dropSourceFilters(scope);
       if (restricted && scope.groupBy === "function") { scope.groupBy = undefined; scope.groupValue = undefined; }
       scope.searchSource = !restricted;
       if (body["operations"] != null) scope.operations = number(body["operations"], -1);

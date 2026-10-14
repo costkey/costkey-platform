@@ -98,6 +98,10 @@ export interface StackFrame {
   fileName: string | null;
   lineNumber: number | null;
   columnNumber: number | null;
+  /** Source context, only on in-app frames whose file could be read (Node only). */
+  contextLine?: string;
+  preContext?: string[];
+  postContext?: string[];
 }
 
 /** User-provided context via withContext() or manual tags */
@@ -230,6 +234,8 @@ export interface CostKeySpanEvent {
   errorType?: string;
   attributes?: Record<string, unknown>;
   context: EventContext;
+  /** Where the span was opened (raw stack). */
+  callSite?: CallSite | null;
 }
 export type ExecutionLifecycle = TraceLifecycle;
 
@@ -585,9 +591,9 @@ export interface CostKeyEvent {
   phase?: string | null;
   datasetRevision?: string | null;
   caseId?: string | null;
-  /** Request body content, only when body capture is enabled (scrubbed, bounded). */
+  /** Request body content, only when body capture is enabled (scrubbed, never truncated). */
   requestBody: unknown | null;
-  /** Response body content, only when body capture is enabled (scrubbed, bounded). */
+  /** Response body content, only when body capture is enabled (scrubbed, never truncated). */
   responseBody: unknown | null;
   /** Raw telemetry (contract v1): always present, never content. */
   telemetry: CallTelemetry;
@@ -602,7 +608,7 @@ export type BeforeSendHook = (
 export interface CostKeyOptions {
   /** DSN in format https://<key>@costkey.dev/<project-id>. Falls back to COSTKEY_DSN env var. Omit both to disable (test mode). */
   dsn?: string;
-  /** Capture request/response bodies (default: true; media bytes are omitted and captures are bounded) */
+  /** Capture request/response bodies (default: true; media bytes are omitted, text is sent whole) */
   captureBody?: boolean;
   /** Hook to modify/filter events before sending */
   beforeSend?: BeforeSendHook;

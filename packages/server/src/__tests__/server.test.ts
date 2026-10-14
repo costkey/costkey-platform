@@ -4,7 +4,7 @@ import type { AddressInfo } from "node:net";
 import express from "express";
 import type { Express } from "express";
 import { computeCost, findPricing } from "../pricing.js";
-import { createIngestRouter, filterFrames, findBusinessLogicFrame, findBusinessLogicFrameWithGraph, truncateBody } from "../ingest.js";
+import { createIngestRouter, filterFrames, findBusinessLogicFrame, findBusinessLogicFrameWithGraph, getFilterContext, truncateBody } from "../ingest.js";
 import { configureRequestParsing, requestParseErrorHandler } from "../request-parsing.js";
 
 // ─── Pricing: findPricing ─────────────────────────────────────────────
@@ -204,6 +204,35 @@ describe("filterFrames", () => {
     functionName: functionName ?? "someFunc",
     lineNumber: 10,
     columnNumber: 5,
+  });
+
+  it("names a framework call after the app, not the framework in site-packages", () => {
+    const frames = [
+      frame("/app/apps/api/.venv/lib/python3.12/site-packages/agents/run_internal/model_retry.py", "stream_response_with_retry"),
+      frame("/app/apps/api/.venv/lib/python3.12/site-packages/agents/run.py", "run"),
+      frame("/app/apps/api/src/platform_api/modules/chat/run_loop.py", "answer"),
+    ];
+    const filtered = filterFrames(frames);
+    assert.equal(findBusinessLogicFrame(filtered, getFilterContext(frames, filtered))?.functionName, "answer");
+    assert.equal(findBusinessLogicFrameWithGraph(filtered, {}, getFilterContext(frames, filtered))?.functionName, "answer");
+  });
+
+  it("names nothing when only a framework, a server and the entry point made the call", () => {
+    // The OpenAI Agents SDK calls the model in a task of its own: no app frame.
+    const frames = filterFrames([
+      frame("/app/apps/api/.venv/lib/python3.12/site-packages/agents/models/openai_responses.py", "_fetch_response"),
+      frame("/app/apps/api/.venv/lib/python3.12/site-packages/agents/run_internal/run_loop.py", "run_single_turn"),
+      frame("/app/apps/api/.venv/lib/python3.12/site-packages/uvicorn/server.py", "run"),
+      frame("/app/apps/api/src/platform_api/__main__.py", "run"),
+      frame("<frozen runpy>", "_run_code"),
+    ]);
+    assert.equal(findBusinessLogicFrame(frames), undefined);
+    assert.equal(findBusinessLogicFrameWithGraph(frames, {}), undefined);
+  });
+
+  it("still names a call inside an installed package when there is nothing else", () => {
+    const frames = [frame("/srv/venv/lib/python3.12/site-packages/myapp/jobs.py", "nightly")];
+    assert.equal(findBusinessLogicFrame(filterFrames(frames))?.functionName, "nightly");
   });
 
   it("Anthropic Python SDK frames removed", () => {
@@ -1599,14 +1628,9 @@ describe("truncateBody", () => {
     assert.equal(result, JSON.stringify(body));
   });
 
-  it("200KB body gets truncated to ~100KB", () => {
-    const bigContent = "x".repeat(200_000);
-    const body = { content: bigContent };
-    const result = truncateBody(body);
-    assert.ok(result);
-    assert.ok(Buffer.byteLength(result, "utf8") <= 100_000);
-    assert.ok(result.includes("[TRUNCATED]"));
-    assert.doesNotThrow(() => JSON.parse(result));
+  it("a 200KB body is stored whole", () => {
+    const body = { content: "x".repeat(200_000) };
+    assert.equal(truncateBody(body), JSON.stringify(body));
   });
 
   it("null body returns null", () => {
@@ -1621,44 +1645,12 @@ describe("truncateBody", () => {
     assert.equal(truncateBody(""), null);
   });
 
-  it("truncated body uses a valid JSON envelope with a preview", () => {
-    const body = { data: "y".repeat(200_000) };
-    const result = truncateBody(body);
-    assert.ok(result);
-    const parsed = JSON.parse(result);
-    assert.equal(parsed.__costkey_truncated__, true);
-    assert.equal(parsed.original_bytes, Buffer.byteLength(JSON.stringify(body), "utf8"));
-    assert.equal(parsed.notice, "[TRUNCATED]");
-    assert.ok(parsed.preview.startsWith('{"data":"yyyy'));
-  });
-
-  it("keeps truncated unicode bodies valid and within the byte limit", () => {
-    const body = { content: "🛋️".repeat(80_000) };
-    const result = truncateBody(body);
-    assert.ok(result);
-    assert.ok(Buffer.byteLength(result, "utf8") <= 100_000);
-    assert.doesNotThrow(() => JSON.parse(result));
-  });
-
-  it("accounts for JSON escape expansion in the preview envelope", () => {
-    const body = { content: '\\"'.repeat(100_000) };
-    const result = truncateBody(body);
-    assert.ok(result);
-    assert.ok(Buffer.byteLength(result, "utf8") <= 100_000);
-    const parsed = JSON.parse(result);
-    assert.equal(parsed.__costkey_truncated__, true);
-    assert.ok(parsed.preview.length > 0);
-  });
-
-  it("body at exactly MAX_BODY_BYTES passes through", () => {
-    // Build a body whose JSON is exactly 100_000 bytes
-    // JSON.stringify adds overhead, so we need to account for that
-    const overhead = JSON.stringify({ d: "" }).length; // {"d":""}
-    const body = { d: "a".repeat(100_000 - overhead) };
-    const result = truncateBody(body);
-    assert.ok(result);
-    assert.equal(result.length, 100_000);
-    assert.ok(!result.includes("[TRUNCATED]"));
+  it("unicode and escape-heavy bodies are stored whole and stay valid JSON", () => {
+    for (const body of [{ content: "🛋️".repeat(80_000) }, { content: '\\"'.repeat(100_000) }]) {
+      const result = truncateBody(body);
+      assert.equal(result, JSON.stringify(body));
+      assert.deepEqual(JSON.parse(result!), body);
+    }
   });
 });
 
@@ -1789,7 +1781,7 @@ describe("large request ingestion", () => {
       const response = await fetch(`${baseUrl}/api/v1/events`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ data: "x".repeat(12 * 1024 * 1024) }),
+        body: JSON.stringify({ data: "x".repeat(64 * 1024 * 1024) }),
       });
       assert.equal(response.status, 413);
       assert.deepEqual(await response.json(), { error: "Request body too large" });
@@ -1825,16 +1817,16 @@ describe("large request ingestion", () => {
     assert.match(logs[0], /POST \/api\/v1\/events \(512\/2048 bytes\)/);
   });
 
-  it("rejects ingest bodies over 12MB and unrelated bodies over 5MB", async () => {
+  it("rejects ingest bodies over 64MB and unrelated bodies over 5MB", async () => {
     await withServer((app) => {
       configureRequestParsing(app);
       app.use(requestParseErrorHandler);
       app.post("/api/v1/events", (_req, res) => res.sendStatus(202));
       app.post("/other", (_req, res) => res.sendStatus(200));
     }, async (baseUrl) => {
-      const over12Mb = JSON.stringify({ data: "x".repeat(12 * 1024 * 1024) });
+      const over64Mb = JSON.stringify({ data: "x".repeat(64 * 1024 * 1024) });
       const ingestResponse = await fetch(`${baseUrl}/api/v1/events`, {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: over12Mb,
+        method: "POST", headers: { "Content-Type": "application/json" }, body: over64Mb,
       });
       assert.equal(ingestResponse.status, 413);
 
@@ -2344,6 +2336,21 @@ describe("findBusinessLogicFrameWithGraph", () => {
     const filterCtx = { removedFiles: new Set(["anthropic/_client.py"]), frame0WasAdjacentToSDK: true };
     const result = findBusinessLogicFrameWithGraph(frames, graph, filterCtx);
     assert.equal(result?.functionName, "run_l3_sonnet");
+  });
+
+  it("the SDK's caller beats a busy dispatcher the graph scores well", () => {
+    const frames = [
+      frame("/app/apps/financial-data-worker/src/financial_data_worker/generated_media.py", "synthesize", 155),
+      frame("/app/packages/story-domain/src/story_domain/service.py", "process_next", 456),
+      frame("/app/apps/financial-data-worker/src/financial_data_worker/costkey_tracing.py", "run", 107),
+      frame("/app/packages/financial-domain/src/financial_domain/platform/work.py", "run", 182),
+    ];
+    const graph: Record<string, { score: number; fan_in: number; calls_ai: boolean }> = {
+      "src/financial_data_worker/generated_media.py:synthesize": { score: 6.0, fan_in: 1, calls_ai: true },
+      "src/financial_data_worker/costkey_tracing.py:run": { score: 1.0, fan_in: 40, calls_ai: false },
+    };
+    const filterCtx = { removedFiles: new Set(["httpx/_client.py"]), frame0WasAdjacentToSDK: true };
+    assert.equal(findBusinessLogicFrameWithGraph(frames, graph, filterCtx)?.functionName, "synthesize");
   });
 
   it("frame[0] adjustment does NOT fire when frame[0] is a known wrapper", () => {
@@ -4891,13 +4898,9 @@ describe("e2e: AI agent and tool-use patterns", () => {
       frame("src/agent.py", "run_agent"),
     ];
     const r = pick(frames);
-    // openai/ filtered. langchain plan adjacent → but "_call" stripped is "call" → wrapper!
-    // plan is not in wrapper names. Not service layer. → fast-path returns plan.
-    // Wait: filtered[0] is langchain plan. Is plan adjacent to openai? Let me trace...
-    // original[0]=openai, original[1]=langchain plan. After filter: [plan, _call, web_search, run_agent]
-    // firstSurvivor=plan, prev in original=openai (filtered) → adjacent!
-    // plan: not wrapper, not service → fast-path returns it.
-    assert.equal(r!.functionName, "plan");
+    // openai/ filtered; langchain's frames are an installed framework, so the
+    // call is named after the app's first frame on the path: the tool.
+    assert.equal(r!.functionName, "web_search");
   });
 
   it("CrewAI multi-agent — nested agent calls", () => {
@@ -5366,9 +5369,9 @@ describe("e2e: multi-provider fallback patterns", () => {
       frame("src/handler.py", "generate"),
     ];
     const r = pick(frames);
-    // openai/ filtered. litellm stays. generate adjacent? No — litellm is adjacent.
-    // litellm:completion is not wrapper. fast-path returns it.
-    assert.equal(r!.functionName, "completion");
+    // openai/ filtered; litellm is an installed package, so the call is named
+    // after the app code that called it.
+    assert.equal(r!.functionName, "generate");
   });
 
   it("Helicone proxy — logging layer between app and SDK", () => {

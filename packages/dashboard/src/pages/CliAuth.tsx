@@ -1,3 +1,4 @@
+import { appUrl } from "../basePath";
 import { useState, useEffect } from "react";
 import { useAuth } from "../contexts/useAuth";
 import { BrandMark } from "../components/BrandMark";
@@ -19,7 +20,7 @@ export default function CliAuth() {
     const sendToken = async () => {
       try {
         // Ask server for a CLI token (uses the ck_cli_port/ck_cli_state cookies)
-        const res = await fetch("/auth/cli-token", {
+        const res = await fetch(appUrl("/auth/cli-token"), {
           method: "POST",
           credentials: "include",
         });

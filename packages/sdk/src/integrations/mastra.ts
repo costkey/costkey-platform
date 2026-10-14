@@ -52,6 +52,16 @@ export interface MastraTracingEventLike {
   exportedSpan: MastraExportedSpanLike;
 }
 
+/**
+ * What the bridge and exporter accept. Mastra's own TracingEvent is assignable
+ * to this: its span attribute types are specific interfaces without an index
+ * signature, so the event is narrowed to MastraTracingEventLike inside.
+ */
+export interface MastraTracingEventInput {
+  type: string;
+  exportedSpan: object;
+}
+
 /** Spans whose provider calls the fetch patch already records. */
 const MODEL_SPAN_TYPES = new Set(["model_generation", "model_step", "model_inference", "model_chunk"]);
 
@@ -168,8 +178,8 @@ export class CostKeyMastraBridge {
     return this.recorder.tracker.run(spanId, fn);
   }
 
-  async exportTracingEvent(event: MastraTracingEventLike): Promise<void> {
-    this.recorder.handle(event);
+  async exportTracingEvent(event: MastraTracingEventInput): Promise<void> {
+    this.recorder.handle(event as MastraTracingEventLike);
   }
 
   async flush(): Promise<void> {}
@@ -202,8 +212,8 @@ export class CostKeyMastraExporter {
 
   init(): void {}
 
-  async exportTracingEvent(event: MastraTracingEventLike): Promise<void> {
-    this.recorder.handle(event);
+  async exportTracingEvent(event: MastraTracingEventInput): Promise<void> {
+    this.recorder.handle(event as MastraTracingEventLike);
   }
 
   async flush(): Promise<void> {}

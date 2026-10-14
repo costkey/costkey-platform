@@ -1,9 +1,12 @@
+import { appUrl } from "../basePath";
 import { useState, type ReactNode } from "react";
 import { GitBranch, ArrowRight, LoaderCircle } from "lucide-react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../contexts/useAuth";
 import { BrandLockup } from "../components/BrandMark";
 import { AuthScene } from "../components/AuthScene";
+import { SsoSignIn } from "../components/SsoSignIn";
+import { useAuthConfig } from "../authConfig";
 
 /** Brand panel for the signed-out pages: a glimpse of what the console shows. */
 export function AuthBrandPanel() {
@@ -39,7 +42,7 @@ export function PrototypeAuthFrame({ children }: { children: ReactNode }) {
         <BrandLockup className="ck-proto-auth-lockup" markClassName="ck-proto-auth-mark" aria-label="CostKey" />
         <h1>A little<br /><em>light on.</em></h1>
         <img
-          src="/assets/console/hero.png"
+          src={appUrl("/assets/console/hero.png")}
           className="ck-proto-auth-hero"
           alt="The observatory illustration from the supplied CostKey design language"
         />
@@ -91,8 +94,24 @@ export default function Login() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const authConfig = useAuthConfig();
 
   if (design === "prototype") return <PrototypeSignIn state={state} />;
+
+  // Single sign-on servers (and the moment before the config loads) never
+  // show password forms. See components/SsoSignIn.tsx.
+  if (authConfig?.mode !== "password") {
+    return (
+      <div className="auth-shell">
+        <AuthBrandPanel />
+        <main className="auth-panel">
+          <div className="auth-mobile-logo"><BrandLockup className="logo" markClassName="logo-mark" aria-label="CostKey" /></div>
+          <div className="auth-panel-inner"><SsoSignIn config={authConfig} /></div>
+          <AuthFooter />
+        </main>
+      </div>
+    );
+  }
 
   const githubQuery = new URLSearchParams();
   if (inviteToken) githubQuery.set("invite", inviteToken);
@@ -139,7 +158,7 @@ export default function Login() {
 
           <div className="auth-form-card">
             <a
-              href={githubQuery.toString() ? `/auth/github?${githubQuery.toString()}` : "/auth/github"}
+              href={appUrl(githubQuery.toString() ? `/auth/github?${githubQuery.toString()}` : "/auth/github")}
               className="ck-button ck-button-secondary auth-provider"
               aria-disabled={isLoadingPreview || submitting ? "true" : undefined}
             >

@@ -1,5 +1,7 @@
 import type pg from "pg";
 import bcrypt from "bcryptjs";
+import { projectDsn } from "./public-url.js";
+import { computeCost } from "./pricing.js";
 
 export async function seedIfEmpty(pool: pg.Pool): Promise<void> {
   const result = await pool.query("SELECT COUNT(*)::int as count FROM projects");
@@ -133,7 +135,7 @@ export async function seedIfEmpty(pool: pg.Pool): Promise<void> {
 
     await client.query("COMMIT");
     console.log(`[costkey] Seeded ${eventCount} events for ACME Corp (demo@costkey.dev / demo1234)`);
-    console.log(`[costkey] Demo DSN: https://${authKey}@localhost:4100/${projectId}`);
+    console.log(`[costkey] Demo DSN: ${projectDsn(authKey, projectId)}`);
   } catch (err) {
     await client.query("ROLLBACK");
     throw err;
@@ -225,16 +227,17 @@ export async function seedDemoAgentRuns(pool: pg.Pool, projectId = "proj_demo"):
           const durationMs = Math.round(random(m.minMs, m.maxMs));
           const inputTokens = Math.floor(random(800, 6000)) + turn * 900;
           const outputTokens = Math.floor(random(80, 900));
-          const cacheRead = m.cache && turn > 0 ? Math.floor(inputTokens * random(0.3, 0.75)) : null;
-          const cacheWrite = m.cache === "anthropic" && turn === 0 ? Math.floor(random(600, 2400)) : null;
+          // Providers that cache report a count on every call, 0 on a miss.
           // Anthropic reads/writes cache beside input; OpenAI cached tokens are part of input.
-          const cost = m.cache === "openai"
-            ? ((inputTokens - (cacheRead ?? 0)) * m.inp + (cacheRead ?? 0) * m.inp * 0.5 + outputTokens * m.out) / 1e6
-            : (inputTokens * m.inp + (cacheRead ?? 0) * m.inp * 0.1 + (cacheWrite ?? 0) * m.inp * 1.25 + outputTokens * m.out) / 1e6;
+          const cacheRead = m.cache ? (turn > 0 ? Math.floor(inputTokens * random(0.3, 0.75)) : 0) : null;
+          const cacheWrite = m.cache === "anthropic" ? (turn === 0 ? Math.floor(random(600, 2400)) : 0) : null;
+          // Priced from the built-in list prices, as a call without a catalog price would be.
+          const cost = computeCost(m.model, inputTokens, outputTokens, cacheRead, cacheWrite, m.provider)
+            ?? (inputTokens * m.inp + outputTokens * m.out) / 1e6;
           events.push([
             id("evt_demo_"), iso(cursor), projectId, m.provider, m.model, "POST", 200,
             inputTokens, outputTokens, inputTokens + outputTokens, cacheRead, cacheWrite,
-            Math.round(cost * 1e6) / 1e6, durationMs, false, traceId, agent.name, rootId,
+            cost, "estimated", "pricing_table", durationMs, false, traceId, agent.name, rootId,
             JSON.stringify({ agent: agent.name, task: agent.name, traceId, traceName: agent.name }),
           ]);
           cursor += durationMs + Math.floor(random(10, 60));
@@ -265,7 +268,7 @@ export async function seedDemoAgentRuns(pool: pg.Pool, projectId = "proj_demo"):
     await insertRows(client, "events", [
       "id", "timestamp", "project_id", "provider", "model", "method", "status_code",
       "input_tokens", "output_tokens", "total_tokens", "cache_read_tokens", "cache_creation_tokens",
-      "cost_usd", "duration_ms", "streaming", "trace_id", "trace_name", "span_id", "context",
+      "cost_usd", "cost_basis", "cost_source", "duration_ms", "streaming", "trace_id", "trace_name", "span_id", "context",
     ], events);
     await insertRows(client, "spans", [
       "id", "project_id", "trace_id", "parent_span_id", "kind", "name", "status", "error_type", "started_at", "ended_at", "attributes",

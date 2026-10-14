@@ -7,7 +7,9 @@ export function configureRequestParsing(app: Express): void {
   // ceiling before reading the body. Authentication-specific limiting runs
   // later, once the app's asynchronous initialization has completed.
   app.use("/api/v1/events", rateLimit({ windowMs: 60 * 1000, max: 60 }));
-  app.use("/api/v1/events", express.json({ limit: "12mb" }));
+  // Bodies arrive whole, usually gzipped (inflated here); the limit is the unpacked size.
+  // The SDKs send batches of at most 8 MB before compression.
+  app.use("/api/v1/events", express.json({ limit: "64mb" }));
   app.use(express.json({ limit: "5mb" }));
 }
 

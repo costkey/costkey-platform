@@ -1,0 +1,93 @@
+/* The run timeline: the landing page's "Traces" view, built from the run's calls. */
+.ck-tl {
+  margin-bottom: 20px;
+  padding: 18px 20px 16px;
+  border: 1px solid var(--ck-border);
+  border-radius: var(--ck-radius);
+  background: var(--ck-raised);
+  color: var(--ck-ink);
+}
+.ck-tl-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--ck-rule); }
+.ck-tl-run { min-width: 0; }
+.ck-tl-name { margin: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 16px; font-weight: 600; line-height: 1.3; }
+.ck-tl-meta { margin-top: 2px; color: var(--ck-slate); font-size: 12px; }
+.ck-tl-total { flex: 0 0 auto; text-align: right; }
+.ck-tl-total small { display: block; color: var(--ck-slate); font-size: 12px; line-height: 1.4; }
+.ck-tl-total b { display: block; font-size: 26px; font-weight: 560; line-height: 1.2; letter-spacing: -0.6px; font-variant-numeric: tabular-nums; }
+
+.ck-tl-axis, .ck-tl-row {
+  display: grid;
+  grid-template-columns: minmax(110px, 150px) minmax(170px, 270px) minmax(0, 1fr) 56px 80px;
+  gap: 14px;
+  align-items: center;
+}
+.ck-tl-axis { padding: 10px 0 4px; color: var(--ck-slate); font-size: 11px; }
+.ck-tl-ticks { position: relative; height: 14px; }
+.ck-tl-ticks i { position: absolute; top: 0; font-style: normal; white-space: nowrap; transform: translateX(-50%); }
+.ck-tl-ticks i:first-child { transform: none; }
+.ck-tl-ticks i.is-end { transform: translateX(-100%); }
+
+.ck-tl-body { margin: 0; padding: 0; list-style: none; }
+.ck-tl-row {
+  width: calc(100% + 40px);
+  margin: 0 -20px;
+  padding: 9px 20px;
+  border: 0;
+  border-top: 1px solid var(--ck-rule);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--ck-motion, 180ms) ease;
+}
+.ck-tl-row:hover { background: var(--ck-soft); }
+.ck-tl-row.is-selected { background: var(--ck-hover, #dce8ee); }
+.ck-tl-row:focus-visible { outline: 2px solid var(--ck-focus, #315f9c); outline-offset: -2px; }
+
+.ck-tl-prov { display: inline-flex; align-items: center; gap: 8px; min-width: 0; font-weight: 600; }
+.ck-tl-logo { display: grid; flex: 0 0 22px; place-items: center; width: 22px; height: 22px; border: 1px solid var(--ck-rule); border-radius: 6px; background: #fff; }
+.ck-tl-logo .ck-provider-logo { object-fit: contain; }
+.ck-tl-prov-name { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+
+.ck-tl-call { display: block; min-width: 0; }
+.ck-tl-fn { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-family: var(--font-mono); font-size: 12.5px; }
+.ck-tl-call small { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--ck-slate); font-size: 11.5px; }
+.ck-tl-failed { margin-right: 6px; color: var(--ck-critical, #a33d32); font-style: normal; font-weight: 600; }
+.ck-tl-row.is-failed .ck-tl-fn { color: var(--ck-critical, #a33d32); }
+
+.ck-tl-lane { position: relative; display: block; height: 10px; border-radius: 999px; background: var(--ck-soft); }
+.ck-tl-lane b { position: absolute; top: 0; bottom: 0; min-width: 4px; border-radius: 999px; }
+
+.ck-tl-time, .ck-tl-cost { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.ck-tl-time { color: var(--ck-slate); font-size: 12px; }
+.ck-tl-cost { font-weight: 600; }
+.ck-tl-cost.is-muted { color: var(--ck-slate); font-weight: 500; }
+
+.ck-tl-more { display: block; margin: 4px auto 0; }
+
+.ck-tl-split { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--ck-rule); }
+.ck-tl-bar { display: flex; gap: 3px; height: 10px; }
+.ck-tl-bar b { min-width: 3px; border-radius: 3px; }
+.ck-tl-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 10px; color: var(--ck-slate); font-size: 12px; }
+.ck-tl-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.ck-tl-legend i { width: 9px; height: 9px; border-radius: 3px; }
+
+/* Narrower content: give the lane the room the provider name would take. */
+@media (max-width: 1100px) {
+  .ck-tl-axis, .ck-tl-row { grid-template-columns: minmax(96px, 120px) minmax(140px, 200px) minmax(0, 1fr) 52px 76px; gap: 12px; }
+}
+
+/* Phones: logo, call, time and cost; no lane, so nothing scrolls sideways. */
+@media (max-width: 767px) {
+  .ck-tl { margin-bottom: 16px; padding: 14px 16px 12px; }
+  .ck-tl-head { align-items: flex-start; }
+  .ck-tl-total b { font-size: 22px; }
+  .ck-tl-axis { display: none; }
+  .ck-tl-row { grid-template-columns: 22px minmax(0, 1fr) 48px 66px; gap: 10px; width: calc(100% + 32px); margin: 0 -16px; padding: 9px 16px; }
+  .ck-tl-prov-name, .ck-tl-lane { display: none; }
+}
+
+/* Choosing a call on a narrow screen scrolls its inspector into view below the sticky header. */
+.ck-tl + .ck-trace-layout { scroll-margin-top: calc(var(--ck-header-height, 56px) + 12px); }

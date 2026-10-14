@@ -28,4 +28,10 @@ export interface ServerExtractor {
   extractStreamUnits?(records: unknown[]): Record<string, number> | null;
   /** Extra places a stream record carries usage (beyond itself, `response` and `message`). */
   streamCandidates?(record: Record<string, unknown>): unknown[];
+  /**
+   * Usage of a request that reached the provider but got no response (the
+   * client timed out reading it). Only for providers that bill on the
+   * request as soon as they start work, e.g. text-to-speech characters.
+   */
+  extractUnansweredUsage?(call: ExtractCall): NormalizedUsage | null;
 }

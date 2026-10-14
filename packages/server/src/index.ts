@@ -5,9 +5,12 @@ import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import type pg from "pg";
-import { ensureQualityCheckSchema, getPool, initDatabase } from "./db.js";
+import { ensureDailyAggregateSchema, ensureQualityCheckSchema, getPool, initDatabase } from "./db.js";
+import { ensureSsoSchema } from "./sso/provision.js";
 import { createIngestRouter, loadCallGraphCache } from "./ingest.js";
 import { createAuthRouter, authMiddleware } from "./auth.js";
+import { createSsoRouter, ssoSessionMiddleware } from "./sso/router.js"; // single sign-on
+import { reportAuthSettingsAtStartup } from "./sso/config.js"; // single sign-on
 import { createInvitePreviewRouter, createTeamsRouter } from "./teams.js";
 import { createAlertsRouter, checkAlerts } from "./alerts.js";
 import { projectMutationGuard, platformResponseGuards, rateLimit } from "./middleware.js";
@@ -31,7 +34,12 @@ import { createSubscriptionRouter } from "./subscription.js";
 import { refreshAllFindings } from "./findings.js";
 import { reconcileDailyCostAggregates } from "./accounting.js";
 import { startQualityCheckWorker } from "./quality-checks/worker.js";
+import { startEmptyRunSweeper } from "./empty-runs.js";
 import { seedDemoQualityChecks } from "./quality-checks/seed.js";
+import { basePath } from "./public-url.js";
+
+// Set by the image build from the release tag; "dev" when run from source.
+const SERVER_VERSION = process.env["COSTKEY_VERSION"] || "dev";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const dashboardDist = path.resolve(__dirname, "../../dashboard/dist");
@@ -100,9 +108,49 @@ async function reconcileDailyAccounting(pool: pg.Pool): Promise<void> {
   }
 }
 
-function addSpaRoutes(app: Express, includeDashboard: boolean): void {
+function escapeHtmlAttribute(value: string): string {
+  return value.replace(/[&<>"']/g, (char) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[char] ?? char));
+}
+
+/**
+ * The console is built once with a relative Vite base ("./assets/...") and
+ * learns its base path when served: asset URLs in the shell are anchored at
+ * the base path, so they resolve from any route depth, and
+ * window.__COSTKEY_BASE__ tells the app where its API and routes live.
+ * Lazy chunks load relative to the chunk that imports them.
+ */
+export function renderDashboardIndex(html: string, base: string): string {
+  const anchored = html.replace(/(\s(?:src|href)=["'])\.\//g, `$1${escapeHtmlAttribute(base)}/`);
+  const script = `<script>window.__COSTKEY_BASE__=${JSON.stringify(base).replace(/</g, "\\u003c")};</script>`;
+  return anchored.replace(/<head>/i, (head) => `${head}\n    ${script}`);
+}
+
+function dashboardIndexSender(base: string): (req: express.Request, res: express.Response) => void {
+  const indexPath = path.join(dashboardDist, "index.html");
+  let cached: { mtimeMs: number; html: string } | null = null;
+  return (_req, res) => {
+    try {
+      const { mtimeMs } = fs.statSync(indexPath);
+      if (!cached || cached.mtimeMs !== mtimeMs) {
+        cached = { mtimeMs, html: renderDashboardIndex(fs.readFileSync(indexPath, "utf8"), base) };
+      }
+      res.setHeader("Cache-Control", "no-store, must-revalidate");
+      res.type("html").send(cached.html);
+    } catch {
+      res.status(404).type("text").send("Console not built");
+    }
+  };
+}
+
+function addSpaRoutes(app: Express, includeDashboard: boolean, base: string): void {
   if (!includeDashboard || !fs.existsSync(path.join(dashboardDist, "index.html"))) return;
+  const sendIndex = dashboardIndexSender(base);
+  // index.html is always rendered for this base path, never sent as a file.
+  app.get(["/", "/index.html"], sendIndex);
   app.use(express.static(dashboardDist, {
+    index: false,
     setHeaders: (res, filePath) => {
       if (path.basename(filePath) === "index.html") {
         res.setHeader("Cache-Control", "no-store, must-revalidate");
@@ -131,20 +179,12 @@ function addSpaRoutes(app: Express, includeDashboard: boolean): void {
     next();
   });
   const spaRoutes = ["/login", "/signup", "/onboarding", "/settings", "/invite/:token"];
-  for (const route of spaRoutes) {
-    app.get(route, (_req, res) => {
-      res.setHeader("Cache-Control", "no-store, must-revalidate");
-      res.sendFile(path.join(dashboardDist, "index.html"));
-    });
-  }
+  for (const route of spaRoutes) app.get(route, sendIndex);
 }
 
-function addSpaFallback(app: Express, includeDashboard: boolean): void {
+function addSpaFallback(app: Express, includeDashboard: boolean, base: string): void {
   if (!includeDashboard || !fs.existsSync(path.join(dashboardDist, "index.html"))) return;
-  app.get("/{*path}", (_req, res) => {
-    res.setHeader("Cache-Control", "no-store, must-revalidate");
-    res.sendFile(path.join(dashboardDist, "index.html"));
-  });
+  app.get("/{*path}", dashboardIndexSender(base));
 }
 
 /**
@@ -153,6 +193,9 @@ function addSpaFallback(app: Express, includeDashboard: boolean): void {
  */
 export function createApp(options: AppOptions = {}): Express & AppRuntime {
   const pool = options.pool ?? getPool();
+  const base = basePath();
+  // Single sign-on: throws for an unknown COSTKEY_AUTH, logs missing settings.
+  reportAuthSettingsAtStartup();
   const app = express();
   const schedulerHandles: NodeJS.Timeout[] = [];
   let initialized = false;
@@ -185,17 +228,19 @@ export function createApp(options: AppOptions = {}): Express & AppRuntime {
 
   const health = (_req: express.Request, res: express.Response) => {
     if (!initialized) {
-      res.status(503).json({ status: initializationError ? "error" : "starting", version: "0.1.0" });
+      res.status(503).json({ status: initializationError ? "error" : "starting", version: SERVER_VERSION });
       return;
     }
-    res.json({ status: "ok", version: "0.1.0" });
+    res.json({ status: "ok", version: SERVER_VERSION });
   };
   app.get(["/health", "/ready"], health);
-  addSpaRoutes(app, options.includeDashboard !== false);
+  addSpaRoutes(app, options.includeDashboard !== false, base);
 
   // Authentication is non-blocking for SDK and public routes. API routers
   // enforce it where a user identity is required.
   app.use(authMiddleware(pool));
+  // Single sign-on: in IAP mode the signed IAP header decides who this is.
+  app.use(ssoSessionMiddleware(pool));
 
   app.use("/auth/login", rateLimit({ windowMs: 15 * 60 * 1000, max: 20 }));
   app.use("/auth/signup", rateLimit({ windowMs: 60 * 60 * 1000, max: 10 }));
@@ -227,6 +272,9 @@ export function createApp(options: AppOptions = {}): Express & AppRuntime {
   // the legacy budget/API routers remain lazy until database initialization.
   app.use(createSdkAdmissionRouter(pool));
   app.use(createSdkBudgetCompatibilityRouter(pool));
+  // Single sign-on: /auth/config, OIDC routes, and the password-route guard
+  // must precede the password auth router.
+  app.use(createSsoRouter(pool));
   app.use(createAuthRouter(pool));
   app.use(createIngestRuntimeConfigRouter(pool));
   app.use(createIngestRouter(pool));
@@ -254,6 +302,9 @@ export function createApp(options: AppOptions = {}): Express & AppRuntime {
       await ensurePlatformSchema(pool);
       await ensurePolicySchema(pool);
       await ensureQualityCheckSchema(pool);
+      // Every table exists from the first boot; nothing is created on first use.
+      await ensureSsoSchema(pool);
+      await ensureDailyAggregateSchema(pool);
       console.log("[costkey] Database ready");
       await loadCallGraphCache(pool);
       // Demo data is opt-in and never runs in production. Existing customer
@@ -283,7 +334,7 @@ export function createApp(options: AppOptions = {}): Express & AppRuntime {
       app.use(createBudgetsRouter(pool));
       app.use(createApiRouter(pool));
       app.use("/api", (_req, res) => res.status(404).json({ error: "Not found" }));
-      addSpaFallback(app, options.includeDashboard !== false);
+      addSpaFallback(app, options.includeDashboard !== false, base);
 
       if (options.startSchedulers !== false) {
         const periodic = setInterval(() => {
@@ -306,6 +357,7 @@ export function createApp(options: AppOptions = {}): Express & AppRuntime {
         hourlyNotifications.unref();
         schedulerHandles.push(periodic, dailyRetention, hourlyNotifications);
         schedulerHandles.push(startQualityCheckWorker(pool));
+        schedulerHandles.push(startEmptyRunSweeper(pool));
         // Generate findings even when nobody opens the console. Ingest also
         // schedules a one-second project-local refresh; this startup pass
         // covers existing activity and the interval handles quiet projects.
@@ -329,11 +381,25 @@ export function createApp(options: AppOptions = {}): Express & AppRuntime {
   };
 
   if (options.initialize) void initialize().catch((error) => console.error("[costkey] Init error:", error));
+
+  // Under a base path ("/costkey") every route above is served beneath it, so
+  // a load balancer can forward the sub-path unchanged. Health checks also
+  // answer at the root for hosting platforms; the root itself points at the
+  // console.
+  let served: Express = app;
+  if (base) {
+    served = express();
+    served.get(["/health", "/ready"], health);
+    served.use(base, app);
+    served.get("/", (_req, res) => res.redirect(`${base}/`));
+    console.log("[costkey] Serving under", base);
+  }
+
   // The returned value is both a normal Express app (for supertest/HTTP
   // harnesses) and a runtime handle exposing explicit initialization/timer
   // controls. Existing callers can use either `createApp()` or `.app`.
-  const handle = app as Express & AppRuntime;
-  handle.app = app;
+  const handle = served as Express & AppRuntime;
+  handle.app = served;
   handle.pool = pool;
   handle.initialize = initialize;
   handle.stopSchedulers = stopSchedulers;

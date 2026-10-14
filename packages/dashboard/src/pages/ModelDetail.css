@@ -1,0 +1,90 @@
+/* Model detail page. Everything else comes from the console's shared classes. */
+
+.ck-md-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.ck-md-title > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.ck-md-title .ck-provider-logo {
+  flex: 0 0 auto;
+}
+
+.ck-md-chart {
+  padding: 4px 20px 18px;
+  min-width: 0;
+}
+
+/* Rates and sources: long values wrap inside the panel. */
+.ck-md-price dd {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* A whole row opens its link; the link stays a real <a> for cmd-click. */
+.ck-table tr.ck-md-row-link {
+  position: relative;
+  cursor: pointer;
+}
+.ck-table tr.ck-md-row-link:hover td {
+  background: var(--ck-soft);
+}
+.ck-md-stretch::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+}
+.ck-md-stretch:focus-visible {
+  outline: none;
+}
+.ck-table tr.ck-md-row-link:has(.ck-md-stretch:focus-visible) td {
+  background: var(--ck-soft);
+}
+.ck-table tr.ck-md-row-link:has(.ck-md-stretch:focus-visible) td:first-child {
+  box-shadow: inset 2px 0 0 var(--ck-signal);
+}
+
+.ck-md-nowrap {
+  white-space: nowrap;
+}
+.ck-md-run {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ck-md-reason {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ck-table .ck-md-mobile-only {
+  display: none;
+}
+
+/* Four cards: two by two when they wrap, one column on phones (no orphan card). */
+@media (max-width: 1000px) {
+  .ck-metric-grid.ck-md-metrics > .ck-metric-card:first-child { grid-column: auto; }
+}
+
+@media (max-width: 767px) {
+  .ck-metric-grid.ck-md-metrics { grid-template-columns: minmax(0, 1fr); }
+  .ck-md-chart {
+    padding: 4px 16px 16px;
+  }
+  .ck-table .ck-md-mobile-only {
+    display: block;
+  }
+  .ck-md-price dd {
+    text-align: left;
+  }
+  .ck-md-reason {
+    max-width: 120px;
+  }
+}

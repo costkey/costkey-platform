@@ -1,4 +1,5 @@
 /* eslint-disable react-refresh/only-export-components -- state helpers intentionally share this component module. */
+import { currentRouterPath } from "../basePath";
 import type { ReactNode } from "react";
 import { AlertTriangle, CircleAlert, Info, LockKeyhole, Search, ShieldCheck } from "lucide-react";
 import { Link } from "react-router-dom";
@@ -97,7 +98,7 @@ function actionFor(state: PrototypeState, backHref: string, retryHref: string): 
 /** Full-page state treatment for named prototype variants. */
 export function PrototypeStatePanel({ state, family, title, backHref = "/", retryHref, loadingRows = 5, children }: StatePanelProps): ReactNode {
   if (state === "default" || state === "healthy" || state === "finding" || state === "partial" || state === "stale" || state === "unassigned" || state === "acknowledged" || state === "updated" || state === "revised" || state === "no-longer" || state === "enforce" || state === "per-execution" || state === "review" || state === "unavailable" || state === "invalid" || state === "proposal" || state === "refused" || state === "decision-unavailable" || state === "stop-requested" || state === "stop-confirmed" || state === "unknown-exposure" || state === "paused" || state === "credits" || state === "incomparable" || state === "delayed" || state === "voice" || state === "job" || state === "capabilities" || state === "cancelled" || state === "credit-form" || state === "missing-source") return null;
-  const effectiveRetry = retryHref ?? window.location.pathname + window.location.search;
+  const effectiveRetry = retryHref ?? currentRouterPath();
   if (state === "loading") return <div className="ck-main-inner"><PageHeader eyebrow={family} title={title ?? `Loading ${family.toLowerCase()}`} /><Panel><LoadingRows count={loadingRows} columns={4} /></Panel></div>;
   if (state === "restricted") return <div className="ck-main-inner"><PageHeader eyebrow={family} title={title ?? "View only"} /><Panel><EmptyPanel title="View only" body="You can see costs and usage. Changing budgets or reading prompts needs a different role." action={actionFor(state, backHref, effectiveRetry)} icon={<LockKeyhole size={18} />} /></Panel></div>;
   if (state === "no-access") return <div className="ck-main-inner"><PageHeader eyebrow={family} title={title ?? "Access required"} /><Panel><EmptyPanel title={`You don’t have access to this ${family.toLowerCase()}`} body="This belongs to a project you can’t open." action={actionFor(state, backHref, effectiveRetry)} icon={<LockKeyhole size={18} />} /></Panel></div>;

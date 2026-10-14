@@ -1,3 +1,4 @@
+import { appUrl, currentRouterPath } from "../basePath";
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { AlertCircle, ArrowRight } from "lucide-react";
@@ -25,9 +26,15 @@ import {
   type Tone,
 } from "../components/ConsolePrimitives";
 import { PrototypeIcon } from "../components/PrototypeIcon";
-import { formatDateTime, formatReportedAmount, parsePeriod, periodDates, periodLabel } from "../components/consoleFormatters";
+import { billedUnitsText } from "../components/tokenUsage";
+import { scopeSearch as drillScope } from "../components/links";
+import { allClearDismissed, dismissAllClear } from "../components/allClear";
+import { LiveStatus } from "../components/LiveStatus";
+import { useLiveQuery } from "../hooks/useLiveQuery";
+import { formatDateTime, formatReportedAmount, parsePeriod, periodDates, periodLabel, zonedDateParts, zonedDaysInMonth } from "../components/consoleFormatters";
 import { prototypeRole, prototypeState, PrototypeStateNotice, PrototypeStatePanel } from "../components/PrototypeState";
 import { BoardSkeleton, CostByModel, KpiCard, LatencyPanel, RunVolume, ScoresPanel, UsageByAgent } from "../components/OverviewBoard";
+import { SpendOverTime } from "../components/SpendOverTime";
 import { compactNumber, formatScore, previousRange } from "../components/overviewBoardModel";
 
 interface BudgetPolicySummary {
@@ -69,71 +76,56 @@ interface OverviewData {
 const EMPTY_DATA: OverviewData = { overview: null, previousOverview: null, board: null, forecast: null, health: null, findings: [], policies: [], environments: [] };
 
 async function getJson<T>(path: string): Promise<T> {
-  const response = await fetch(path, { credentials: "include" });
+  const response = await fetch(appUrl(path), { credentials: "include" });
   if (!response.ok) throw new Error(`Request failed (${response.status})`);
   return response.json() as Promise<T>;
 }
 
 function useOverviewData(projectId: string | null, period: Period, timezone?: string | null, scopeOverride?: { from?: string; to?: string } | null, environment?: string) {
   const requestKey = [projectId ?? "none", period, timezone ?? "", scopeOverride?.from ?? "", scopeOverride?.to ?? "", environment ?? "all"].join("\u0001");
-  const [state, setState] = useState<{ key: string; data: OverviewData; error: string | null }>({ key: "", data: EMPTY_DATA, error: null });
-  const loading = Boolean(projectId) && state.key !== requestKey;
-  const data = state.key === requestKey ? state.data : EMPTY_DATA;
-  const [refreshing, setRefreshing] = useState(false);
-  const [reloadKey, setReloadKey] = useState(0);
-
-  useEffect(() => {
-    if (!projectId) return;
-    let cancelled = false;
+  // Live: the board refreshes every 10 s while the tab is visible, keeping what is on screen.
+  const live = useLiveQuery(projectId ? requestKey : null, async () => {
     const dates = periodDates(period, timezone ?? undefined);
     const from = scopeOverride?.from ?? dates.from;
     const to = scopeOverride?.to ?? dates.to;
     const previous = previousRange(from, to);
     const env = environment && environment !== "all" ? environment : undefined;
-    const load = async () => {
-      const [overview, previousOverview, board, callSites, forecast, health, anomalies, policies] = await Promise.allSettled([
-        getOverview(projectId, from, to, env),
-        getOverview(projectId, previous.from, previous.to, env),
-        getOverviewBoard(projectId, { from, to, environment: env }),
-        // Only for the environments that have data.
-        getCostBreakdown(projectId, { groupBy: "feature", from, to, environment: env }),
-        period === "mtd" ? getForecast(projectId, { from, to, environment: env }) : Promise.resolve(null),
-        getHealth(projectId),
-        getJson<{ findings: FindingRow[] }>(`/api/v1/projects/${projectId}/findings`),
-        getJson<{ policies: BudgetPolicySummary[] }>(`/api/v1/projects/${projectId}/budget/policies`),
-      ]);
-      if (cancelled) return;
-      const forecastResult = period === "mtd" ? forecast : null;
-      const next: OverviewData = {
-        overview: overview.status === "fulfilled" ? overview.value.overview : null,
-        previousOverview: previousOverview.status === "fulfilled" ? previousOverview.value.overview : null,
-        board: board.status === "fulfilled" ? board.value : null,
-        forecast: forecastResult?.status === "fulfilled" ? forecastResult.value?.forecast ?? null : null,
-        health: health.status === "fulfilled" ? health.value : null,
-        findings: anomalies.status === "fulfilled" ? anomalies.value.findings ?? [] : [],
-        policies: policies.status === "fulfilled" ? policies.value.policies ?? [] : [],
-        environments: callSites.status === "fulfilled" ? callSites.value.availableFilters?.environments ?? [] : [],
-      };
-      const firstError = [overview, board, callSites].find((result) => result.status === "rejected");
-      setState({ key: requestKey, data: next, error: firstError?.status === "rejected" ? firstError.reason instanceof Error ? firstError.reason.message : "Could not load overview" : null });
-      setRefreshing(false);
+    const [overview, previousOverview, board, callSites, forecast, health, anomalies, policies] = await Promise.allSettled([
+      getOverview(projectId!, from, to, env),
+      getOverview(projectId!, previous.from, previous.to, env),
+      getOverviewBoard(projectId!, { from, to, environment: env }),
+      // Only for the environments that have data.
+      getCostBreakdown(projectId!, { groupBy: "feature", from, to, environment: env }),
+      period === "mtd" ? getForecast(projectId!, { from, to, environment: env }) : Promise.resolve(null),
+      getHealth(projectId!),
+      getJson<{ findings: FindingRow[] }>(`/api/v1/projects/${projectId}/findings`),
+      getJson<{ policies: BudgetPolicySummary[] }>(`/api/v1/projects/${projectId}/budget/policies`),
+    ]);
+    const forecastResult = period === "mtd" ? forecast : null;
+    const next: OverviewData = {
+      overview: overview.status === "fulfilled" ? overview.value.overview : null,
+      previousOverview: previousOverview.status === "fulfilled" ? previousOverview.value.overview : null,
+      board: board.status === "fulfilled" ? board.value : null,
+      forecast: forecastResult?.status === "fulfilled" ? forecastResult.value?.forecast ?? null : null,
+      health: health.status === "fulfilled" ? health.value : null,
+      findings: anomalies.status === "fulfilled" ? anomalies.value.findings ?? [] : [],
+      policies: policies.status === "fulfilled" ? policies.value.policies ?? [] : [],
+      environments: callSites.status === "fulfilled" ? callSites.value.availableFilters?.environments ?? [] : [],
     };
-    void load().catch((reason: unknown) => {
-      if (cancelled) return;
-      setState({ key: requestKey, data: EMPTY_DATA, error: reason instanceof Error ? reason.message : "Could not load overview" });
-      setRefreshing(false);
-    });
-    return () => { cancelled = true; };
-  }, [projectId, period, timezone, reloadKey, requestKey, scopeOverride?.from, scopeOverride?.to, environment]);
-
-  const error = state.key === requestKey ? state.error : null;
-
+    const firstError = [overview, board, callSites].find((result) => result.status === "rejected");
+    // Every part failing is a failed refresh: keep the last numbers and say so.
+    if (overview.status === "rejected" && board.status === "rejected") throw firstError?.status === "rejected" && firstError.reason instanceof Error ? firstError.reason : new Error("Could not load overview");
+    return { key: requestKey, data: next, error: firstError?.status === "rejected" ? firstError.reason instanceof Error ? firstError.reason.message : "Could not load overview" : null };
+  });
+  const current = live.data?.key === requestKey ? live.data : null;
   return {
-    data,
-    loading,
-    refreshing,
-    error,
-    refresh: () => { setRefreshing(true); setReloadKey((key) => key + 1); },
+    data: current?.data ?? EMPTY_DATA,
+    loading: Boolean(projectId) && !current,
+    refreshing: false,
+    error: current ? current.error : live.error,
+    status: live.status,
+    updatedAt: live.updatedAt,
+    refresh: live.refresh,
   };
 }
 
@@ -167,20 +159,20 @@ function monthlyBudget(policies: BudgetPolicySummary[]): BudgetPolicySummary | n
 
 function OverviewLoadingState(): ReactNode {
   return <>
-    <div className="ck-board-kpis">{["Agent runs", "Model cost", "Tokens", "Avg score"].map((label) => <KpiCard key={label} label={label} value="" current={null} previous={null} previousLabel="" higherIsBetter loading />)}</div>
+    <div className="ck-board-kpis">{["Runs", "Model cost", "Tokens", "Avg score"].map((label) => <KpiCard key={label} label={label} value="" current={null} previous={null} previousLabel="" higherIsBetter loading />)}</div>
     <div className="ck-board-row ck-board-row-3"><BoardSkeleton /><BoardSkeleton /><BoardSkeleton /></div>
     <div className="ck-board-row ck-board-row-2"><BoardSkeleton /><BoardSkeleton /></div>
   </>;
-}
-
-function daysInMonth(date: Date): number {
-  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)).getUTCDate();
 }
 
 export default function Dashboard() {
   const { currentProjectId, projects, org, workspaceSettings, setCurrentProjectId } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
   const projectId = currentProjectId ?? projects[0]?.id ?? null;
+  const workspaceZone = workspaceSettings?.timezone ?? org?.timezone ?? undefined;
+  const [allClearHidden, setAllClearHidden] = useState<Record<string, boolean>>({});
+  const allClearIsHidden = projectId ? allClearHidden[projectId] ?? allClearDismissed(projectId, new Date(), workspaceZone) : false;
+  const hideAllClear = () => { if (!projectId) return; dismissAllClear(projectId, new Date(), workspaceZone); setAllClearHidden((current) => ({ ...current, [projectId]: true })); };
   const project = projects.find((item) => item.id === projectId);
   const timezone = workspaceSettings?.timezone ?? org?.timezone;
   const reportingCurrency = workspaceSettings?.reportingCurrency ?? "USD";
@@ -197,6 +189,7 @@ export default function Dashboard() {
     if (requestedProject && requestedProject.id !== currentProjectId) setCurrentProjectId(requestedProject.id);
   }, [requestedProject, currentProjectId, setCurrentProjectId]);
   const resource = useOverviewData(projectId, period, timezone, requestedScope, environment);
+  void dataVersion;
   const overview = normalizeOverview(resource.data.overview);
   const previousOverview = normalizeOverview(resource.data.previousOverview);
   const board = resource.data.board;
@@ -208,8 +201,9 @@ export default function Dashboard() {
   const pace = resource.data.forecast?.currentPace;
   const projected = pace?.available && pace.projectedCost != null ? Number(pace.projectedCost) : null;
   const now = new Date();
-  const periodDays = pace?.periodDays ?? daysInMonth(now);
-  const dayOfMonth = now.getUTCDate();
+  // Days count in the workspace time zone: 1 Nov starts at midnight in India, not UTC.
+  const periodDays = pace?.periodDays ?? zonedDaysInMonth(now, timezone);
+  const dayOfMonth = zonedDateParts(now, timezone).day;
   const unpriced = Number(overview?.unpriced_count ?? forecastObserved?.unpricedObservations) || 0;
   const explicitState = prototypeState(searchParams);
   const activeFindings = explicitState === "healthy" ? [] : resource.data.findings.filter((finding) => finding.state !== "no_longer_outside_threshold" && finding.state !== "acknowledged");
@@ -248,9 +242,10 @@ export default function Dashboard() {
 
   const scopeEnvironments = environmentOptions.length > 1 || environment !== "all";
   const periodBadge = <div className="ck-period-badge">
+    <LiveStatus status={resource.status} updatedAt={resource.updatedAt} onRefresh={resource.refresh} />
     {scopeEnvironments && <span className="ck-pill-select"><select aria-label="Environment" value={environment} onChange={(event) => onEnvironmentChange(event.target.value)}>{environmentOptions.concat(environment !== "all" && !environmentOptions.some((option) => option.value === environment) ? [{ value: environment, label: environment }] : []).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select><PrototypeIcon name="down" size={12} /></span>}
     <span className="ck-pill-select ck-period-pill"><select aria-label="Period" value={toolbarPeriod === "custom" ? "custom" : period} onChange={(event) => changePeriod(event.target.value as Period)}>
-      <option value="mtd">{now.toLocaleDateString("en-US", { month: "long", timeZone: "UTC" })}</option>
+      <option value="mtd">{now.toLocaleDateString("en-US", { month: "long", timeZone: timezone ?? undefined })}</option>
       <option value="7d">Last 7 days</option>
       <option value="30d">Last 30 days</option>
       {toolbarPeriod === "custom" && <option value="custom">Custom range</option>}
@@ -271,7 +266,7 @@ export default function Dashboard() {
   }
 
   const namedState = ["none", "new"].includes(explicitState)
-    ? PrototypeStatePanel({ state: explicitState, family: "Overview", title: explicitState === "new" ? "Ready for your first run" : "No runs in this period", backHref: "/onboarding", retryHref: window.location.pathname + window.location.search })
+    ? PrototypeStatePanel({ state: explicitState, family: "Overview", title: explicitState === "new" ? "Ready for your first run" : "No runs in this period", backHref: "/onboarding", retryHref: currentRouterPath() })
     : null;
   if (namedState) return namedState;
 
@@ -280,14 +275,21 @@ export default function Dashboard() {
     return <div className="ck-main-inner"><PageHeader title="Overview" actions={periodBadge} /><Panel><EmptyPanel illustration={lastSeen ? "a-closer-look" : "first-light"} title={lastSeen ? "No runs in this period" : "Ready for your first run"} body={lastSeen ? `The last run arrived ${formatDateTime(lastSeen)}. Try a longer period. A quiet project is not necessarily disconnected.` : "Send a request from your app. It shows up here with its cost."} action={<div className="ck-button-row"><Link className="ck-button ck-button-secondary" to={`/traces${scopeSearch}`}>View runs</Link><Link className="ck-button ck-button-primary" to="/onboarding">Check setup</Link></div>} /></Panel></div>;
   }
 
-  // "Agent runs" counts runs whose root is an agent; a project with no agents counts all runs.
-  const hasAgents = Boolean(board && (board.runs.current.agentRuns > 0 || board.runs.previous.agentRuns > 0));
+  // Every run counts, agents and workflows alike; the split is under the number.
+  const agentRuns = board?.runs.current.agentRuns ?? 0;
+  const workflowRuns = Math.max(0, (board?.runs.current.runs ?? 0) - agentRuns);
   const runsKpi = {
-    label: hasAgents || !board ? "Agent runs" : "Runs",
-    current: board ? hasAgents ? board.runs.current.agentRuns : board.runs.current.runs : 0,
-    previous: board ? hasAgents ? board.runs.previous.agentRuns : board.runs.previous.runs : 0,
+    label: "Runs",
+    current: board ? board.runs.current.runs : 0,
+    previous: board ? board.runs.previous.runs : 0,
+    split: board && agentRuns > 0 && workflowRuns > 0
+      ? `${agentRuns.toLocaleString("en-US")} agent · ${workflowRuns.toLocaleString("en-US")} workflow`
+      : undefined,
   };
   const currentTokens = overviewTokens(overview);
+  // Speech, audio, images and searches bill in their own units; they count as usage too.
+  const otherUnits = billedUnitsText(board?.units?.current);
+  const scopeSearchText = drillScope();
   const previousTokens = overviewTokens(previousOverview);
   const finding = activeFindings[0];
   const findingHref = finding ? `/finding?id=${encodeURIComponent(finding.id)}&project=${encodeURIComponent(projectId ?? "")}` : "";
@@ -309,17 +311,19 @@ export default function Dashboard() {
       <PageHeader title="Overview" actions={periodBadge} />
       
       {!["partial", "stale", "error", "healthy"].includes(explicitState) && <PrototypeStateNotice state={explicitState} family="overview" role={prototypeRole(searchParams, "viewer")} />}
-      {(explicitState === "error" || resource.error) && <div className="ck-alert ck-alert-error" role="alert"><AlertCircle size={15} aria-hidden="true" /><div><strong>Couldn’t refresh everything.</strong> Showing the latest numbers we have. <button type="button" className="ck-button ck-button-quiet ck-inline-button" onClick={() => setDataVersion((value) => value + 1)}>Try again</button></div></div>}
-      {!resource.loading && <StatusLine tone={status.tone} right={status.right}>{status.text}</StatusLine>}
+      {(explicitState === "error" || resource.error) && <div className="ck-alert ck-alert-error" role="alert"><AlertCircle size={15} aria-hidden="true" /><div><strong>Couldn’t refresh everything.</strong> Showing the latest numbers we have. <button type="button" className="ck-button ck-button-quiet ck-inline-button" onClick={() => { resource.refresh(); setDataVersion((value) => value + 1); }}>Try again</button></div></div>}
+      {/* The all-clear can be dismissed for the month; a warning always shows. */}
+      {!resource.loading && !(status.tone === "good" && allClearIsHidden) && <StatusLine tone={status.tone} right={status.right} onDismiss={status.tone === "good" ? hideAllClear : undefined}>{status.text}</StatusLine>}
       {resource.loading ? <OverviewLoadingState /> : <>
         <div className="ck-board-kpis">
-          <KpiCard label={runsKpi.label} value={board ? runsKpi.current.toLocaleString("en-US") : "—"} current={board ? runsKpi.current : null} previous={board ? runsKpi.previous : null} previousLabel={runsKpi.previous.toLocaleString("en-US")} higherIsBetter />
-          <KpiCard label="Model cost" value={money(currentCost)} current={currentCost} previous={previousCost} previousLabel={money(previousCost)} higherIsBetter={false} />
-          <KpiCard label="Tokens" value={compactNumber(currentTokens)} current={currentTokens} previous={previousTokens} previousLabel={compactNumber(previousTokens)} higherIsBetter={false} />
-          <KpiCard label="Avg score" value={formatScore(board?.scores.current.avg)} current={board?.scores.current.avg ?? null} previous={board?.scores.previous.avg ?? null} previousLabel={formatScore(board?.scores.previous.avg)} higherIsBetter />
+          <KpiCard to={`/traces${scopeSearchText}`} label={runsKpi.label} value={board ? runsKpi.current.toLocaleString("en-US") : "—"} current={board ? runsKpi.current : null} previous={board ? runsKpi.previous : null} previousLabel={runsKpi.previous.toLocaleString("en-US")} higherIsBetter={null} note={runsKpi.split} />
+          <KpiCard to={`/costs${scopeSearchText}`} label="Model cost" value={money(currentCost)} current={currentCost} previous={previousCost} previousLabel={money(previousCost)} higherIsBetter={false} />
+          <KpiCard to={`/models${scopeSearchText}`} label={currentTokens || !otherUnits ? "Tokens" : "Usage"} value={currentTokens ? compactNumber(currentTokens) : otherUnits || compactNumber(currentTokens)} current={currentTokens} previous={previousTokens} previousLabel={compactNumber(previousTokens)} higherIsBetter={null} />
+          <KpiCard to={`/quality${scopeSearchText}`} label="Avg score" value={formatScore(board?.scores.current.avg)} current={board?.scores.current.avg ?? null} previous={board?.scores.previous.avg ?? null} previousLabel={formatScore(board?.scores.previous.avg)} higherIsBetter />
         </div>
+        <SpendOverTime projectId={projectId} period={toolbarPeriod} range={requestedScope} environment={environment} money={money} />
         <div className="ck-board-row ck-board-row-3">
-          <CostByModel board={board} totalCost={money(currentCost)} />
+          <CostByModel board={board} totalCost={money(currentCost)} money={money} projectId={projectId} />
           <UsageByAgent board={board} money={money} />
           <ScoresPanel board={board} />
         </div>

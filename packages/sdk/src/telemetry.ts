@@ -470,10 +470,17 @@ export class ChunkCollector {
   }
 }
 
+/**
+ * A stream record that parsed as JSON, with its SSE `event:` name when it had
+ * one. Content capture keeps these (and only these) whole.
+ */
+export type StreamContentHandler = (record: unknown, event: string | null) => void;
+
 /** Incremental parser of a text stream into its JSON records. */
 export class TextStreamParser {
   private buffer = "";
   private dataLines: string[] = [];
+  private eventName: string | null = null;
   private jsonText = "";
   private jsonOverflow = false;
   private static readonly MAX_JSON_ARRAY_CHARS = 8 * 1024 * 1024;
@@ -481,12 +488,14 @@ export class TextStreamParser {
   constructor(
     readonly format: Exclude<StreamFormat, "aws-eventstream">,
     private readonly onRecord: (record: unknown) => void,
+    /** Content capture: every JSON record, uncapped (the 8 MB JSON-array cap is lifted). */
+    private readonly onContent: StreamContentHandler | null = null,
   ) {}
 
   push(text: string): void {
     if (this.format === "json-array") {
       if (this.jsonOverflow) return;
-      if (this.jsonText.length + text.length > TextStreamParser.MAX_JSON_ARRAY_CHARS) {
+      if (!this.onContent && this.jsonText.length + text.length > TextStreamParser.MAX_JSON_ARRAY_CHARS) {
         this.jsonOverflow = true;
         this.jsonText = "";
         return;
@@ -510,9 +519,9 @@ export class TextStreamParser {
       this.jsonText = "";
       if (parsed === NOT_JSON) return;
       if (Array.isArray(parsed)) {
-        for (const item of parsed) this.onRecord(item);
+        for (const item of parsed) this.emit(item, null);
       } else {
-        this.onRecord(parsed);
+        this.emit(parsed, null);
       }
       return;
     }
@@ -528,7 +537,8 @@ export class TextStreamParser {
     if (this.format === "ndjson") {
       if (line.trim().length === 0) return;
       const parsed = parseJson(line);
-      this.onRecord(parsed === NOT_JSON ? line : parsed);
+      if (parsed === NOT_JSON) this.onRecord(line);
+      else this.emit(parsed, null);
       return;
     }
     // SSE: data lines accumulate until a blank line ends the event.
@@ -540,17 +550,28 @@ export class TextStreamParser {
     if (line.startsWith("data:")) {
       const value = line.slice(5);
       this.dataLines.push(value.startsWith(" ") ? value.slice(1) : value);
+    } else if (line.startsWith("event:")) {
+      const value = line.slice(6);
+      this.eventName = value.startsWith(" ") ? value.slice(1) : value;
     }
   }
 
   private dispatch(): void {
+    const eventName = this.eventName;
+    this.eventName = null;
     if (this.dataLines.length === 0) return;
     const data = this.dataLines.join("\n");
     this.dataLines = [];
     // `[DONE]` is the SSE terminator (framing), not a record.
     if (data.trim() === "[DONE]" || data.length === 0) return;
     const parsed = parseJson(data);
-    this.onRecord(parsed === NOT_JSON ? data : parsed);
+    if (parsed === NOT_JSON) this.onRecord(data);
+    else this.emit(parsed, eventName || null);
+  }
+
+  private emit(record: unknown, event: string | null): void {
+    this.onRecord(record);
+    if (this.onContent) this.onContent(record, event);
   }
 }
 

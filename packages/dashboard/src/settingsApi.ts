@@ -1,6 +1,7 @@
+import { appUrl } from "./basePath";
 import { UNAUTHENTICATED_EVENT } from "./api";
 
-const API_BASE = "/api/v1";
+const API_BASE = appUrl("/api/v1");
 
 export class SettingsApiError extends Error {
   readonly status: number;

@@ -1,3 +1,4 @@
+import { appUrl } from "../basePath";
 import { setDisplayTimeZone } from "../components/consoleFormatters";
 import { useState, useEffect, useCallback, type ReactNode } from "react";
 import { analytics } from "../analytics";
@@ -27,7 +28,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const refresh = useCallback(async () => {
     try {
-      const res = await fetch("/auth/me", { credentials: "include" });
+      const res = await fetch(appUrl("/auth/me"), { credentials: "include" });
       if (!res.ok) {
         setUser(null);
         setOrg(null);
@@ -90,7 +91,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = async (email: string, password: string): Promise<boolean> => {
     setError(null);
     try {
-      const res = await fetch("/auth/login", {
+      const res = await fetch(appUrl("/auth/login"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -102,7 +103,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return false;
       }
       // Fetch user data immediately after login
-      const meRes = await fetch("/auth/me", { credentials: "include" });
+      const meRes = await fetch(appUrl("/auth/me"), { credentials: "include" });
       if (meRes.ok) {
         const data = await meRes.json();
         setUser(data.user);
@@ -128,7 +129,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   ): Promise<{ dsn: string; projectId: string; joinedViaInvite?: boolean } | null> => {
     setError(null);
     try {
-      const res = await fetch("/auth/signup", {
+      const res = await fetch(appUrl("/auth/signup"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -154,13 +155,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const logout = async () => {
     analytics.capture("user_logged_out");
-    await fetch("/auth/logout", { method: "POST", credentials: "include" });
+    const res = await fetch(appUrl("/auth/logout"), { method: "POST", credentials: "include" });
     setUser(null);
     setOrg(null);
     setProjects([]);
     setCurrentProjectId(null);
     setWorkspaceSettings(null);
     analytics.reset();
+    // Single sign-on: behind IAP the server names IAP's clear-login-cookie
+    // path, otherwise the next request would sign straight back in.
+    const body = await res.json().catch(() => null) as { redirectTo?: unknown } | null;
+    if (typeof body?.redirectTo === "string" && body.redirectTo.startsWith("/") && !body.redirectTo.startsWith("//")) {
+      window.location.assign(body.redirectTo);
+      // The page is leaving; don't let callers route to /login and sign in again.
+      await new Promise<never>(() => undefined);
+    }
   };
 
   return (

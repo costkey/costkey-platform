@@ -1,4 +1,7 @@
 import type { Request, Response, Router } from "express";
+import { scopeSite } from "./scope-site.js";
+import { findBusinessLogicFrame } from "./ingest.js";
+import type { StackFrame } from "@costkey/shared";
 import { Router as createRouter } from "express";
 import type pg from "pg";
 import { randomBytes } from "node:crypto";
@@ -48,6 +51,8 @@ import {
   type ChargeScope,
   type ScopeValues,
 } from "./charge-cohort.js";
+import { callCacheSavings, callCostBreakdown } from "./token-usage.js";
+import { loadRetries } from "./retries.js";
 
 type ScopeDimension = "feature" | "function" | "customer" | "model" | "provider" | "context";
 type ExplorerSort = "newest" | "cost_desc" | "duration_desc" | "calls_desc";
@@ -635,7 +640,7 @@ function traceCte(): string {
              MAX(model) AS model,
              COUNT(*)::int AS observations,
              COUNT(*) FILTER (WHERE cost_usd IS NOT NULL)::int AS priced_observations,
-             COUNT(*) FILTER (WHERE cost_usd IS NULL)::int AS unpriced_observations,
+             COUNT(*) FILTER (WHERE cost_usd IS NULL AND NOT no_charge)::int AS unpriced_observations,
              SUM(cost_usd) FILTER (WHERE cost_usd IS NOT NULL) AS known_cost,
              STRING_AGG(DISTINCT provider, ',') AS providers,
              STRING_AGG(DISTINCT model, ',') AS models,
@@ -661,7 +666,7 @@ function traceCte(): string {
              MAX(e.context->>'environment') AS environment,
              MAX(e.context->>'customer') AS customer,
              MAX(e.context->>'service') AS service,
-             MAX(to_jsonb(e)->>'release') AS release,
+             MAX(e.release) AS release,
              MAX(e.bl_file) AS bl_file,
              MAX(e.bl_function) AS bl_function,
              MAX(e.execution_id) AS execution_id,
@@ -774,7 +779,8 @@ function serializeTrace(row: Record<string, unknown>): Record<string, unknown> {
   const observations = number(row.observations, 0);
   const priced = number(row.priced_observations, 0);
   const unpriced = number(row.unpriced_observations, 0);
-  const knownCost = priced > 0 ? number(row.known_cost, 0) : null;
+  // No model calls, or only failed calls without a price: it cost nothing.
+  const knownCost = priced > 0 ? number(row.known_cost, 0) : unpriced === 0 ? 0 : null;
   const started = row.started_at ? new Date(String(row.started_at)) : null;
   const ended = row.ended_at ? new Date(String(row.ended_at)) : null;
   const elapsed = started && ended && !Number.isNaN(started.getTime()) && !Number.isNaN(ended.getTime())
@@ -796,7 +802,7 @@ function serializeTrace(row: Record<string, unknown>): Record<string, unknown> {
     known_cost: knownCost,
     unpriced_count: unpriced,
     pricing_coverage: observations > 0 ? priced / observations : null,
-    accounting_state: observations === 0 ? "pending" : unpriced > 0 ? "partial" : "complete",
+    accounting_state: observations === 0 ? "no_calls" : unpriced > 0 ? "partial" : "complete",
     execution_state: row.execution_state ?? "unknown",
     providers: row.providers ?? null,
     models: row.models ?? null,
@@ -1170,7 +1176,18 @@ export function createAccountingRouter(pool: pg.Pool): Router {
       );
       if (result.rows.length === 0) { res.status(404).json({ error: "Event not found" }); return; }
       const sourceRestricted = !await sourceAccessAllowed(pool, String(req.params["projectId"]), user(req).role);
-      res.json({ event: exposeEvent(result.rows[0] as Record<string, unknown>, sourceRestricted) });
+      const row = result.rows[0] as Record<string, unknown>;
+      // A call with no code of its own (made on a framework's task) shows the
+      // code that opened the span it ran in.
+      let scope: Awaited<ReturnType<typeof scopeSite>> = null;
+      const frames = Array.isArray(row["call_site_frames"]) ? row["call_site_frames"] as StackFrame[] : [];
+      if (!sourceRestricted && !findBusinessLogicFrame(frames)) scope = await scopeSite(pool, String(req.params["projectId"]), row["span_id"] as string | null);
+      // How its cost adds up: each component at its rate, from the price it was charged at.
+      res.json({ event: {
+        ...exposeEvent(row, sourceRestricted),
+        cost_breakdown: callCostBreakdown(row),
+        scope_site: scope ? { span_id: scope.spanId, kind: scope.kind, name: scope.name, frames: scope.frames } : null,
+      } });
     } catch (err) {
       console.error("[costkey] Accounting event detail error:", err);
       res.status(500).json({ error: "Failed to fetch event" });
@@ -1346,6 +1363,8 @@ export function createAccountingRouter(pool: pg.Pool): Router {
       const offset = Math.max(number(req.query["offset"], 0), 0);
       const params: unknown[] = [projectId];
       const clauses = scopeClauses(scope, params, "tb");
+      // The console hides runs that made no model calls unless asked.
+      if (value(req.query["withCalls"]) === "1") clauses.push("tb.observations > 0");
       const statuses = queryValues(req.query["status"] ?? req.query["lifecycle"]);
       if (statuses) {
         const statusItems = Array.isArray(statuses) ? statuses : [statuses];
@@ -1378,8 +1397,10 @@ export function createAccountingRouter(pool: pg.Pool): Router {
       const result = await pool.query(listSql, [...params, limit, offset]);
       const total = await pool.query(`${traceCte()}
         SELECT COUNT(*)::int AS count FROM trace_base tb WHERE ${clauses.join(" AND ")}`, params);
+      // A failed attempt that a later attempt of the same work item completed is "retried".
+      const retries = await loadRetries(pool, projectId, result.rows.map((row) => String(row.trace_id)));
       res.json({
-        traces: result.rows.map((row) => serializeTrace(row as Record<string, unknown>)),
+        traces: result.rows.map((row) => ({ ...serializeTrace(row as Record<string, unknown>), retry: retries.get(String(row.trace_id)) ?? null })),
         total: number(total.rows[0]?.count, 0),
         limit,
         offset,
@@ -1419,7 +1440,7 @@ export function createAccountingRouter(pool: pg.Pool): Router {
                 feature_mapping_action_id, feature_original,
                 call_site_raw, call_site_frames, bl_function, bl_file, bl_line,
                 context, metadata, system_prompt, request_body, response_body,
-                span_id, native_units
+                span_id, native_units, release, url AS pricing_url
          FROM events
          WHERE project_id = $1 AND trace_id = $2
            AND COALESCE(event_type, 'call') = 'call'
@@ -1453,7 +1474,7 @@ export function createAccountingRouter(pool: pg.Pool): Router {
          ORDER BY observed_at ASC, id ASC`,
         params,
       );
-      const summary = serializeTrace(summaryResult.rows[0] as Record<string, unknown>);
+      const summary = { ...serializeTrace(summaryResult.rows[0] as Record<string, unknown>), retry: (await loadRetries(pool, projectId, [traceId])).get(traceId) ?? null };
       const usageComponents = components.rows.map((row) => restricted
         ? {
           id: row.id,
@@ -1477,7 +1498,11 @@ export function createAccountingRouter(pool: pg.Pool): Router {
       res.json({
         traceId,
         summary,
-        events: events.rows.map((row) => exposeEvent(row as Record<string, unknown>, restricted)),
+        events: events.rows.map((row) => {
+          // What cache hits saved on this call, when its price can be checked.
+          const { pricing_url: url, ...call } = row as Record<string, unknown>;
+          return exposeEvent({ ...call, cache_saved_usd: callCacheSavings({ ...call, url }) }, restricted);
+        }),
         lifecycleEvents: lifecycleEvents.rows.map((row) => exposeEvent(row as Record<string, unknown>, restricted)),
         usageComponents,
         spans: spans.rows.map((row) => exposeSpan(row as Record<string, unknown>, restricted)),
@@ -1561,7 +1586,7 @@ export function createAccountingRouter(pool: pg.Pool): Router {
           SELECT project_id, execution_id,
                  COUNT(*)::int AS observations,
                  COUNT(*) FILTER (WHERE cost_usd IS NOT NULL)::int AS priced_observations,
-                 COUNT(*) FILTER (WHERE cost_usd IS NULL)::int AS unpriced_observations,
+                 COUNT(*) FILTER (WHERE cost_usd IS NULL AND NOT no_charge)::int AS unpriced_observations,
                  SUM(cost_usd) FILTER (WHERE cost_usd IS NOT NULL) AS known_cost,
                  COUNT(*) FILTER (WHERE record_type = 'call')::int AS call_count,
                  MAX(provider) AS provider,

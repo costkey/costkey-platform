@@ -1,0 +1,169 @@
+/* Users pages and the UserId chip. Everything else comes from the console's shared classes. */
+
+/* ── UserId ─────────────────────────────────────────────────────────── */
+.ck-users-id {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+  vertical-align: middle;
+}
+.ck-users-id-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.ck-table .ck-users-id-text {
+  font-size: 12.5px;
+}
+.ck-users-copy {
+  /* Above a row's stretched link, so copying never opens the user. */
+  position: relative;
+  z-index: 1;
+  display: inline-grid;
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ck-slate);
+  cursor: pointer;
+}
+.ck-users-copy:hover {
+  background: var(--ck-soft);
+  color: var(--ck-ink);
+}
+.ck-users-copy:focus-visible {
+  outline: 2px solid var(--ck-signal);
+  outline-offset: 1px;
+}
+
+/* The detail page title is the id. */
+.ck-users-title {
+  display: flex;
+  min-width: 0;
+}
+.ck-users-title .ck-users-id-text {
+  font-family: inherit;
+  font-size: inherit;
+}
+.ck-users-title .ck-users-copy {
+  width: 30px;
+  height: 30px;
+}
+
+/* ── Users list ─────────────────────────────────────────────────────── */
+.ck-users-toolbar {
+  display: flex;
+  align-items: center;
+  padding: 16px 16px 12px;
+}
+.ck-users-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 1 320px;
+  min-width: 0;
+  min-height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--ck-border);
+  border-radius: 10px;
+  background: var(--ck-raised);
+  color: var(--ck-slate);
+}
+.ck-users-search:focus-within {
+  border-color: var(--ck-border-strong);
+}
+.ck-users-search input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 2px;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--ck-ink);
+  font-family: var(--font);
+  font-size: 13px;
+}
+
+/* A whole row opens its link; the link stays a real <a> for cmd-click. */
+.ck-table tr.ck-users-row {
+  position: relative;
+}
+.ck-table tr.ck-users-row:hover td {
+  background: var(--ck-soft);
+  cursor: pointer;
+}
+.ck-users-stretch::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+}
+.ck-users-stretch:focus-visible {
+  outline: none;
+}
+.ck-table tr.ck-users-row:has(.ck-users-stretch:focus-visible) td {
+  background: var(--ck-soft);
+}
+.ck-table tr.ck-users-row:has(.ck-users-stretch:focus-visible) td:first-child {
+  box-shadow: inset 2px 0 0 var(--ck-signal);
+}
+
+.ck-users-owners {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ck-users-nowrap {
+  white-space: nowrap;
+}
+.ck-table .ck-users-mobile-only,
+.ck-users-label-short {
+  display: none;
+}
+
+/* ── User detail ────────────────────────────────────────────────────── */
+.ck-users-chart {
+  min-width: 0;
+  padding: 4px 20px 18px;
+}
+
+@media (max-width: 1000px) {
+  .ck-metric-grid.ck-users-metrics > .ck-metric-card:first-child { grid-column: auto; }
+}
+
+@media (max-width: 767px) {
+  .ck-metric-grid.ck-users-metrics { grid-template-columns: minmax(0, 1fr); }
+  .ck-users-toolbar {
+    padding: 14px 16px 10px;
+  }
+  .ck-users-search {
+    flex: 1 1 auto;
+  }
+  .ck-users-chart {
+    padding: 4px 16px 16px;
+  }
+  .ck-users-label-long {
+    display: none;
+  }
+  .ck-users-label-short {
+    display: inline;
+  }
+  .ck-table .ck-users-mobile-only {
+    display: block;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .ck-users-title .ck-users-copy {
+    width: 26px;
+    height: 26px;
+  }
+}

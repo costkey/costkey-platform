@@ -1,4 +1,5 @@
 import type { Router } from "express";
+import { attributeCallsToSpan, firstLine, scopeSite, storeSpanSite } from "./scope-site.js";
 import { Router as createRouter } from "express";
 import type pg from "pg";
 import type { CostKeyEvent, TransportPayload, StackFrame } from "@costkey/shared";
@@ -19,6 +20,7 @@ import { applyCallTelemetry, hasCallTelemetry, type AppliedTelemetry } from "./t
 import { expandLiveKitEvent, isLiveKitTelemetry, LiveKitPayloadError } from "./telemetry/livekit.js";
 import { projectCustomExtractors } from "./telemetry/custom-providers.js";
 import { callGraphFromUpload } from "./telemetry/callgraph.js";
+import { assembleStreamBody, streamEvents } from "./telemetry/stream-assembly.js";
 import { stripOtelContent } from "./telemetry/otel.js";
 import type { ServerExtractor } from "./telemetry/types.js";
 
@@ -316,11 +318,36 @@ export function isInternalFrame(frame: StackFrame): boolean {
   const file = frame.fileName ?? "";
   const fn = frame.functionName ?? "";
   if (!file && !fn) return true;
+  // Python 3.11+ frozen stdlib modules: <frozen runpy>, <frozen importlib._bootstrap>.
+  if (file.startsWith("<frozen ")) return true;
   if (INTERNAL_FILE_PATTERNS.some((p) => file.includes(p))) return true;
   if (INTERNAL_FN_PATTERNS.some((p) => fn.includes(p))) return true;
   // Python stdlib: /lib/pythonX.Y/foo.py but NOT /lib/pythonX.Y/site-packages/
   if (file.includes("/lib/python") && !file.includes("site-packages")) return true;
   return false;
+}
+
+/** Installed third-party code: site-packages, dist-packages, node_modules. */
+export const INSTALLED_PACKAGE = /[\\/](?:site-packages|dist-packages|node_modules)[\\/]/;
+
+/**
+ * Frameworks, servers and SDKs that never name a call: a stack made only of
+ * them (a model call the OpenAI Agents SDK makes in its own task) has no
+ * business logic, and the call is better named by its model and span.
+ */
+const FRAMEWORK_PACKAGE = /[\\/](?:site-packages|dist-packages|node_modules)[\\/](?:agents|openai|anthropic|langchain[^\\/]*|langgraph[^\\/]*|llama_index|litellm|crewai|dspy|smolagents|autogen[^\\/]*|ag2|strands|pydantic_ai|google|mistralai|cohere|groq|httpx|httpcore|aiohttp|requests|urllib3|uvicorn|starlette|fastapi|anyio|gunicorn|celery|ai|@(?:openai|anthropic-ai|ai-sdk|langchain|mastra|google)[\\/][^\\/]+)[\\/]/;
+
+/** An app's entry point (python -m, __main__.py) starts everything and names nothing. */
+function isEntryPoint(frame: StackFrame): boolean {
+  return /(?:^|[\\/])__main__\.py$/.test(frame.fileName ?? "");
+}
+
+/** The frames that may name a call: the app's own first, then non-framework packages. */
+function namingFrames(frames: StackFrame[]): StackFrame[] {
+  const candidates = frames.filter((frame) => !isEntryPoint(frame));
+  const own = candidates.filter((frame) => !INSTALLED_PACKAGE.test(frame.fileName ?? ""));
+  if (own.length > 0) return own;
+  return candidates.filter((frame) => !FRAMEWORK_PACKAGE.test(frame.fileName ?? ""));
 }
 
 export function filterFrames(frames: StackFrame[]): StackFrame[] {
@@ -432,10 +459,21 @@ function isServiceLayer(filePath: string): boolean {
 }
 
 export function findBusinessLogicFrame(
-  frames: StackFrame[],
+  allFrames: StackFrame[],
   filterCtx?: { removedFiles: Set<string>; frame0WasAdjacentToSDK: boolean },
 ): StackFrame | undefined {
-  if (frames.length === 0) return undefined;
+  if (allFrames.length === 0) return undefined;
+  // A call made through a framework (the OpenAI Agents SDK, LangChain) has
+  // the framework's frames between the provider SDK and the app: name the call
+  // after the app's own code. Installed packages count only when nothing else
+  // is there, so code that is itself installed as a package still attributes;
+  // a stack of frameworks and servers alone names nothing.
+  const own = namingFrames(allFrames);
+  if (own.length === 0) return undefined;
+  const frames = own;
+  // Framework frames sat between the provider SDK and the app: the app's first
+  // frame is the code that made the call.
+  if (frames !== allFrames && own[0] !== allFrames[0]) filterCtx = { removedFiles: filterCtx?.removedFiles ?? new Set(), frame0WasAdjacentToSDK: true };
 
   // Filter out useless names
   const useless = new Set(["<module>", "<anonymous>", "anonymous", "<lambda>", "main", "_run", ""]);
@@ -495,10 +533,17 @@ export const callGraphCache = new Map<string, Record<string, { score: number; fa
  * Falls back to findBusinessLogicFrame if no matches found.
  */
 export function findBusinessLogicFrameWithGraph(
-  frames: StackFrame[],
+  allFrames: StackFrame[],
   graph: Record<string, { score: number; fan_in: number; calls_ai: boolean }>,
   filterCtx?: { removedFiles: Set<string>; frame0WasAdjacentToSDK: boolean },
 ): StackFrame | undefined {
+  // As in findBusinessLogicFrame: the app's own frames over installed packages.
+  const own = namingFrames(allFrames);
+  if (own.length === 0) return undefined;
+  const frames = own;
+  // Framework frames sat between the provider SDK and the app: the app's first
+  // frame is the code that made the call.
+  if (frames !== allFrames && own[0] !== allFrames[0]) filterCtx = { removedFiles: filterCtx?.removedFiles ?? new Set(), frame0WasAdjacentToSDK: true };
   let bestFrame: StackFrame | null = null;
   let bestScore = Infinity;
   const scoredFrames: { frame: StackFrame; score: number }[] = [];
@@ -519,6 +564,13 @@ export function findBusinessLogicFrameWithGraph(
     && f0
     && !isWrapperFn(f0)
     && !isServiceLayer(f0.fileName ?? "");
+
+  // The frame that called the provider SDK is the business logic, with or
+  // without a graph: a heavily used caller (a dispatcher, a tracing wrapper)
+  // must not outscore it. The graph decides only when that frame is a wrapper.
+  // Two frames from the same file at the top is a client wrapper around the
+  // SDK (call_haiku over _messages_create_with_backoff): leave that to the graph.
+  if (f0Qualifies && (frames[1]?.fileName ?? null) !== (f0.fileName ?? null)) return f0;
 
   const graphKeys = Object.keys(graph);
 
@@ -623,40 +675,10 @@ export async function loadCallGraphCache(pool: import("pg").Pool): Promise<void>
   console.log(`[costkey] Loaded ${cgResult.rows.length} call graphs`);
 }
 
-/** Max stored body size (100KB). Truncates large prompts/completions to avoid DB bloat. */
-const MAX_BODY_BYTES = 100_000;
-
+/** A request or response body as stored: whole. Nothing is cut. */
 export function truncateBody(body: unknown): string | null {
   if (!body) return null;
-  const json = JSON.stringify(body);
-  const originalBytes = Buffer.byteLength(json, "utf8");
-  if (originalBytes <= MAX_BODY_BYTES) return json;
-
-  // JSONB rejects a raw slice because it can end in the middle of a string,
-  // object, or UTF-8 sequence. Store the slice as a string inside a valid
-  // envelope so one large prompt cannot abort the entire ingest transaction.
-  const envelope = {
-    __costkey_truncated__: true,
-    original_bytes: originalBytes,
-    notice: "[TRUNCATED]",
-    preview: "",
-  };
-  const emptyEnvelopeBytes = Buffer.byteLength(JSON.stringify(envelope), "utf8");
-  let previewBytes = Math.max(0, MAX_BODY_BYTES - emptyEnvelopeBytes);
-  const source = Buffer.from(json, "utf8");
-  let result = "";
-
-  // JSON escaping can expand the preview, so tighten it until the serialized
-  // envelope respects the byte limit. This normally completes in one pass.
-  do {
-    envelope.preview = source.subarray(0, previewBytes).toString("utf8");
-    result = JSON.stringify(envelope);
-    const excess = Buffer.byteLength(result, "utf8") - MAX_BODY_BYTES;
-    if (excess <= 0) break;
-    previewBytes = Math.max(0, previewBytes - excess);
-  } while (previewBytes > 0);
-
-  return result;
+  return JSON.stringify(body);
 }
 
 /** Store only the provider route; query strings commonly carry API keys. */
@@ -905,6 +927,19 @@ export function createIngestRouter(pool: pg.Pool): Router {
                 if (ctx && ctx["release"] === undefined) ctx["release"] = release;
                 else if (!ctx && (rawType === undefined || rawType === "call")) rawEvent["context"] = { release };
               }
+              // A streamed response arrives as its events; store it assembled
+              // into the provider's non-streaming shape (before redaction, so a
+              // secret split across deltas is redacted whole). Content only:
+              // usage and cost already came from the telemetry envelope.
+              for (const key of ["responseBody", "response_body"]) {
+                if (allowBody && streamEvents(rawEvent[key])) {
+                  rawEvent[key] = assembleStreamBody(rawEvent[key], {
+                    provider: typeof rawEvent["provider"] === "string" ? rawEvent["provider"] : null,
+                    url: typeof rawEvent["url"] === "string" ? rawEvent["url"] : null,
+                    model: typeof rawEvent["model"] === "string" ? rawEvent["model"] : null,
+                  });
+                }
+              }
               // Enforce the setting again at the persistence boundary. This keeps
               // direct router mounts and a failed/missing privacy middleware from
               // ever writing captured body/source fields.
@@ -936,6 +971,11 @@ export function createIngestRouter(pool: pg.Pool): Router {
                   if (typeof rawEvent[key] === "string") rawEvent[key] = trustedEventTimestamp(rawEvent[key]);
                 }
                 await recordAccountingEvent(client, projectId, rawEvent);
+                // Where the span was opened: calls inside it with no code of their own take it.
+                const spanSite = (rawEvent["callSite"] ?? rawEvent["call_site"]) as { frames?: unknown } | undefined;
+                if (accounting.spanId && spanSite && await storeSpanSite(client, projectId, accounting.spanId, spanSite.frames)) {
+                  await attributeCallsToSpan(client, projectId, accounting.spanId);
+                }
                 return;
               }
               if (accounting.eventType === "score") {
@@ -1026,6 +1066,16 @@ export function createIngestRouter(pool: pg.Pool): Router {
                   blLine = best.lineNumber ?? null;
                 }
 
+              }
+              // A call with no code of its own (made on a framework's task)
+              // takes the code that opened the span it ran in.
+              if (!blFunction && allowSource && accounting.eventType === "call" && accounting.spanId) {
+                const scope = await scopeSite(client, projectId, accounting.spanId);
+                if (scope) {
+                  blFunction = firstLine(scope.frame.functionName);
+                  blFile = scope.frame.fileName ?? null;
+                  blLine = scope.frame.lineNumber ?? null;
+                }
               }
 
               // Reusable mappings supply only missing business meaning. Explicit

@@ -6,6 +6,7 @@ import {
   recordLiveKitUsage,
 } from "../index.js";
 import { addCaptureTarget } from "../providers/registry.js";
+import { wireBody } from "./wireBody";
 
 interface CapturedPayload {
   events: Array<Record<string, unknown>>;
@@ -72,7 +73,8 @@ describe("CostKey developer experience", () => {
     globalThis.fetch = async (input, init) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
       if (url === "https://costkey.dev/api/v1/events") {
-        const body = typeof init?.body === "string" ? JSON.parse(init.body) as CapturedPayload : { events: [] };
+        const text = wireBody(init);
+        const body = text ? JSON.parse(text) as CapturedPayload : { events: [] };
         payloads.push(body);
         return new Response(JSON.stringify({ accepted: body.events.length }), { status: 202 });
       }
@@ -223,7 +225,10 @@ describe("CostKey developer experience", () => {
     expect(calls[0]?.["requestBody"]).toBeNull();
     expect(calls[0]?.["responseBody"]).toBeNull();
     expect(JSON.stringify(calls[0])).not.toContain("delayed-url-secret");
-    expect(JSON.stringify(calls[0])).not.toContain("private-before-config");
+    // The call site carries this test's own source lines, which spell the
+    // fixture prompt; the request itself must not appear anywhere else.
+    const { callSite: _callSite, ...firstCall } = calls[0] ?? {};
+    expect(JSON.stringify(firstCall)).not.toContain("private-before-config");
 
     releaseConfig(new Response(JSON.stringify(runtimeConfig("delayed-config", "text", true)), {
       status: 200,

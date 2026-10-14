@@ -4,6 +4,7 @@
  * CostKey ingest endpoint collects what the SDK sends.
  */
 import { CostKey } from "../../index.js";
+import { wireBody } from "../wireBody";
 
 export type Event = Record<string, any>;
 export type Route = (url: URL, init: RequestInit | undefined, body: unknown) => Response | Promise<Response> | null | undefined;
@@ -44,7 +45,7 @@ export function startHarness(route: Route, options: { captureBody?: boolean; pro
     const url = new URL(href);
     if (url.hostname === "costkey.dev") {
       if (url.pathname === "/api/v1/events") {
-        payloads.push(...(JSON.parse(String(init?.body)) as { events: Event[] }).events);
+        payloads.push(...(JSON.parse(wireBody(init)) as { events: Event[] }).events);
         return json({ accepted: true }, 202);
       }
       if (url.pathname.endsWith("/config")) {

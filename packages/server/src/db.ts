@@ -13,7 +13,9 @@ export function getPool(): pg.Pool {
   if (!pool) {
     pool = new pg.Pool({
       connectionString: DATABASE_URL,
-      max: 20,
+      // Small Postgres tiers allow ~25 connections, and a rollout runs two
+      // revisions at once: 10 each leaves room. COSTKEY_DB_POOL_SIZE raises it.
+      max: Math.max(1, Number(process.env["COSTKEY_DB_POOL_SIZE"]) || 10),
       idleTimeoutMillis: 30000,
       connectionTimeoutMillis: 5000,
     });
@@ -278,6 +280,9 @@ export async function initDatabase(): Promise<void> {
     END WHERE feature_source IS NULL OR feature_source = 'unknown';
     CREATE INDEX IF NOT EXISTS idx_events_execution ON events(project_id, execution_id);
     CREATE INDEX IF NOT EXISTS idx_events_charge ON events(project_id, charge_id);
+    -- Retries: attempts of one work item share context.work_id (retries.ts, WORK_ID_SQL).
+    CREATE INDEX IF NOT EXISTS idx_events_work_id ON events (project_id, (NULLIF(COALESCE(context->>'work_id', context->>'workId', context->>'attempt_key'), '')))
+      WHERE NULLIF(COALESCE(context->>'work_id', context->>'workId', context->>'attempt_key'), '') IS NOT NULL;
     ALTER TABLE call_site_stats ADD COLUMN IF NOT EXISTS priced_calls INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE call_site_stats ADD COLUMN IF NOT EXISTS unpriced_calls INTEGER NOT NULL DEFAULT 0;
     UPDATE call_site_stats cs SET
@@ -603,6 +608,8 @@ export async function initDatabase(): Promise<void> {
       PRIMARY KEY (project_id, id)
     );
     CREATE INDEX IF NOT EXISTS idx_spans_trace ON spans(project_id, trace_id);
+    -- Where the span was opened (filtered frames); calls with no code of their own take it.
+    ALTER TABLE spans ADD COLUMN IF NOT EXISTS call_site_frames JSONB;
     CREATE INDEX IF NOT EXISTS idx_spans_project_started ON spans(project_id, started_at DESC);
     ALTER TABLE events ADD COLUMN IF NOT EXISTS span_id TEXT;
     ALTER TABLE events ADD COLUMN IF NOT EXISTS sdk_version TEXT;

@@ -1,0 +1,101 @@
+/* Budgets: the list, the compact card on agent and workflow pages, the Costs
+   column and the spend chart. Panels and stacks sit on 16 px gaps. */
+
+.ck-budgets-page > .ck-status-line,
+.ck-budgets-page > .ck-alert { margin-bottom: 16px; }
+.ck-budgets-panel { overflow: hidden; }
+
+.ck-budget-figure { color: var(--ck-ink); font-weight: 500; font-variant-numeric: tabular-nums lining-nums; white-space: nowrap; }
+.ck-budget-sub { display: block; margin-top: 2px; font-size: 12px; line-height: 1.5; color: var(--ck-slate); }
+.ck-budget-muted { font-size: 13px; color: var(--ck-slate); }
+.ck-budget-kind { color: var(--ck-slate); }
+
+.ck-budgets-table td { vertical-align: middle; }
+.ck-budgets-table .ck-budget-name-cell { min-width: 180px; max-width: 300px; }
+.ck-budgets-table .ck-budget-name-cell .ck-budget-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ck-budgets-table .ck-budget-used-cell { min-width: 150px; }
+.ck-budget-used-line { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.ck-budget-used-line .ck-budget-sub { margin: 0; }
+.ck-progress.ck-budget-progress { height: 6px; margin: 6px 0 0; }
+.ck-budgets-table td[data-label="Status"],
+.ck-budgets-table td[data-label="At the limit"],
+.ck-budgets-table td[data-label="Limit"] { white-space: nowrap; }
+.ck-budget-actions-cell { width: 1%; white-space: nowrap; text-align: right; }
+.ck-budget-row-actions { display: inline-flex; gap: 0; justify-content: flex-end; }
+.ck-budget-row-actions .ck-button.sm { padding-left: 8px; padding-right: 8px; }
+.ck-budget-delete:hover { color: var(--ck-critical); }
+
+.ck-budget-dialog h2 { margin: 0; font-size: 18px; font-weight: 600; letter-spacing: -0.25px; }
+.ck-budget-dialog p { margin: 8px 0 0; font-size: 14px; line-height: 1.6; color: var(--ck-slate); }
+.ck-budget-dialog .ck-form-error { margin-top: 16px; }
+.ck-budget-dialog .ck-dialog-footer { margin-top: 24px; }
+
+/* Phones: each budget becomes a card with labelled facts. */
+@media (max-width: 760px) {
+  .ck-budgets-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .ck-budgets-table, .ck-budgets-table tbody { display: block; width: 100%; }
+  .ck-budgets-table tr { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 16px; padding: 16px; border-top: 1px solid var(--ck-rule); }
+  .ck-budgets-table tr:first-child { border-top: 0; }
+  .ck-budgets-table td { display: block; height: auto; padding: 0; border: 0; text-align: left; white-space: normal; }
+  .ck-budgets-table tbody tr:hover { background: transparent; }
+  /* Name, then limit beside status, usage, forecast beside the action, then buttons. */
+  .ck-budgets-table td[data-label="Limit"] { order: 1; }
+  .ck-budgets-table td[data-label="Status"] { order: 2; }
+  .ck-budgets-table td[data-label="Used"] { order: 3; }
+  .ck-budgets-table td[data-label="Forecast"] { order: 4; }
+  .ck-budgets-table td[data-label="At the limit"] { order: 5; }
+  .ck-budgets-table .ck-budget-actions-cell { order: 6; }
+  .ck-budgets-table td.numeric { text-align: left; }
+  .ck-budgets-table td[data-label]::before { content: attr(data-label); display: block; margin-bottom: 2px; font-size: 12px; color: var(--ck-slate); }
+  .ck-budgets-table .ck-budget-name-cell { grid-column: 1 / -1; min-width: 0; max-width: none; }
+  .ck-budgets-table .ck-budget-used-cell { grid-column: 1 / -1; min-width: 0; }
+  .ck-budgets-table .ck-budget-actions-cell { grid-column: 1 / -1; width: auto; text-align: left; }
+  .ck-budget-row-actions { justify-content: flex-start; margin-left: -8px; }
+}
+
+/* Compact card on agent and workflow pages. */
+.ck-scope-budget { display: flex; flex-direction: column; gap: 16px; margin: 0; padding: 16px 20px; }
+.ck-scope-budget-skeleton { height: 56px; width: 100%; }
+.ck-scope-budget-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-width: 0; }
+.ck-scope-budget-title { display: inline-flex; align-items: center; gap: 8px; min-width: 0; font-size: 14px; font-weight: 500; color: var(--ck-ink); }
+.ck-scope-budget-title > svg { flex: 0 0 auto; color: var(--ck-slate); }
+.ck-scope-budget-title > a { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ck-scope-budget-status { display: inline-flex; align-items: center; gap: 12px; flex: 0 0 auto; }
+.ck-scope-budget-facts { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1fr); gap: 16px; margin: 0; }
+.ck-scope-budget-facts > div { min-width: 0; }
+.ck-scope-budget-facts dt { font-size: 12px; color: var(--ck-slate); }
+.ck-scope-budget-facts dd { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px; margin: 4px 0 0; font-size: 16px; font-weight: 500; color: var(--ck-ink); font-variant-numeric: tabular-nums lining-nums; }
+.ck-scope-budget-facts dd small { font-size: 12px; font-weight: 400; color: var(--ck-slate); }
+.ck-scope-budget-empty { flex-direction: row; align-items: center; flex-wrap: wrap; gap: 8px 16px; }
+.ck-scope-budget-empty p { flex: 1 1 200px; margin: 0; font-size: 14px; color: var(--ck-slate); }
+@media (max-width: 760px) {
+  .ck-scope-budget { padding: 16px; }
+  .ck-scope-budget-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ck-scope-budget-facts .ck-scope-budget-used { grid-column: 1 / -1; }
+}
+
+/* Costs and agent/workflow tables. */
+.ck-budget-cell { display: inline-flex; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 120px; color: var(--ck-ink); text-decoration: none; }
+.ck-budget-cell small { font-size: 12px; color: var(--ck-slate); }
+.ck-budget-cell:hover small { text-decoration: underline; text-underline-offset: 3px; }
+.ck-budget-cell .ck-budget-progress { width: 100%; }
+.ck-budget-set-link { white-space: nowrap; }
+
+/* Spend over time on the Overview. */
+.ck-spend-panel { min-height: 0; margin-bottom: 16px; }
+.ck-spend-head-right { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; justify-content: flex-end; }
+.ck-spend-glance { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
+.ck-spend-glance .ck-text-link { white-space: nowrap; }
+.ck-spend-chart .spend-line { fill: none; stroke: var(--ck-chart); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.ck-spend-chart .spend-area { fill: var(--ck-chart); opacity: 0.08; }
+.ck-spend-chart .spend-point { fill: var(--ck-chart); stroke: var(--ck-raised); stroke-width: 1.5; }
+.ck-spend-chart .spend-point.is-over { fill: var(--ck-critical); }
+.ck-board-legend i.swatch.dot { border-radius: 50%; }
+.ck-spend-chart .budget-line { stroke: var(--ck-warn); stroke-width: 1.5; stroke-dasharray: 5 4; fill: none; }
+.ck-board-legend i.dash { width: 14px; height: 0; border-top: 2px dashed var(--ck-warn); background: none; }
+.ck-spend-note { margin: 0; font-size: 12px; color: var(--ck-slate); }
+@media (max-width: 767px) {
+  .ck-spend-panel .ck-board-head { flex-direction: column; align-items: stretch; gap: 12px; }
+  .ck-spend-head-right { justify-content: space-between; }
+}
+.ck-budget-scope-custom { grid-column: 1 / -1; }

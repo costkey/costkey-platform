@@ -1,6 +1,7 @@
 import type { EventContext } from "./types.js";
-import { isCaptureActive, recordObservedCall } from "./fetch-patch.js";
+import { STREAM_CONTENT_KEY, isCaptureActive, isContentCaptureActive, recordObservedCall } from "./fetch-patch.js";
 import { captureCallSite } from "./stack.js";
+import { withoutPadding } from "./eventstream.js";
 import { getCallContext, withContext } from "./context.js";
 import {
   StreamRecorder,
@@ -26,8 +27,9 @@ import {
  * status and headers (including x-amzn-bedrock-*-token-count), and the
  * deserialized output as a skeleton. ConverseStream /
  * InvokeModelWithResponseStream event streams are passed through and their
- * events recorded as chunks. No AWS SDK import is needed; the client is
- * duck-typed.
+ * events recorded as chunks; with content capture on, every event's payload
+ * is also sent whole as `responseBody: {"__costkey_stream__": [...]}`. No AWS
+ * SDK import is needed; the client is duck-typed.
  */
 
 type Handler = (args: Record<string, unknown>) => Promise<Record<string, unknown>>;
@@ -135,6 +137,7 @@ const recordBedrockCall: Middleware = (next, handlerContext) => async (args) => 
     response: TelemetryResponse | null,
     stream: CallTelemetry["stream"],
     error: unknown,
+    responseContent?: unknown,
   ): void => {
     const durationMs = round(performance.now() - startTime);
     recordObservedCall({
@@ -151,6 +154,7 @@ const recordBedrockCall: Middleware = (next, handlerContext) => async (args) => 
       method: request.method,
       callSite: caller?.callSite ?? null,
       context,
+      ...(responseContent === undefined ? {} : { responseContent }),
     });
   };
 
@@ -191,8 +195,14 @@ const recordBedrockCall: Middleware = (next, handlerContext) => async (args) => 
       const source = output?.[streamKey];
       if (output && isAsyncIterable(source)) {
         const recorder = new StreamRecorder("aws-eventstream", startTime);
-        output[streamKey] = observeStream(source, recorder, (error) => {
-          report({ ...responseBase, body: null, bytes: null }, recorder.telemetry(), error);
+        const content: unknown[] | null = isContentCaptureActive() ? [] : null;
+        output[streamKey] = observeStream(source, recorder, content, (error) => {
+          report(
+            { ...responseBase, body: null, bytes: null },
+            recorder.telemetry(),
+            error,
+            content ? { [STREAM_CONTENT_KEY]: content } : undefined,
+          );
         });
       } else {
         report({ ...responseBase, body: null, bytes: null }, null, null);
@@ -222,12 +232,14 @@ function outputSkeleton(output: Record<string, unknown> | null): unknown {
 }
 
 /**
- * Pass every stream event through unchanged and record it as a chunk; report
- * once when the caller finishes, stops early or the stream fails.
+ * Pass every stream event through unchanged and record it as a chunk (and,
+ * with content capture on, its payload whole); report once when the caller
+ * finishes, stops early or the stream fails.
  */
 async function* observeStream(
   source: AsyncIterable<unknown>,
   recorder: StreamRecorder,
+  content: unknown[] | null,
   onEnd: (error: unknown) => void,
 ): AsyncGenerator<unknown, void, undefined> {
   let failure: unknown = null;
@@ -235,7 +247,9 @@ async function* observeStream(
     for await (const event of source) {
       try {
         recorder.arrived();
-        recorder.record(streamEventChunk(event));
+        const chunk = streamEventChunk(event);
+        recorder.record(chunk);
+        if (content) content.push(streamEventContent(chunk));
       } catch {
         // Skip an event that can't be read.
       }
@@ -263,6 +277,21 @@ function streamEventChunk(event: unknown): unknown {
   if (!record) return event;
   const result: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(record)) result[key] = decodeBytesField(value);
+  return result;
+}
+
+/**
+ * Content capture: the SDK stream event keyed by event type, the same element
+ * the fetch path sends (`{"contentBlockDelta": {...}}`, `{"chunk": {"bytes": <JSON>}}`),
+ * without undefined members or the `p` padding field.
+ */
+function streamEventContent(chunk: unknown): unknown {
+  const record = asRecord(chunk);
+  if (!record) return chunk;
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(record)) {
+    if (value !== undefined) result[key] = withoutPadding(value);
+  }
   return result;
 }
 

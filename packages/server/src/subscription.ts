@@ -4,7 +4,7 @@ import { Router as createRouter } from "express";
 import type pg from "pg";
 import { requireAuth } from "./auth.js";
 import { roleCanManageSubscription } from "./permissions.js";
-import { publicOrigin } from "./public-url.js";
+import { publicAppUrl } from "./public-url.js";
 
 type SubscriptionUser = { id: string; email: string; orgId: string; role: string };
 
@@ -350,7 +350,7 @@ export function createSubscriptionRouter(pool: pg.Pool): Router {
       }
       await validateStripePrice();
       const seats = await countSeats(pool, user.orgId);
-      const base = publicOrigin();
+      const base = publicAppUrl();
       const params = new URLSearchParams({
         mode: "subscription",
         "line_items[0][price]": process.env["COSTKEY_STRIPE_PRICE_ID"]!,

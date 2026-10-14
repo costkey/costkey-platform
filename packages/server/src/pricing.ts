@@ -6,6 +6,8 @@
  * legacy entries remain estimates. These are standard API rates;
  * batch, priority, long-context, and provider-reseller rates may differ.
  */
+import { repairTruncatedEnvelope } from "./body-trim.js";
+import { scopeSite } from "./scope-site.js";
 import { filterFrames, findBusinessLogicFrame, findBusinessLogicFrameWithGraph, getFilterContext, callGraphCache } from "./ingest.js";
 interface ModelPricing {
   input: number;
@@ -245,23 +247,11 @@ export function computeCost(
         output: pricing.output * 2, cacheRead: (pricing.cacheRead ?? 0) * 2 };
     }
   }
-  // DeepSeek's direct API: prompt_tokens includes cache hits (billed at the
-  // cache-hit rate) and misses (ordinary input). SDK 0.6 reported the misses
-  // as cache creation; they are never a separate charge.
-  const isDeepSeekDirect = provider === "deepseek"
-    || (!provider && !lowerModel.includes("/") && lowerModel.includes("deepseek-v4"));
+  const isDeepSeekDirect = isDeepSeekDirectCall(model, provider);
   let cost = 0;
 
   if (inputTokens != null) {
-    // Google reports promptTokenCount as the full prompt, with cached content
-    // included as a separately-priced subset. OpenRouter follows the same
-    // convention for prompt_tokens_details. Anthropic's input_tokens already
-    // excludes cache reads, so only adjust these two providers/model families.
-    const cacheIncludedInInput = provider === "google"
-      || provider === "openai"
-      || provider === "openrouter"
-      || lowerModel.includes("gemini");
-    const includedCacheTokens = cacheIncludedInInput
+    const includedCacheTokens = tableCacheIncludedInInput(model, provider) && !isDeepSeekDirect
       ? (effectivePricing.cacheRead != null ? (cacheReadTokens ?? 0) : 0)
         + (provider === "openrouter" && effectivePricing.cacheWrite != null ? (cacheCreationTokens ?? 0) : 0)
       : isDeepSeekDirect
@@ -285,6 +275,32 @@ export function computeCost(
   }
 
   return Math.round(cost * 1_000_000_000_000) / 1_000_000_000_000;
+}
+
+/**
+ * DeepSeek's direct API: prompt_tokens includes cache hits (billed at the
+ * cache-hit rate) and misses (ordinary input). SDK 0.6 reported the misses
+ * as cache creation; they are never a separate charge.
+ */
+function isDeepSeekDirectCall(model: string, provider?: string | null): boolean {
+  const lowerModel = model.toLowerCase();
+  return provider === "deepseek"
+    || (!provider && !lowerModel.includes("/") && lowerModel.includes("deepseek-v4"));
+}
+
+/**
+ * Whether the built-in table treats a call's input count as already holding
+ * its cache reads. Google reports promptTokenCount as the full prompt, with
+ * cached content included as a separately-priced subset; OpenAI, OpenRouter
+ * and DeepSeek's direct API do the same. Anthropic's input_tokens excludes
+ * cache reads.
+ */
+export function tableCacheIncludedInInput(model: string, provider?: string | null): boolean {
+  return provider === "google"
+    || provider === "openai"
+    || provider === "openrouter"
+    || model.toLowerCase().includes("gemini")
+    || isDeepSeekDirectCall(model, provider);
 }
 
 export function findPricing(model: string): ModelPricing | null {
@@ -586,8 +602,41 @@ async function backfillFrames(pool: import("pg").Pool): Promise<void> {
   });
 
   // Rebuild call_site_stats (also runs once)
-  await runOnce(pool, "rebuild_callsite_stats_v12", async () => {
+  // v13: framework, entry-point and <frozen> frames no longer name a call, and
+  // the SDK's caller beats busy dispatchers; re-derive every stored call site.
+  // v16: again, for calls an older server stored after v15 ran (a rollout keeps
+  // the previous revision ingesting until the new one serves).
+  await runOnce(pool, "rebuild_callsite_stats_v16", async () => {
     await rebuildCallSiteStats(pool);
+  });
+
+  // Bodies over the size limit were stored as a raw text slice the console
+  // could not read. Turn each back into JSON, cut at the last complete value.
+  await runOnce(pool, "repair_truncated_bodies_v1", async () => {
+    let repaired = 0;
+    let after = "";
+    for (;;) {
+      const batch = await pool.query<{ id: string; project_id: string; request_body: unknown; response_body: unknown }>(
+        `SELECT id, project_id, request_body, response_body FROM events
+          WHERE (request_body->>'__costkey_truncated__' = 'true' OR response_body->>'__costkey_truncated__' = 'true')
+            AND id > $1 ORDER BY id LIMIT 200`,
+        [after],
+      );
+      if (batch.rows.length === 0) break;
+      for (const row of batch.rows) {
+        after = row.id;
+        const request = repairTruncatedEnvelope(row.request_body);
+        const response = repairTruncatedEnvelope(row.response_body);
+        if (!request && !response) continue;
+        await pool.query(
+          `UPDATE events SET request_body = COALESCE($3::jsonb, request_body), response_body = COALESCE($4::jsonb, response_body)
+            WHERE project_id = $1 AND id = $2`,
+          [row.project_id, row.id, request ? JSON.stringify(request) : null, response ? JSON.stringify(response) : null],
+        );
+        repaired++;
+      }
+    }
+    console.log(`[costkey] Repaired ${repaired} cut-off request or response bodies`);
   });
 }
 
@@ -623,7 +672,7 @@ async function rebuildCallSiteStats(pool: import("pg").Pool): Promise<void> {
 
   // Re-backfill ALL bl_ fields using the canonical algorithm (with graph when available)
   const needBl = await pool.query(`
-    SELECT id, project_id, call_site_frames FROM events
+    SELECT id, project_id, span_id, call_site_frames FROM events
     WHERE call_site_frames IS NOT NULL
       AND call_site_frames != '[]'::jsonb
       AND jsonb_array_length(call_site_frames) > 0
@@ -633,18 +682,25 @@ async function rebuildCallSiteStats(pool: import("pg").Pool): Promise<void> {
       ? JSON.parse(row.call_site_frames) : row.call_site_frames;
     if (!frames || frames.length === 0) continue;
     const filtered = filterFrames(frames);
-    const filterCtx = getFilterContext(frames, filtered);
+    // Stored stacks were filtered at ingest: the provider SDK's frames are
+    // gone, so the first stored frame is the one that called it.
+    const filterCtx = filtered[0] === frames[0]
+      ? { removedFiles: new Set<string>(), frame0WasAdjacentToSDK: true }
+      : getFilterContext(frames, filtered);
     const graph = callGraphCache.get(row.project_id);
     const best = graph
       ? findBusinessLogicFrameWithGraph(filtered, graph, filterCtx)
       : findBusinessLogicFrame(filtered, filterCtx);
-    if (best) {
-      const fn = (best.functionName ?? "").split("\n")[0].trim() || null;
-      await pool.query(
-        "UPDATE events SET bl_function = $1, bl_file = $2, bl_line = $3 WHERE project_id = $4 AND id = $5",
-        [fn, best.fileName ?? null, best.lineNumber ?? null, row.project_id, row.id],
-      );
-    }
+    // No business-logic frame (a stack of frameworks only): the code that
+    // opened the span the call ran in, else the old name is cleared.
+    const chosen = best ?? (await scopeSite(pool, row.project_id, row.span_id))?.frame ?? null;
+    const fn = chosen ? (chosen.functionName ?? "").split("\n")[0].trim() || null : null;
+    await pool.query(
+      `UPDATE events SET bl_function = $1, bl_file = $2, bl_line = $3
+        WHERE project_id = $4 AND id = $5
+          AND (bl_function IS DISTINCT FROM $1 OR bl_file IS DISTINCT FROM $2 OR bl_line IS DISTINCT FROM $3)`,
+      [fn, chosen?.fileName ?? null, chosen?.lineNumber ?? null, row.project_id, row.id],
+    );
   }
   if (needBl.rows.length > 0) {
     console.log(`[costkey] Backfilled bl_ fields on ${needBl.rows.length} events`);

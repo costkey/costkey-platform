@@ -39,7 +39,7 @@ import {
   type SpanRecord,
 } from "./context.js";
 import { addCaptureTarget, hostnameTarget, removeCaptureTarget, type CaptureTarget } from "./providers/registry.js";
-import { capSkeleton, skeleton } from "./telemetry.js";
+import { skeleton } from "./telemetry.js";
 import { randomBytes } from "node:crypto";
 import { CostKeyPolicyClient, CostKeyPolicyRefused, type PolicyAdmissionClient } from "./policy.js";
 import { recordLiveKitUsage, recordLiveKitSessionUsage } from "./livekit.js";
@@ -407,49 +407,43 @@ async function flush(): Promise<void> {
   if (transport) await transport.flush();
 }
 
-const MAX_SPAN_PAYLOAD_CHARS = 2_000;
-
-/** Span input/output are content: bounded, and only sent when capture is on. */
+/** Span input/output are content: sent whole, and only when capture is on. */
 function spanPayload(value: unknown): string | undefined {
   if (value === undefined) return undefined;
-  let text: string;
   try {
-    text = typeof value === "string" ? value : JSON.stringify(value) ?? "";
+    return typeof value === "string" ? value : JSON.stringify(value) ?? "";
   } catch {
     return undefined;
   }
-  return text.length > MAX_SPAN_PAYLOAD_CHARS ? `${text.slice(0, MAX_SPAN_PAYLOAD_CHARS)}…` : text;
 }
 
-const MAX_RAW_ATTRIBUTE_STRING_CHARS = 2_000;
-
 /**
- * An integration's raw framework payload: verbatim (strings bounded) when
- * body capture is on, otherwise a skeleton whose allowlist also matches a
- * dotted key's last segment (`gen_ai.request.model`).
+ * An integration's raw framework payload: verbatim when body capture is on
+ * (strings whole, no depth or size cap; only cycles are cut), otherwise a
+ * skeleton whose allowlist also matches a dotted key's last segment
+ * (`gen_ai.request.model`).
  */
 function rawAttributes(value: unknown, capture: boolean): unknown {
   if (!capture) return skeleton(value, undefined, { leafKeys: true });
-  return capSkeleton(boundedRaw(value, 0, new Set()));
+  return verbatimRaw(value, new Set());
 }
 
-function boundedRaw(value: unknown, depth: number, ancestors: Set<object>): unknown {
-  if (typeof value === "string") {
-    return value.length > MAX_RAW_ATTRIBUTE_STRING_CHARS ? `${value.slice(0, MAX_RAW_ATTRIBUTE_STRING_CHARS)}…` : value;
-  }
+function verbatimRaw(value: unknown, ancestors: Set<object>): unknown {
+  if (typeof value === "string") return value;
   if (typeof value === "number") return Number.isFinite(value) ? value : null;
   if (typeof value === "bigint") return Number(value);
   if (value === null || typeof value !== "object") return typeof value === "boolean" ? value : null;
   if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) return { $bytes: value.byteLength };
   if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value.toISOString();
-  if (depth >= 12 || ancestors.has(value)) return { $trunc: true };
+  // A reference cycle can't be serialized; mark where it was cut.
+  if (ancestors.has(value)) return { $trunc: true };
   ancestors.add(value);
   try {
-    if (Array.isArray(value)) return value.map((item) => boundedRaw(item, depth + 1, ancestors));
+    if (Array.isArray(value)) return value.map((item) => verbatimRaw(item, ancestors));
     const result: Record<string, unknown> = {};
     for (const [key, entry] of Object.entries(value)) {
       if (entry === undefined || typeof entry === "function" || typeof entry === "symbol") continue;
-      result[key] = boundedRaw(entry, depth + 1, ancestors);
+      result[key] = verbatimRaw(entry, ancestors);
     }
     return result;
   } finally {
@@ -489,6 +483,7 @@ function buildSpanEvent(
     ...(record.durationMs !== undefined ? { durationMs: record.durationMs } : {}),
     ...(record.errorName ? { errorName: record.errorName, errorType: record.errorName } : {}),
     ...(Object.keys(attributes).length > 0 ? { attributes } : {}),
+    ...(record.callSite ? { callSite: record.callSite } : {}),
     context: { ...currentDefaultContext, ...record.context },
   };
 }

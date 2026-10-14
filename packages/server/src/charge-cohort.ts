@@ -111,14 +111,17 @@ export function chargesCte(): string {
              e.timestamp, e.provider, e.model, e.request_model, e.pricing_id,
              e.cost_usd, e.cost_basis, e.cost_source, e.cost_currency,
              e.duration_ms, e.trace_id, e.trace_name, e.context,
-             (to_jsonb(e)->>'release') AS release, e.context->>'service' AS service,
+             e.release AS release, e.context->>'service' AS service,
              e.feature_source, e.feature_mapping_id, e.feature_mapping_action_id, e.feature_original,
              e.execution_id, e.group_id, e.group_name, e.group_kind,
              e.phase, e.case_id, e.bl_file, e.bl_function, e.bl_line,
              'call'::text AS record_type,
              e.input_tokens, e.output_tokens, e.total_tokens,
              NULL::double precision AS unit_value, NULL::text AS unit,
-             NULL::text AS unit_kind, NULL::integer AS revision
+             NULL::text AS unit_kind, NULL::integer AS revision,
+             -- A failed call without a price cost nothing: it is not unpriced.
+             (e.cost_usd IS NULL AND (COALESCE(e.lifecycle_state, '') IN ('failed', 'cancelled')
+               OR COALESCE(e.status_code, 200) >= 400)) AS no_charge
       FROM events e
       WHERE COALESCE(e.event_type, 'call') = 'call'
     ), auto_charges AS (
@@ -156,10 +159,11 @@ export function chargesCte(): string {
              anchor.bl_file, anchor.bl_function, anchor.bl_line,
              'usage'::text AS record_type, NULL::integer AS input_tokens,
              NULL::integer AS output_tokens, NULL::integer AS total_tokens,
-             u.unit_value, u.unit, u.unit_kind, u.revision
+             u.unit_value, u.unit, u.unit_kind, u.revision,
+             FALSE AS no_charge
       FROM usage_components u
       LEFT JOIN LATERAL (
-        SELECT e.trace_name, e.context, (to_jsonb(e)->>'release') AS release, e.feature_source, e.feature_mapping_id,
+        SELECT e.trace_name, e.context, e.release AS release, e.feature_source, e.feature_mapping_id,
                e.feature_mapping_action_id, e.feature_original,
                e.execution_id, e.group_id,
                e.group_name, e.group_kind, e.case_id,

@@ -1,10 +1,10 @@
+import { appUrl } from "../basePath";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, Check, CircleAlert, Clock, Save, ShieldCheck, X } from "lucide-react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Area, AreaChart, CartesianGrid, Tooltip, XAxis, YAxis } from "recharts";
 import {
   acknowledgeFinding,
-  getCostBreakdown,
   getCostContributor,
   getTrace,
   getTraces,
@@ -18,6 +18,9 @@ import { useAuth } from "../contexts/useAuth";
 import { EmptyPanel, LoadingRows, MetricCard, PageHeader, Panel, ScopeToolbar, StatusLine, StatusPill, type Period } from "../components/ConsolePrimitives";
 import { FindingBody } from "../components/FindingBody";
 import { PrototypeIcon } from "../components/PrototypeIcon";
+import { BudgetScopePicker } from "../components/BudgetScopePicker";
+import { healthView } from "../components/budgetModel";
+import type { Budget } from "../budgetsApi";
 import { formatDateTime, formatDayDate, formatPercent, formatReportedAmount, parsePeriod, periodDates, periodLabel, reportingCurrencyNote, type ReportingFx } from "../components/consoleFormatters";
 import { formatDuration } from "../utils";
 import { prototypeRole, prototypeState, PrototypeStateNotice, PrototypeStatePanel } from "../components/PrototypeState";
@@ -136,7 +139,7 @@ function ContributorPage() {
     <p className="ck-contributor-subtitle" style={{ margin: "-10px 0 18px", color: "var(--ck-slate)", fontSize: 14 }}>{type.charAt(0).toUpperCase() + type.slice(1)} · {environment === "all" ? "All environments" : environment} · {periodLabel(period).replace(/^./, (letter) => letter.toUpperCase())}</p>
     <div className="ck-tabs" role="tablist" aria-label="Detail view"><button className={`ck-tab ${tab === "Summary" ? "active" : ""}`} role="tab" aria-selected={tab === "Summary"} type="button" onClick={() => setParams((current) => { current.set("tab", "Summary"); return current; })}>Summary</button><button className={`ck-tab ${tab === "Traces" ? "active" : ""}`} role="tab" aria-selected={tab === "Traces"} type="button" onClick={() => setParams((current) => { current.set("tab", "Traces"); return current; })}>Runs</button></div>
     
-    <div className="ck-metric-grid"><MetricCard icon="activity" label="Spend" value={summary?.known_cost == null ? "Unpriced" : formatReportedAmount(Number(summary.known_cost), currency, fx)} detail={summary?.coverage != null && Number(summary.coverage) < 1 ? `${Math.round(Number(summary.coverage) * 100)}% of calls priced` : "Every call priced"} /><MetricCard icon="trace" label="Runs" value={Number(summary?.trace_count ?? summary?.observations ?? detail.traces.length).toLocaleString()} /><MetricCard icon="cost" label="Per run" value={summary?.mean_cost_per_trace == null ? "—" : formatReportedAmount(Number(summary.mean_cost_per_trace), currency, fx)} detail="Average" /></div>
+    <div className="ck-metric-grid"><MetricCard icon="activity" label="Spend" value={summary?.known_cost == null ? "Unpriced" : formatReportedAmount(Number(summary.known_cost), currency, fx)} detail={summary?.coverage != null && Number(summary.coverage) < 1 ? `${Math.round(Number(summary.coverage) * 100)}% of calls priced` : undefined} /><MetricCard icon="trace" label="Runs" value={Number(summary?.trace_count ?? summary?.observations ?? detail.traces.length).toLocaleString()} /><MetricCard icon="cost" label="Per run" value={summary?.mean_cost_per_trace == null ? "—" : formatReportedAmount(Number(summary.mean_cost_per_trace), currency, fx)} detail="Average" /></div>
     {tab === "Traces" ? <Panel title="Runs">{detail.traces.length === 0 ? <EmptyPanel title="No runs in this period" /> : <div className="ck-table-wrap"><table className="ck-table"><thead><tr><th>Run</th><th>Started</th><th className="numeric">Calls</th><th className="numeric">Cost ({currency})</th></tr></thead><tbody>{detail.traces.slice(0, 50).map((trace) => <tr key={trace.trace_id}><td className="primary-cell"><Link className="ck-table-link" to={`/traces/${encodeURIComponent(trace.trace_id)}?project=${encodeURIComponent(projectId)}`}>{trace.trace_name || trace.trace_id}</Link><div className="muted mono">{trace.trace_id}</div></td><td>{formatDateTime(trace.started_at)}</td><td className="numeric">{trace.call_count.toLocaleString()}</td><td className="numeric">{trace.known_cost == null ? "Unpriced" : formatReportedAmount(Number(trace.known_cost), currency, fx)}</td></tr>)}</tbody></table></div>}</Panel> : <div className="ck-stack ck-contributor-history"><Panel title="Daily cost"><div className="ck-chart-wrap"><ContributorHistory detail={detail} currency={currency} fx={fx} /></div>{history.length === 0 && <p className="ck-table-note">No daily history for this period yet.</p>}</Panel></div>}
     {tab === "Summary" && <div className="ck-content-grid" style={{ marginTop: 16 }}><Panel title="Where in your code">{relatedFunctions.length === 0 ? <p className="ck-table-note" style={{ borderTop: 0 }}>No functions recorded for this yet.</p> : <div className="ck-table-wrap"><table className="ck-table"><thead><tr><th>Function</th><th className="numeric">Cost ({currency})</th><th className="numeric">Share</th><th className="numeric">Calls</th><th className="numeric">Per call</th></tr></thead><tbody>{relatedFunctions.slice(0, 5).map((row) => <tr key={row.key}><td className="primary-cell"><Link className="ck-table-link" to={`/contributor?type=Function&name=${encodeURIComponent(row.key)}&project=${encodeURIComponent(projectId)}&period=${period}`}>{row.label || row.key}</Link></td><td className="numeric">{row.known_cost == null ? "Unpriced" : formatReportedAmount(Number(row.known_cost), currency, fx)}</td><td className="numeric">{summary?.known_cost && row.known_cost != null ? formatPercent(Number(row.known_cost) / Number(summary.known_cost) * 100) : "—"}</td><td className="numeric">{Number(row.observations).toLocaleString()}</td><td className="numeric">{row.known_cost == null || !Number(row.priced_observations ?? row.observations) ? "Unpriced" : formatReportedAmount(Number(row.known_cost) / Number(row.priced_observations ?? row.observations), currency, fx)}</td></tr>)}</tbody></table></div>}</Panel><Panel title="Budget">{(() => { const policies = detail.policyActions?.policies ?? []; if (policies.length === 0) return <div className="ck-budget-check"><p className="ck-budget-check-empty">No budget covers {name} yet.</p><Link className="ck-button ck-button-secondary" to={`/policy-edit?${scopeQuery.toString()}&scopeDimension=${dimension}&scopeValue=${encodeURIComponent(name)}`}><ShieldCheck size={14} /> Set a budget</Link></div>; return <div className="ck-definition-list">{policies.slice(0, 3).map((policy) => <div key={String(policy["id"] ?? policy["name"])}><span>{String(policy["name"] ?? "Budget")}</span><strong>{policy["allowance"] != null ? formatReportedAmount(Number(policy["allowance"]), currency, fx) : ""} {String(policy["mode"]) === "enforce" ? "· stops calls" : "· alerts only"}</strong></div>)}</div>; })()}</Panel></div>}
   </div>;
@@ -166,12 +169,12 @@ function FindingDrawerPage() {
       try {
         let id = requestedId;
         if (!id) {
-          const response = await fetch(`/api/v1/projects/${projectId}/findings`, { credentials: "include" });
+          const response = await fetch(appUrl(`/api/v1/projects/${projectId}/findings`), { credentials: "include" });
           const data = await response.json() as { findings?: FindingResponse[] };
           id = data.findings?.[0]?.id ?? null;
         }
         if (!id) throw new Error("Nothing needs a look right now.");
-        const response = await fetch(`/api/v1/projects/${projectId}/findings/${encodeURIComponent(id)}`, { credentials: "include" });
+        const response = await fetch(appUrl(`/api/v1/projects/${projectId}/findings/${encodeURIComponent(id)}`), { credentials: "include" });
         if (!response.ok) throw new Error("Couldn’t open this change. It may have been removed.");
         const data = await response.json() as { finding?: FindingResponse };
         if (!data.finding) throw new Error("Couldn’t open this change.");
@@ -213,7 +216,7 @@ function capitalizeState(value: unknown): string {
 
 function accountingLabel(value: unknown): string {
   const text = String(value ?? "Unknown").toLowerCase();
-  if (text === "complete" || text === "up to date") return "All calls priced";
+  if (text === "complete" || text === "up to date") return "Priced";
   if (text === "partial" || text === "partial cost") return "Some calls unpriced";
   return capitalizeState(value);
 }
@@ -308,7 +311,6 @@ const REFUSAL_REASON: Record<string, string> = {
 };
 
 const WINDOW_WORDS: Record<string, string> = { calendar_month: "per month", calendar_day: "per day", calendar_minute: "per minute", per_trace: "per run", per_execution: "per batch", per_call: "per call" };
-const SCOPE_SUGGESTION_DIMENSIONS = new Set<string>(["feature", "customer", "model", "provider"]);
 const MAX_SCOPE_VALUES = 50;
 const MAX_SCOPE_VALUE_LENGTH = 200;
 
@@ -384,7 +386,7 @@ function PolicyDetailPage() {
     if (!projectId || !policy) return;
     setStatusSaving(true); setStatusError(null);
     try {
-      const response = await fetch(`/api/v1/projects/${projectId}/budget/policies/${encodeURIComponent(policy.id)}`, { method: "PATCH", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: next }) });
+      const response = await fetch(appUrl(`/api/v1/projects/${projectId}/budget/policies/${encodeURIComponent(policy.id)}`), { method: "PATCH", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: next }) });
       if (!response.ok) throw new Error(next === "paused" ? "Couldn’t pause this budget." : "Couldn’t resume this budget.");
       const data = await response.json() as { policy?: PolicyRecord };
       setPolicy((current) => data.policy ? { ...current, ...data.policy } : current ? { ...current, status: next } : current);
@@ -401,8 +403,8 @@ function PolicyDetailPage() {
       await Promise.resolve();
       try {
         const [policyResponse, decisionsResponse] = await Promise.all([
-          fetch(`/api/v1/projects/${projectId}/budget/policies/${encodeURIComponent(policyId)}`, { credentials: "include" }),
-          fetch(`/api/v1/projects/${projectId}/budget/policies/${encodeURIComponent(policyId)}/decisions`, { credentials: "include" }),
+          fetch(appUrl(`/api/v1/projects/${projectId}/budget/policies/${encodeURIComponent(policyId)}`), { credentials: "include" }),
+          fetch(appUrl(`/api/v1/projects/${projectId}/budget/policies/${encodeURIComponent(policyId)}/decisions`), { credentials: "include" }),
         ]);
         if (!policyResponse.ok) throw new Error("It may have been archived, or you don’t have access.");
         const policyData = await policyResponse.json() as { policy?: PolicyRecord };
@@ -431,7 +433,10 @@ function PolicyDetailPage() {
   const committed = policy.usage?.committed;
   const allowanceValue = Number(policy.allowance) || 0;
   const ratio = observed != null && allowanceValue > 0 ? observed / allowanceValue : null;
-  const status = policy.status === "paused" ? { tone: "neutral" as const, label: "Paused" } : policy.status === "archived" ? { tone: "neutral" as const, label: "Archived" } : ratio == null ? { tone: "neutral" as const, label: "Waiting for usage" } : ratio >= 1 ? { tone: "critical" as const, label: "Limit reached" } : ratio >= 0.8 ? { tone: "warn" as const, label: "Needs a look" } : { tone: "good" as const, label: "Within budget" };
+  // Same words as the Budgets list: On track, At risk, Over.
+  const health = healthView(policy as unknown as Budget);
+  const status = { tone: health.tone, label: health.label };
+  const forecast = (policy as unknown as Budget).forecast;
   const windowWords = WINDOW_WORDS[policy.window] ?? policy.window;
   const perCall = policy.window === "per_call";
   const overLimit = Number(policy.usage?.overLimit) || 0;
@@ -442,10 +447,11 @@ function PolicyDetailPage() {
     {statusError && <div className="ck-alert ck-alert-error" role="alert"><CircleAlert size={15} /><div><strong>{statusError}</strong></div></div>}
     <PrototypeStateNotice state={explicitState} family="policy" role="viewer" />
     {["refused", "stop-requested", "stop-confirmed", "decision-unavailable", "unknown-exposure", "paused"].includes(explicitState) && <div className="ck-alert" role="status"><ShieldCheck size={15} /><div><strong>{explicitState === "refused" ? "A call was refused." : explicitState === "decision-unavailable" ? "We couldn’t check a call, so it was refused." : explicitState === "unknown-exposure" ? "Some spend isn’t known yet." : explicitState === "paused" ? "This budget is paused." : explicitState === "stop-requested" ? "Pause requested. Stop not yet confirmed." : "Stop confirmed."}</strong> Late costs still show below.</div></div>}
-    <StatusLine tone={status.tone} right={<span>{policy.status === "active" ? "Checking new calls" : "Not checking"}</span>}>{status.label === "Within budget" ? `${policy.name || "This budget"} is within its limit.` : status.label === "Needs a look" ? perCall ? `The largest call used ${Math.floor((ratio ?? 0) * 100)}% of the limit.` : `${Math.floor((ratio ?? 0) * 100)}% of this budget is used.` : status.label === "Limit reached" ? (perCall ? (policy.mode === "enforce" ? "Calls over the limit are refused." : "A call went over the limit. Nothing is blocked; alerts were sent.") : policy.mode === "enforce" ? "Limit reached. New matching calls are being refused." : "Limit reached. Nothing is blocked; alerts were sent.") : status.label === "Waiting for usage" ? "No usage counted yet." : `This budget is ${status.label.toLowerCase()}.`}</StatusLine>
+    <StatusLine tone={status.tone} right={<span>{policy.status === "active" ? "Checking new calls" : "Not checking"}</span>}>{health.health === "on_track" ? `${policy.name || "This budget"} is within its limit.` : health.health === "at_risk" ? perCall ? `The largest call used ${Math.floor((ratio ?? 0) * 100)}% of the limit.` : ratio != null && ratio < 0.8 && forecast?.projected != null ? `At this pace it reaches ${policyDisplayValue(policy, forecast.projected, policy.currency ?? currency)} by the end of the period.` : `${Math.floor((ratio ?? 0) * 100)}% of this budget is used.` : health.health === "over" ? (perCall ? (policy.mode === "enforce" ? "Calls over the limit are refused." : "A call went over the limit. Nothing is blocked; alerts were sent.") : policy.mode === "enforce" ? "Limit reached. New matching calls are being refused." : "Limit reached. Nothing is blocked; alerts were sent.") : health.health === "no_data" ? "No usage counted yet." : `This budget is ${status.label.toLowerCase()}.`}</StatusLine>
     <div className="ck-metric-grid">
       <MetricCard icon="shield" label="Limit" value={policyDisplayValue(policy, policy.allowance, policy.currency ?? currency)} detail={windowWords.charAt(0).toUpperCase() + windowWords.slice(1)} />
       {perCall ? <MetricCard icon="activity" label="Largest call" value={policyDisplayValue(policy, observed, policy.currency ?? currency)} detail={overLimit > 0 ? `${overLimit.toLocaleString()} over the limit · last 24 hours` : "Last 24 hours"} /> : <MetricCard icon="activity" label="Used" value={policyDisplayValue(policy, observed, policy.currency ?? currency)} detail={ratio == null ? "Nothing counted yet" : `${Math.floor(ratio * 100)}% of the limit`} />}
+      {!perCall && forecast?.projected != null && <MetricCard icon="calendar" label="Forecast" value={policyDisplayValue(policy, forecast.projected, policy.currency ?? currency)} detail={forecast.periodEnd ? `By ${formatDayDate(new Date(new Date(forecast.periodEnd).getTime() - 1).toISOString(), policy.timezone ?? undefined)}, at the last 7 days’ pace` : "At the last 7 days’ pace"} />}
       {policy.mode === "enforce" && !perCall && <MetricCard icon="clock" label="Reserved for calls in progress" value={policyDisplayValue(policy, committed, policy.currency ?? currency)} />}
     </div>
     {policy.mode === "enforce" && <Panel title="Recent decisions">{decisions.length === 0 ? <EmptyPanel title="No calls refused yet" /> : <div className="ck-table-wrap"><table className="ck-table"><thead><tr><th>Decision</th><th>Reason</th><th>When</th></tr></thead><tbody>{decisions.map((decision, index) => <tr key={String(decision.id ?? index)}><td><StatusPill tone={decision.decision === "refuse" ? "critical" : "good"}>{decision.decision === "refuse" ? "Refused" : "Allowed"}</StatusPill></td><td>{refusalReason(decision)}</td><td>{decision.created_at ? formatDateTime(String(decision.created_at)) : "—"}</td></tr>)}</tbody></table></div>}</Panel>}
@@ -495,7 +501,7 @@ function PolicyEditPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [reviewed, setReviewed] = useState(false);
-  const [suggestions, setSuggestions] = useState<{ dimension: string; values: string[] }>({ dimension: "", values: [] });
+  const [nameTouched, setNameTouched] = useState(Boolean(params.get("name")));
   const prototype = isPrototypePreview();
   const role = prototype ? prototypeRole(params, user?.role ?? "owner") : user?.role ?? "viewer";
   const proposal = explicitState === "proposal" || (role !== "owner" && role !== "admin");
@@ -529,7 +535,7 @@ function PolicyEditPage() {
     let cancelled = false;
     const load = async () => {
       await Promise.resolve();
-      const response = await fetch(`/api/v1/projects/${projectId}/budget/policies/${encodeURIComponent(policyId)}`, { credentials: "include" });
+      const response = await fetch(appUrl(`/api/v1/projects/${projectId}/budget/policies/${encodeURIComponent(policyId)}`), { credentials: "include" });
       if (!response.ok) return;
       const data = await response.json() as { policy?: PolicyRecord };
       if (!cancelled && data.policy) { setName(data.policy.name ?? "Monthly budget"); setAllowance(String(data.policy.allowance)); setUnit(data.policy.unit); setPolicyCurrency(data.policy.currency === "INR" ? "INR" : "USD"); setWindowKind(data.policy.window); setMode(data.policy.mode); const [dimension, value] = Object.entries(data.policy.scope ?? {})[0] ?? []; if (dimension) setScopeDimension(dimension); setScopeValue(Array.isArray(value) ? value.join(", ") : value ?? ""); }
@@ -537,16 +543,15 @@ function PolicyEditPage() {
     void load();
     return () => { cancelled = true; };
   }, [projectId, policyId, currency]);
-  useEffect(() => {
-    // Known values from the last 30 days of costs; the field still takes any name.
-    if (!projectId || prototype || !SCOPE_SUGGESTION_DIMENSIONS.has(scopeDimension)) return;
-    let cancelled = false;
-    const { from, to } = periodDates("30d", timezone);
-    getCostBreakdown(projectId, { groupBy: scopeDimension as CostDimension, from, to, limit: 50 })
-      .then((result) => { if (!cancelled) setSuggestions({ dimension: scopeDimension, values: (result.contributors ?? []).map((row) => row.key ?? "").filter((key) => key && !key.startsWith("(")) }); })
-      .catch(() => undefined);
-    return () => { cancelled = true; };
-  }, [projectId, scopeDimension, prototype, timezone]);
+  const changeScope = (dimension: string, value: string): void => {
+    setScopeDimension(dimension);
+    setScopeValue(value);
+    // A new budget is named after what it covers until someone names it.
+    if (!policyId && !nameTouched) {
+      const covered = dimension === "project" ? "" : parseScopeValues(value).join(", ");
+      setName(covered ? `${covered} monthly budget` : "Monthly budget");
+    }
+  };
   async function copySummary(): Promise<void> {
     const windowWords = WINDOW_WORDS[windowKind] ?? windowKind;
     const limit = unit === "money" ? `${policyCurrency} ${allowance || "?"}` : `${allowance || "?"} ${unit}`;
@@ -562,7 +567,7 @@ function PolicyEditPage() {
     setSaving(true); setError(null);
     try {
       const payload = { name, scope: scopeDimension !== "project" && scopeValues.length > 0 ? { [scopeDimension]: scopeValues.length === 1 ? scopeValues[0] : scopeValues } : { project: projectId }, unit, allowance: Number(allowance), currency: unit === "money" ? policyCurrency : undefined, window: windowKind, timezone, mode, ...(policyId ? {} : { status: "active" }) };
-      const response = await fetch(`/api/v1/projects/${projectId}/budget/policies${policyId ? `/${encodeURIComponent(policyId)}` : ""}`, { method: policyId ? "PATCH" : "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      const response = await fetch(appUrl(`/api/v1/projects/${projectId}/budget/policies${policyId ? `/${encodeURIComponent(policyId)}` : ""}`), { method: policyId ? "PATCH" : "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
       if (!response.ok) throw new Error(response.status === 403 ? "Only Owners and Admins can save budgets." : "Couldn’t save this budget. Try again.");
       setReviewed(true);
       if (isPrototypePreview()) {
@@ -590,16 +595,13 @@ function PolicyEditPage() {
   const environmentLabel = environment === "all" || environment === "all environments" ? "All environments" : environment;
   const windowLabel = ({ calendar_month: "Monthly", calendar_day: "Daily", per_trace: "Per run", per_execution: "Per batch", per_call: "Per call" } as Record<string, string>)[windowKind] ?? windowKind;
   const perCall = windowKind === "per_call";
-  // Offer known values after the last comma, keeping what is already typed.
-  const suggestionPrefix = scopeValue.includes(",") ? `${scopeValue.slice(0, scopeValue.lastIndexOf(",") + 1).trimEnd()} ` : "";
-  const scopeSuggestions = suggestions.dimension === scopeDimension ? suggestions.values.filter((value) => !scopeValues.includes(value)) : [];
   const preview = scopeValue === "Search" ? "1,200 runs · $142.80" : scopeValue === "nightly-document-import" ? "40 runs · $6.18" : "Matching history preview available";
   const summaryAmount = unit === "money" ? formatReportedAmount(Number(allowance) || 0, policyCurrency, undefined) : `${Number(allowance || 0).toLocaleString()} ${unit}`;
   const summaryAction = perCall ? (mode === "enforce" ? "Refuse calls over the limit" : "Alert on calls over the limit") : mode === "enforce" ? "Stop new calls" : "Alert at 80% and 100%";
   if (prototype && explicitState === "review") return <PrototypePolicyReview projectName={projectName} scopeValue={scopeValue || "Search"} amount={allowance || "200"} windowLabel={windowLabel} timezone={timezone} enforce={mode === "enforce" || explicitState === "review"} onBack={() => navigate("/policy-edit?design=prototype&project=proj_preview")} />;
   return <div className="ck-main-inner ck-policy-editor-page prototype-policy-route">
     <Link className="ck-back-link" to="/budgets"><ArrowLeft size={13} /> Budgets</Link>
-    <PageHeader title={proposal ? "Suggest a budget" : policyId ? "Edit budget" : "Create a budget"} description={proposal ? "An Owner or Admin needs to turn this on." : undefined} />
+    <PageHeader title={proposal ? "Suggest a budget" : policyId ? "Edit budget" : "New budget"} description={proposal ? "An Owner or Admin needs to turn this on." : undefined} />
     {proposal && <div className="ck-alert prototype-policy-proposal-notice" role="status"><ShieldCheck size={15} /><div><strong>This won’t turn on by itself</strong><span>Only Owners and Admins can save budgets. Copy the summary and send it to one.</span></div></div>}
     {unavailable && <div className="ck-alert" role="status"><CircleAlert size={15} /><div><strong>This integration can’t stop calls.</strong><span>It doesn’t check prices before each call, so only alerts are available.</span></div></div>}
     {prototypeError && <div className="ck-alert ck-alert-error" role="alert"><CircleAlert size={15} /><div><strong>Couldn’t save this budget</strong><span>Your values are kept and nothing was turned on. Try again.</span></div></div>}
@@ -608,12 +610,11 @@ function PolicyEditPage() {
       <form id="policy-form" className="ck-panel ck-form prototype-policy-form" onSubmit={(event) => { event.preventDefault(); void review(); }}>
         <div className="ck-form-section prototype-policy-section">
           <div className="ck-form-section-title"><span className="ck-section-number">1</span> Name</div>
-          <label className="ck-form-field"><span>Budget name</span><input className="ck-input" name="policyName" value={name} onChange={(event) => setName(event.target.value)} required autoComplete="off" /></label>
+          <label className="ck-form-field"><span>Budget name</span><input className="ck-input" name="policyName" value={name} onChange={(event) => { setName(event.target.value); setNameTouched(true); }} required autoComplete="off" /></label>
         </div>
         <div className="ck-form-section prototype-policy-section prototype-policy-scope-section">
           <div className="ck-form-section-title"><span className="ck-section-number">2</span> Applies to</div>
-          <div className="ck-form-grid prototype-policy-two-col"><label className="ck-form-field"><span>Project</span><span className="ck-form-select-wrap"><select className="ck-select" name="project" value={projectId ?? ""} onChange={(event) => setSelectedProjectId(event.target.value)}>{projects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}</select><PrototypeIcon name="down" size={14} /></span></label><label className="ck-form-field"><span>Covers</span><span className="ck-form-select-wrap"><select className="ck-select" name="dimension" value={scopeDimension} onChange={(event) => setScopeDimension(event.target.value)}><option value="project">Whole project</option><option value="feature">A feature</option><option value="customer">A customer</option><option value="function">A function</option><option value="model">A model</option><option value="group">An experiment</option><option value="agent">An agent</option><option value="tool">A tool</option><option value="user">A user</option><option value="workflow">A workflow</option></select><PrototypeIcon name="down" size={14} /></span></label></div>
-          {scopeDimension !== "project" && <label className="ck-form-field prototype-policy-match-field"><span>Which {scopeDimension === "group" ? "experiments" : `${scopeDimension}s`}?</span><input className="ck-input" name="scope" value={scopeValue} onChange={(event) => setScopeValue(event.target.value)} list={scopeSuggestions.length > 0 ? "policy-scope-suggestions" : undefined} autoComplete="off" placeholder={scopeDimension === "feature" ? "e.g. search, answer" : scopeDimension === "model" ? "e.g. gpt-4o" : scopeDimension === "agent" ? "e.g. browser-agent" : scopeDimension === "tool" ? "e.g. search_funds" : scopeDimension === "user" ? "e.g. user_123" : scopeDimension === "workflow" ? "e.g. nightly-import" : ""} /><small>Exact names, comma-separated.</small>{scopeSuggestions.length > 0 && <datalist id="policy-scope-suggestions">{scopeSuggestions.map((value) => <option key={value} value={`${suggestionPrefix}${value}`} />)}</datalist>}</label>}
+          <div className="ck-form-grid prototype-policy-two-col"><label className="ck-form-field"><span>Project</span><span className="ck-form-select-wrap"><select className="ck-select" name="project" value={projectId ?? ""} onChange={(event) => setSelectedProjectId(event.target.value)}>{projects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}</select><PrototypeIcon name="down" size={14} /></span></label><BudgetScopePicker projectId={projectId} dimension={scopeDimension} value={scopeValue} onChange={changeScope} /></div>
           {prototype && <details className="prototype-policy-advanced"><summary>Advanced matching</summary><div className="prototype-policy-advanced-body"><label className="prototype-policy-check"><input type="checkbox" /> <span>Use a wildcard pattern. Preview matches before activation.</span></label><div className="ck-definition-list"><div><span>Project</span><strong>{projectName}</strong></div><div><span>Scope</span><strong>{scopeLabel}</strong></div><div><span>Future work</span><strong>Matching calls only</strong></div></div></div></details>}
           {prototype && <div className="prototype-policy-preview"><PrototypeIcon name="trace" size={15} /><span>Recent match preview: {preview} · 1–20 Sep · {environmentLabel}</span></div>}
         </div>

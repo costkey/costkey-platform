@@ -26,6 +26,11 @@ function prototypeDataAsset() {
 }
 
 export default defineConfig({
+  // Relative asset URLs let one build serve under any base path. The server
+  // anchors index.html's URLs at its base path when it serves the shell, and
+  // lazy chunks load relative to the chunk that imports them. The dev server
+  // still serves from the root.
+  base: './',
   plugins: [react(), tailwindcss(), prototypeDataAsset()],
   server: {
     port: 5180,

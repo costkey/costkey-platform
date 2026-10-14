@@ -78,11 +78,13 @@ export class PriceCatalog {
   private readonly prices: CatalogPrice[];
   /** Curated prices for every model starting with a prefix (`aura-2-*`, or `*` for all). */
   private readonly prefixes: Array<{ prefix: string; price: CatalogPrice }> = [];
+  private readonly ids = new Map<string, CatalogPrice>();
   readonly size: number;
 
   constructor(prices: CatalogPrice[], readonly loadedAt: Date = new Date()) {
     this.prices = prices;
     for (const price of prices) {
+      this.ids.set(price.id, price);
       if (price.model.endsWith("*")) {
         this.prefixes.push({ prefix: price.model.slice(0, -1), price });
         continue;
@@ -124,6 +126,11 @@ export class PriceCatalog {
     const votes = (price: CatalogPrice) => electorate.filter((other) => other !== price && agrees(price.rates, other.rates)).length;
     const rank = (price: CatalogPrice) => provider === "openrouter" && price.source === "openrouter" ? -1 : SOURCE_RANK[price.source];
     return candidates.sort((a, b) => votes(b) - votes(a) || rank(a) - rank(b))[0] ?? null;
+  }
+
+  /** The exact price version a call was priced with (its stored pricing_id). */
+  byId(id: string): CatalogPrice | null {
+    return this.ids.get(id) ?? null;
   }
 
   lookup(provider: string, model: string, at: Date, allowUndated: boolean): CatalogPrice | null {

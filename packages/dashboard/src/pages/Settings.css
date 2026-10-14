@@ -94,6 +94,8 @@
 
 .settings-form-field input:disabled, .settings-form-field select:disabled { cursor: not-allowed; opacity: .65; }
 .settings-form-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; border-top: 1px solid var(--ck-border); padding-top: 14px; }
+/* In a plain card body the footer needs its own space; .settings-form already spaces it with gap. */
+.settings-card-body > .settings-form-footer { margin-top: 16px; }
 
 .settings-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; border-top: 1px solid var(--ck-border); padding: 14px 0; }
 .settings-row:first-child { border-top: 0; }
@@ -182,7 +184,7 @@
 .settings-project-picker label { color: var(--ck-slate); font-size: 12px; font-weight: 500; letter-spacing: 0; text-transform: none; }
 .settings-form-field select, .settings-project-picker select, .settings-row select { appearance: none; -webkit-appearance: none; padding-right: 34px; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2352677A' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 10 5 5 5-5'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 10px center; }
 .settings-project-picker select, .settings-row select { min-height: 36px; border: 1px solid var(--ck-border-strong); border-radius: 10px; background-color: var(--ck-raised); font-size: 14px; padding-left: 12px; }
-.settings-project-actions-end { display: inline-flex; gap: 4px; margin-left: auto; }
+.settings-project-actions-end { display: inline-flex; gap: 8px; margin-left: auto; }
 .ck-button.ck-button-danger-quiet { color: #a33d32; }
 .settings-project-warning { display: flex; align-items: center; gap: 12px; margin-top: 14px; }
 

@@ -75,6 +75,13 @@ function parseUrl(value: unknown): URL | null {
   }
 }
 
+/** Whether a call with no response got as far as the provider: a read timeout or a cut-off read. */
+function reachedProvider(error: Record<string, unknown> | null): boolean {
+  const name = typeof error?.["name"] === "string" ? error["name"] : "";
+  if (/connect|dns|resolve|refused|ssl|tls|certificate/i.test(name)) return false;
+  return /readtimeout|read_timeout|timeouterror|timeout|remoteprotocol|incompleteread|chunkedencoding|abort|cancel/i.test(name);
+}
+
 function safeUsage(extractor: ServerExtractor, body: unknown, call: ExtractCall): NormalizedUsage | null {
   try {
     return extractor.extractUsage(body, call) ?? null;
@@ -245,6 +252,16 @@ export function extractCall(telemetry: unknown, options: ExtractOptions = {}): D
   if (!response) {
     // The request never got a response (network error, abort before headers).
     model = safeModel(extractor, requestBody, null, requestCall);
+    // A read timeout means the provider had the request and was working on it;
+    // providers that bill on the request still charge. A refused or failed
+    // connection never reached them.
+    if (reachedProvider(error) && extractor.extractUnansweredUsage) {
+      try {
+        usage = withTotal(extractor.extractUnansweredUsage(requestCall));
+      } catch {
+        usage = null;
+      }
+    }
   } else if (stream) {
     const records = items(stream["chunks"]) ?? [];
     const summary = streamSummary(extractor, records, call);

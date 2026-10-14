@@ -58,6 +58,13 @@ export const elevenlabsExtractor: ServerExtractor = {
     }
     return null;
   },
+  // Text-to-speech starts generating as soon as the request arrives, so a
+  // request whose response timed out is still billed for its text.
+  extractUnansweredUsage(call) {
+    if (!ELEVENLABS_TTS_PATH.test(call.url.pathname)) return null;
+    const characters = strLength(asObject(call.requestBody)?.["text"]);
+    return characters != null ? unitUsage({ characters }) : null;
+  },
   extractModel(requestBody, _responseBody, call) {
     const model = nonEmpty(asObject(requestBody)?.["model_id"]);
     if (model) return model;

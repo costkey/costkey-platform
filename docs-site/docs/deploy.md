@@ -82,7 +82,27 @@ curl -fsSLO https://costkey.dev/self-host/cloud-run.sh
 COSTKEY_VERSION=0.7.0 PROJECT=your-project REGION=us-central1 bash cloud-run.sh
 ```
 
-It creates Cloud SQL for Postgres, keeps the secrets in Secret Manager, mirrors the image through Artifact Registry and deploys with one warm instance, since CostKey runs background jobs. Run it again to upgrade.
+Nothing gets a public IP.
+
+- **Database:** Cloud SQL for Postgres on the smallest machine type (`db-f1-micro`), with a private IP in your VPC. If the VPC has no private services access, the script sets it up.
+- **Secrets:** stored in Secret Manager.
+- **Image:** mirrored through Artifact Registry.
+- **Service:** Cloud Run, reaching the database through your VPC. It only accepts traffic from inside the VPC and anything connected to it, such as a VPN or a peered VPC. It keeps one warm instance, because CostKey runs background jobs.
+
+Run the script again to upgrade.
+
+| Variable | What it does |
+| --- | --- |
+| `NETWORK`, `SUBNET` | The VPC and subnet to use. By default it uses the project's only VPC and its first subnet in `REGION`. |
+| `COSTKEY_DB_TIER` | The Cloud SQL machine type. Default `db-f1-micro`, the smallest. Set a larger one, for example `db-g1-small`, as traffic grows; a later run resizes it. |
+| `COSTKEY_PUBLIC_URL` | The address SDKs and people use, such as an internal DNS name. DSNs and email links use it. |
+| `COSTKEY_INGRESS` | `internal` (default), `internal-and-cloud-load-balancing`, or `all` to accept traffic from the internet. The database stays private either way. |
+
+To reach it by an internal name:
+
+1. Put an internal Application Load Balancer with a serverless NEG in front of the service.
+2. Add a record for it in a private Cloud DNS zone.
+3. Run the script again with `COSTKEY_INGRESS=internal-and-cloud-load-balancing COSTKEY_PUBLIC_URL=https://costkey.internal.your-company.com`.
 
 ## AWS
 

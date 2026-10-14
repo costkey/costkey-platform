@@ -1,3 +1,5 @@
+import { IngestStatus } from "./components/IngestStatus";
+import { appUrl, BASE_PATH } from "./basePath";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowRight,
@@ -12,29 +14,34 @@ import { useAuth } from "./contexts/useAuth";
 import { BrandMark } from "./components/BrandMark";
 import { isPrototypePreview } from "./prototypePreview";
 import { PrototypeIcon, type PrototypeIconName } from "./components/PrototypeIcon";
-const Budgets = lazy(() => import("./pages/Budgets"));
-const Costs = lazy(() => import("./pages/Costs"));
-const Dashboard = lazy(() => import("./pages/Dashboard"));
-const Forecast = lazy(() => import("./pages/Forecast"));
-const Executions = lazy(() => import("./pages/Executions"));
-const Finding = lazy(() => import("./pages/Finding"));
-const Invite = lazy(() => import("./pages/Invite"));
-const CliAuth = lazy(() => import("./pages/CliAuth"));
-const Login = lazy(() => import("./pages/Login"));
-const Onboarding = lazy(() => import("./pages/Onboarding"));
-const SettingsPage = lazy(() => import("./pages/Settings"));
-const Signup = lazy(() => import("./pages/Signup"));
-const Traces = lazy(() => import("./pages/Traces"));
-const Workflows = lazy(() => import("./pages/RunGroups").then((module) => ({ default: module.Workflows })));
-const Agents = lazy(() => import("./pages/RunGroups").then((module) => ({ default: module.Agents })));
-const AgentDetailPage = lazy(() => import("./pages/RunGroups").then((module) => ({ default: module.AgentDetailPage })));
-const Quality = lazy(() => import("./pages/Quality"));
-const Alerting = lazy(() => import("./pages/Alerting"));
-const ContributorPage = lazy(() => import("./pages/ProductParityRoutes").then((module) => ({ default: module.ContributorPage })));
-const FindingDrawerPage = lazy(() => import("./pages/ProductParityRoutes").then((module) => ({ default: module.FindingDrawerPage })));
-const ComparePage = lazy(() => import("./pages/ProductParityRoutes").then((module) => ({ default: module.ComparePage })));
-const PolicyDetailPage = lazy(() => import("./pages/ProductParityRoutes").then((module) => ({ default: module.PolicyDetailPage })));
-const PolicyEditPage = lazy(() => import("./pages/ProductParityRoutes").then((module) => ({ default: module.PolicyEditPage })));
+import { loadChunk } from "./chunkLoad";
+const Budgets = lazy(() => loadChunk(() => import("./pages/Budgets")));
+const Costs = lazy(() => loadChunk(() => import("./pages/Costs")));
+const Dashboard = lazy(() => loadChunk(() => import("./pages/Dashboard")));
+const Forecast = lazy(() => loadChunk(() => import("./pages/Forecast")));
+const Executions = lazy(() => loadChunk(() => import("./pages/Executions")));
+const Finding = lazy(() => loadChunk(() => import("./pages/Finding")));
+const Invite = lazy(() => loadChunk(() => import("./pages/Invite")));
+const CliAuth = lazy(() => loadChunk(() => import("./pages/CliAuth")));
+const Login = lazy(() => loadChunk(() => import("./pages/Login")));
+const Onboarding = lazy(() => loadChunk(() => import("./pages/Onboarding")));
+const SettingsPage = lazy(() => loadChunk(() => import("./pages/Settings")));
+const Signup = lazy(() => loadChunk(() => import("./pages/Signup")));
+const Traces = lazy(() => loadChunk(() => import("./pages/Traces")));
+const Workflows = lazy(() => loadChunk(() => import("./pages/RunGroups")).then((module) => ({ default: module.Workflows })));
+const Agents = lazy(() => loadChunk(() => import("./pages/RunGroups")).then((module) => ({ default: module.Agents })));
+const AgentDetailPage = lazy(() => loadChunk(() => import("./pages/RunGroups")).then((module) => ({ default: module.AgentDetailPage })));
+const UsersPage = lazy(() => loadChunk(() => import("./pages/Users")).then((module) => ({ default: module.UsersPage })));
+const UserDetailPage = lazy(() => loadChunk(() => import("./pages/Users")).then((module) => ({ default: module.UserDetailPage })));
+const ModelDetailPage = lazy(() => loadChunk(() => import("./pages/ModelDetail")).then((module) => ({ default: module.ModelDetailPage })));
+const WorkflowDetailPage = lazy(() => loadChunk(() => import("./pages/RunGroups")).then((module) => ({ default: module.WorkflowDetailPage })));
+const Quality = lazy(() => loadChunk(() => import("./pages/Quality")));
+const Alerting = lazy(() => loadChunk(() => import("./pages/Alerting")));
+const ContributorPage = lazy(() => loadChunk(() => import("./pages/ProductParityRoutes")).then((module) => ({ default: module.ContributorPage })));
+const FindingDrawerPage = lazy(() => loadChunk(() => import("./pages/ProductParityRoutes")).then((module) => ({ default: module.FindingDrawerPage })));
+const ComparePage = lazy(() => loadChunk(() => import("./pages/ProductParityRoutes")).then((module) => ({ default: module.ComparePage })));
+const PolicyDetailPage = lazy(() => loadChunk(() => import("./pages/ProductParityRoutes")).then((module) => ({ default: module.PolicyDetailPage })));
+const PolicyEditPage = lazy(() => loadChunk(() => import("./pages/ProductParityRoutes")).then((module) => ({ default: module.PolicyEditPage })));
 
 function displayProjectName(value: string | null | undefined): string {
   return (value ?? "").replace(/\s+\(synthetic\)$/i, "").trim() || "Project";
@@ -199,7 +206,7 @@ function FeedbackLink() {
     if (!message.trim()) return;
     setStatus("sending");
     try {
-      const response = await fetch("/api/v1/feedback", {
+      const response = await fetch(appUrl("/api/v1/feedback"), {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
@@ -283,7 +290,10 @@ function AppShell() {
     { to: "/workflows", label: "Workflows", icon: "workflow" as PrototypeIconName },
     { to: "/agents", label: "Agents", icon: "agent" as PrototypeIconName },
     { to: "/traces", label: "Traces", icon: "trace" as PrototypeIconName },
+    { to: "/users", label: "Users", icon: "users" as PrototypeIconName },
+    { to: "/costs", label: "Costs", icon: "cost" as PrototypeIconName },
     { to: "/quality", label: "Quality", icon: "quality" as PrototypeIconName },
+    { to: "/budgets", label: "Budgets", icon: "shield" as PrototypeIconName },
   ], []);
 
   function navSection(pathname: string): string {
@@ -293,7 +303,8 @@ function AppShell() {
     if (pathname.startsWith("/traces") || pathname === "/trace" || pathname.startsWith("/compare")) return "/traces";
     if (pathname.startsWith("/executions") || pathname.startsWith("/group")) return "/workflows";
     if (pathname.startsWith("/quality")) return "/quality";
-    if (pathname.startsWith("/models") || pathname.startsWith("/costs") || pathname.startsWith("/contributor")) return "/models";
+    if (pathname.startsWith("/users")) return "/users";
+    if (pathname.startsWith("/models") || pathname.startsWith("/costs") || pathname.startsWith("/contributor")) return "/costs";
     if (pathname.startsWith("/forecast")) return "/forecast";
     if (pathname.startsWith("/budgets") || pathname.startsWith("/policy")) return "/budgets";
     if (pathname.startsWith("/alerting")) return "/alerting";
@@ -328,11 +339,6 @@ function AppShell() {
       {menuOpen && <div className="ck-mobile-overlay" onClick={closeMenu} role="presentation" />}
       <aside className={`ck-sidebar ${menuOpen ? "open" : ""}`} aria-label="Primary navigation">
         <Link className="ck-sidebar-brand" to="/" onClick={closeMenu}><BrandMark className="ck-brand-mark" /><span className="ck-brand-name">CostKey</span></Link>
-        <div className="ck-workspace-block">
-          <div className="ck-overline">Workspace</div>
-          <div className="ck-workspace-name" title={org?.name}>{org?.name ?? "Your workspace"}</div>
-          <ProjectSwitcher />
-        </div>
         <nav className="ck-nav" aria-label="Main">
           {navItems.map(({ to, label, icon }) => (
             <Link key={to} className={`ck-nav-link ${isActive(to) ? "active" : ""}`} to={to} onClick={closeMenu} aria-current={isActive(to) ? "page" : undefined}>
@@ -353,6 +359,8 @@ function AppShell() {
             </section>
           )}
           <div className="ck-utility-optional"><FeedbackLink /></div>
+          <IngestStatus projectId={currentProjectId ?? projects[0]?.id ?? null} />
+          <ProjectSwitcher />
           <div className="ck-user-row" role="button" tabIndex={0} aria-expanded={sidebarPanel === "account"} aria-haspopup="dialog" onClick={() => setSidebarPanel((panel) => panel === "account" ? null : "account")} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setSidebarPanel((panel) => panel === "account" ? null : "account"); } }}>
             <span className="ck-user-avatar" aria-hidden="true">{initials}</span>
             <div className="ck-user-meta"><div className="ck-user-name" title={user?.email}>{user?.name || user?.email}</div><div className="ck-user-role">{displayRole(user?.role)}</div></div>
@@ -390,7 +398,7 @@ function AppShell() {
 
 export default function App() {
   return (
-    <BrowserRouter>
+    <BrowserRouter basename={BASE_PATH || undefined}>
       <AuthProvider>
         <Suspense fallback={<RouteLoading />}>
           <Routes>
@@ -413,6 +421,10 @@ export default function App() {
             <RouterRoute path="/workflows" element={<Workflows />} />
             <RouterRoute path="/agents" element={<Agents />} />
             <RouterRoute path="/agents/:name" element={<AgentDetailPage />} />
+            <RouterRoute path="/workflows/:name" element={<WorkflowDetailPage />} />
+            <RouterRoute path="/models/:provider/*" element={<ModelDetailPage />} />
+            <RouterRoute path="/users" element={<UsersPage />} />
+            <RouterRoute path="/users/:userId" element={<UserDetailPage />} />
             <RouterRoute path="/errors" element={<Navigate to="/quality" replace />} />
             <RouterRoute path="/quality" element={<Quality />} />
             <RouterRoute path="/alerting" element={<Alerting />} />

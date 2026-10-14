@@ -1,5 +1,6 @@
+import { appUrl } from "../basePath";
 import type { ReactNode } from "react";
-import { ArrowDown, ArrowUp, Minus, RefreshCw } from "lucide-react";
+import { ArrowDown, ArrowUp, Minus, RefreshCw, X } from "lucide-react";
 import { PrototypeIcon, type PrototypeIconName } from "./PrototypeIcon";
 
 export type Tone = "good" | "warn" | "critical" | "info" | "neutral";
@@ -9,17 +10,17 @@ export type IllustrationName = "first-light" | "a-little-ahead" | "room-to-explo
 
 /** Spot art for onboarding, summaries and empty states. Never placed over live data. */
 export function Illustration({ name, width = 200, className = "" }: { name: IllustrationName; width?: number; className?: string }) {
-  return <img className={`ck-illustration ${className}`} src={`/assets/illustrations/${name}.svg`} width={width} height={Math.round(width * 2 / 3)} alt="" aria-hidden="true" draggable={false} />;
+  return <img className={`ck-illustration ${className}`} src={appUrl(`/assets/illustrations/${name}.svg`)} width={width} height={Math.round(width * 2 / 3)} alt="" aria-hidden="true" draggable={false} />;
 }
 
 const STATUS_ICON: Record<Tone, PrototypeIconName> = { good: "check", warn: "alert", critical: "pause", info: "info", neutral: "info" };
 
 /** One-line scoped status ("All tracked projects are within budget."). Always an icon and words. */
-export function StatusLine({ tone = "good", children, right }: { tone?: Tone; children: ReactNode; right?: ReactNode }) {
+export function StatusLine({ tone = "good", children, right, onDismiss }: { tone?: Tone; children: ReactNode; right?: ReactNode; /** Shows a close button at the right edge. */ onDismiss?: () => void }) {
   return (
-    <div className={`ck-status-line ck-status-line-${tone}`} role="status">
+    <div className={`ck-status-line ck-status-line-${tone} ${onDismiss ? "is-dismissible" : ""}`} role="status">
       <span className="ck-status-line-text"><PrototypeIcon name={STATUS_ICON[tone]} size={16} />{children}</span>
-      {right && <span className="ck-status-line-right">{right}</span>}
+      {(right || onDismiss) && <span className="ck-status-line-right">{right}{onDismiss && <button className="ck-status-line-close" type="button" aria-label="Dismiss this message" onClick={onDismiss}><X size={14} aria-hidden="true" /></button>}</span>}
     </div>
   );
 }
@@ -162,7 +163,8 @@ export function StatusPill({ tone = "neutral", children, icon }: { tone?: Tone; 
 /** Period-over-period change in words ("12.4% lower than last month"). */
 export function Delta({ value, comparison = "the previous period" }: { value: number | null | undefined; comparison?: string }) {
   if (value == null || !Number.isFinite(Number(value))) {
-    return <span className="ck-delta ck-delta-neutral">No earlier period to compare</span>;
+    // Nothing earlier to compare with: say nothing rather than filler.
+    return null;
   }
   const numeric = Number(value);
   if (Math.abs(numeric) < 0.05) {

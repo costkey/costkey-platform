@@ -1,4 +1,8 @@
-import { useEffect, useState, type ReactElement } from "react";
+import { type ReactElement } from "react";
+import { useLiveQuery, type LiveQuery } from "../hooks/useLiveQuery";
+import type { LiveOptions } from "../hooks/liveQuery";
+
+type LiveQueryOptions<T> = Omit<LiveOptions<T>, "initialData" | "environment">;
 import { useSearchParams } from "react-router-dom";
 import { ScopeToolbar, type Period } from "../components/ConsolePrimitives";
 import { parsePeriod, periodDates, type ReportingFx } from "../components/consoleFormatters";
@@ -42,18 +46,10 @@ export function useInsightScope(): {
   };
 }
 
-/** Load once per scope; keeps the last result while a new one loads. */
-export function useScopedLoad<T>(key: string | null, load: () => Promise<T>): { data: T | null; error: string | null; loading: boolean } {
-  const [state, setState] = useState<{ key: string | null; data: T | null; error: string | null }>({ key: null, data: null, error: null });
-  useEffect(() => {
-    if (!key) return;
-    let alive = true;
-    load()
-      .then((data) => { if (alive) setState({ key, data, error: null }); })
-      .catch((error: unknown) => { if (alive) setState((current) => ({ key, data: current.data, error: error instanceof Error ? error.message : "Couldn't load this page." })); });
-    return () => { alive = false; };
-    // `load` closes over the same values as `key`.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key]);
-  return { data: state.data, error: state.error, loading: state.key !== key };
+/**
+ * Load per scope and keep it current (every 10 s while the tab is visible).
+ * The last result stays on screen while a new one loads.
+ */
+export function useScopedLoad<T>(key: string | null, load: () => Promise<T>, options: LiveQueryOptions<T> = {}): LiveQuery<T> {
+  return useLiveQuery(key, load, options);
 }

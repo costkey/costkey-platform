@@ -1,219 +1,161 @@
-import { useEffect, useState } from "react";
-import { ArrowRight, CircleAlert, Gauge, Plus, ShieldCheck } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { CircleAlert, Plus } from "lucide-react";
 import { Link, Navigate, useParams, useSearchParams } from "react-router-dom";
+import { deleteBudget, listBudgets, type Budget } from "../budgetsApi";
 import { useAuth } from "../contexts/useAuth";
-import { EmptyPanel, LoadingRows, PageHeader, Panel, StatusPill } from "../components/ConsolePrimitives";
-import { formatCurrencyAmount } from "../components/consoleFormatters";
-import { prototypeRole, prototypeState, PrototypeStateNotice, PrototypeStatePanel } from "../components/PrototypeState";
-import { isPrototypePreview } from "../prototypePreview";
-import "./PrototypeRoute.css";
+import { useLiveQuery } from "../hooks/useLiveQuery";
+import { EmptyPanel, LoadingRows, PageHeader, Panel, StatusLine, StatusPill } from "../components/ConsolePrimitives";
+import { LiveStatus } from "../components/LiveStatus";
+import { actionText, periodLastDay, budgetDetailHref, budgetEditorHref, coversText, formatBudgetAmount, healthCounts, healthView, periodText, sortBudgets, usedShare } from "../components/budgetModel";
+import { BudgetProgress } from "../components/ScopeBudget";
+import "../components/Budgets.css";
 
-type PolicyMode = "monitor" | "enforce";
-type PolicyStatus = "active" | "paused" | "archived";
-type PolicyUnit = "money" | "calls" | "tokens";
-type PolicyWindow = "per_trace" | "per_execution" | "per_call" | "calendar_minute" | "calendar_day" | "calendar_month";
-
-interface Policy {
-  id: string;
-  projectId: string;
-  name: string | null;
-  scope: Record<string, string | string[]>;
-  mode: PolicyMode;
-  status: PolicyStatus;
-  unit: PolicyUnit;
-  allowance: number;
-  currency: "USD" | "INR" | null;
-  window: PolicyWindow;
-  timezone: string;
-  usage?: { observed: number | null; committed: number | null; remaining: number | null; coverage?: number | null };
+function usedCell(budget: Budget): { label: string; value: string } {
+  if (budget.window === "per_call") return { label: "Largest call, last 24 hours", value: formatBudgetAmount(budget, budget.usage?.observed) };
+  if (budget.window === "per_trace" || budget.window === "per_execution") return { label: "", value: "Counted each run" };
+  return { label: "", value: formatBudgetAmount(budget, budget.usage?.observed) };
 }
 
-const POLICY_TABS = ["Active", "Paused", "Archived"] as const;
-type PolicyTab = typeof POLICY_TABS[number];
-
-/** "search, answer +1": a group shows its first two values. */
-function scopeValueText(value: string | string[]): string {
-  const values = Array.isArray(value) ? value : [value];
-  return values.length > 2 ? `${values.slice(0, 2).join(", ")} +${values.length - 2}` : values.join(", ");
+function ForecastCell({ budget, timezone }: { budget: Budget; timezone?: string }) {
+  const projected = budget.forecast?.projected;
+  const end = budget.forecast?.periodEnd;
+  if (projected == null || !end) return <span className="ck-budget-muted">—</span>;
+  // A period is a calendar month or day in the budget's own time zone.
+  const lastDay = periodLastDay(end, budget.timezone ?? timezone);
+  return <><span className="ck-budget-figure">{formatBudgetAmount(budget, projected)}</span><span className="ck-budget-sub">by {lastDay}</span></>;
 }
 
-function policyScope(policy: Policy): string {
-  const [key, rawValue] = Object.entries(policy.scope ?? {})[0] ?? [];
-  if (!key || !rawValue || rawValue.length === 0) return "Whole project";
-  const value = scopeValueText(rawValue);
-  if (isPrototypePreview()) {
-    if (key === "project") return "Atlas · All environments";
-    if (key === "feature" && value === "Search") return "Feature: Search · All environments";
-    if (key === "feature" && value === "Voice assistance") return "Voice framework · Each trace";
-    if (key === "group") return `Group: ${value}`;
-  }
-  return `${key === "group" ? "Experiment" : key[0].toUpperCase() + key.slice(1)}: ${value}`;
+function DeleteDialog({ budget, onCancel, onConfirm, busy, error }: { budget: Budget; onCancel: () => void; onConfirm: () => void; busy: boolean; error: string | null }) {
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const onCancelRef = useRef(onCancel);
+  useEffect(() => { onCancelRef.current = onCancel; });
+  useEffect(() => {
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    cancelRef.current?.focus();
+    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") onCancelRef.current(); };
+    document.addEventListener("keydown", onKey);
+    return () => { document.removeEventListener("keydown", onKey); opener?.focus(); };
+  }, []);
+  // On the body, so no page container can clip the backdrop.
+  return createPortal(<div className="ck-dialog-backdrop" role="presentation" onClick={onCancel}>
+    <section className="ck-dialog ck-budget-dialog" role="alertdialog" aria-modal="true" aria-labelledby="budget-delete-title" aria-describedby="budget-delete-copy" onClick={(event) => event.stopPropagation()}>
+      <h2 id="budget-delete-title">Delete {budget.name || "this budget"}?</h2>
+      <p id="budget-delete-copy">It stops checking calls right away. Spend history is kept.</p>
+      {error && <p className="ck-form-error" role="alert">{error}</p>}
+      <div className="ck-dialog-footer">
+        <button ref={cancelRef} className="ck-button ck-button-secondary" type="button" onClick={onCancel} disabled={busy}>Cancel</button>
+        <button className="ck-button ck-button-danger" type="button" onClick={onConfirm} disabled={busy}>{busy ? "Deleting" : "Delete budget"}</button>
+      </div>
+    </section>
+  </div>, document.body);
 }
 
-function formatWindow(value: PolicyWindow): string {
-  return ({
-    per_trace: "Per run",
-    per_execution: "Per batch",
-    per_call: "Per call",
-    calendar_minute: "Per minute",
-    calendar_day: "Daily",
-    calendar_month: "Monthly",
-  })[value];
+function BudgetTable({ budgets, projectId, canManage, timezone, onDelete }: { budgets: Budget[]; projectId: string; canManage: boolean; timezone?: string; onDelete: (budget: Budget) => void }) {
+  return <div className="ck-table-wrap"><table className="ck-table ck-budgets-table">
+    <thead><tr>
+      <th>Budget</th>
+      <th className="numeric">Limit</th>
+      <th>Used</th>
+      <th className="numeric">Forecast</th>
+      <th>Status</th>
+      <th>At the limit</th>
+      <th><span className="sr-only">Actions</span></th>
+    </tr></thead>
+    <tbody>{budgets.map((budget) => {
+      const covers = coversText(budget);
+      const health = healthView(budget);
+      const action = actionText(budget);
+      const used = usedCell(budget);
+      const share = usedShare(budget);
+      const calendar = budget.window === "calendar_month" || budget.window === "calendar_day" || budget.window === "calendar_minute";
+      return <tr key={budget.id}>
+        <td className="ck-budget-name-cell">
+          <Link className="ck-table-link primary-cell" to={budgetDetailHref(projectId, budget.id)}>{budget.name || "Unnamed budget"}</Link>
+          <span className="ck-budget-sub"><span className="ck-budget-kind">{covers.kind}</span>{covers.value && <> · <span title={covers.value}>{covers.value}</span></>}</span>
+        </td>
+        <td className="numeric" data-label="Limit"><span className="ck-budget-figure">{formatBudgetAmount(budget, budget.allowance)}</span><span className="ck-budget-sub">{periodText(budget.window)}</span></td>
+        <td className="ck-budget-used-cell" data-label="Used">
+          <span className="ck-budget-used-line"><span className="ck-budget-figure">{used.value}</span>{calendar && share != null && <span className="ck-budget-sub">{Math.round(share * 100)}%</span>}</span>
+          {calendar && share != null && <BudgetProgress share={share} health={health.health} label={`${budget.name || "Budget"}: ${Math.round(share * 100)} percent used`} />}
+          {used.label && <span className="ck-budget-sub">{used.label}</span>}
+        </td>
+        <td className="numeric" data-label="Forecast"><ForecastCell budget={budget} timezone={timezone} /></td>
+        <td data-label="Status"><StatusPill tone={health.tone}>{health.label}</StatusPill></td>
+        <td data-label="At the limit"><span className="ck-budget-action">{budget.mode === "enforce" ? <StatusPill tone="critical" icon="pause">{action.label}</StatusPill> : <StatusPill tone="neutral" icon="bell">{action.label}</StatusPill>}</span></td>
+        <td className="ck-budget-actions-cell">
+          <span className="ck-budget-row-actions">
+            <Link className="ck-button ck-button-quiet sm" to={budgetDetailHref(projectId, budget.id)} aria-label={`View ${budget.name || "budget"}`}>View</Link>
+            {canManage && <Link className="ck-button ck-button-quiet sm" to={budgetEditorHref(projectId, { id: budget.id })} aria-label={`Edit ${budget.name || "budget"}`}>Edit</Link>}
+            {canManage && <button className="ck-button ck-button-quiet sm ck-budget-delete" type="button" onClick={() => onDelete(budget)} aria-label={`Delete ${budget.name || "budget"}`}>Delete</button>}
+          </span>
+        </td>
+      </tr>;
+    })}</tbody>
+  </table></div>;
 }
 
-function formatPolicyValue(policy: Policy, value: number | null | undefined): string {
-  if (value == null) return "Unavailable";
-  if (policy.unit === "money") return formatCurrencyAmount(value, policy.currency ?? "USD");
-  return `${value.toLocaleString()} ${policy.unit}`;
+function glance(budgets: Budget[]): { tone: "good" | "warn" | "critical"; text: string } | null {
+  if (budgets.length === 0) return null;
+  const counts = healthCounts(budgets);
+  const plural = (count: number) => count === 1 ? "budget is" : "budgets are";
+  if (counts.over > 0) return { tone: "critical", text: `${counts.over} ${plural(counts.over)} over the limit${counts.at_risk > 0 ? `, ${counts.at_risk} more at risk` : ""}.` };
+  if (counts.at_risk > 0) return { tone: "warn", text: `${counts.at_risk} ${plural(counts.at_risk)} at risk of going over this period.` };
+  return { tone: "good", text: "Every budget is on track." };
 }
-
-/** Budget status in the design language: Within budget, Needs a look, Limit reached. */
-function budgetStatus(policy: Policy): { tone: "good" | "warn" | "critical" | "neutral"; label: string } {
-  if (policy.status === "paused") return { tone: "neutral", label: "Paused" };
-  if (policy.status === "archived") return { tone: "neutral", label: "Archived" };
-  const allowance = Number(policy.allowance) || 0;
-  const observed = policy.usage?.observed;
-  if (observed == null || allowance <= 0) return { tone: "neutral", label: "Waiting for usage" };
-  const ratio = observed / allowance;
-  if (ratio >= 1) return { tone: "critical", label: "Limit reached" };
-  if (ratio >= 0.8) return { tone: "warn", label: "Needs a look" };
-  return { tone: "good", label: "Within budget" };
-}
-
-function actionText(policy: Policy): string {
-  if (policy.status !== "active") return "Not checking";
-  if (policy.window === "per_call") return policy.mode === "enforce" ? "Refuse calls over the limit" : "Alert on calls over the limit";
-  return policy.mode === "enforce" ? "Stop new calls" : "Alert at 80% and 100%";
-}
-
-function actionSubtext(policy: Policy): string {
-  if (isPrototypePreview()) {
-    if (policy.mode === "enforce") return "Calls already running still finish";
-    if (policy.scope?.feature === "Voice assistance") return "Nothing is blocked";
-    return "Resets 1 Oct, 00:00 IST";
-  }
-  if (policy.status !== "active") return "History kept";
-  return policy.mode === "enforce" ? "Calls already running still finish" : "Nothing is blocked";
-}
-
-function policyPath(projectId: string, policyId: string): string {
-  return `/policy?id=${encodeURIComponent(policyId)}&project=${encodeURIComponent(projectId)}`;
-}
-
-function editorPath(projectId: string, policy?: Policy): string {
-  const params = new URLSearchParams({ project: projectId });
-  if (policy) {
-    params.set("id", policy.id);
-    const [scopeDimension, scopeValue] = Object.entries(policy.scope ?? {})[0] ?? [];
-    if (scopeDimension) params.set("scopeDimension", scopeDimension);
-    if (scopeValue) params.set("scopeValue", Array.isArray(scopeValue) ? scopeValue.join(", ") : scopeValue);
-  }
-  return `/policy-edit?${params.toString()}`;
-}
-
-function PolicyTable({ policies, projectId, canEdit, onArchive }: { policies: Policy[]; projectId: string; canEdit: boolean; onArchive: (policy: Policy) => void }) {
-  if (policies.length === 0) return <EmptyPanel title="No budgets here yet" action={canEdit ? <Link className="ck-button ck-button-secondary" to={editorPath(projectId)}>Create a budget <ArrowRight size={14} /></Link> : <span className="ck-table-note" style={{ border: 0, padding: 0 }}>Ask an Owner or Admin to create one.</span>} icon={<ShieldCheck size={20} />} />;
-
-  return <div className="ck-table-wrap"><table className="ck-table ck-budget-table"><thead><tr><th>Budget</th><th>Limit</th><th className="numeric">Used</th><th className="hide-mobile">When reached</th><th className="hide-mobile">Status</th>{canEdit && <th className="hide-mobile"><span className="sr-only">Actions</span></th>}</tr></thead><tbody>{policies.map((policy) => {
-    const allowance = Number(policy.allowance) || 0;
-    const observed = policy.usage?.observed ?? null;
-    const progress = allowance > 0 && observed != null ? Math.min(100, Math.max(0, observed / allowance * 100)) : null;
-    const progressTone = progress != null && progress >= 100 ? "critical" : progress != null && progress >= 80 ? "warn" : "";
-    return <tr key={policy.id}>
-      <td><Link className="ck-table-link primary-cell" to={policyPath(projectId, policy.id)}>{policy.name || "Unnamed budget"}</Link><div className="muted">{policyScope(policy)}</div><div className="ck-show-mobile"><StatusPill tone={budgetStatus(policy).tone}>{budgetStatus(policy).label}</StatusPill></div></td>
-      <td><span className="numeric">{formatPolicyValue(policy, allowance)}</span><div className="muted">{formatWindow(policy.window)}</div></td>
-      <td className="numeric"><span>{formatPolicyValue(policy, observed)}</span>{progress != null && <div className={`ck-progress ${progressTone}`} style={{ margin: "6px 0 0", height: 5 }} aria-label={`${Math.round(progress)} percent used`}><span style={{ width: `${progress}%` }} /></div>}</td>
-      <td className="hide-mobile"><span>{actionText(policy)}</span><div className="muted">{actionSubtext(policy)}</div></td>
-      <td className="hide-mobile"><StatusPill tone={budgetStatus(policy).tone}>{budgetStatus(policy).label}</StatusPill></td>
-      {canEdit && <td className="hide-mobile numeric"><span className="ck-row-actions"><Link className="ck-button ck-button-quiet sm" to={editorPath(projectId, policy)}>Edit</Link>{policy.status !== "archived" && <button className="ck-button ck-button-quiet sm" type="button" onClick={() => onArchive(policy)}>Archive</button>}</span></td>}
-    </tr>;
-  })}</tbody></table></div>;
-}
-
 
 export default function Budgets() {
-  const { currentProjectId, projects, user, setCurrentProjectId } = useAuth();
-  const projectId = currentProjectId ?? projects[0]?.id ?? null;
+  const { currentProjectId, projects, user, workspaceSettings, org, setCurrentProjectId } = useAuth();
   const { policyId: pathPolicyId } = useParams();
-  const [searchParams, setSearchParams] = useSearchParams();
-  const [policies, setPolicies] = useState<Policy[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [reload, setReload] = useState(0);
+  const [searchParams] = useSearchParams();
   const requestedProjectId = searchParams.get("project");
   const requestedProject = requestedProjectId ? projects.find((project) => project.id === requestedProjectId) : undefined;
-  const requestedTab = searchParams.get("tab");
-  const tab: PolicyTab = POLICY_TABS.includes(requestedTab as PolicyTab) ? requestedTab as PolicyTab : "Active";
-  const previewState = searchParams.get("state");
-  const previewLoading = previewState === "loading";
-  const previewError = previewState === "error" ? "Couldn’t refresh budgets. Nothing was changed." : null;
-  const previewEmpty = previewState === "empty";
-  const previewRestricted = previewState === "restricted";
+  const projectId = currentProjectId ?? projects[0]?.id ?? null;
+  const switching = Boolean(requestedProject && requestedProject.id !== currentProjectId);
+  const timezone = workspaceSettings?.timezone ?? org?.timezone ?? undefined;
+  const canManage = user?.role === "owner" || user?.role === "admin";
+  const [pendingDelete, setPendingDelete] = useState<Budget | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [removed, setRemoved] = useState<ReadonlySet<string>>(new Set());
 
   useEffect(() => {
-    if (requestedProject && requestedProject.id !== currentProjectId) setCurrentProjectId(requestedProject.id);
-  }, [requestedProject, currentProjectId, setCurrentProjectId]);
+    if (switching && requestedProject) setCurrentProjectId(requestedProject.id);
+  }, [switching, requestedProject, setCurrentProjectId]);
 
-  useEffect(() => {
-    if (!projectId || (requestedProject && requestedProject.id !== currentProjectId)) return;
-    let cancelled = false;
-    // Start the refresh in a microtask so the effect only coordinates the
-    // external request; the loading/error state updates happen in the async
-    // request lifecycle rather than during the effect's synchronous pass.
-    void Promise.resolve().then(() => {
-      if (cancelled) return null;
-      setLoading(true); setError(null);
-      return fetch(`/api/v1/projects/${projectId}/budget/policies`, { credentials: "include" });
-    })
-      .then(async (response) => {
-        if (!response) return;
-        if (!response.ok) throw new Error("Couldn’t load budgets. Try again in a moment.");
-        const result = await response.json() as { policies?: Policy[] };
-        if (!cancelled) { setPolicies(result.policies ?? []); setLoading(false); }
-      })
-      .catch((reason: unknown) => { if (!cancelled) { setError(reason instanceof Error ? reason.message : "Couldn’t load budgets."); setLoading(false); } });
-    return () => { cancelled = true; };
-  }, [projectId, reload, requestedProject, currentProjectId]);
+  const live = useLiveQuery(projectId && !switching ? `budgets|${projectId}` : null, () => listBudgets(projectId!));
 
-  if (pathPolicyId) return <Navigate to={policyPath(projectId ?? "", pathPolicyId)} replace />;
-  if (requestedProject && requestedProject.id !== currentProjectId) return <div className="ck-main-inner"><PageHeader title="Budgets" /><Panel><LoadingRows count={4} columns={4} /></Panel></div>;
-  if (!projectId) return <div className="ck-main-inner"><PageHeader title="Budgets" /><Panel><EmptyPanel title="Connect a project first" action={<Link className="ck-button ck-button-primary" to="/onboarding">Connect a project</Link>} icon={<Gauge size={20} />} /></Panel></div>;
-  const explicitState = prototypeState(searchParams);
-  const effectiveRole = prototypeRole(searchParams, user?.role ?? "viewer");
-  const effectiveCanEdit = effectiveRole === "owner" || effectiveRole === "admin";
-  // The reference keeps budget loading, errors, empty and viewer access in
-  // the normal page frame. PrototypeStatePanel is intentionally terminal for
-  // other routes, so do not let it replace this route's tabs/table.
-  const panelState = ["loading", "error", "restricted", "empty"].includes(explicitState) ? "default" : explicitState;
-  const namedState = PrototypeStatePanel({ state: panelState as typeof explicitState, family: "Budgets", title: explicitState === "error" ? "Couldn’t refresh budgets" : undefined, backHref: "/overview", retryHref: `/budgets${window.location.search}`, loadingRows: 4 });
-  if (namedState) return namedState;
+  if (pathPolicyId) return <Navigate to={budgetDetailHref(projectId ?? "", pathPolicyId)} replace />;
+  if (!projectId) return <div className="ck-main-inner"><PageHeader title="Budgets" /><Panel><EmptyPanel title="Connect a project to set budgets." action={<Link className="ck-button ck-button-primary" to="/onboarding">Connect a project</Link>} /></Panel></div>;
 
-  const previewPolicies = isPrototypePreview()
-    ? policies.map((policy) => policy.id === "search" && tab === "Paused" ? { ...policy, status: "paused" as const } : policy)
-    : policies;
-  const visiblePolicies = previewEmpty || (isPrototypePreview() && tab === "Archived") ? [] : previewPolicies.filter((policy) => tab === "Archived" ? policy.status === "archived" : tab === "Paused" ? policy.status === "paused" : policy.status === "active");
-  const changeTab = (next: PolicyTab): void => setSearchParams((current) => { current.set("tab", next); current.delete("policy"); return current; });
-  const archive = async (policy: Policy): Promise<void> => {
-    if (!window.confirm(`Archive ${policy.name || "this budget"}? It stops checking new calls. Its history is kept.`)) return;
-    const response = await fetch(`/api/v1/projects/${projectId}/budget/policies/${encodeURIComponent(policy.id)}`, { method: "DELETE", credentials: "include" });
-    if (!response.ok) { setError("Couldn’t archive this budget. Try again."); return; }
-    setReload((value) => value + 1);
+  const budgets = sortBudgets((live.data ?? []).filter((budget) => !removed.has(budget.id)));
+  const summary = glance(budgets);
+  const newButton = canManage ? <Link className="ck-button ck-button-primary" to={budgetEditorHref(projectId)}><Plus size={14} aria-hidden="true" /> New budget</Link> : null;
+
+  const confirmDelete = async (): Promise<void> => {
+    if (!pendingDelete) return;
+    setDeleting(true); setDeleteError(null);
+    try {
+      await deleteBudget(projectId, pendingDelete.id);
+      setRemoved((current) => new Set([...current, pendingDelete.id]));
+      setPendingDelete(null);
+      live.refresh();
+    } catch (reason) {
+      setDeleteError(reason instanceof Error ? reason.message : "Couldn’t delete this budget. Try again.");
+    } finally {
+      setDeleting(false);
+    }
   };
 
-  const prototypeReadOnly = isPrototypePreview() && explicitState === "restricted";
-  const prototypeLoading = isPrototypePreview() && explicitState === "loading";
-  const prototypeError = isPrototypePreview() && explicitState === "error";
-  const prototypeArchived = isPrototypePreview() && tab === "Archived";
-  const prototypeEmpty = isPrototypePreview() && (explicitState === "empty" || prototypeArchived);
-  return <div className="ck-main-inner prototype-budgets-route">
-    <PageHeader title="Budgets" actions={effectiveCanEdit && !previewRestricted && !prototypeReadOnly && !prototypeLoading && !prototypeError ? <Link className="ck-button ck-button-primary" to={editorPath(projectId)}><Plus size={14} /> Create a budget</Link> : <button className="ck-button ck-button-primary" type="button" disabled title="Only Owners and Admins can create budgets"><Plus size={14} /> Create a budget</button>} />
-    <nav className="ck-tabs ck-budget-tabs" aria-label="Budget status">{POLICY_TABS.map((item) => <button className={`ck-tab ${tab === item ? "active" : ""}`} type="button" role="tab" aria-selected={tab === item} key={item} onClick={() => changeTab(item)}>{item}</button>)}</nav>
-    {prototypeReadOnly && <div className="ck-alert prototype-budget-inline-notice" role="status"><ShieldCheck size={15} /><div><strong>View only</strong><span>You can see budgets and spend. Ask an Owner or Admin to change them.</span><Link className="ck-finding-link" to="/settings?section=team">See roles</Link></div></div>}
-    {prototypeError && <div className="ck-alert ck-alert-error prototype-budget-inline-notice" role="alert"><CircleAlert size={15} /><div><strong>Couldn’t refresh</strong><span>Showing the last budgets we loaded.</span><button className="ck-button ck-button-quiet ck-inline-button" type="button" onClick={() => setReload((value) => value + 1)}>Try again</button></div></div>}
-    {!prototypeReadOnly && !prototypeError && !prototypeLoading && <PrototypeStateNotice state={explicitState} family="budgets" role={effectiveRole} onRetry={() => setReload((value) => value + 1)} />}
-    {(error || previewError) && <div className="ck-alert ck-alert-error" role="alert"><CircleAlert size={15} /><span>{previewError ?? error}</span></div>}
-    <Panel className="ck-budget-table-panel">
-      {prototypeEmpty ? <EmptyPanel title={prototypeArchived ? "Nothing archived" : "No budgets here yet"} body={prototypeArchived ? "Archived budgets keep their history." : undefined} action={<Link className="ck-button ck-button-primary" to={prototypeArchived ? "/budgets" : editorPath(projectId)}>{prototypeArchived ? "View active budgets" : "Create a budget"}</Link>} icon={<ShieldCheck size={20} />} /> : prototypeLoading || loading || previewLoading ? <LoadingRows count={4} columns={5} /> : <PolicyTable policies={visiblePolicies} projectId={projectId} canEdit={effectiveCanEdit && !previewRestricted} onArchive={(policy) => void archive(policy)} />}
+  return <div className="ck-main-inner ck-budgets-page">
+    <PageHeader title="Budgets" description={canManage ? undefined : "View only. Owners and Admins can change budgets."} actions={<><LiveStatus status={live.status} updatedAt={live.updatedAt} onRefresh={live.refresh} />{budgets.length > 0 && newButton}</>} />
+    {live.error && <div className="ck-alert ck-alert-error" role="alert"><CircleAlert size={15} aria-hidden="true" /><span>Couldn’t refresh budgets. <button className="ck-button ck-button-quiet ck-inline-button" type="button" onClick={live.refresh}>Try again</button></span></div>}
+    {summary && <StatusLine tone={summary.tone}>{summary.text}</StatusLine>}
+    <Panel className="ck-budgets-panel">
+      {live.loading && !live.data ? <LoadingRows count={4} columns={6} />
+        : budgets.length === 0 ? <EmptyPanel title="No budgets yet. Set one to see spend against a limit." action={newButton ?? undefined} />
+          : <BudgetTable budgets={budgets} projectId={projectId} canManage={canManage} timezone={timezone} onDelete={(budget) => { setDeleteError(null); setPendingDelete(budget); }} />}
     </Panel>
+    {pendingDelete && <DeleteDialog budget={pendingDelete} busy={deleting} error={deleteError} onCancel={() => { if (!deleting) setPendingDelete(null); }} onConfirm={() => void confirmDelete()} />}
   </div>;
 }

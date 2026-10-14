@@ -9,6 +9,8 @@ import { requireAuth } from "./auth.js";
 import { createAccountingRouter } from "./accounting-api.js";
 import { createPricingRouter } from "./pricing-api.js";
 import { createInsightsRouter } from "./insights-api.js";
+import { createModelDetailRouter } from "./model-detail-api.js";
+import { createUsersRouter } from "./users-api.js";
 import { createQualityRouter } from "./quality-api.js";
 import { createFeatureMappingsRouter } from "./feature-mappings.js";
 import { listAccessibleProjects, roleCanManageWorkspace } from "./permissions.js";
@@ -41,6 +43,8 @@ export function createApiRouter(pool: pg.Pool): Router {
   router.use(createAccountingRouter(pool));
   router.use(createPricingRouter(pool));
   router.use(createInsightsRouter(pool));
+  router.use(createModelDetailRouter(pool));
+  router.use(createUsersRouter(pool));
   router.use(createQualityRouter(pool));
   router.use(createFeatureMappingsRouter(pool));
 
@@ -183,11 +187,14 @@ export function createApiRouter(pool: pg.Pool): Router {
         [projectId],
       );
       const recentCount = await pool.query(
-        `SELECT COUNT(*)::int as cnt FROM events WHERE project_id = $1 AND timestamp > NOW() - INTERVAL '1 hour'`,
+        `SELECT COUNT(*)::int as cnt,
+                COUNT(*) FILTER (WHERE COALESCE(lifecycle_state, '') IN ('failed', 'cancelled') OR COALESCE(status_code, 200) >= 400)::int AS failed
+         FROM events WHERE project_id = $1 AND timestamp > NOW() - INTERVAL '1 hour'`,
         [projectId],
       );
       const lastAt = lastEvent.rows[0]?.last_event_at;
       const eventsLastHour = recentCount.rows[0]?.cnt ?? 0;
+      const failedLastHour = recentCount.rows[0]?.failed ?? 0;
 
       let status: "active" | "idle" | "inactive" | "no_data" = "no_data";
       if (lastAt) {
@@ -195,6 +202,12 @@ export function createApiRouter(pool: pg.Pool): Router {
         if (msSince < 5 * 60 * 1000) status = "active";
         else if (msSince < 24 * 60 * 60 * 1000) status = "idle";
         else status = "inactive";
+      }
+
+      // The sidebar's live dot polls with ?light=1: status only, no scans.
+      if (req.query["light"] === "1") {
+        res.json({ status, lastEventAt: lastAt ?? null, eventsLastHour, failedLastHour, hints: [] });
+        return;
       }
 
       // Detect minified/bundled code without sourcemaps

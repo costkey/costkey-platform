@@ -1,10 +1,13 @@
 import { ChevronDown, ChevronRight } from "lucide-react";
+import { attributeRows, valueText } from "./spanAttributes";
 import type { TraceEvent } from "../api";
 import { formatDuration } from "../utils";
 import { formatDateTime, formatReportedAmount, providerName, type ReportingFx } from "./consoleFormatters";
 import { Panel, StatusPill } from "./ConsolePrimitives";
 import { SPAN_KIND_LABEL, spanTitle, type RunTreeNode, type RunTreeSpanNode } from "./runTreeModel";
 import { ProviderLogo, providerId } from "./ProviderLogo";
+import { billedUnitsText, callUsage, callUsageLine } from "./tokenUsage";
+import { callCostText, callFailure } from "./callOutcome";
 
 const BAR_TONE: Record<string, string> = {
   agent: "var(--ck-ink)",
@@ -28,15 +31,12 @@ function providerTone(provider: string | null | undefined): string {
 
 /** What a call used, in the units it is billed in. */
 export function usageText(event: TraceEvent): string {
-  const units = event.native_units ?? {};
-  const n = (value: number) => Math.round(value).toLocaleString();
-  if (units["audioSeconds"]) return `${n(units["audioSeconds"])} s audio`;
-  if (units["characters"]) return `${n(units["characters"])} characters`;
-  if (units["searchQueries"]) return `${n(units["searchQueries"])} ${units["searchQueries"] === 1 ? "query" : "queries"}`;
-  if (units["pages"]) return `${n(units["pages"])} pages`;
-  if (units["images"]) return `${n(units["images"])} images`;
-  if (event.total_tokens) return `${n(event.total_tokens)} tokens`;
-  if (event.input_tokens || event.output_tokens) return `${n((event.input_tokens ?? 0) + (event.output_tokens ?? 0))} tokens`;
+  // Tokens: input with cache, output with reasoning, and the cache hit rate when reported.
+  const tokens = callUsageLine(callUsage(event));
+  if (tokens) return tokens;
+  const units = billedUnitsText(event.native_units);
+  if (units) return units;
+  if (event.total_tokens) return `${Math.round(event.total_tokens).toLocaleString()} tokens`;
   return "";
 }
 
@@ -59,6 +59,7 @@ export function RunTree({
   callName,
   currency,
   fx,
+  showSplit = true,
 }: {
   rows: RunTreeNode[];
   events: TraceEvent[];
@@ -77,6 +78,8 @@ export function RunTree({
   callName: (event: TraceEvent) => string;
   currency: string;
   fx?: ReportingFx | null;
+  /** The run page's timeline already shows the provider split. */
+  showSplit?: boolean;
 }) {
   const money = (value: number | null) => value == null ? "Unpriced" : formatReportedAmount(value, currency, fx);
   const bar = (startMs: number, endMs: number, color: string) => {
@@ -94,7 +97,7 @@ export function RunTree({
       {runSpanMs > 1 && (
         <div className="ck-wf-row ck-wf-axis" aria-hidden="true">
           <span />
-          <span className="ck-wf-ticks">{[0, 1 / 3, 2 / 3, 1].map((at) => <i key={at} style={{ left: `${at * 100}%` }}>{at === 0 ? "0 s" : formatDuration(runSpanMs * at)}</i>)}</span>
+          <span className="ck-wf-ticks">{[0, 0.5, 1].map((at) => <i key={at} style={{ left: `${at * 100}%` }}>{at === 0 ? "0 s" : formatDuration(runSpanMs * at)}</i>)}</span>
           <span /><span />
         </div>
       )}
@@ -107,23 +110,23 @@ export function RunTree({
         <span className="ck-wf-time">{formatDuration(runDurationMs)}</span>
         <span className="ck-wf-cost">{money(runCost)}</span>
       </button>
-      {rows.map((node) => node.type === "span"
-        ? <SpanRow key={node.id} node={node} open={!collapsed.has(node.id)} selected={selectedId === `span:${node.id}`} onToggle={onToggle} onSelect={onSelectSpan} money={money} bar={bar} />
-        : (
-          <button key={node.id} className={`ck-wf-row ${selectedId === node.id ? "selected" : ""}`} type="button" role="treeitem" aria-level={node.depth + 2} onClick={() => onSelectCall(node.id)}>
+      {rows.map((node) => { if (node.type === "span") return <SpanRow key={node.id} node={node} open={!collapsed.has(node.id)} selected={selectedId === `span:${node.id}`} onToggle={onToggle} onSelect={onSelectSpan} money={money} bar={bar} />;
+        const failure = callFailure(node.event);
+        return (
+          <button key={node.id} className={`ck-wf-row ${selectedId === node.id ? "selected" : ""} ${failure ? "is-failed" : ""}`} type="button" role="treeitem" aria-level={node.depth + 2} onClick={() => onSelectCall(node.id)}>
             <span className="ck-wf-name" style={{ paddingLeft: indent(node.depth, true) }}>
               <span className="ck-wf-tile" title={providerName(node.event.provider || "")}><ProviderLogo provider={node.event.provider} size={15} /></span>
               <span className="ck-wf-text">
-                <span className="ck-wf-title ck-wf-mono">{callName(node.event)}{node.event.parent_event_id && <em className="ck-wf-tag">Retry</em>}{Number(node.event.status_code) >= 400 && <em className="ck-wf-tag is-error">{node.event.status_code}</em>}</span>
-                <span className="ck-wf-sub">{node.event.model || "Model not recorded"}{usageText(node.event) ? ` · ${usageText(node.event)}` : ""}</span>
+                <span className="ck-wf-title"><span className="ck-wf-mono ck-wf-name-text">{callName(node.event)}</span>{node.event.parent_event_id && <em className="ck-wf-tag">Retry</em>}</span>
+                <span className="ck-wf-sub">{failure && <><StatusPill tone="critical">{failure.label}</StatusPill> {failure.reason && <span className="ck-tone-critical-text">{failure.reason}</span>}{failure.reason ? " · " : null}</>}{[callName(node.event) === node.event.model ? null : node.event.model || "Model not recorded", usageText(node.event) || null].filter(Boolean).join(" · ") || node.event.model}</span>
               </span>
             </span>
-            {bar(node.startMs, node.endMs, providerTone(node.event.provider))}
+            {bar(node.startMs, node.endMs, failure ? "var(--ck-critical, #a33d32)" : providerTone(node.event.provider))}
             <span className="ck-wf-time">{formatDuration(Number(node.event.duration_ms) || 0)}</span>
-            <span className="ck-wf-cost">{node.event.cost_usd == null ? "Unpriced" : formatReportedAmount(Number(node.event.cost_usd), currency, fx)}</span>
+            <span className={`ck-wf-cost ${node.event.cost_usd == null && failure ? "is-muted" : ""}`}>{callCostText(node.event, (value) => formatReportedAmount(value, currency, fx))}</span>
           </button>
-        ))}
-      <ProviderSplit events={events} />
+        ); })}
+      {showSplit && <ProviderSplit events={events} />}
     </div>
   );
 }
@@ -182,7 +185,7 @@ function SpanRow({ node, open, selected, onToggle, onSelect, money, bar }: {
       </span>
       {bar(node.startMs, node.endMs, span.status === "error" ? "var(--ck-critical, #a33d32)" : BAR_TONE[span.kind] ?? "var(--ck-slate)")}
       <span className="ck-wf-time">{duration == null ? "—" : formatDuration(duration)}</span>
-      <span className="ck-wf-cost">{node.calls === 0 ? "—" : money(node.cost)}</span>
+      <span className="ck-wf-cost">{node.calls === 0 ? "—" : node.cost === 0 && node.unpriced === 0 && node.failed === node.calls ? "No charge" : money(node.cost)}</span>
     </div>
   );
 }
@@ -196,7 +199,7 @@ export function SpanInspector({ node, currency, fx }: { node: RunTreeSpanNode; c
   const content = Object.entries(span.attributes ?? {}).filter(([key]) => CONTENT_KEYS.has(key));
   const duration = Number.isFinite(node.endMs) && Number.isFinite(node.startMs) ? node.endMs - node.startMs : null;
   const tone = span.status === "ok" ? "good" : span.status === "error" ? "critical" : "neutral";
-  const statusLabel = span.status === "ok" ? "Completed" : span.status === "error" ? "Failed" : span.status === "cancelled" ? "Cancelled" : "Running";
+  const statusLabel = span.status === "ok" ? "Succeeded" : span.status === "error" ? "Failed" : span.status === "cancelled" ? "Cancelled" : "Running";
   return (
     <Panel className="ck-inspector">
       <div className="ck-inspector-call">
@@ -213,12 +216,12 @@ export function SpanInspector({ node, currency, fx }: { node: RunTreeSpanNode; c
           <div><dt>Duration</dt><dd>{duration == null ? "—" : formatDuration(duration)}</dd></div>
           <div><dt>Started</dt><dd>{span.started_at ? formatDateTime(span.started_at) : "—"}</dd></div>
           {span.error_type && <div><dt>Error</dt><dd>{span.error_type}</dd></div>}
-          {attributes.map(([key, value]) => <div key={key}><dt>{key}</dt><dd>{String(value ?? "—")}</dd></div>)}
+          {attributeRows(Object.fromEntries(attributes)).map(([label, text]) => <div key={label}><dt>{label}</dt><dd>{text}</dd></div>)}
         </dl>
         {content.map(([key, value]) => (
           <div className="ck-inspector-section" key={key}>
             <div className="ck-inspector-section-title"><span>{key === "input" ? "Input" : "Output"}</span></div>
-            <pre className="ck-inspector-pre">{String(value)}</pre>
+            <pre className="ck-inspector-pre">{valueText(value)}</pre>
           </div>
         ))}
       </div>

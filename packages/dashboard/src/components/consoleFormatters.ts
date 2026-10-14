@@ -188,3 +188,20 @@ export function formatProviders(value: string | null | undefined): string {
   if (names.length === 0) return "—";
   return names.map(providerName).join(", ");
 }
+
+/** Year, month (1-12) and day of a moment in the workspace time zone. */
+export function zonedDateParts(date: Date, timeZone?: string | null): { year: number; month: number; day: number } {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", { timeZone: timeZone ?? undefined, year: "numeric", month: "numeric", day: "numeric" }).formatToParts(date);
+    const get = (type: string) => Number(parts.find((part) => part.type === type)?.value);
+    return { year: get("year"), month: get("month"), day: get("day") };
+  } catch {
+    return { year: date.getUTCFullYear(), month: date.getUTCMonth() + 1, day: date.getUTCDate() };
+  }
+}
+
+/** Days in the workspace's current month. */
+export function zonedDaysInMonth(date: Date, timeZone?: string | null): number {
+  const { year, month } = zonedDateParts(date, timeZone);
+  return new Date(Date.UTC(year, month, 0)).getUTCDate();
+}

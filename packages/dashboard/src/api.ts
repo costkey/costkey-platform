@@ -1,4 +1,5 @@
-const API_BASE = "/api/v1";
+import { appUrl } from "./basePath";
+const API_BASE = appUrl("/api/v1");
 
 export const UNAUTHENTICATED_EVENT = "costkey:unauthenticated";
 
@@ -69,6 +70,10 @@ export interface CallSite {
 }
 
 export interface EventRow {
+  /** How its cost adds up, line by line (call detail only). */
+  cost_breakdown?: import("./modelDetailApi").CallCostBreakdown | null;
+  /** For a call with no code of its own: the span it ran in and the code that opened it. */
+  scope_site?: { span_id: string; kind: string; name: string; frames: import("./components/stackFrames").StackFrame[] } | null;
   id: string;
   timestamp: string;
   trace_id?: string | null;
@@ -86,6 +91,8 @@ export interface EventRow {
   cache_read_tokens?: number | null;
   cache_creation_tokens?: number | null;
   image_output_tokens?: number | null;
+  lifecycle_state?: string | null;
+  lifecycle_error_type?: string | null;
   cost_usd: number | null;
   cost_basis?: "reported" | "estimated" | "unknown" | null;
   cost_source?: string | null;
@@ -279,6 +286,8 @@ export interface Trace {
   conversation_id?: string | null;
   agent_count?: number;
   step_count?: number;
+  /** Attempts of the same work item (context.work_id): a failed attempt a later one completed is retried. */
+  retry?: RunRetry | null;
   tool_count?: number;
   span_error?: boolean;
 }
@@ -327,6 +336,15 @@ export interface TraceEvent {
   input_tokens: number | null;
   output_tokens: number | null;
   total_tokens: number | null;
+  reasoning_tokens?: number | null;
+  cache_read_tokens?: number | null;
+  cache_creation_tokens?: number | null;
+  /** What cache hits saved on this call in USD; null when its price can't be checked. */
+  cache_saved_usd?: number | null;
+  /** How the call ended: "failed" or "cancelled" with an error name such as ReadTimeout or http_429. */
+  lifecycle_state?: string | null;
+  lifecycle_error_type?: string | null;
+  lifecycle_at?: string | null;
   cost_usd: number | null;
   duration_ms: number;
   streaming: number;
@@ -363,6 +381,8 @@ export interface TraceQuery {
   groupBy?: "context";
   contextKey?: string;
   contextValue?: string | string[];
+  /** Only runs that made at least one model call. */
+  withCalls?: boolean;
 }
 
 export type TraceSort = "newest" | "cost_desc" | "duration_desc" | "calls_desc";
@@ -435,6 +455,7 @@ export async function getTraces(
   if (query.q) params.set("q", query.q);
   if (query.from) params.set("from", query.from);
   if (query.to) params.set("to", query.to);
+  if (query.withCalls) params.set("withCalls", "1");
   const appendValues = (key: string, value: string | string[] | undefined): void => {
     if (Array.isArray(value)) value.forEach((item) => params.append(key, item));
     else if (value) params.set(key, value);
@@ -835,11 +856,14 @@ export interface PipelineHealth {
   status: "active" | "idle" | "inactive" | "no_data";
   lastEventAt: string | null;
   eventsLastHour: number;
+  /** Calls in the last hour that failed or were cancelled (light mode). */
+  failedLastHour?: number;
   hints?: HealthHint[];
 }
 
-export async function getHealth(projectId: string): Promise<PipelineHealth> {
-  return get(`/projects/${projectId}/health`);
+/** `light` skips the hint scans; the sidebar's live dot polls it. */
+export async function getHealth(projectId: string, light = false): Promise<PipelineHealth> {
+  return get(`/projects/${projectId}/health${light ? "?light=1" : ""}`);
 }
 
 // ── Custom Providers ──
@@ -964,27 +988,77 @@ export async function getInsights(projectId: string, range?: TimeRange): Promise
   return get(`/projects/${projectId}/insights${qs}`);
 }
 
+/**
+ * Token usage as the server reads it across providers: input counts the whole
+ * prompt with cache included, output includes reasoning. Cache fields are null
+ * when no call reported one.
+ */
+export interface TokenUsage {
+  inputTokens: number | null;
+  cacheReadTokens: number | null;
+  cacheWriteTokens: number | null;
+  cacheHitRate: number | null;
+  outputTokens: number | null;
+  reasoningTokens: number | null;
+  /** USD saved by cache hits; only set when every hit was priced from a list price we could check. */
+  cacheSavings?: number | null;
+}
+
 export interface RunGroup {
   name: string;
   runs: number;
   cost: number | null;
   costPerRun: number | null;
+  /** Spend over successful runs: what each success really costs, failures included. */
+  costPerSuccess?: number | null;
   partlyPricedRuns: number;
   calls: number;
   p50Ms: number | null;
   p95Ms: number | null;
   failedRuns: number;
+  /** Failed attempts that a later attempt of the same work item completed. */
+  retriedRuns?: number;
   avgSteps: number | null;
   avgTools: number | null;
   lastRun: string | null;
+  usage?: TokenUsage;
+}
+
+/** How a run relates to other attempts of the same work item. */
+export interface RunRetry {
+  workId: string | null;
+  attempt: number;
+  attempts?: number;
+  retried: boolean;
+  succeededBy: string | null;
+  succeededOnAttempt: number | null;
+  willRetry: boolean;
+  errorType: string | null;
+}
+
+export interface AgentRun {
+  traceId: string;
+  startedAt: string;
+  cost: number | null;
+  unpriced: number;
+  calls: number;
+  steps: number;
+  tools: number;
+  failed: boolean;
+  durationMs: number | null;
+  userId: string | null;
+  usage?: TokenUsage;
+  retry?: RunRetry;
 }
 
 export interface AgentDetail {
   agent: RunGroup;
-  runs: Array<{ traceId: string; startedAt: string; cost: number | null; unpriced: number; calls: number; steps: number; tools: number; failed: boolean; durationMs: number | null; userId: string | null }>;
+  runs: AgentRun[];
   tools: Array<{ name: string; calls: number; avgMs: number | null; failed: number; cost: number | null }>;
-  models: Array<{ model: string; provider: string; calls: number; cost: number | null }>;
+  models: Array<{ model: string; provider: string; calls: number; cost: number | null; usage?: TokenUsage; units?: Record<string, number> }>;
   subagents: Array<{ name: string; runs: number }>;
+  /** Top users by spend: context.customer or userId on the runs' calls. */
+  users?: Array<{ userId: string; runs: number; calls: number; cost: number | null; failedRuns: number; lastRun: string | null; usage?: TokenUsage; units?: Record<string, number> }>;
 }
 
 export interface ErrorSummary {
@@ -1018,6 +1092,11 @@ export function getAgentDetail(projectId: string, name: string, scope: InsightSc
   return get(`/projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(name)}?${scopeQuery(scope)}`);
 }
 
+/** A workflow's page: the same shape as an agent's. */
+export function getWorkflowDetail(projectId: string, name: string, scope: InsightScope): Promise<AgentDetail> {
+  return get(`/projects/${encodeURIComponent(projectId)}/workflows/${encodeURIComponent(name)}?${scopeQuery(scope)}`);
+}
+
 export function getErrors(projectId: string, scope: InsightScope): Promise<ErrorSummary> {
   return get(`/projects/${encodeURIComponent(projectId)}/errors?${scopeQuery(scope)}`);
 }
@@ -1029,6 +1108,9 @@ export interface TabModel {
   runs: number;
   cost: number | null;
   topOwners: string[];
+  usage?: TokenUsage;
+  /** Characters, audio seconds, images or searches, for models that bill them. */
+  units?: Record<string, number>;
 }
 
 export function getTabModels(projectId: string, kind: "agent" | "workflow", scope: InsightScope): Promise<{ models: TabModel[] }> {
@@ -1074,6 +1156,8 @@ export interface OverviewBoardLatency {
 
 export interface OverviewBoardCount { name: string; runs: number; calls: number }
 
+export interface OverviewBoardUsage { name: string; runs: number; input: number; output: number; cost: number | null; unpriced: number; units?: Record<string, number> }
+
 /** The Overview board: runs, scores, model tokens, agent usage, volume and latency for one window and the one before it. */
 export interface OverviewBoard {
   window: { from: string; to: string; environment: string | null; timezone: string; bucket: BoardBucketUnit };
@@ -1085,8 +1169,12 @@ export interface OverviewBoard {
     previous: { avg: number | null; count: number; allCount: number };
     checks: Array<{ name: string; avg: number | null; count: number; runs: number; unitScale: boolean; series: Array<{ bucket: string; avg: number | null; count: number }> }>;
   };
-  models: Array<{ provider: string | null; model: string; calls: number; input: number | null; output: number | null; cacheRead: number | null; cacheWrite: number | null; cost: number | null; unpriced: number }>;
-  agents: Array<{ name: string; runs: number; input: number; output: number; cost: number | null; unpriced: number }>;
+  /** Every model with calls in the period, whatever it bills; `units` holds characters, audio seconds, images or searches. */
+  models: Array<{ provider: string | null; model: string; calls: number; input: number | null; output: number | null; cacheRead: number | null; cacheWrite: number | null; cost: number | null; unpriced: number; units?: Record<string, number> }>;
+  /** Billed units other than tokens, for this period and the one before. */
+  units?: { current: Record<string, number>; previous: Record<string, number> };
+  agents: OverviewBoardUsage[];
+  workflows?: OverviewBoardUsage[];
   volume: { agents: OverviewBoardCount[]; workflows: OverviewBoardCount[]; tools: OverviewBoardCount[] };
   latency: { agents: OverviewBoardLatency; workflows: OverviewBoardLatency; tools: OverviewBoardLatency };
 }

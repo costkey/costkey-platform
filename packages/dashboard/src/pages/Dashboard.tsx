@@ -241,8 +241,6 @@ export default function Dashboard() {
   }, [dataVersion]);
 
   const scopeEnvironments = environmentOptions.length > 1 || environment !== "all";
-  const compareParams = new URLSearchParams({ project: projectId ?? "" });
-  if (environment !== "all") compareParams.set("environment", environment);
   const periodBadge = <div className="ck-period-badge">
     <LiveStatus status={resource.status} updatedAt={resource.updatedAt} onRefresh={resource.refresh} />
     {scopeEnvironments && <span className="ck-pill-select"><select aria-label="Environment" value={environment} onChange={(event) => onEnvironmentChange(event.target.value)}>{environmentOptions.concat(environment !== "all" && !environmentOptions.some((option) => option.value === environment) ? [{ value: environment, label: environment }] : []).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select><PrototypeIcon name="down" size={12} /></span>}
@@ -253,7 +251,6 @@ export default function Dashboard() {
       {toolbarPeriod === "custom" && <option value="custom">Custom range</option>}
     </select><PrototypeIcon name="down" size={12} /></span>
     {monthToDate && <span>Day {dayOfMonth} of {periodDays}</span>}
-    <Link className="ck-text-link" to={`/overview/compare?${compareParams.toString()}`}>Compare periods</Link>
   </div>;
 
   if (requestedProject && requestedProject.id !== currentProjectId) {

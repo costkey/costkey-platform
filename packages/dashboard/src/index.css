@@ -4847,16 +4847,34 @@ a.ck-metric-link > .ck-metric-card { height: 100%; }
 .ck-sidebar-bottom .ck-project-switcher { position: relative; margin: 4px 0; }
 .ck-sidebar-bottom .ck-project-menu { top: auto; bottom: calc(100% + 6px); }
 
-/* Compare periods: two windows side by side with the change. */
-.ck-period-compare-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 16px; }
-.ck-period-compare-days { display: flex; flex-wrap: wrap; gap: 12px; }
-.ck-period-compare-days strong { color: var(--ck-ink); font-size: 12px; font-weight: 600; }
-.ck-period-compare .ck-compare-row { grid-template-columns: minmax(130px, 1.1fr) repeat(3, minmax(90px, 1fr)); align-items: baseline; color: var(--ck-ink); font-size: 13px; font-variant-numeric: tabular-nums lining-nums; }
-.ck-period-compare .ck-compare-row.head strong { display: flex; flex-direction: column; gap: 2px; }
-.ck-period-compare-range { color: var(--ck-slate); font-size: 12px; font-weight: 400; }
-.ck-period-compare-section { background: var(--ck-paper); color: var(--ck-slate) !important; font-size: 11px !important; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; padding-top: 8px !important; padding-bottom: 8px !important; }
-.ck-period-compare-value { display: flex; flex-direction: column; gap: 2px; }
-.ck-period-compare-note { color: var(--ck-slate); font-size: 12px; }
-@media (max-width: 767px) {
-  .ck-period-compare .ck-compare-table .ck-compare-row { grid-template-columns: minmax(0, 1fr) repeat(3, minmax(0, 0.9fr)); }
-}
+/* Compare: the period against the same window earlier, or against the previous deploy. */
+.ck-scope-pills { flex-wrap: wrap; justify-content: flex-end; }
+.ck-compare-pill { gap: 0; padding-left: 12px; }
+.ck-compare-pill > svg:first-child { position: static; flex: none; color: var(--ck-slate); }
+.ck-compare-pill select { padding-left: 6px; }
+.ck-compare-pill.is-active { background: #fbe8b4; box-shadow: inset 0 0 0 1px #e8c46a; }
+.ck-compare-pill.is-active > svg:first-child { color: var(--ck-ink); }
+.ck-scope-dates input[type="datetime-local"] { min-width: 0; }
+
+.ck-compare-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; color: var(--ck-slate); font-size: 12.5px; line-height: 18px; font-variant-numeric: tabular-nums; }
+.ck-compare-was { min-width: 0; }
+.ck-compare-was .ck-release { margin-left: 2px; vertical-align: -1px; }
+.ck-skeleton-inline { display: inline-block; width: 128px; height: 14px; border-radius: 6px; }
+.ck-change { display: inline-flex; align-items: center; gap: 2px; padding: 1px 7px 1px 5px; border-radius: 999px; font-size: 12px; font-weight: 600; line-height: 16px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.ck-change-good { color: var(--ck-good); background: var(--ck-good-soft); }
+.ck-change-bad { color: var(--ck-warn); background: var(--ck-warn-soft); }
+.ck-change-flat { color: var(--ck-slate); background: var(--ck-neutral-soft); }
+.ck-table-sub .ck-change { margin-top: 3px; padding: 0 6px 0 4px; font-size: 11px; }
+.ck-metric-card .ck-compare-line { margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--ck-rule); }
+
+.ck-release { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px 1px 6px; border: 1px solid var(--ck-border); border-radius: 999px; background: var(--ck-raised); color: var(--ck-ink); font: 500 12px/18px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; text-decoration: none; white-space: nowrap; }
+.ck-release svg { color: var(--ck-slate); flex: none; }
+.ck-release-link:hover { border-color: var(--ck-border-strong); background: var(--ck-soft); }
+.ck-release-link:focus-visible { outline: 2px solid var(--ck-focus); outline-offset: 2px; }
+.ck-release.is-current { border-color: #e8c46a; background: #fdf3d7; }
+.ck-deploy-compare { display: inline-flex; align-items: center; gap: 6px; }
+.ck-deploy-vs { color: var(--ck-slate); font-size: 12px; }
+.ck-deploy-base select { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+.ck-deploy-none { color: var(--ck-slate); font-size: 12.5px; }
+.ck-server-build { margin-left: auto; color: var(--ck-slate); }
+.ck-server-build a { color: inherit; }

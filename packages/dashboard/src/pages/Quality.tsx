@@ -1,6 +1,6 @@
 import { Link, useSearchParams } from "react-router-dom";
 import { getQualitySummary, type QualitySummary } from "../api";
-import { EmptyPanel, LoadingRows, MetricCard, PageHeader, Panel, StatusPill } from "../components/ConsolePrimitives";
+import { CompareLine, EmptyPanel, LoadingRows, MetricCard, PageHeader, Panel, StatusPill } from "../components/ConsolePrimitives";
 import { LiveStatus } from "../components/LiveStatus";
 import { formatDateTime, formatReportedAmount, type ReportingFx } from "../components/consoleFormatters";
 import { formatDuration } from "../utils";
@@ -73,12 +73,19 @@ function Failures({ data, currency, fx }: { data: QualitySummary; currency: stri
 }
 
 export default function Quality() {
-  const { projectId, scope, scopeKey, currency, fx, toolbar } = useInsightScope();
+  const { projectId, scope, scopeKey, currency, fx, toolbar, comparison } = useInsightScope({ compare: true });
   const [params, setParams] = useSearchParams();
   const view = (VIEWS.find((item) => item.id === params.get("view"))?.id ?? "runs") as View;
   const owner = params.get("owner");
   const { data, error, loading, status: liveStatus, updatedAt, refresh } = useScopedLoad(projectId ? `quality|${scopeKey}|${owner ?? ""}` : null, () => getQualitySummary(projectId!, scope, owner));
+  const before = useScopedLoad(projectId && comparison ? `quality|${scopeKey}|${owner ?? ""}|vs|${comparison.key}` : null, () => getQualitySummary(projectId!, comparison!.scope, owner));
   const totals = data?.totals;
+  const then = comparison ? before.data?.totals ?? null : null;
+  const share = (part: number | undefined, whole: number | undefined) => part != null && whole ? part / whole : null;
+  const line = (current: number | null | undefined, previous: number | null | undefined, format: (value: number) => string, opts: { rate?: boolean; total?: boolean } = {}) => comparison
+    ? <CompareLine current={current} previous={previous} better="lower" rate={opts.rate} format={format} against={comparison.against} hideChange={opts.total && !comparison.totalsComparable} loading={!before.data} />
+    : undefined;
+  const pct = (value: number) => (value === 0 ? "0%" : value < 0.01 ? "<1%" : `${Math.round(value * 100)}%`);
   const setView = (next: View, nextOwner: string | null = null) => setParams((current) => {
     if (next === "runs") current.delete("view"); else current.set("view", next);
     if (nextOwner) current.set("owner", nextOwner); else current.delete("owner");
@@ -86,10 +93,11 @@ export default function Quality() {
   });
   return <div className="ck-main-inner">
     <PageHeader title="Quality" actions={<><LiveStatus status={liveStatus} updatedAt={updatedAt} onRefresh={refresh} />{toolbar}</>} />
-    <div className="ck-metric-grid">
-      <MetricCard icon="alert" label="Failed runs" value={totals ? rate(totals.failedRuns, totals.runs) : "—"} tone={(totals?.failedRuns ?? 0) > 0 ? "warn" : "neutral"} detail={totals ? `${totals.failedRuns.toLocaleString()} of ${totals.runs.toLocaleString()} runs` : undefined} loading={loading && !data} />
-      <MetricCard icon="activity" label="Failed calls" value={totals ? rate(totals.failedCalls, totals.calls) : "—"} detail={totals ? `${totals.failedCalls.toLocaleString()} failed · ${totals.retries.toLocaleString()} retries` : undefined} loading={loading && !data} />
-      <MetricCard icon="cost" label="Wasted" value={formatReportedAmount(totals?.wastedCost ?? 0, currency, fx)} loading={loading && !data} />
+    <div className="ck-metric-grid ck-metric-grid-4">
+      <MetricCard icon="alert" label="Failed runs" value={totals ? rate(totals.failedRuns, totals.runs) : "—"} tone={(totals?.failedRuns ?? 0) > 0 ? "warn" : "neutral"} detail={totals ? `${totals.failedRuns.toLocaleString()} of ${totals.runs.toLocaleString()} runs` : undefined} loading={loading && !data} compare={line(share(totals?.failedRuns, totals?.runs), share(then?.failedRuns, then?.runs), pct, { rate: true })} />
+      <MetricCard icon="activity" label="Failed calls" value={totals ? rate(totals.failedCalls, totals.calls) : "—"} detail={totals ? `${totals.failedCalls.toLocaleString()} failed · ${totals.retries.toLocaleString()} retries` : undefined} loading={loading && !data} compare={line(share(totals?.failedCalls, totals?.calls), share(then?.failedCalls, then?.calls), pct, { rate: true })} />
+      <MetricCard icon="clock" label="p95 run time" value={totals?.p95Ms == null ? "—" : formatDuration(totals.p95Ms)} detail={totals?.p50Ms == null ? undefined : `p50 ${formatDuration(totals.p50Ms)}`} loading={loading && !data} compare={line(totals?.p95Ms, then?.p95Ms, formatDuration)} />
+      <MetricCard icon="cost" label="Wasted" value={formatReportedAmount(totals?.wastedCost ?? 0, currency, fx)} loading={loading && !data} compare={line(totals?.wastedCost, then?.wastedCost, (value) => formatReportedAmount(value, currency, fx), { total: true })} />
     </div>
     <div className="ck-tabs ck-page-tabs" role="tablist" aria-label="Quality views">{VIEWS.map((item) => <button key={item.id} className={`ck-tab ${view === item.id ? "active" : ""}`} role="tab" aria-selected={view === item.id} type="button" onClick={() => setView(item.id)}>{item.label}</button>)}</div>
     {view === "checks" ? (projectId ? <QualityChecksPanel projectId={projectId} scope={scope} scopeKey={scopeKey} /> : null) : <Panel key={`${view}|${owner ?? ""}`} className="ck-view" title={view === "failures" && owner ? owner : undefined} actions={view === "failures" && owner ? <button className="ck-button ck-button-quiet" type="button" onClick={() => setView("failures")}>All runs</button> : undefined}>

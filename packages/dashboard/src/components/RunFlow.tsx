@@ -19,6 +19,7 @@ import { CallContent } from "./CallContent";
 import { modelHref } from "./links";
 import { billedUnitsText, cachedNote, cacheWriteText, callUsage, formatHitRate, formatTokenCount, hasTokens, reasoningNote, sumUnits, sumUsage, type CallUsage } from "./tokenUsage";
 import { CostBreakdownTable } from "./CostBreakdown";
+import { ProjectRelease } from "./Releases";
 
 /**
  * One run's whole flow, shared by the run page and the inline run on the
@@ -460,7 +461,7 @@ export function ContextTab({ context }: { context: unknown }) {
 export function RootInspector({ projectId, traceId, openChecks = false, summary, context, knownCost, unpriced, usageComponents, callEvents, mostExpensive, usage, currency, fx, initialTab = "content", onSelectCall }: { projectId: string; traceId: string; openChecks?: boolean; summary: Record<string, unknown>; context: unknown; knownCost: number | null; unpriced: number; usageComponents?: UsageComponent[]; callEvents?: TraceEvent[]; mostExpensive?: TraceEvent | null; usage?: CallUsage; onSelectCall?: (eventId: string) => void; currency: string; fx?: ReportingFx | null; initialTab?: InspectorTab }) {
   const [tab, setTab] = useState<InspectorTab | "checks">(openChecks ? "checks" : initialTab === "content" ? "cost" : initialTab);
   const callCount = Number(summary.call_count ?? callEvents?.length ?? 0) || 0;
-  return <Panel className="ck-inspector"><div className="ck-inspector-call"><div><div className="ck-inspector-heading">This run</div><div className="ck-inspector-subheading">{callCount.toLocaleString()} call{callCount === 1 ? "" : "s"} · {String(summary.operation_name ?? summary.trace_name ?? "Unnamed run")}</div></div></div><div className="ck-tabs" role="tablist" aria-label="Run detail"><button className={`ck-tab ${tab === "cost" ? "active" : ""}`} role="tab" aria-selected={tab === "cost"} type="button" onClick={() => setTab("cost")}>Cost &amp; usage</button><button className={`ck-tab ${tab === "source" ? "active" : ""}`} role="tab" aria-selected={tab === "source"} type="button" onClick={() => setTab("source")}>Source</button><button className={`ck-tab ${tab === "context" ? "active" : ""}`} role="tab" aria-selected={tab === "context"} type="button" onClick={() => setTab("context")}>Context</button><button className={`ck-tab ${tab === "checks" ? "active" : ""}`} role="tab" aria-selected={tab === "checks"} type="button" onClick={() => setTab("checks")}>Checks</button></div><div className="ck-inspector-body">{tab === "cost" && <><CostRootSummary knownCost={knownCost} unpriced={unpriced} mostExpensive={mostExpensive} usageComponents={usageComponents} usage={usage} currency={currency} fx={fx} /></>}{tab === "source" && <RunSourceTab summary={summary} events={callEvents ?? []} currency={currency} fx={fx} onSelectCall={onSelectCall} />}{tab === "context" && <ContextTab context={context} />}{tab === "checks" && <RunQualityChecks projectId={projectId} traceId={traceId} />}</div></Panel>;
+  return <Panel className="ck-inspector"><div className="ck-inspector-call"><div><div className="ck-inspector-heading">This run</div><div className="ck-inspector-subheading">{callCount.toLocaleString()} call{callCount === 1 ? "" : "s"} · {String(summary.operation_name ?? summary.trace_name ?? "Unnamed run")}</div></div></div><div className="ck-tabs" role="tablist" aria-label="Run detail"><button className={`ck-tab ${tab === "cost" ? "active" : ""}`} role="tab" aria-selected={tab === "cost"} type="button" onClick={() => setTab("cost")}>Cost &amp; usage</button><button className={`ck-tab ${tab === "source" ? "active" : ""}`} role="tab" aria-selected={tab === "source"} type="button" onClick={() => setTab("source")}>Source</button><button className={`ck-tab ${tab === "context" ? "active" : ""}`} role="tab" aria-selected={tab === "context"} type="button" onClick={() => setTab("context")}>Context</button><button className={`ck-tab ${tab === "checks" ? "active" : ""}`} role="tab" aria-selected={tab === "checks"} type="button" onClick={() => setTab("checks")}>Checks</button></div><div className="ck-inspector-body">{tab === "cost" && <><CostRootSummary knownCost={knownCost} unpriced={unpriced} mostExpensive={mostExpensive} usageComponents={usageComponents} usage={usage} currency={currency} fx={fx} /></>}{tab === "source" && <RunSourceTab projectId={projectId} summary={summary} events={callEvents ?? []} currency={currency} fx={fx} onSelectCall={onSelectCall} />}{tab === "context" && <ContextTab context={context} />}{tab === "checks" && <RunQualityChecks projectId={projectId} traceId={traceId} />}</div></Panel>;
 }
 
 function CostRootSummary({ knownCost, unpriced, mostExpensive, usageComponents, usage, currency, fx }: { knownCost: number | null; unpriced: number; mostExpensive?: TraceEvent | null; usageComponents?: UsageComponent[]; usage?: CallUsage; currency: string; fx?: ReportingFx | null }) {
@@ -473,7 +474,7 @@ function Recorded({ value }: { value: string | null }) {
 }
 
 /** Where the run's money went in code: each call site with its calls and cost. */
-function RunSourceTab({ summary, events, currency, fx, onSelectCall }: { summary: Record<string, unknown>; events: TraceEvent[]; currency: string; fx?: ReportingFx | null; onSelectCall?: (eventId: string) => void }) {
+function RunSourceTab({ projectId, summary, events, currency, fx, onSelectCall }: { projectId: string; summary: Record<string, unknown>; events: TraceEvent[]; currency: string; fx?: ReportingFx | null; onSelectCall?: (eventId: string) => void }) {
   const sites = runCallSites(events);
   const feature = runLabel(summary, events, "feature");
   const release = runLabel(summary, events, "release");
@@ -481,7 +482,7 @@ function RunSourceTab({ summary, events, currency, fx, onSelectCall }: { summary
     <div className="ck-inspector-section">
       <dl className="ck-definition-list">
         <div><dt>Feature</dt><dd><Recorded value={feature} /></dd></div>
-        <div><dt>Release</dt><dd><Recorded value={release} /></dd></div>
+        <div><dt>Release</dt><dd>{release ? <ProjectRelease projectId={projectId} release={release} /> : <Recorded value={null} />}</dd></div>
       </dl>
     </div>
     <div className="ck-inspector-section">

@@ -142,7 +142,9 @@ CostKey.init({
 | `flushInterval` | `number` | `5000` | Milliseconds between automatic flushes. |
 | `debug` | `boolean` | `false` | Enable debug logging to console. |
 | `defaultContext` | `EventContext` | `{}` | Default context applied to every event. |
-| `release` | `string` | `undefined` | Release version. Used for [sourcemap translation](/sourcemaps). |
+| `release` | `string` | `COSTKEY_RELEASE`, then the commit | Release version. Compares deploys in the console, and is used for [sourcemap translation](/sourcemaps). |
+| `commit` | `string` | detected | Commit SHA of the running code: `COSTKEY_COMMIT`, then CI variables such as `GITHUB_SHA`, then `.git`. |
+| `repository` | `string` | detected | Repository URL, so releases link to their commits: `COSTKEY_REPOSITORY`, then CI variables, then `.git`. |
 | `beforeSendEvent` | `BeforeSendEventHook` | `null` | Hook for lifecycle, span and explicit usage events. Return `null` to drop one. |
 | `configRefreshInterval` | `number` | `60000` | Milliseconds between DSN project config refreshes (capture mode and custom provider hosts). |
 | `policy` | `PolicyOptions` | `undefined` | Optional explicit monitor/enforce admission. Omitted means observation only. |

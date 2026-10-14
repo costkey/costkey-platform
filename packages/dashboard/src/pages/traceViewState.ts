@@ -1,7 +1,7 @@
 export const TRACE_VIEW_FILTER_KEYS = ["provider", "model", "feature", "function", "customer", "environment", "lifecycle", "accounting"] as const;
 
 export type TraceViewTab = "traces" | "calls";
-export type TraceViewPeriod = "24h" | "mtd" | "7d" | "30d" | "custom";
+export type TraceViewPeriod = "1h" | "today" | "24h" | "mtd" | "7d" | "30d" | "custom";
 
 export interface TraceViewStateInput {
   tab: TraceViewTab;
@@ -38,7 +38,7 @@ export function restoreTraceView(raw: unknown): RestoredTraceView {
     const value = source[key] ?? (alias ? source[alias] ?? definition[alias] : definition[key]);
     filters[key] = Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : typeof value === "string" ? [value] : [];
   }
-  const period = definition["period"] === "24h" || definition["period"] === "mtd" || definition["period"] === "7d" || definition["period"] === "30d" || definition["period"] === "custom" ? definition["period"] as TraceViewPeriod : null;
+  const period = definition["period"] === "1h" || definition["period"] === "today" || definition["period"] === "24h" || definition["period"] === "mtd" || definition["period"] === "7d" || definition["period"] === "30d" || definition["period"] === "custom" ? definition["period"] as TraceViewPeriod : null;
   return {
     tab: definition["tab"] === "calls" ? "calls" : "traces",
     query: typeof definition["query"] === "string" ? definition["query"] : typeof definition["q"] === "string" ? definition["q"] : "",

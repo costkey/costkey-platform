@@ -71,6 +71,22 @@ cookies, authorization and API-key response headers are dropped. Arrays over
 and streams over 200 chunks keep the first 20 and the last 50. The full
 contract is in [`RAW_TELEMETRY.md`](../shared/RAW_TELEMETRY.md).
 
+## Releases and commits
+
+Every call carries the release it ran on, so the console can compare one
+deploy with the one before it and link each release to its commit. Without a
+`release`, the SDK uses `COSTKEY_RELEASE`, then the commit SHA it finds in
+CI and hosting variables (`GITHUB_SHA`, `VERCEL_GIT_COMMIT_SHA`,
+`RENDER_GIT_COMMIT`, `RAILWAY_GIT_COMMIT_SHA`, `CI_COMMIT_SHA` and others) or
+in `.git`. The repository comes from the same places, or `COSTKEY_REPOSITORY`.
+
+Where the platform sets none of these (Cloud Run, a plain container), pass the
+commit at deploy time:
+
+```bash
+gcloud run deploy app --update-env-vars COSTKEY_COMMIT=$GITHUB_SHA,COSTKEY_REPOSITORY=https://github.com/acme/app
+```
+
 ## Sourcemaps
 
 For minified production builds, set `release` and upload sourcemaps:
@@ -439,7 +455,9 @@ example `@ai-sdk/amazon-bedrock`) need no setup.
 |---|---|---|
 | `dsn` | required | `http://ck_key@localhost:4100/project` |
 | `captureBody` | `true` | Also send request/response content (subject to the project's capture setting) |
-| `release` | — | Release version for sourcemap translation |
+| `release` | `COSTKEY_RELEASE`, then the commit | Release version, for comparing deploys and sourcemap translation |
+| `commit` | detected | Commit SHA of the running code (`COSTKEY_COMMIT`, CI variables, `.git`) |
+| `repository` | detected | Repository URL the console links commits to (`COSTKEY_REPOSITORY`, CI variables, `.git`) |
 | `beforeSend` | — | Hook to modify/filter events |
 | `beforeSendEvent` | — | Hook to modify/filter lifecycle and usage events |
 | `policy` | — | Explicit monitor/enforce admission configuration |

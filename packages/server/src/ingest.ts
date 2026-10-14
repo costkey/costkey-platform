@@ -22,6 +22,7 @@ import { projectCustomExtractors } from "./telemetry/custom-providers.js";
 import { callGraphFromUpload } from "./telemetry/callgraph.js";
 import { assembleStreamBody, streamEvents } from "./telemetry/stream-assembly.js";
 import { stripOtelContent } from "./telemetry/otel.js";
+import { recordRelease } from "./releases.js";
 import type { ServerExtractor } from "./telemetry/types.js";
 
 function textFromContent(content: unknown): string | null {
@@ -862,6 +863,8 @@ export function createIngestRouter(pool: pg.Pool): Router {
 
       const sdkVersion = typeof payload.sdkVersion === "string" ? payload.sdkVersion.slice(0, 40) : null;
       const legacyCallTimestamps = callTimestampIsEnd(sdkVersion);
+      // The deploy this batch came from, linked to its commit when the SDK knows it.
+      if (release) void recordRelease(pool, projectId, { release, commit: payload.commit, repository: payload.repository });
 
       // Raw LiveKit rows (SDK 0.7) expand into one cumulative usage event per
       // component; `index` keeps rejections pointing at the sent event.

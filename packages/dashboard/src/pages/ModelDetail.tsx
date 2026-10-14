@@ -2,7 +2,7 @@ import { useState } from "react";
 import { ArrowLeft } from "lucide-react";
 import { Link, useParams } from "react-router-dom";
 import { currentRouterPath } from "../basePath";
-import { EmptyPanel, LoadingRows, MetricCard, Panel, StatusPill } from "../components/ConsolePrimitives";
+import { CompareLine, EmptyPanel, LoadingRows, MetricCard, Panel, StatusPill } from "../components/ConsolePrimitives";
 import { LiveStatus } from "../components/LiveStatus";
 import { LineChart, Pills } from "../components/OverviewBoard";
 import { ProviderLogo } from "../components/ProviderLogo";
@@ -67,6 +67,21 @@ function CallStatus({ call }: { call: ModelRecentCall }) {
     {lifecycleState === "cancelled" ? <StatusPill tone="warn">Cancelled</StatusPill> : <StatusPill tone="critical">Failed</StatusPill>}
     {reason && <small className="ck-table-sub ck-md-reason" title={reason}>{reason}</small>}
   </>;
+}
+
+/** Spend per priced call, failures that cost nothing aside. */
+function perCall(summary: ModelDetail["summary"] | null | undefined): number | null {
+  return summary && summary.cost != null && summary.pricedCalls > 0 ? summary.cost / summary.pricedCalls : null;
+}
+
+function failRate(summary: ModelDetail["summary"] | null | undefined): number | null {
+  return summary && summary.calls > 0 ? summary.failedCalls / summary.calls : null;
+}
+
+function tokensOf(summary: ModelDetail["summary"] | null | undefined): number | null {
+  if (!summary) return null;
+  const tokens = (summary.usage.inputTokens ?? 0) + (summary.usage.outputTokens ?? 0);
+  return tokens > 0 ? tokens : null;
 }
 
 type Measure = "spend" | "calls";
@@ -153,11 +168,19 @@ export function ModelDetailPage() {
   const params = useParams();
   const provider = decodeSplat(params["provider"]);
   const model = decodeSplat(params["*"]);
-  const { projectId, scope, scopeKey, currency, fx, toolbar } = useInsightScope();
+  const { projectId, scope, scopeKey, currency, fx, toolbar, comparison } = useInsightScope({ compare: true });
   const { data, error, loading, status, updatedAt, refresh } = useScopedLoad(
     projectId && provider && model ? `model|${provider}|${model}|${scopeKey}` : null,
     () => getModelDetail(projectId!, provider, model, scope),
   );
+  const before = useScopedLoad(
+    projectId && provider && model && comparison ? `model|${provider}|${model}|${scopeKey}|vs|${comparison.key}` : null,
+    () => getModelDetail(projectId!, provider, model, comparison!.scope),
+  );
+  const then = comparison ? before.data?.summary ?? null : null;
+  const line = (current: number | null | undefined, previous: number | null | undefined, better: "lower" | "higher" | null, format: (value: number) => string, opts: { rate?: boolean; total?: boolean } = {}) => comparison
+    ? <CompareLine current={current} previous={previous} better={better} rate={opts.rate} format={format} against={comparison.against} hideChange={opts.total && !comparison.totalsComparable} loading={!before.data} />
+    : undefined;
   const money: Money = (value) => value == null ? "Unpriced" : formatReportedAmount(value, currency, fx);
   const summary = data?.summary;
   const first = loading && !data;
@@ -175,10 +198,12 @@ export function ModelDetailPage() {
     </div>
     {error && !data ? <Panel><EmptyPanel title="Couldn’t load this model" body={error} /></Panel> : <>
       <div className="ck-metric-grid ck-metric-grid-4 ck-md-metrics">
-        <MetricCard icon="cost" label="Spend" value={summary ? summary.cost == null && summary.calls === 0 ? formatReportedAmount(0, currency, fx) : money(summary.cost) : "—"} detail={spendDetail(summary, money)} loading={first} />
-        <MetricCard icon="trace" label="Calls" value={(summary?.calls ?? 0).toLocaleString()} detail={summary && summary.calls > 0 ? summary.failedCalls > 0 ? `${summary.failedCalls.toLocaleString()} failed` : "None failed" : undefined} tone={summary && summary.failedCalls > 0 ? "warn" : "neutral"} loading={first} />
-        <MetricCard icon="model" label="Usage" value={usage.value} detail={usage.detail} loading={first} />
-        <MetricCard icon="clock" label="Latency p50" value={summary?.p50Ms == null ? "—" : formatDuration(summary.p50Ms)} detail={summary?.p95Ms == null ? undefined : `p95 ${formatDuration(summary.p95Ms)}`} loading={first} />
+        <MetricCard icon="cost" label="Spend" value={summary ? summary.cost == null && summary.calls === 0 ? formatReportedAmount(0, currency, fx) : money(summary.cost) : "—"} detail={spendDetail(summary, money)} loading={first}
+          compare={comparison && summary && then ? line(perCall(summary), perCall(then), "lower", (value) => `${money(value)} per call`) : undefined} />
+        <MetricCard icon="trace" label="Calls" value={(summary?.calls ?? 0).toLocaleString()} detail={summary && summary.calls > 0 ? summary.failedCalls > 0 ? `${summary.failedCalls.toLocaleString()} failed` : "None failed" : undefined} tone={summary && summary.failedCalls > 0 ? "warn" : "neutral"} loading={first}
+          compare={line(failRate(summary), failRate(then), "lower", (value) => `${(value * 100).toFixed(value > 0 && value < 0.01 ? 1 : 0)}% failed`, { rate: true })} />
+        <MetricCard icon="clock" label="Latency p95" value={summary?.p95Ms == null ? "—" : formatDuration(summary.p95Ms)} detail={summary?.p50Ms == null ? undefined : `p50 ${formatDuration(summary.p50Ms)}`} loading={first} compare={line(summary?.p95Ms, then?.p95Ms, "lower", formatDuration)} />
+        <MetricCard icon="model" label="Usage" value={usage.value} detail={usage.detail} loading={first} compare={line(tokensOf(summary), tokensOf(then), null, (value) => `${formatTokens(value)} tokens`, { total: true })} />
       </div>
       <Panel title="Spend over time" subtitle={data ? `By ${data.window.bucket}` : undefined} actions={data && !empty ? <Pills label="Measure" value={measure} onChange={setMeasure} options={[{ value: "spend", label: "Spend" }, { value: "calls", label: "Calls" }]} /> : undefined}>
         {first ? <div className="ck-md-chart"><LoadingRows count={4} columns={1} /></div> : data && !empty ? <SpendChart data={data} measure={measure} money={money} /> : <EmptyPanel title="No calls to this model in this period" />}

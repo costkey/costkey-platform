@@ -14,6 +14,9 @@ export interface TransportOptions {
   debug: boolean;
   /** Release version for sourcemap translation */
   release?: string;
+  /** Commit SHA and repository URL of the running code, sent with every batch */
+  commit?: string;
+  repository?: string;
   /**
    * Max serialized bytes per POST (default 8 MB, well under the ingest
    * limit). A single event larger than this is sent alone.
@@ -98,7 +101,7 @@ export class Transport {
    */
   private takeBatch(): { events: CostKeyTelemetryEvent[]; body: string } | null {
     const maxBytes = this.options.maxBatchBytes ?? MAX_BATCH_BYTES;
-    const header = JSON.stringify({ sdkVersion: SDK_VERSION, release: this.options.release });
+    const header = JSON.stringify({ sdkVersion: SDK_VERSION, release: this.options.release, commit: this.options.commit, repository: this.options.repository });
     const prefix = `${header.slice(0, -1)},"events":[`;
     const suffix = "]}";
     let bytes = utf8Bytes(prefix) + utf8Bytes(suffix);

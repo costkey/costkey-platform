@@ -293,8 +293,12 @@ export interface CostKeyOptions {
 export interface TransportPayload {
   /** SDK version */
   sdkVersion: string;
-  /** Release version (for sourcemap translation) */
+  /** Release version (for sourcemap translation); the commit SHA unless set */
   release?: string;
+  /** Full commit SHA of the running code, when the SDK can find it */
+  commit?: string;
+  /** Source repository as an https URL, when the SDK can find it */
+  repository?: string;
   /** Events in this batch */
   events: CostKeyEvent[];
 }

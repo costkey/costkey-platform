@@ -22,7 +22,26 @@ interface Window {
   from: string;
   to: string;
   environment: string | null;
+  /** One release (deploy) only; null for every release. */
+  release: string | null;
 }
+
+/**
+ * The scope filter queries take as $4: environment and release as one jsonb,
+ * so every query keeps its parameter positions.
+ */
+export function scopeParam(window: { environment: string | null; release?: string | null }): string {
+  return JSON.stringify({ environment: window.environment, release: window.release ?? null });
+}
+
+/** A call's release: its context, or the column older calls carry it in. Spans only have context. */
+export const RELEASE_SQL = (alias: string, column = true) => column
+  ? `COALESCE(NULLIF(${alias}.context->>'release', ''), NULLIF(${alias}.release, ''))`
+  : `NULLIF(${alias}.context->>'release', '')`;
+
+/** Rows (aliased `alias`) inside the $4 scope; `calls` is false for spans. */
+export const SCOPE_FILTER = (alias: string, calls = true) => `(($4::jsonb->>'environment') IS NULL OR COALESCE(NULLIF(${alias}.context->>'environment', ''), '(unassigned)') = $4::jsonb->>'environment')
+      AND (($4::jsonb->>'release') IS NULL OR ${RELEASE_SQL(alias, calls)} = $4::jsonb->>'release')`;
 
 function text(raw: unknown): string | null {
   return typeof raw === "string" && raw.trim() ? raw.trim() : null;
@@ -40,13 +59,14 @@ function windowFrom(req: Request): Window {
     from: parse(req.query["from"], now - 30 * DAY_MS),
     to: parse(req.query["to"], now + 60_000),
     environment: environment && environment !== "all" ? environment : null,
+    release: text(req.query["release"]),
   };
 }
 
 /** The work item a run is an attempt of: runs that share it are retries of one job. */
 export const WORK_ID_SQL = (e: string) => `NULLIF(COALESCE(${e}.context->>'work_id', ${e}.context->>'workId', ${e}.context->>'attempt_key'), '')`;
 
-/** One row per run in the window, with its root span. Params: $1 project, $2 from, $3 to, $4 environment. */
+/** One row per run in the window, with its root span. Params: $1 project, $2 from, $3 to, $4 scope (scopeParam). */
 export const RUNS_CTE = `
   calls AS (
     SELECT e.id, e.trace_id, e.trace_name, e.cost_usd, e.duration_ms, e.status_code, e.timestamp, e.parent_event_id,
@@ -63,7 +83,7 @@ export const RUNS_CTE = `
     FROM events e
     WHERE e.project_id = $1 AND COALESCE(e.event_type, 'call') = 'call' AND e.trace_id IS NOT NULL
       AND e.timestamp >= $2 AND e.timestamp < $3
-      AND ($4::text IS NULL OR COALESCE(NULLIF(e.context->>'environment', ''), '(unassigned)') = $4)
+      AND ${SCOPE_FILTER("e")}
   ),
   runs AS (
     SELECT trace_id, MAX(trace_name) AS trace_name,
@@ -242,14 +262,14 @@ function unitsByKey(rows: Array<Record<string, unknown>>, keyOf: (row: Record<st
 /** Local bucket label for a timestamp. Params: $5 bucket unit, $6 timezone. */
 const BUCKET = (column: string) => `to_char(date_trunc($5::text, ${column} AT TIME ZONE $6::text), 'YYYY-MM-DD"T"HH24:MI')`;
 
-export interface BoardWindow { from: string; to: string; environment: string | null }
+export interface BoardWindow { from: string; to: string; environment: string | null; release?: string | null }
 
 /** Everything the Overview board needs beyond spend totals, for one window and the one before it. */
 export async function loadOverviewBoard(pool: pg.Pool, projectId: string, window: BoardWindow, timezone: string) {
   const previous = previousWindow(window.from, window.to);
   const bucket = boardBucket(window.from, window.to);
-  const params = [projectId, window.from, window.to, window.environment];
-  const previousParams = [projectId, previous.from, previous.to, window.environment];
+  const params = [projectId, window.from, window.to, scopeParam(window)];
+  const previousParams = [projectId, previous.from, previous.to, scopeParam(window)];
   const bucketParams = [...params, bucket, timezone];
   const runCounts = `WITH ${RUNS_CTE}
     SELECT COUNT(*)::int AS runs, COUNT(*) FILTER (WHERE root_kind = 'agent')::int AS agent_runs FROM run_rows`;
@@ -261,10 +281,10 @@ export async function loadOverviewBoard(pool: pg.Pool, projectId: string, window
   // Cost per model comes from the same charges the Overview's spend total
   // counts, so the table adds up to that total whatever the model bills.
   const chargeParams: unknown[] = [projectId];
-  const chargeClauses = scopeClauses({ from: window.from, to: window.to, environment: window.environment ?? undefined }, chargeParams, "c");
+  const chargeClauses = scopeClauses({ from: window.from, to: window.to, environment: window.environment ?? undefined, release: window.release ?? undefined }, chargeParams, "c");
   const eventFilter = `e.project_id = $1 AND COALESCE(e.event_type, 'call') = 'call'
     AND e.timestamp >= $2 AND e.timestamp < $3
-    AND ($4::text IS NULL OR COALESCE(NULLIF(e.context->>'environment', ''), '(unassigned)') = $4)`;
+    AND ${SCOPE_FILTER("e")}`;
   const unitTotals = `SELECT u.key AS unit, SUM(u.value::float) AS total FROM events e ${UNIT_ROWS("e")} AND ${eventFilter} GROUP BY 1`;
   const [modelCosts, modelUnits, unitsNow, unitsBefore, ownerUnits] = await Promise.all([
     pool.query(
@@ -318,7 +338,7 @@ export async function loadOverviewBoard(pool: pg.Pool, projectId: string, window
        FROM events e
        WHERE e.project_id = $1 AND COALESCE(e.event_type, 'call') = 'call'
          AND e.timestamp >= $2 AND e.timestamp < $3
-         AND ($4::text IS NULL OR COALESCE(NULLIF(e.context->>'environment', ''), '(unassigned)') = $4)
+         AND ${SCOPE_FILTER("e")}
        GROUP BY 1, 2`,
       params,
     ),
@@ -523,7 +543,7 @@ function fail(res: Response, label: string, error: unknown): void {
 /** An agent's or workflow's page: summary, recent runs, tools, models, sub-agents and users. */
 async function loadGroupDetail(pool: pg.Pool, req: Request, kind: "agent" | "workflow", name: string) {
   const window = windowFrom(req);
-  const params = [req.params["projectId"], window.from, window.to, window.environment, name];
+  const params = [req.params["projectId"], window.from, window.to, scopeParam(window), name];
   // "agent_runs" holds the runs of this agent or workflow.
   const scoped = `WITH ${RUNS_CTE}, agent_runs AS (SELECT * FROM run_rows WHERE ${kind === "agent" ? "root_kind = 'agent' AND root_name = $5" : `root_kind IS DISTINCT FROM 'agent' AND ${WORKFLOW_NAME} = $5`})`;
   const [summary, runs, tools, models, subagents, cacheHits, modelUnits, users, userUnits] = await Promise.all([
@@ -641,7 +661,7 @@ export function createInsightsRouter(pool: pg.Pool): Router {
          GROUP BY 1
          ORDER BY SUM(cost) DESC NULLS LAST, COUNT(*) DESC
          LIMIT 200`,
-        [req.params["projectId"], window.from, window.to, window.environment],
+        [req.params["projectId"], window.from, window.to, scopeParam(window)],
       );
       res.json({ workflows: result.rows.map(groupRow) });
     } catch (error) { fail(res, "Workflows", error); }
@@ -658,7 +678,7 @@ export function createInsightsRouter(pool: pg.Pool): Router {
          GROUP BY root_name
          ORDER BY SUM(cost) DESC NULLS LAST, COUNT(*) DESC
          LIMIT 200`,
-        [req.params["projectId"], window.from, window.to, window.environment],
+        [req.params["projectId"], window.from, window.to, scopeParam(window)],
       );
       res.json({ agents: result.rows.map(groupRow) });
     } catch (error) { fail(res, "Agents", error); }
@@ -676,7 +696,7 @@ export function createInsightsRouter(pool: pg.Pool): Router {
   router.get("/api/v1/projects/:projectId/insights/models", async (req: Request, res: Response) => {
     const window = windowFrom(req);
     const agents = req.query["kind"] === "agent";
-    const params = [req.params["projectId"], window.from, window.to, window.environment];
+    const params = [req.params["projectId"], window.from, window.to, scopeParam(window)];
     const scopedRuns = `
          scoped AS (
            SELECT trace_id,
@@ -735,7 +755,7 @@ export function createInsightsRouter(pool: pg.Pool): Router {
   router.get("/api/v1/projects/:projectId/quality/summary", async (req: Request, res: Response) => {
     const window = windowFrom(req);
     const owner = text(req.query["owner"]);
-    const params = [req.params["projectId"], window.from, window.to, window.environment];
+    const params = [req.params["projectId"], window.from, window.to, scopeParam(window)];
     const qualityCte = `WITH ${RUNS_CTE},
       owned AS (
         SELECT r.*,
@@ -866,10 +886,10 @@ export function createInsightsRouter(pool: pg.Pool): Router {
 
   router.get("/api/v1/projects/:projectId/errors", async (req: Request, res: Response) => {
     const window = windowFrom(req);
-    const params = [req.params["projectId"], window.from, window.to, window.environment];
+    const params = [req.params["projectId"], window.from, window.to, scopeParam(window)];
     const callFilter = `e.project_id = $1 AND COALESCE(e.event_type, 'call') = 'call'
       AND e.timestamp >= $2 AND e.timestamp < $3
-      AND ($4::text IS NULL OR COALESCE(NULLIF(e.context->>'environment', ''), '(unassigned)') = $4)`;
+      AND ${SCOPE_FILTER("e")}`;
     try {
       const [totals, failedCalls, retries, failedSpans] = await Promise.all([
         pool.query(
@@ -902,7 +922,7 @@ export function createInsightsRouter(pool: pg.Pool): Router {
            FROM spans s
            WHERE s.project_id = $1 AND s.status = 'error'
              AND COALESCE(s.ended_at, s.started_at) >= $2 AND COALESCE(s.ended_at, s.started_at) < $3
-             AND ($4::text IS NULL OR COALESCE(NULLIF(s.context->>'environment', ''), '(unassigned)') = $4)
+             AND ${SCOPE_FILTER("s", false)}
            GROUP BY 1, 2, 3 ORDER BY COUNT(*) DESC LIMIT 100`,
           params,
         ),

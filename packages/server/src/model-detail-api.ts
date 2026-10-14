@@ -3,7 +3,7 @@ import type pg from "pg";
 import { requireAuth } from "./auth.js";
 import { orgScope } from "./middleware.js";
 import { workspaceTimezone } from "./quality-api.js";
-import { BILLED_UNITS, boardBucket, RUNS_CTE } from "./insights-api.js";
+import { BILLED_UNITS, boardBucket, RUNS_CTE, SCOPE_FILTER, scopeParam } from "./insights-api.js";
 import { getPriceCatalog } from "./price-catalog/catalog.js";
 import type { PriceRates } from "./price-catalog/types.js";
 import {
@@ -24,6 +24,8 @@ export interface ModelDetailQuery {
   from: string;
   to: string;
   environment: string | null;
+  /** One release (deploy) only; null for every release. */
+  release?: string | null;
   timezone: string;
 }
 
@@ -41,12 +43,12 @@ const FAILED_SQL = (e: string) => `(COALESCE(${e}.lifecycle_state, '') IN ('fail
 
 /**
  * This model's calls in the window. Params: $1 project, $2 from, $3 to,
- * $4 environment, $5 provider, $6 model. project_id and timestamp lead so
+ * $4 scope (scopeParam), $5 provider, $6 model. project_id and timestamp lead so
  * idx_events_project_ts does the work.
  */
 const MODEL_CALLS = `e.project_id = $1 AND e.timestamp >= $2 AND e.timestamp < $3
   AND COALESCE(e.event_type, 'call') = 'call'
-  AND ($4::text IS NULL OR COALESCE(NULLIF(e.context->>'environment', ''), '(unassigned)') = $4)
+  AND ${SCOPE_FILTER("e")}
   AND e.provider = $5 AND COALESCE(e.model, e.request_model) = $6`;
 
 /** A native_units number, or null when it isn't one. */
@@ -118,7 +120,7 @@ function currentPrice(provider: string, model: string) {
 }
 
 export async function loadModelDetail(pool: pg.Pool, projectId: string, query: ModelDetailQuery) {
-  const params = [projectId, query.from, query.to, query.environment, query.provider, query.model];
+  const params = [projectId, query.from, query.to, scopeParam(query), query.provider, query.model];
   const bucket = boardBucket(query.from, query.to);
   const [summary, units, series, owners, recent, sources, cacheHits, pricedCalls] = await Promise.all([
     pool.query(
@@ -296,7 +298,7 @@ function text(raw: unknown): string | null {
 }
 
 /** Same window rules as the other insight routes: 30 days back by default. */
-function windowFrom(req: Request): { from: string; to: string; environment: string | null } {
+function windowFrom(req: Request): { from: string; to: string; environment: string | null; release: string | null } {
   const now = Date.now();
   const parse = (raw: unknown, fallback: number) => {
     const value = text(raw);
@@ -308,6 +310,7 @@ function windowFrom(req: Request): { from: string; to: string; environment: stri
     from: parse(req.query["from"], now - 30 * DAY_MS),
     to: parse(req.query["to"], now + 60_000),
     environment: environment && environment !== "all" ? environment : null,
+    release: text(req.query["release"]),
   };
 }
 

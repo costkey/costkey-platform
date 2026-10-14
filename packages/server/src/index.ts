@@ -27,6 +27,7 @@ import { createPlatformRouter } from "./platform.js";
 import { createSdkBudgetCompatibilityRouter } from "./platform.js";
 import { createSdkAdmissionRouter } from "./admission.js";
 import { createIngestRuntimeConfigRouter, createPrivacyRouter, privacyIngestGuard } from "./privacy.js";
+import { createReleasesRouter, ensureReleaseSchema } from "./releases.js";
 import { createRetentionRouter, runRetention } from "./retention.js";
 import { createSavedViewsRouter } from "./saved-views.js";
 import { createNotificationsRouter, runWeeklyDigests } from "./notifications.js";
@@ -40,6 +41,8 @@ import { basePath } from "./public-url.js";
 
 // Set by the image build from the release tag; "dev" when run from source.
 const SERVER_VERSION = process.env["COSTKEY_VERSION"] || "dev";
+/** The commit this server was built from, stamped into the image by CI. */
+const SERVER_COMMIT = /^[0-9a-f]{7,40}$/i.test(process.env["COSTKEY_COMMIT"] ?? "") ? process.env["COSTKEY_COMMIT"]!.toLowerCase() : null;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const dashboardDist = path.resolve(__dirname, "../../dashboard/dist");
@@ -228,10 +231,10 @@ export function createApp(options: AppOptions = {}): Express & AppRuntime {
 
   const health = (_req: express.Request, res: express.Response) => {
     if (!initialized) {
-      res.status(503).json({ status: initializationError ? "error" : "starting", version: SERVER_VERSION });
+      res.status(503).json({ status: initializationError ? "error" : "starting", version: SERVER_VERSION, commit: SERVER_COMMIT });
       return;
     }
-    res.json({ status: "ok", version: SERVER_VERSION });
+    res.json({ status: "ok", version: SERVER_VERSION, commit: SERVER_COMMIT });
   };
   app.get(["/health", "/ready"], health);
   addSpaRoutes(app, options.includeDashboard !== false, base);
@@ -283,6 +286,7 @@ export function createApp(options: AppOptions = {}): Express & AppRuntime {
   app.use(createSubscriptionRouter(pool));
   app.use(createPlatformRouter(pool));
   app.use(createPrivacyRouter(pool));
+  app.use(createReleasesRouter(pool));
   app.use(createRetentionRouter(pool));
   app.use(createSavedViewsRouter(pool));
   app.use(createNotificationsRouter(pool));
@@ -300,6 +304,7 @@ export function createApp(options: AppOptions = {}): Express & AppRuntime {
       // the production pool uses the legacy initializer before platform DDL.
       if (!options.pool) await initDatabase();
       await ensurePlatformSchema(pool);
+      await ensureReleaseSchema(pool);
       await ensurePolicySchema(pool);
       await ensureQualityCheckSchema(pool);
       // Every table exists from the first boot; nothing is created on first use.

@@ -3,7 +3,7 @@ import type pg from "pg";
 import { requireAuth } from "./auth.js";
 import { orgScope } from "./middleware.js";
 import { workspaceTimezone } from "./quality-api.js";
-import { BILLED_UNITS, retryInfo, RUNS_CTE } from "./insights-api.js";
+import { BILLED_UNITS, retryInfo, RUNS_CTE, scopeParam } from "./insights-api.js";
 import { USAGE_SUM_COLUMNS, usageFrom, type TokenUsage } from "./token-usage.js";
 
 /**
@@ -18,6 +18,7 @@ export interface UsersWindow {
   from: string;
   to: string;
   environment: string | null;
+  release: string | null;
 }
 
 function text(raw: unknown): string | null {
@@ -36,6 +37,7 @@ function windowFrom(req: Request): UsersWindow {
     from: parse(req.query["from"], now - 30 * DAY_MS),
     to: parse(req.query["to"], now + 60_000),
     environment: environment && environment !== "all" ? environment : null,
+    release: text(req.query["release"]),
   };
 }
 
@@ -139,7 +141,7 @@ export async function loadUsers(pool: pg.Pool, projectId: string, window: UsersW
             (SELECT jsonb_object_agg(us.unit, us.total) FROM unit_sums us WHERE us.user_id = b.user_id) AS units
      FROM totals t LEFT JOIN by_user b ON TRUE
      ORDER BY b.cost DESC NULLS LAST, b.runs DESC, b.user_id`,
-    [projectId, window.from, window.to, window.environment, q],
+    [projectId, window.from, window.to, scopeParam(window), q],
   );
   const rows = result.rows as Array<Record<string, unknown>>;
   const first = rows[0] ?? {};
@@ -238,7 +240,7 @@ export async function loadUserDetail(pool: pg.Pool, projectId: string, userId: s
        (SELECT COALESCE(json_agg(json_build_object('row', m, 'units', mu.units) ORDER BY m.cost DESC NULLS LAST, m.calls DESC, m.model), '[]'::json)
           FROM models m LEFT JOIN model_units mu ON mu.provider IS NOT DISTINCT FROM m.provider AND mu.model = m.model) AS models,
        (SELECT COALESCE(json_agg(l ORDER BY l.started_at DESC, l.trace_id), '[]'::json) FROM latest l) AS runs`,
-    [projectId, window.from, window.to, window.environment, userId, timezone],
+    [projectId, window.from, window.to, scopeParam(window), userId, timezone],
   );
   const row = (result.rows[0] ?? {}) as Record<string, unknown>;
   const summary = (row.summary ?? {}) as Record<string, unknown>;

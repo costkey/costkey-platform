@@ -264,11 +264,11 @@ test("health stays unhealthy while startup is pending or failed", async () => {
     const base = `http://127.0.0.1:${address.port}`;
     const pending = await fetch(`${base}/health`);
     assert.equal(pending.status, 503);
-    assert.deepEqual(await pending.json(), { status: "starting", version: process.env["COSTKEY_VERSION"] || "dev" });
+    assert.deepEqual(await pending.json(), { status: "starting", version: process.env["COSTKEY_VERSION"] || "dev", commit: null });
     await assert.rejects(app.initialize());
     const failed = await fetch(`${base}/ready`);
     assert.equal(failed.status, 503);
-    assert.deepEqual(await failed.json(), { status: "error", version: process.env["COSTKEY_VERSION"] || "dev" });
+    assert.deepEqual(await failed.json(), { status: "error", version: process.env["COSTKEY_VERSION"] || "dev", commit: null });
   } finally {
     app.stopSchedulers();
     server.closeIdleConnections?.();

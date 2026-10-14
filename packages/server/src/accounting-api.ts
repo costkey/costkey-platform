@@ -2,6 +2,7 @@ import type { Request, Response, Router } from "express";
 import { scopeSite } from "./scope-site.js";
 import { findBusinessLogicFrame } from "./ingest.js";
 import type { StackFrame } from "@costkey/shared";
+import { getPriceCatalog } from "./price-catalog/catalog.js";
 import { Router as createRouter } from "express";
 import type pg from "pg";
 import { randomBytes } from "node:crypto";
@@ -559,7 +560,7 @@ async function loadFinancialTotals(pool: pg.Pool, projectId: string, scope: Char
   const detailClauses = scopeClauses({ ...scope, groupBy: undefined, groupValue: undefined }, detailParams, "c");
   const [totals, functions, releases, aggregates] = await Promise.all([
     pool.query(
-      `${chargesCte()}
+      `${chargesCte(detailParams)}
        SELECT COUNT(*)::int AS observations,
               COUNT(*) FILTER (WHERE c.record_type = 'call')::int AS calls,
               COUNT(*) FILTER (WHERE c.cost_usd IS NOT NULL)::int AS priced,
@@ -569,7 +570,7 @@ async function loadFinancialTotals(pool: pg.Pool, projectId: string, scope: Char
       detailParams,
     ),
     pool.query(
-      `${chargesCte()}
+      `${chargesCte(detailParams)}
        SELECT c.bl_function AS function_name, c.bl_file AS file_name,
               SUM(c.cost_usd) FILTER (WHERE c.cost_usd IS NOT NULL) AS cost,
               COUNT(*) FILTER (WHERE c.record_type = 'call')::int AS calls
@@ -579,7 +580,7 @@ async function loadFinancialTotals(pool: pg.Pool, projectId: string, scope: Char
       detailParams,
     ),
     pool.query(
-      `${chargesCte()}
+      `${chargesCte(detailParams)}
        SELECT COALESCE(NULLIF(c.release, ''), NULLIF(c.context->>'release', ''), '(unassigned)') AS release,
               COUNT(*)::int AS observations,
               COUNT(*) FILTER (WHERE c.record_type = 'call')::int AS calls,
@@ -930,7 +931,7 @@ export function createAccountingRouter(pool: pg.Pool): Router {
       const detailClauses = scopeClauses(detailScope, detailParams, "c");
       const [totalsResult, modelResult, providerResult, aggregateRows] = await Promise.all([
         pool.query(
-          `${chargesCte()}
+          `${chargesCte(detailParams)}
            SELECT COUNT(*)::int AS observations,
                   COUNT(*) FILTER (WHERE c.record_type = 'call')::int AS calls,
                   -- A failed call without a price cost nothing: it counts as settled, not unpriced.
@@ -944,7 +945,7 @@ export function createAccountingRouter(pool: pg.Pool): Router {
           detailParams,
         ),
         pool.query(
-          `${chargesCte()}
+          `${chargesCte(detailParams)}
            SELECT c.provider, COALESCE(c.model, 'unknown') AS model,
                   COUNT(*)::int AS observations,
                   COUNT(*) FILTER (WHERE c.record_type = 'call')::int AS calls,
@@ -957,7 +958,7 @@ export function createAccountingRouter(pool: pg.Pool): Router {
           detailParams,
         ),
         pool.query(
-          `${chargesCte()}
+          `${chargesCte(detailParams)}
            SELECT c.provider, COUNT(*)::int AS observations,
                   COUNT(*) FILTER (WHERE c.record_type = 'call')::int AS calls,
                   COUNT(*) FILTER (WHERE c.cost_usd IS NOT NULL OR c.no_charge)::int AS priced,
@@ -1010,6 +1011,14 @@ export function createAccountingRouter(pool: pg.Pool): Router {
       const observations = total.observations;
       const unpriced = observations - total.priced;
       const avgDuration = Number(totalsResult.rows[0]?.avg_duration_ms ?? 0);
+      // Of the calls with no cost, only a model the catalog doesn't know needs a price;
+      // a priced model's calls with no cost reported no usage, and no price fixes that.
+      let unpricedNoUsage = 0;
+      for (const row of byModel.values()) {
+        const waiting = row.observations - row.priced;
+        if (waiting > 0 && row.model && getPriceCatalog().resolve({ provider: row.provider, model: row.model })) unpricedNoUsage += waiting;
+      }
+      unpricedNoUsage = Math.min(unpricedNoUsage, unpriced);
       res.json({
         overview: {
           total_calls: total.calls,
@@ -1024,6 +1033,8 @@ export function createAccountingRouter(pool: pg.Pool): Router {
           trace_count: Number(totalsResult.rows[0]?.traces) || 0,
           priced_observations: total.priced,
           unpriced_count: unpriced,
+          unpriced_no_price_count: unpriced - unpricedNoUsage,
+          unpriced_no_usage_count: unpricedNoUsage,
           pricing_coverage: observations > 0 ? total.priced / observations : null,
           accounting_state: observations === 0 ? "pending" : unpriced > 0 ? "partial" : "complete",
         },
@@ -2038,7 +2049,7 @@ export function createAccountingRouter(pool: pg.Pool): Router {
         const clauses = scopeClauses(period, params, "c");
         const expression = dimensionExpression(period, "c");
         const detail = await pool.query(
-          `${chargesCte()},
+          `${chargesCte(params)},
            scoped AS (
              SELECT c.*, ${expression} AS group_key
              FROM charges c WHERE ${clauses.join(" AND ")}

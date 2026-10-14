@@ -103,8 +103,14 @@ export function frameViews(frames: StackFrame[], callSite: { functionName?: stri
   });
 }
 
-/** The frame whose code opens by default: the first in-app frame with recorded source. */
+/**
+ * The frame whose code opens by default: the one the server attributed the
+ * call to (its call-graph ranking picks the function the cost belongs to),
+ * else the first in-app frame with recorded source.
+ */
 export function defaultOpenFrame(views: FrameView[]): number | null {
+  const attributed = views.findIndex((view) => view.isCallSite && view.code !== null);
+  if (attributed !== -1) return attributed;
   const index = views.findIndex((view) => view.isInApp && view.code !== null);
   return index === -1 ? null : index;
 }

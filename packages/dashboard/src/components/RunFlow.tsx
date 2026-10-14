@@ -410,8 +410,9 @@ const STACK_PREVIEW = 8;
 
 /** The call stack, one compact row per frame. Frames with recorded source open to show it; the first in-app one starts open. */
 export function CallStack({ frames, callSite }: { frames: StackFrame[]; callSite: { functionName?: string | null; file?: string | null; line?: number | null } }) {
-  const [showAll, setShowAll] = useState(false);
   const views = useMemo(() => frameViews(frames, callSite), [frames, callSite.functionName, callSite.file, callSite.line]);
+  // The attributed frame is never hidden behind "Show all".
+  const [showAll, setShowAll] = useState(() => views.findIndex((view) => view.isCallSite) >= STACK_PREVIEW);
   const [open, setOpen] = useState<Set<number>>(() => {
     const first = defaultOpenFrame(views);
     return new Set(first === null ? [] : [first]);
@@ -429,10 +430,10 @@ export function CallStack({ frames, callSite }: { frames: StackFrame[]; callSite
     <ol className="ck-callstack">{shown.map((frame, index) => {
       const expanded = frame.code !== null && open.has(index);
       const row = <>
-        <span className="ck-callstack-fn">{frame.functionName}{frame.packageName && <em className="ck-callstack-package">{frame.packageName}</em>}</span>
+        <span className="ck-callstack-fn">{frame.functionName}{frame.packageName && <em className="ck-callstack-package">{frame.packageName}</em>}{frame.isCallSite && <em className="ck-callstack-attributed" title="The function this call's cost is attributed to">Attributed</em>}</span>
         {frame.location && <span className="ck-callstack-path" title={frame.fullLocation ?? undefined}><bdi>{frame.location}</bdi></span>}
       </>;
-      return <li key={index} className={`${frame.packageName ? "is-installed" : ""} ${expanded ? "is-open" : ""}`}>
+      return <li key={index} className={`${frame.packageName ? "is-installed" : ""} ${expanded ? "is-open" : ""} ${frame.isCallSite ? "is-attributed" : ""}`}>
         {frame.code
           ? <button className="ck-callstack-row has-code" type="button" aria-expanded={expanded} onClick={() => toggle(index)}><span className="ck-callstack-chevron" aria-hidden="true" />{row}</button>
           : <div className="ck-callstack-row">{row}</div>}

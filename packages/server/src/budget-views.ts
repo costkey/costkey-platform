@@ -218,7 +218,7 @@ export async function loadSpendSeries(pool: pg.Pool, projectId: string, input: {
   params.push(input.timezone);
   const timezoneParam = params.length;
   const detail = await pool.query(
-    `${chargesCte()}
+    `${chargesCte(params)}
      SELECT to_char(c.timestamp AT TIME ZONE $${timezoneParam}::text, 'YYYY-MM-DD') AS day,
             COALESCE(SUM(c.cost_usd), 0)::double precision AS cost,
             COUNT(*) FILTER (WHERE c.record_type = 'call')::int AS calls,

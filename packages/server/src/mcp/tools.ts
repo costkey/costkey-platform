@@ -166,7 +166,32 @@ async function listProjects(ctx: ToolContext): Promise<Project[]> {
 }
 
 /** The project a tool reads: the one named, else the only one this caller can read. */
+/** One project by id, from the cheap detail route; null when it isn't readable. */
+async function projectById(ctx: ToolContext, id: string): Promise<Project | null> {
+  try {
+    const body = await ctx.api.get<{ project?: Row }>(`/api/v1/projects/${encodeURIComponent(id)}`);
+    const row = body.project;
+    if (!row) return null;
+    return {
+      id: String(row["id"]),
+      name: String(row["name"] ?? row["id"]),
+      captureMode: str(row["capture_mode"]) ?? undefined,
+      bodyCaptureEnabled: row["body_capture_enabled"] === true,
+      sourceAccessEnabled: row["source_access_enabled"] === true,
+    };
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) return null;
+    throw error;
+  }
+}
+
 async function resolveProject(ctx: ToolContext, requested: string | undefined): Promise<Project> {
+  // The project list counts every project's calls; skip it when the id is known.
+  const knownId = requested?.trim() || (ctx.tokenProjectIds?.length === 1 ? ctx.tokenProjectIds[0] : undefined);
+  if (knownId) {
+    const project = await projectById(ctx, knownId);
+    if (project) return project;
+  }
   const projects = await listProjects(ctx);
   const names = () => projects.map((project) => `"${project.name}" (${project.id})`).join(", ");
   if (projects.length === 0) throw new ToolInputError("No projects are available to this token.");

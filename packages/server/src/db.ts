@@ -22,8 +22,31 @@ export function getPool(): pg.Pool {
     pool.on("error", (err) => {
       console.error("[costkey] Postgres pool error:", err.message);
     });
+    logSlowQueries(pool);
   }
   return pool;
+}
+
+/** Queries slower than this are logged with their start, to find what holds the pool. */
+const SLOW_QUERY_MS = Math.max(100, Number(process.env["COSTKEY_SLOW_QUERY_MS"]) || 1000);
+
+/** Log each slow pool.query: how long it took, how busy the pool was, and the query's first words. */
+function logSlowQueries(target: pg.Pool): void {
+  const original = target.query.bind(target) as (...args: unknown[]) => unknown;
+  (target as unknown as { query: (...args: unknown[]) => unknown }).query = (...args: unknown[]) => {
+    const started = Date.now();
+    const result = original(...args);
+    if (!result || typeof (result as Promise<unknown>).finally !== "function") return result;
+    const text = typeof args[0] === "string" ? args[0] : String((args[0] as { text?: unknown } | undefined)?.text ?? "");
+    return (result as Promise<unknown>).finally(() => {
+      const ms = Date.now() - started;
+      if (ms < SLOW_QUERY_MS) return;
+      const sql = text.replace(/\s+/g, " ").trim();
+      // Long queries share their opening CTEs; their end says which one this is.
+      const shown = sql.length > 400 ? `${sql.slice(0, 120)} … ${sql.slice(-260)}` : sql;
+      console.warn(`[costkey] Slow query ${ms}ms (pool ${target.totalCount - target.idleCount}/${target.totalCount} busy, ${target.waitingCount} waiting): ${shown}`);
+    });
+  };
 }
 
 export function getDb() {

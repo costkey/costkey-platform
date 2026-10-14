@@ -299,7 +299,7 @@ export async function loadOverviewBoard(pool: pg.Pool, projectId: string, window
       `${chargesCte(chargeParams)}
        SELECT c.provider, COALESCE(c.model, 'unknown') AS model, COUNT(*)::int AS charges,
               SUM(c.cost_usd) FILTER (WHERE c.cost_usd IS NOT NULL) AS cost,
-              COUNT(*) FILTER (WHERE c.cost_usd IS NULL)::int AS unpriced
+              COUNT(*) FILTER (WHERE c.cost_usd IS NULL AND NOT c.no_charge)::int AS unpriced
        FROM charges c WHERE ${chargeClauses.join(" AND ")}
        GROUP BY 1, 2`,
       chargeParams,

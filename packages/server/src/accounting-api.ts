@@ -338,7 +338,7 @@ async function loadAvailableFilters(
          SELECT c.trace_id,
                 COALESCE(MAX(t.state), 'unknown') AS lifecycle,
                 COUNT(*)::int AS observations,
-                COUNT(*) FILTER (WHERE c.cost_usd IS NULL)::int AS unpriced
+                COUNT(*) FILTER (WHERE c.cost_usd IS NULL AND NOT c.no_charge)::int AS unpriced
          FROM base c
          LEFT JOIN traces t ON t.project_id = c.project_id AND t.id = c.trace_id
          WHERE c.trace_id IS NOT NULL
@@ -1769,7 +1769,7 @@ export function createAccountingRouter(pool: pg.Pool): Router {
         `${chargesCte()}
          SELECT COALESCE(phase, 'unassigned') AS phase,
                 COUNT(*)::int AS observations,
-                COUNT(*) FILTER (WHERE cost_usd IS NULL)::int AS unpriced_count,
+                COUNT(*) FILTER (WHERE cost_usd IS NULL AND NOT no_charge)::int AS unpriced_count,
                 SUM(cost_usd) FILTER (WHERE cost_usd IS NOT NULL) AS known_cost
          FROM charges WHERE project_id = $1 AND execution_id = $2
          GROUP BY 1 ORDER BY 1`,
@@ -1823,7 +1823,7 @@ export function createAccountingRouter(pool: pg.Pool): Router {
            SELECT project_id, group_id,
                   COUNT(*)::int AS observations,
                   COUNT(*) FILTER (WHERE cost_usd IS NOT NULL)::int AS priced_observations,
-                  COUNT(*) FILTER (WHERE cost_usd IS NULL)::int AS unpriced_count,
+                  COUNT(*) FILTER (WHERE cost_usd IS NULL AND NOT no_charge)::int AS unpriced_count,
                   SUM(cost_usd) FILTER (WHERE cost_usd IS NOT NULL) AS known_cost
            FROM charges WHERE group_id IS NOT NULL GROUP BY project_id, group_id
          ), execution_rollup AS (
@@ -1920,7 +1920,7 @@ export function createAccountingRouter(pool: pg.Pool): Router {
            SELECT project_id, execution_id,
                   COUNT(*)::int AS observations,
                   COUNT(*) FILTER (WHERE cost_usd IS NOT NULL)::int AS priced_observations,
-                  COUNT(*) FILTER (WHERE cost_usd IS NULL)::int AS unpriced_count,
+                  COUNT(*) FILTER (WHERE cost_usd IS NULL AND NOT no_charge)::int AS unpriced_count,
                   SUM(cost_usd) FILTER (WHERE cost_usd IS NOT NULL) AS known_cost,
                   COUNT(*) FILTER (WHERE record_type = 'call')::int AS call_count,
                   MAX(provider) AS provider, MAX(model) AS model,
@@ -2073,7 +2073,7 @@ export function createAccountingRouter(pool: pg.Pool): Router {
                     COUNT(*)::int AS observations,
                     COUNT(*) FILTER (WHERE c.record_type = 'call')::int AS call_count,
                     COUNT(*) FILTER (WHERE c.cost_usd IS NOT NULL)::int AS priced_observations,
-                    COUNT(*) FILTER (WHERE c.cost_usd IS NULL)::int AS unpriced_observations,
+                    COUNT(*) FILTER (WHERE c.cost_usd IS NULL AND NOT c.no_charge)::int AS unpriced_observations,
                     SUM(c.cost_usd) FILTER (WHERE c.cost_usd IS NOT NULL) AS known_cost,
                     AVG(c.cost_usd) FILTER (WHERE c.cost_usd IS NOT NULL) AS mean_cost_per_charge,
                     COUNT(*) FILTER (WHERE c.cost_usd IS NOT NULL AND c.cost_basis = 'reported')::int AS reported_observations,
@@ -2240,7 +2240,7 @@ export function createAccountingRouter(pool: pg.Pool): Router {
            )
            SELECT COUNT(*)::int AS observations,
                   COUNT(*) FILTER (WHERE c.cost_usd IS NOT NULL)::int AS priced_observations,
-                  COUNT(*) FILTER (WHERE c.cost_usd IS NULL)::int AS unpriced_observations,
+                  COUNT(*) FILTER (WHERE c.cost_usd IS NULL AND NOT c.no_charge)::int AS unpriced_observations,
                   SUM(c.cost_usd) FILTER (WHERE c.cost_usd IS NOT NULL) AS known_cost,
                   COUNT(*) FILTER (WHERE c.record_type = 'call')::int AS call_count,
                   COUNT(*) FILTER (WHERE c.trace_id IS NULL AND c.record_type = 'usage')::int AS untraced_usage_count,
@@ -2262,7 +2262,7 @@ export function createAccountingRouter(pool: pg.Pool): Router {
          SELECT date_trunc('day', c.timestamp) AS day,
                 COUNT(*)::int AS observations,
                 COUNT(*) FILTER (WHERE c.cost_usd IS NOT NULL)::int AS priced_observations,
-                COUNT(*) FILTER (WHERE c.cost_usd IS NULL)::int AS unpriced_observations,
+                COUNT(*) FILTER (WHERE c.cost_usd IS NULL AND NOT c.no_charge)::int AS unpriced_observations,
                 SUM(c.cost_usd) FILTER (WHERE c.cost_usd IS NOT NULL) AS known_cost
          FROM charges c WHERE ${clauses.join(" AND ")}
          GROUP BY 1 ORDER BY 1 ASC`,
@@ -2273,7 +2273,7 @@ export function createAccountingRouter(pool: pg.Pool): Router {
          SELECT c.trace_id, MAX(c.trace_name) AS trace_name,
                 COUNT(*) FILTER (WHERE c.record_type = 'call')::int AS call_count,
                 COUNT(*) FILTER (WHERE c.cost_usd IS NOT NULL)::int AS priced_observations,
-                COUNT(*) FILTER (WHERE c.cost_usd IS NULL)::int AS unpriced_count,
+                COUNT(*) FILTER (WHERE c.cost_usd IS NULL AND NOT c.no_charge)::int AS unpriced_count,
                 SUM(c.cost_usd) FILTER (WHERE c.cost_usd IS NOT NULL) AS known_cost,
                 MIN(c.timestamp) AS started_at
          FROM charges c WHERE ${clauses.join(" AND ")} AND c.trace_id IS NOT NULL

@@ -38,6 +38,7 @@ import { startEmptyRunSweeper } from "./empty-runs.js";
 import { seedDemoQualityChecks } from "./quality-checks/seed.js";
 import { basePath } from "./public-url.js";
 import { apiTokenGuards, createApiTokensRouter } from "./api-tokens.js";
+import { createMcpRouter } from "./mcp/index.js";
 
 // Set by the image build from the release tag; "dev" when run from source.
 const SERVER_VERSION = process.env["COSTKEY_VERSION"] || "dev";
@@ -274,8 +275,9 @@ export function createApp(options: AppOptions = {}): Express & AppRuntime {
   // They are safe to import because admission has no optional email client;
   // the legacy budget/API routers remain lazy until database initialization.
   app.use(createSdkAdmissionRouter(pool));
-  // Coding agents: read-only tokens.
+  // Coding agents: read-only tokens and the MCP endpoint they use.
   app.use(createApiTokensRouter(pool));
+  app.use(createMcpRouter());
   app.use(createSdkBudgetCompatibilityRouter(pool));
   // Single sign-on: /auth/config, OIDC routes, and the password-route guard
   // must precede the password auth router.

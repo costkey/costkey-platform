@@ -1,7 +1,7 @@
 export const TRACE_VIEW_FILTER_KEYS = ["provider", "model", "feature", "function", "customer", "environment", "lifecycle", "accounting"] as const;
 
 export type TraceViewTab = "traces" | "calls";
-export type TraceViewPeriod = "1h" | "today" | "24h" | "mtd" | "7d" | "30d" | "custom";
+export type TraceViewPeriod = import("../components/consoleFormatters").ConsolePeriod;
 
 export interface TraceViewStateInput {
   tab: TraceViewTab;

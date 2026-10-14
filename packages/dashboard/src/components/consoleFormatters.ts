@@ -1,13 +1,40 @@
 import { formatCost } from "../utils";
 
-export type ConsolePeriod = "1h" | "today" | "24h" | "mtd" | "7d" | "30d" | "custom";
+/** A rolling window ending now: `15m`, `3h`, `7d`, `2w`. */
+export type RelativePeriod = `${number}${"m" | "h" | "d" | "w"}`;
 
-export function parsePeriod(value: string | null | undefined): ConsolePeriod {
-  return value === "1h" || value === "today" || value === "24h" || value === "7d" || value === "30d" || value === "custom" ? value : "mtd";
+/** Rolling windows, today and the month so far, since the latest deploy, or a custom range. */
+export type ConsolePeriod = RelativePeriod | "today" | "mtd" | "deploy" | "custom";
+
+const RELATIVE = /^([1-9]\d{0,3})([mhdw])$/;
+const UNIT_MS = { m: 60_000, h: 3_600_000, d: 86_400_000, w: 604_800_000 } as const;
+const UNIT_WORDS = { m: ["minute", "minutes"], h: ["hour", "hours"], d: ["day", "days"], w: ["week", "weeks"] } as const;
+const MAX_RELATIVE_MS = 400 * UNIT_MS.d;
+
+/** A rolling period's length in ms, or null for any other period. */
+export function relativeMs(period: string): number | null {
+  const match = RELATIVE.exec(period);
+  if (!match) return null;
+  const ms = Number(match[1]) * UNIT_MS[match[2] as keyof typeof UNIT_MS];
+  return ms <= MAX_RELATIVE_MS ? ms : null;
 }
 
+export function parsePeriod(value: string | null | undefined): ConsolePeriod {
+  if (value === "today" || value === "deploy" || value === "custom") return value;
+  return value && relativeMs(value) != null ? value as RelativePeriod : "mtd";
+}
+
+/** "last 15 minutes", "today", "since the last deploy". */
 export function periodLabel(period: ConsolePeriod): string {
-  return ({ "1h": "last hour", today: "today", "24h": "last 24 hours", mtd: "month to date", "7d": "last 7 days", "30d": "last 30 days", custom: "custom range" })[period];
+  if (period === "today") return "today";
+  if (period === "mtd") return "month to date";
+  if (period === "deploy") return "since the last deploy";
+  if (period === "custom") return "custom range";
+  const match = RELATIVE.exec(period);
+  if (!match) return "month to date";
+  const amount = Number(match[1]);
+  const [one, many] = UNIT_WORDS[match[2] as keyof typeof UNIT_WORDS];
+  return amount === 1 ? `last ${one}` : `last ${amount} ${many}`;
 }
 
 /** Convert a date-input day in the workspace timezone to an exclusive UTC range boundary. */
@@ -172,8 +199,11 @@ export function formatDayDate(value: string | null | undefined, timeZone?: strin
 
 export function periodDates(period: ConsolePeriod, timezone = Intl.DateTimeFormat().resolvedOptions().timeZone): { from: string; to: string } {
   const to = new Date();
-  if (period === "24h") return { from: new Date(to.getTime() - 24 * 60 * 60 * 1000).toISOString(), to: to.toISOString() };
-  if (period === "1h") return { from: new Date(to.getTime() - 60 * 60 * 1000).toISOString(), to: to.toISOString() };
+  // 7 and 30 days start at local midnight, as they always have; other rolling windows end now.
+  const rolling = period === "7d" || period === "30d" ? null : relativeMs(period);
+  if (rolling != null) return { from: new Date(to.getTime() - rolling).toISOString(), to: to.toISOString() };
+  // "deploy" and "custom" need more than a period; callers that support them resolve them first.
+  if (period === "deploy") return { from: new Date(to.getTime() - UNIT_MS.d).toISOString(), to: to.toISOString() };
   const dateParts = new Intl.DateTimeFormat("en-US", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(to);
   const year = Number(dateParts.find((part) => part.type === "year")?.value);
   const month = Number(dateParts.find((part) => part.type === "month")?.value);

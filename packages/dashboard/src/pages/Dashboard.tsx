@@ -31,7 +31,10 @@ import { scopeSearch as drillScope } from "../components/links";
 import { allClearDismissed, dismissAllClear } from "../components/allClear";
 import { LiveStatus } from "../components/LiveStatus";
 import { useLiveQuery } from "../hooks/useLiveQuery";
-import { formatDateTime, formatReportedAmount, parsePeriod, periodDates, periodLabel, zonedDateParts, zonedDaysInMonth } from "../components/consoleFormatters";
+import { formatDateTime, formatReportedAmount, isoToZonedInput, parsePeriod, periodDates, periodLabel, zonedDateParts, zonedDaysInMonth, zonedInputToIso } from "../components/consoleFormatters";
+import { TimeRangePicker } from "../components/TimeRangePicker";
+import { useReleases } from "../components/releasesModel";
+import { INSIGHT_PERIODS } from "./useInsightScope";
 import { prototypeRole, prototypeState, PrototypeStateNotice, PrototypeStatePanel } from "../components/PrototypeState";
 import { BoardSkeleton, CostByModel, KpiCard, LatencyPanel, RunVolume, ScoresPanel, UsageByAgent } from "../components/OverviewBoard";
 import { SpendOverTime } from "../components/SpendOverTime";
@@ -183,7 +186,12 @@ export default function Dashboard() {
   const requestedFrom = searchParams.get("from");
   const requestedTo = searchParams.get("to");
   const environment = searchParams.get("environment") ?? "all";
-  const requestedScope = requestedFrom && requestedTo && !Number.isNaN(new Date(requestedFrom).getTime()) && !Number.isNaN(new Date(requestedTo).getTime()) && new Date(requestedFrom) < new Date(requestedTo) ? { from: requestedFrom, to: requestedTo } : null;
+  const customScope = requestedFrom && requestedTo && !Number.isNaN(new Date(requestedFrom).getTime()) && !Number.isNaN(new Date(requestedTo).getTime()) && new Date(requestedFrom) < new Date(requestedTo) ? { from: requestedFrom, to: requestedTo } : null;
+  // "Since the last deploy" starts at the newest release's first call.
+  const { releases, loaded: releasesLoaded } = useReleases(currentProjectId ?? projects[0]?.id ?? null, searchParams.get("environment") ?? "all");
+  const latestRelease = releases[0] ?? null;
+  // Its end is left open so the window runs to now on every refresh.
+  const requestedScope: { from: string; to?: string } | null = customScope ?? (period === "deploy" && latestRelease ? { from: latestRelease.firstSeen } : null);
   const requestedProject = requestedProjectId ? projects.find((item) => item.id === requestedProjectId) : undefined;
   useEffect(() => {
     if (requestedProject && requestedProject.id !== currentProjectId) setCurrentProjectId(requestedProject.id);
@@ -212,23 +220,24 @@ export default function Dashboard() {
   const budgetSpent = budget?.usage?.observed == null ? null : Number(budget.usage.observed);
   const projectName = (project?.name ?? "This project").replace(/\s+\(synthetic\)$/i, "");
   const noProject = !projectId;
-  const toolbarPeriod: Period = requestedScope ? "custom" : period;
+  const toolbarPeriod: Period = customScope ? "custom" : period;
   const scopeParams = new URLSearchParams();
   scopeParams.set("project", projectId ?? "");
-  if (requestedScope) { scopeParams.set("period", "custom"); scopeParams.set("from", requestedScope.from ?? ""); scopeParams.set("to", requestedScope.to ?? ""); }
+  if (customScope) { scopeParams.set("period", "custom"); scopeParams.set("from", customScope.from ?? ""); scopeParams.set("to", customScope.to ?? ""); }
   else scopeParams.set("period", period);
   if (environment !== "all") scopeParams.set("environment", environment);
   const scopeSearch = `?${scopeParams.toString()}`;
   const money = (value: number | null | undefined) => formatReportedAmount(value, reportingCurrency, fx);
   const changePeriod = (next: Period): void => {
-    if (next === "custom") {
-      const dates = periodDates("30d", timezone ?? undefined);
-      setPeriod(next);
-      setSearchParams((current) => { current.set("period", "custom"); current.set("from", dates.from); current.set("to", dates.to); return current; });
-      return;
-    }
     setPeriod(next);
     setSearchParams((current) => { current.set("period", next); current.delete("from"); current.delete("to"); return current; });
+  };
+  const changeCustomRange = (fromValue: string, toValue: string): void => {
+    const from = zonedInputToIso(fromValue, timezone);
+    const to = zonedInputToIso(toValue, timezone);
+    if (!from || !to || from >= to) return;
+    setPeriod("custom");
+    setSearchParams((current) => { current.set("period", "custom"); current.set("from", from); current.set("to", to); return current; });
   };
   const environmentOptions = [{ value: "all", label: "All environments" }, ...resource.data.environments.filter((value) => value !== "all").map((value) => ({ value, label: value }))];
   const onEnvironmentChange = (next: string) => setSearchParams((current) => { if (next === "all") current.delete("environment"); else current.set("environment", next); return current; });
@@ -244,12 +253,15 @@ export default function Dashboard() {
   const periodBadge = <div className="ck-period-badge">
     <LiveStatus status={resource.status} updatedAt={resource.updatedAt} onRefresh={resource.refresh} />
     {scopeEnvironments && <span className="ck-pill-select"><select aria-label="Environment" value={environment} onChange={(event) => onEnvironmentChange(event.target.value)}>{environmentOptions.concat(environment !== "all" && !environmentOptions.some((option) => option.value === environment) ? [{ value: environment, label: environment }] : []).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select><PrototypeIcon name="down" size={12} /></span>}
-    <span className="ck-pill-select ck-period-pill"><select aria-label="Period" value={toolbarPeriod === "custom" ? "custom" : period} onChange={(event) => changePeriod(event.target.value as Period)}>
-      <option value="mtd">{now.toLocaleDateString("en-US", { month: "long", timeZone: timezone ?? undefined })}</option>
-      <option value="7d">Last 7 days</option>
-      <option value="30d">Last 30 days</option>
-      {toolbarPeriod === "custom" && <option value="custom">Custom range</option>}
-    </select><PrototypeIcon name="down" size={12} /></span>
+    <TimeRangePicker
+      period={toolbarPeriod}
+      onPeriodChange={changePeriod}
+      quick={INSIGHT_PERIODS}
+      customRelative
+      deploy={{ release: latestRelease, loaded: releasesLoaded }}
+      timezone={timezone}
+      absolute={{ from: requestedScope ? isoToZonedInput(requestedScope.from, timezone) : undefined, to: requestedScope?.to ? isoToZonedInput(requestedScope.to, timezone) : undefined, withTime: true, onApply: changeCustomRange }}
+    />
     {monthToDate && <span>Day {dayOfMonth} of {periodDays}</span>}
   </div>;
 

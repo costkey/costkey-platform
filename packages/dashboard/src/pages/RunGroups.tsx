@@ -9,12 +9,11 @@ import { UserId } from "../components/UserId";
 import { modelHref, ownerHref, toolHref, userHref } from "../components/links";
 import { useNewIds, usePointerHold } from "../hooks/useLiveQuery";
 import { billedUnitsText, formatHitRate, formatTokenCount } from "../components/tokenUsage";
-import { ChangeBadge, CompareLine, EmptyPanel, LoadingRows, MetricCard, PageHeader, Panel, StatusPill } from "../components/ConsolePrimitives";
-import { metricChange } from "../components/compareScope";
+import { EmptyPanel, LoadingRows, MetricCard, PageHeader, Panel, StatusPill } from "../components/ConsolePrimitives";
 import { formatDateTime, formatReportedAmount, type ReportingFx } from "../components/consoleFormatters";
 import { useAuth } from "../contexts/useAuth";
 import { formatDuration } from "../utils";
-import { useInsightScope, useScopedLoad, type InsightComparison } from "./useInsightScope";
+import { useInsightScope, useScopedLoad } from "./useInsightScope";
 import { ProviderLabel } from "../components/ProviderLogo";
 import { GroupBudgets, ScopeBudgetCard } from "../components/ScopeBudget";
 
@@ -28,51 +27,29 @@ function failureRate(group: RunGroup): string {
   return rate === 0 ? "0%" : rate < 0.01 ? "<1%" : `${Math.round(rate * 100)}%`;
 }
 
-function sumGroups(groups: RunGroup[]) {
+function Totals({ groups, currency, fx, loading }: { groups: RunGroup[]; currency: string; fx?: ReportingFx | null; loading: boolean }) {
   const runs = groups.reduce((sum, group) => sum + group.runs, 0);
   const cost = groups.reduce((sum, group) => sum + (group.cost ?? 0), 0);
   const failed = groups.reduce((sum, group) => sum + group.failedRuns, 0);
-  return { runs, cost, failed, failureRate: runs > 0 ? failed / runs : null, perRun: runs > 0 ? cost / runs : null };
-}
-
-function percentText(rate: number): string {
-  return rate === 0 ? "0%" : rate < 0.01 ? "<1%" : `${Math.round(rate * 100)}%`;
-}
-
-function Totals({ groups, previous, comparison, currency, fx, loading }: { groups: RunGroup[]; previous: RunGroup[] | null; comparison: InsightComparison | null; currency: string; fx?: ReportingFx | null; loading: boolean }) {
-  const now = sumGroups(groups);
-  const then = previous ? sumGroups(previous) : null;
-  const compareLoading = Boolean(comparison) && !previous;
-  const reported = (value: number) => formatReportedAmount(value, currency, fx);
-  const line = (current: number | null, before: number | null | undefined, better: "lower" | "higher" | null, format: (value: number) => string, opts: { rate?: boolean; total?: boolean } = {}) => comparison
-    ? <CompareLine current={current} previous={before} better={better} rate={opts.rate} format={format} against={comparison.against} hideChange={opts.total && !comparison.totalsComparable} loading={compareLoading} />
-    : undefined;
   return <div className="ck-metric-grid">
-    <MetricCard icon="trace" label="Runs" value={now.runs.toLocaleString()} loading={loading} compare={line(now.runs, then?.runs, null, (value) => value.toLocaleString(), { total: true })} />
-    <MetricCard icon="cost" label="Spend" value={reported(now.cost)} detail={now.perRun != null ? `${reported(now.perRun)} per run` : undefined} loading={loading} compare={line(now.perRun, then?.perRun, "lower", (value) => `${reported(value)} per run`)} />
-    <MetricCard icon="alert" label="Failed runs" value={now.failed.toLocaleString()} tone={now.failed > 0 ? "warn" : "neutral"} detail={now.failureRate != null ? `${percentText(now.failureRate)} of runs` : undefined} loading={loading} compare={line(now.failureRate, then?.failureRate, "lower", (value) => `${percentText(value)} of runs`, { rate: true })} />
+    <MetricCard icon="trace" label="Runs" value={runs.toLocaleString()} loading={loading} />
+    <MetricCard icon="cost" label="Spend" value={formatReportedAmount(cost, currency, fx)} detail={runs > 0 ? `${formatReportedAmount(cost / runs, currency, fx)} per run` : undefined} loading={loading} />
+    <MetricCard icon="alert" label="Failed runs" value={failed.toLocaleString()} tone={failed > 0 ? "warn" : "neutral"} detail={runs > 0 ? `${Math.round(failed / runs * 100)}% of runs` : undefined} loading={loading} />
   </div>;
 }
 
-/** A small change badge under a table value, when there is something to compare with. */
-function CellChange({ current, previous, better }: { current: number | null | undefined; previous: number | null | undefined; better: "lower" | "higher" }) {
-  const change = metricChange(current, previous, better);
-  if (change.direction === "none" || change.direction === "same") return null;
-  return <small className="ck-table-sub"><ChangeBadge change={change} /></small>;
-}
-
-function GroupTable({ groups, previous, label, kind, showShape, currency, fx }: { groups: RunGroup[]; previous?: Map<string, RunGroup> | null; label: string; kind: GroupKind; showShape: boolean; currency: string; fx?: ReportingFx | null }) {
+function GroupTable({ groups, label, kind, showShape, currency, fx }: { groups: RunGroup[]; label: string; kind: GroupKind; showShape: boolean; currency: string; fx?: ReportingFx | null }) {
   return <div className="ck-table-wrap"><table className="ck-table">
     <thead><tr><th>{label}</th><th className="numeric">Runs</th><th className="numeric">Spend</th><th className="numeric">Per run</th><th className="numeric hide-mobile" title="Spend over runs that succeeded, failed runs included">Per success</th>{showShape && <th className="numeric hide-mobile">Steps</th>}{showShape && <th className="numeric hide-mobile">Tool calls</th>}<th className="numeric hide-mobile">p95</th><th className="numeric hide-mobile" title="Share of input tokens read from cache">Cache</th><th className="numeric">Failed</th><th className="hide-mobile">Last run</th></tr></thead>
     <tbody>{groups.map((group) => <tr key={group.name} className="ck-row-link">
       <td className="primary-cell"><Link className="ck-table-link ck-stretch-link" to={ownerHref(kind, group.name)}>{group.name}</Link></td>
       <td className="numeric">{group.runs.toLocaleString()}</td>
       <td className="numeric">{money(group.cost, currency, fx)}{group.partlyPricedRuns > 0 && <small className="ck-table-sub">{group.partlyPricedRuns} partly priced</small>}</td>
-      <td className="numeric">{money(group.costPerRun, currency, fx)}{previous && <CellChange current={group.costPerRun} previous={previous.get(group.name)?.costPerRun} better="lower" />}</td>
+      <td className="numeric">{money(group.costPerRun, currency, fx)}</td>
       <td className="numeric hide-mobile">{money(group.costPerSuccess ?? null, currency, fx)}</td>
       {showShape && <td className="numeric hide-mobile">{group.avgSteps == null ? "—" : group.avgSteps.toFixed(1)}</td>}
       {showShape && <td className="numeric hide-mobile">{group.avgTools == null ? "—" : group.avgTools.toFixed(1)}</td>}
-      <td className="numeric hide-mobile">{group.p95Ms == null ? "—" : formatDuration(group.p95Ms)}{previous && <CellChange current={group.p95Ms} previous={previous.get(group.name)?.p95Ms} better="lower" />}</td>
+      <td className="numeric hide-mobile">{group.p95Ms == null ? "—" : formatDuration(group.p95Ms)}</td>
       <td className="numeric hide-mobile">{formatHitRate(group.usage?.cacheHitRate)}</td>
       <td className="numeric">{group.failedRuns > 0 ? <StatusPill tone="warn">{failureRate(group)}</StatusPill> : "0%"}</td>
       <td className="hide-mobile">{group.lastRun ? formatDateTime(group.lastRun) : "—"}</td>
@@ -113,16 +90,12 @@ function ModelsView({ kind, projectId, scope, scopeKey, currency, fx }: { kind: 
 }
 
 function RunGroupsPage({ kind }: { kind: GroupKind }) {
-  const { projectId, scope, scopeKey, currency, fx, toolbar, comparison } = useInsightScope({ compare: true });
+  const { projectId, scope, scopeKey, currency, fx, toolbar } = useInsightScope();
   const [params, setParams] = useSearchParams();
   const view = (VIEWS.find((item) => item.id === params.get("view"))?.id ?? "runs") as View;
-  const loadGroups = (target: typeof scope) => kind === "agent"
-    ? getAgents(projectId!, target).then((result) => result.agents)
-    : getWorkflows(projectId!, target).then((result) => result.workflows);
-  const { data, error, loading, status: liveStatus, updatedAt, refresh } = useScopedLoad(projectId ? `${kind}|${scopeKey}` : null, () => loadGroups(scope));
-  const before = useScopedLoad(projectId && comparison ? `${kind}|${scopeKey}|vs|${comparison.key}` : null, () => loadGroups(comparison!.scope));
-  const previous = comparison ? before.data ?? null : null;
-  const previousByName = previous ? new Map(previous.map((group) => [group.name, group])) : null;
+  const { data, error, loading, status: liveStatus, updatedAt, refresh } = useScopedLoad(projectId ? `${kind}|${scopeKey}` : null, () => kind === "agent"
+    ? getAgents(projectId!, scope).then((result) => result.agents)
+    : getWorkflows(projectId!, scope).then((result) => result.workflows));
   const groups = data ?? [];
   const title = kind === "agent" ? "Agents" : "Workflows";
   const setView = (next: View) => setParams((current) => { if (next === "runs") current.delete("view"); else current.set("view", next); return current; });
@@ -131,10 +104,10 @@ function RunGroupsPage({ kind }: { kind: GroupKind }) {
     <PageHeader title={title} actions={headerAction} />
     <div className="ck-tabs ck-page-tabs" role="tablist" aria-label={`${title} views`}>{VIEWS.map((item) => <button key={item.id} className={`ck-tab ${view === item.id ? "active" : ""}`} role="tab" aria-selected={view === item.id} type="button" onClick={() => setView(item.id)}>{item.label}</button>)}</div>
     {view === "runs" && <div className="ck-view">
-      <Totals groups={groups} previous={previous} comparison={comparison} currency={currency} fx={fx} loading={loading && !data} />
+      <Totals groups={groups} currency={currency} fx={fx} loading={loading && !data} />
       <Panel>{error && !data ? <EmptyPanel title={`Couldn’t load ${title.toLowerCase()}`} body={error} /> : loading && !data ? <LoadingRows count={6} columns={6} /> : groups.length === 0
         ? <EmptyPanel illustration="first-light" title={kind === "agent" ? "No agent runs yet" : "No workflows yet"} body={kind === "agent" ? "Wrap a run in CostKey.agent() to see it here." : "Name a run with startTrace to see it here."} />
-        : <GroupTable groups={groups} previous={previousByName} label={kind === "agent" ? "Agent" : "Workflow"} kind={kind} showShape={kind === "agent"} currency={currency} fx={fx} />}</Panel>
+        : <GroupTable groups={groups} label={kind === "agent" ? "Agent" : "Workflow"} kind={kind} showShape={kind === "agent"} currency={currency} fx={fx} />}</Panel>
     </div>}
     {view !== "runs" && projectId && <Panel key={view} className="ck-view">
       {view === "models" && <ModelsView kind={kind} projectId={projectId} scope={scope} scopeKey={scopeKey} currency={currency} fx={fx} />}
@@ -256,18 +229,10 @@ function UsersPanel({ users, total, currency, fx }: { users: NonNullable<AgentDe
 
 function GroupDetailPage({ kind }: { kind: GroupKind }) {
   const { name = "" } = useParams();
-  const { projectId, scope, scopeKey, currency, fx, toolbar, comparison } = useInsightScope({ compare: true });
+  const { projectId, scope, scopeKey, currency, fx, toolbar } = useInsightScope();
   const [params, setParams] = useSearchParams();
   const runsHold = usePointerHold();
-  const loadDetail = kind === "agent" ? getAgentDetail : getWorkflowDetail;
-  const { data, error, loading, status: liveStatus, updatedAt, refresh } = useScopedLoad(projectId && name ? `${kind}|${name}|${scopeKey}` : null, () => loadDetail(projectId!, name, scope), { shouldDefer: runsHold.held });
-  const before = useScopedLoad(projectId && name && comparison ? `${kind}|${name}|${scopeKey}|vs|${comparison.key}` : null, () => loadDetail(projectId!, name, comparison!.scope));
-  const then = comparison ? before.data?.agent ?? null : null;
-  const compareLoading = Boolean(comparison) && !before.data;
-  const line = (current: number | null | undefined, previousValue: number | null | undefined, better: "lower" | "higher" | null, format: (value: number) => string, opts: { rate?: boolean; total?: boolean } = {}) => comparison
-    ? <CompareLine current={current} previous={previousValue} better={better} rate={opts.rate} format={format} against={comparison.against} hideChange={opts.total && !comparison.totalsComparable} loading={compareLoading} />
-    : undefined;
-  const failureRate = (group: RunGroup | null | undefined) => group && group.runs > 0 ? group.failedRuns / group.runs : null;
+  const { data, error, loading, status: liveStatus, updatedAt, refresh } = useScopedLoad(projectId && name ? `${kind}|${name}|${scopeKey}` : null, () => (kind === "agent" ? getAgentDetail : getWorkflowDetail)(projectId!, name, scope), { shouldDefer: runsHold.held });
   const freshRuns = useNewIds(data?.runs.map((run) => run.traceId) ?? []);
   const agent = data?.agent;
   const openRun = params.get("run");
@@ -293,14 +258,11 @@ function GroupDetailPage({ kind }: { kind: GroupKind }) {
     <PageHeader title={name} actions={<><LiveStatus status={liveStatus} updatedAt={updatedAt} onRefresh={refresh} />{toolbar}</>} />
     {error && !data ? <Panel><EmptyPanel title={kind === "agent" ? "Couldn’t load this agent" : "Couldn’t load this workflow"} body={error} /></Panel> : <>
       <div className="ck-metric-grid ck-metric-grid-5">
-        <MetricCard icon="trace" label="Runs" value={(agent?.runs ?? 0).toLocaleString()} detail={agent && (agent.failedRuns > 0 || (agent.retriedRuns ?? 0) > 0) ? [agent.failedRuns > 0 ? `${agent.failedRuns} failed` : null, agent.retriedRuns ? `${agent.retriedRuns} retried` : null].filter(Boolean).join(" · ") : undefined} loading={loading && !data}
-          compare={comparison && then && failureRate(agent) != null && failureRate(then) != null && (agent!.failedRuns > 0 || then.failedRuns > 0)
-            ? line(failureRate(agent), failureRate(then), "lower", (value) => `${percentText(value)} failed`, { rate: true })
-            : line(agent?.runs ?? 0, then?.runs, null, (value) => value.toLocaleString(), { total: true })} />
-        <MetricCard icon="cost" label="Per run" value={money(agent?.costPerRun, currency, fx)} detail={agent ? `${money(agent.cost, currency, fx)} total` : undefined} loading={loading && !data} compare={line(agent?.costPerRun, then?.costPerRun, "lower", (value) => money(value, currency, fx))} />
-        <MetricCard icon="cost" label="Per successful run" value={money(agent?.costPerSuccess ?? null, currency, fx)} detail={agent && agent.runs > 0 ? `${(agent.runs - agent.failedRuns).toLocaleString()} of ${agent.runs.toLocaleString()} succeeded` : undefined} loading={loading && !data} compare={line(agent?.costPerSuccess, then?.costPerSuccess, "lower", (value) => money(value, currency, fx))} />
-        <MetricCard icon="clock" label="p95 run time" value={agent?.p95Ms == null ? "—" : formatDuration(agent.p95Ms)} detail={agent?.avgSteps != null ? [agent.avgSteps > 0 ? `${agent.avgSteps.toFixed(1)} steps` : null, (agent.avgTools ?? 0) > 0 ? `${(agent.avgTools ?? 0).toFixed(1)} tools per run` : null].filter(Boolean).join(" · ") || undefined : undefined} loading={loading && !data} compare={line(agent?.p95Ms, then?.p95Ms, "lower", formatDuration)} />
-        <MetricCard icon="model" label="Cache hit rate" value={formatHitRate(usage?.cacheHitRate)} detail={cacheDetail(usage, currency, fx)} loading={loading && !data} compare={line(usage?.cacheHitRate, then?.usage?.cacheHitRate, "higher", (value) => formatHitRate(value), { rate: true })} />
+        <MetricCard icon="trace" label="Runs" value={(agent?.runs ?? 0).toLocaleString()} detail={agent && (agent.failedRuns > 0 || (agent.retriedRuns ?? 0) > 0) ? [agent.failedRuns > 0 ? `${agent.failedRuns} failed` : null, agent.retriedRuns ? `${agent.retriedRuns} retried` : null].filter(Boolean).join(" · ") : undefined} loading={loading && !data} />
+        <MetricCard icon="cost" label="Per run" value={money(agent?.costPerRun, currency, fx)} detail={agent ? `${money(agent.cost, currency, fx)} total` : undefined} loading={loading && !data} />
+        <MetricCard icon="cost" label="Per successful run" value={money(agent?.costPerSuccess ?? null, currency, fx)} detail={agent && agent.runs > 0 ? `${(agent.runs - agent.failedRuns).toLocaleString()} of ${agent.runs.toLocaleString()} succeeded` : undefined} loading={loading && !data} />
+        <MetricCard icon="clock" label="p95 run time" value={agent?.p95Ms == null ? "—" : formatDuration(agent.p95Ms)} detail={agent?.avgSteps != null ? [agent.avgSteps > 0 ? `${agent.avgSteps.toFixed(1)} steps` : null, (agent.avgTools ?? 0) > 0 ? `${(agent.avgTools ?? 0).toFixed(1)} tools per run` : null].filter(Boolean).join(" · ") || undefined : undefined} loading={loading && !data} />
+        <MetricCard icon="model" label="Cache hit rate" value={formatHitRate(usage?.cacheHitRate)} detail={cacheDetail(usage, currency, fx)} loading={loading && !data} />
       </div>
       <ScopeBudgetCard projectId={projectId} dimension={kind} name={name} />
       {openRun && data && !runListed && projectId && <Panel title="Run" className="ck-run-panel"><InlineRun projectId={projectId} traceId={openRun} currency={currency} fx={fx} initialCallId={callId} onCallChange={changeCall} /></Panel>}

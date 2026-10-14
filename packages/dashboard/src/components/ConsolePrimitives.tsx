@@ -1,7 +1,9 @@
 import { appUrl } from "../basePath";
 import type { ReactNode } from "react";
-import { ArrowDown, ArrowUp, GitCompareArrows, Minus, RefreshCw, X } from "lucide-react";
-import { COMPARE_OPTIONS, metricChange, type CompareTo, type MetricChange } from "./compareScope";
+import { ArrowDown, ArrowUp, Minus, RefreshCw, X } from "lucide-react";
+import type { Release } from "../api";
+import { TimeRangePicker } from "./TimeRangePicker";
+import type { ConsolePeriod } from "./consoleFormatters";
 import { PrototypeIcon, type PrototypeIconName } from "./PrototypeIcon";
 
 export type Tone = "good" | "warn" | "critical" | "info" | "neutral";
@@ -49,27 +51,21 @@ export function PageHeader({
   );
 }
 
-export type Period = "1h" | "today" | "24h" | "mtd" | "7d" | "30d" | "custom";
+export type Period = ConsolePeriod;
 
 /**
  * Period and environment as compact pills for the page header. There is no
  * filter bar: pages put this in their header actions.
  */
-const PERIOD_LABELS: Record<Period, string> = {
-  "1h": "Last hour",
-  today: "Today",
-  "24h": "Last 24 hours",
-  "7d": "Last 7 days",
-  "30d": "Last 30 days",
-  mtd: "Month to date",
-  custom: "Custom range",
-};
-const DEFAULT_PERIODS: Period[] = ["mtd", "7d", "30d", "24h", "custom"];
+const DEFAULT_PERIODS: Period[] = ["24h", "7d", "30d", "mtd"];
 
 export function ScopeToolbar({
   period,
   onPeriodChange,
   periods = DEFAULT_PERIODS,
+  customRelative = false,
+  deploy,
+  timezone,
   environment = "all",
   onEnvironmentChange,
   environmentOptions,
@@ -77,14 +73,17 @@ export function ScopeToolbar({
   customTo,
   customTime = false,
   onCustomRangeChange,
-  compare,
   chips,
   right,
 }: {
   period: Period;
   onPeriodChange: (period: Period) => void;
-  /** The periods offered, in order. */
+  /** The time picker's quick picks, in order. */
   periods?: Period[];
+  /** Offer "last N minutes/hours/days/weeks". */
+  customRelative?: boolean;
+  /** Offer "since the last deploy". */
+  deploy?: { release: Release | null; loaded: boolean };
   environment?: string;
   onEnvironmentChange?: (environment: string) => void;
   environmentOptions?: Array<{ value: string; label: string }>;
@@ -93,30 +92,27 @@ export function ScopeToolbar({
   /** Custom ranges pick a time of day as well as a day (datetime-local values). */
   customTime?: boolean;
   onCustomRangeChange?: (from: string, to: string) => void;
-  /** A Compare control, and anything that goes with the comparison (a deploy picker). */
-  compare?: { value: CompareTo; onChange: (value: CompareTo) => void; deployAvailable?: boolean; detail?: ReactNode };
   currency?: string;
   currencyNote?: string;
-  timezone?: string;
+  timezone?: string | null;
   chips?: ReactNode;
   right?: ReactNode;
 }) {
   const environments = environmentOptions ?? [{ value: "all", label: "All environments" }];
   const showEnvironment = Boolean(onEnvironmentChange) && (environments.length > 1 || environment !== "all");
-  const inputType = customTime ? "datetime-local" : "date";
-  const trim = (value: string | undefined) => customTime ? value ?? "" : value?.slice(0, 10) ?? "";
   return (
     <div className="ck-scope-pills">
       {chips}
       {showEnvironment && <span className="ck-pill-select"><select aria-label="Environment" value={environment} onChange={(event) => onEnvironmentChange?.(event.target.value)}>{environments.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select><PrototypeIcon name="down" size={12} /></span>}
-      <span className="ck-pill-select"><select aria-label="Period" value={period} onChange={(event) => onPeriodChange(event.target.value as Period)}>
-        {(periods.includes(period) ? periods : [...periods, period]).map((value) => <option key={value} value={value}>{PERIOD_LABELS[value]}</option>)}
-      </select><PrototypeIcon name="down" size={12} /></span>
-      {period === "custom" && onCustomRangeChange && <span className="ck-scope-dates"><input aria-label="From" type={inputType} value={trim(customFrom)} max={trim(customTo) || undefined} onChange={(event) => onCustomRangeChange(event.target.value, trim(customTo) || event.target.value)} /><span aria-hidden="true">–</span><input aria-label="To" type={inputType} value={trim(customTo)} min={trim(customFrom) || undefined} onChange={(event) => onCustomRangeChange(trim(customFrom) || event.target.value, event.target.value)} /></span>}
-      {compare && <span className={`ck-pill-select ck-compare-pill ${compare.value !== "off" ? "is-active" : ""}`}><GitCompareArrows size={13} aria-hidden="true" /><select aria-label="Compare" value={compare.value} onChange={(event) => compare.onChange(event.target.value as CompareTo)}>
-        {COMPARE_OPTIONS.map((option) => <option key={option.value} value={option.value} disabled={option.value === "deploy" && compare.deployAvailable === false}>{option.value === "deploy" && compare.deployAvailable === false ? "vs previous deploy (no deploys yet)" : option.label}</option>)}
-      </select><PrototypeIcon name="down" size={12} /></span>}
-      {compare?.detail}
+      <TimeRangePicker
+        period={period}
+        onPeriodChange={onPeriodChange}
+        quick={periods}
+        customRelative={customRelative}
+        deploy={deploy}
+        timezone={timezone}
+        absolute={onCustomRangeChange ? { from: customFrom, to: customTo, withTime: customTime, onApply: onCustomRangeChange } : undefined}
+      />
       {right}
     </div>
   );
@@ -160,7 +156,6 @@ export function MetricCard({
   tone = "neutral",
   loading = false,
   icon,
-  compare,
 }: {
   label: string;
   value: string;
@@ -168,50 +163,14 @@ export function MetricCard({
   tone?: Tone;
   loading?: boolean;
   icon?: PrototypeIconName;
-  /** How the value moved against the comparison period (a CompareLine). */
-  compare?: ReactNode;
 }) {
   return (
     <article className="ck-metric-card">
       <div className="ck-metric-label"><span>{label}</span>{icon && <PrototypeIcon name={icon} size={16} />}</div>
       {loading ? <div className="ck-skeleton ck-skeleton-metric" /> : <div className={`ck-metric-value ck-tone-${tone}`}>{value}</div>}
       {detail && <div className="ck-metric-detail">{detail}</div>}
-      {!loading && compare}
     </article>
   );
-}
-
-/** The change as a small badge: an arrow and the amount, green when better, amber when worse. */
-export function ChangeBadge({ change }: { change: MetricChange }) {
-  if (change.direction === "none") return null;
-  if (change.direction === "same") return <span className="ck-change ck-change-flat">Same</span>;
-  return <span className={`ck-change ck-change-${change.tone}`}>
-    {change.direction === "up" ? <ArrowUp size={11} strokeWidth={2.5} aria-hidden="true" /> : <ArrowDown size={11} strokeWidth={2.5} aria-hidden="true" />}
-    <span className="sr-only">{change.direction === "up" ? "Up" : "Down"} </span>{change.text}
-  </span>;
-}
-
-/**
- * Under a number: how it moved and what it was. `against` names the
- * comparison ("the day before"); `hideChange` keeps the old value but drops
- * the badge, for totals over windows of different lengths.
- */
-export function CompareLine({ current, previous, better, rate = false, format, against, hideChange = false, loading = false }: {
-  current: number | null | undefined;
-  previous: number | null | undefined;
-  better: "lower" | "higher" | null;
-  rate?: boolean;
-  format: (value: number) => string;
-  against: ReactNode;
-  hideChange?: boolean;
-  loading?: boolean;
-}) {
-  if (loading) return <div className="ck-compare-line"><span className="ck-skeleton ck-skeleton-inline" /></div>;
-  const change = hideChange ? null : metricChange(current, previous, better, rate);
-  return <div className="ck-compare-line">
-    {change && <ChangeBadge change={change} />}
-    <span className="ck-compare-was">vs {previous == null ? "none" : format(previous)} {against}</span>
-  </div>;
 }
 
 /** Status pill: icon and words, never color alone. Pass `icon={false}` for a plain label. */

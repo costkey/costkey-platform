@@ -88,7 +88,10 @@ export function createPricingRouter(pool: pg.Pool): Router {
     lastManualSync = Date.now();
     try {
       await ready();
-      res.json(await syncPriceCatalog(pool, { trigger: "manual" }));
+      const result = await syncPriceCatalog(pool, { trigger: "manual" });
+      // Asking for a refresh prices every call still waiting, not only when a price changed.
+      if (result.repriced === 0) result.repriced = await repriceUnpricedEvents(pool);
+      res.json(result);
     } catch (error) {
       console.error("[costkey] Manual price sync error:", error);
       res.status(500).json({ error: "Couldn't refresh prices" });
@@ -123,6 +126,8 @@ export function createPricingRouter(pool: pg.Pool): Router {
          ) u ON TRUE
          WHERE e.project_id = $1 AND e.cost_usd IS NULL
            AND COALESCE(e.event_type, 'call') = 'call'
+           -- A failed call without a price cost nothing; it isn't unpriced.
+           AND NOT (COALESCE(e.lifecycle_state, '') IN ('failed', 'cancelled') OR COALESCE(e.status_code, 200) >= 400)
            AND e.timestamp >= NOW() - ($2::int * INTERVAL '1 day')
          GROUP BY 1, 2
          ORDER BY calls DESC
@@ -130,17 +135,17 @@ export function createPricingRouter(pool: pg.Pool): Router {
         [req.params["projectId"], days],
       );
       res.json({
-        models: result.rows.map((row) => ({
-          provider: row.provider,
-          model: row.model,
-          calls: row.calls,
-          firstSeen: row.first_seen,
-          lastSeen: row.last_seen,
-          units: [...new Set([
+        models: result.rows.map((row) => {
+          const units = [...new Set([
             ...(row.has_tokens ? ["tokens"] : []),
             ...((row.unit_sets ?? []) as string[]).flatMap((set) => set.split(",")).filter((unit) => unit !== "searchResults"),
-          ])],
-        })),
+          ])];
+          // A model the catalog prices has no cost only when its calls reported no usage,
+          // or until the next reprice; only a model the catalog doesn't know needs a price.
+          const known = row.model ? getPriceCatalog().resolve({ provider: String(row.provider), model: String(row.model) }) : null;
+          const reason = !known ? "no_price" : units.length === 0 ? "no_usage" : "pending";
+          return { provider: row.provider, model: row.model, calls: row.calls, firstSeen: row.first_seen, lastSeen: row.last_seen, units, reason };
+        }),
       });
     } catch (error) {
       console.error("[costkey] Unpriced models error:", error);

@@ -3,7 +3,7 @@ import type pg from "pg";
 import { requireAuth } from "./auth.js";
 import { orgScope } from "./middleware.js";
 import { workspaceTimezone } from "./quality-api.js";
-import { BILLED_UNITS, boardBucket, RUNS_CTE, SCOPE_FILTER, scopeParam } from "./insights-api.js";
+import { BILLED_UNITS, boardBucket, KNOWN_COST_SQL, RUNS_CTE, SCOPE_FILTER, scopeParam } from "./insights-api.js";
 import { getPriceCatalog } from "./price-catalog/catalog.js";
 import type { PriceRates } from "./price-catalog/types.js";
 import {
@@ -136,7 +136,7 @@ export async function loadModelDetail(pool: pg.Pool, projectId: string, query: M
          FROM events e WHERE ${MODEL_CALLS}
        )
        SELECT COUNT(*)::int AS calls, COUNT(*) FILTER (WHERE failed)::int AS failed_calls,
-              SUM(cost_usd) AS cost, COUNT(cost_usd)::int AS priced_calls,
+              ${KNOWN_COST_SQL("cost_usd", "failed")} AS cost, COUNT(cost_usd)::int AS priced_calls,
               -- A failed call without a price cost nothing; it isn't unpriced.
               COUNT(*) FILTER (WHERE cost_usd IS NULL AND NOT failed)::int AS unpriced_calls,
               percentile_cont(0.5) WITHIN GROUP (ORDER BY duration_ms) AS p50_ms,

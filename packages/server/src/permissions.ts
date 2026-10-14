@@ -6,6 +6,8 @@ export interface AuthPrincipal {
   id: string;
   orgId: string;
   role: string;
+  /** Set when a personal access token limits the request to some projects. */
+  tokenProjectIds?: string[] | null;
 }
 
 const RESTRICTED_KEYS = new Set([
@@ -156,6 +158,7 @@ export async function canAccessProject(
   user: AuthPrincipal,
   projectId: string,
 ): Promise<boolean> {
+  if (user.tokenProjectIds && !user.tokenProjectIds.includes(projectId)) return false;
   const role = normalizeRole(user.role);
   const result = await pool.query(
     `SELECT p.id
@@ -192,7 +195,8 @@ export async function listAccessibleProjects(
      ORDER BY p.created_at ASC, p.id ASC`,
     [user.orgId, role, user.id],
   );
-  return result.rows.map((row: Record<string, unknown>) => {
+  const tokenProjects = user.tokenProjectIds ? new Set(user.tokenProjectIds) : null;
+  return result.rows.filter((row: Record<string, unknown>) => !tokenProjects || tokenProjects.has(String(row.id))).map((row: Record<string, unknown>) => {
     const project = { ...row };
     if (!options.includeAuthKey) delete project.auth_key;
     return project;

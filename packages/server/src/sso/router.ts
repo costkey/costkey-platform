@@ -19,6 +19,7 @@ import { constantTimeEqual, decodeJwt, TokenError } from "./jwt.js";
 import { authorizationUrl, completeLogin, newFlow, OidcError } from "./oidc.js";
 import { findOrProvisionSsoUser, SsoAccessError } from "./provision.js";
 import { appPath, cookiePath, publicAppUrl } from "./urls.js";
+import { isApiTokenHeader } from "../api-tokens.js";
 
 /** What the console needs to draw its sign-in page. */
 export interface AuthConfigResponse {
@@ -101,6 +102,9 @@ export function ssoSessionMiddleware(pool: pg.Pool) {
     if (settings.mode !== "iap") { next(); return; }
     const ssoReq = req as SsoRequest;
     if (isSdkPath(req.path) || NO_IDENTITY_PATHS.some((pattern) => pattern.test(req.path))) { next(); return; }
+    // A personal access token stands on its own: authMiddleware has already
+    // accepted or refused it, and an IAP identity must not widen it.
+    if (isApiTokenHeader(req.headers.authorization)) { next(); return; }
 
     const cookieSession = Boolean(req.cookies?.["ck_token"]);
     const bearer = !cookieSession && isCliBearer(req.headers.authorization);
@@ -125,6 +129,7 @@ export function ssoSessionMiddleware(pool: pg.Pool) {
       const user = await findOrProvisionSsoUser(pool, { email: identity.email }, settings.defaultRole);
       if (user.outcome !== "existing") console.log(`[costkey] IAP sign-in provisioned ${user.email} as ${user.role} (${user.outcome})`);
       ssoReq.user = { id: user.id, email: user.email, name: user.name, orgId: user.orgId, role: user.role };
+      (req as Request & { authKind?: string }).authKind = "session";
       ssoReq.ssoStatus = "signed_in";
       issueSessionCookie(res, user);
     } catch (error) {

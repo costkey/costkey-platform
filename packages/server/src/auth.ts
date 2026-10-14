@@ -16,6 +16,7 @@ import {
   roleCanManageWorkspace,
 } from "./permissions.js";
 import { appPath, cookiePath, projectDsn, publicAppUrl, secureCookies } from "./public-url.js";
+import { apiTokenFromHeader, apiTokenRouteAllowed, authenticateApiToken, projectIdFromPath } from "./api-tokens.js";
 
 async function sendWelcomeEmail(to: string, name: string, projectId: string): Promise<void> {
   if (!process.env["RESEND_API_KEY"]
@@ -995,10 +996,40 @@ export function authMiddleware(pool?: pg.Pool) {
   const authPool = pool ?? getPool();
   const db = pool ? drizzle(authPool) : getDb();
 
-  return async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
-    const token =
-      req.cookies?.["ck_token"] ??
-      req.headers.authorization?.replace("Bearer ", "");
+  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    // A personal access token is read-only and only ever authenticates the
+    // routes it is allowed to use; a cookie on the same request is ignored.
+    const apiToken = apiTokenFromHeader(req.headers.authorization);
+    if (apiToken) {
+      if (!apiTokenRouteAllowed(req.method, req.path)) {
+        res.status(403).json({ error: "This token is read-only. It can read projects and use the MCP endpoint." });
+        return;
+      }
+      try {
+        const resolved = await authenticateApiToken(authPool, apiToken);
+        if (!resolved) {
+          res.status(401).json({ error: "Invalid, expired or revoked token" });
+          return;
+        }
+        const projectId = projectIdFromPath(req.path);
+        if (projectId && resolved.token.projectIds && !resolved.token.projectIds.includes(projectId)) {
+          res.status(404).json({ error: "Project not found" });
+          return;
+        }
+        (req as any).user = resolved.user;
+        (req as any).apiToken = resolved.token;
+        (req as any).authKind = "token";
+      } catch (error) {
+        console.error("[costkey] Token auth error:", error);
+        res.status(500).json({ error: "Internal server error" });
+        return;
+      }
+      next();
+      return;
+    }
+
+    const cookieToken = req.cookies?.["ck_token"];
+    const token = cookieToken ?? req.headers.authorization?.replace("Bearer ", "");
 
     if (!token) { next(); return; }
 
@@ -1010,6 +1041,7 @@ export function authMiddleware(pool?: pg.Pool) {
 
       if (result.length > 0) {
         (req as any).user = { ...result[0], role: normalizeRole(result[0].role) } as AuthUser;
+        (req as any).authKind = cookieToken ? "session" : "bearer";
       }
     } catch { /* invalid token */ }
 

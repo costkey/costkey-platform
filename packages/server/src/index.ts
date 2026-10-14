@@ -37,6 +37,7 @@ import { startQualityCheckWorker } from "./quality-checks/worker.js";
 import { startEmptyRunSweeper } from "./empty-runs.js";
 import { seedDemoQualityChecks } from "./quality-checks/seed.js";
 import { basePath } from "./public-url.js";
+import { apiTokenGuards, createApiTokensRouter } from "./api-tokens.js";
 
 // Set by the image build from the release tag; "dev" when run from source.
 const SERVER_VERSION = process.env["COSTKEY_VERSION"] || "dev";
@@ -241,6 +242,8 @@ export function createApp(options: AppOptions = {}): Express & AppRuntime {
   app.use(authMiddleware(pool));
   // Single sign-on: in IAP mode the signed IAP header decides who this is.
   app.use(ssoSessionMiddleware(pool));
+  // Personal access tokens: a per-token read limit, and no ingest secrets.
+  app.use(apiTokenGuards());
 
   app.use("/auth/login", rateLimit({ windowMs: 15 * 60 * 1000, max: 20 }));
   app.use("/auth/signup", rateLimit({ windowMs: 60 * 60 * 1000, max: 10 }));
@@ -271,6 +274,8 @@ export function createApp(options: AppOptions = {}): Express & AppRuntime {
   // They are safe to import because admission has no optional email client;
   // the legacy budget/API routers remain lazy until database initialization.
   app.use(createSdkAdmissionRouter(pool));
+  // Coding agents: read-only tokens.
+  app.use(createApiTokensRouter(pool));
   app.use(createSdkBudgetCompatibilityRouter(pool));
   // Single sign-on: /auth/config, OIDC routes, and the password-route guard
   // must precede the password auth router.

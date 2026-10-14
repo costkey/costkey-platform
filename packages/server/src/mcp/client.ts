@@ -19,14 +19,14 @@ export interface RestClient {
   get<T = Record<string, unknown>>(path: string, query?: Record<string, QueryValue>): Promise<T>;
 }
 
-/** The address this request arrived on, so the loopback call reaches this same server. */
+/**
+ * This same server, over loopback on the port the request arrived on. Not the
+ * request's local address: behind Cloud Run and other proxies that is the
+ * sandbox's interface, which the container can't connect back to.
+ */
 export function loopbackOrigin(req: Request): string {
-  const socket = req.socket;
-  let host = socket.localAddress ?? "127.0.0.1";
-  if (host.startsWith("::ffff:")) host = host.slice(7);
-  if (host === "::" || host === "0.0.0.0") host = "127.0.0.1";
-  if (host.includes(":")) host = `[${host}]`;
-  return `http://${host}:${socket.localPort}`;
+  const port = req.socket.localPort ?? Number(process.env["PORT"] ?? 4100);
+  return `http://127.0.0.1:${port}`;
 }
 
 export function queryString(query: Record<string, QueryValue> = {}): string {

@@ -847,10 +847,11 @@ function wrap<A>(ctx: ToolContext, run: (ctx: ToolContext, args: A) => Promise<s
         if (error.status === 404) return text(`Not found: ${error.message}. Check the id, or that it belongs to a project this token can read.`, true);
         if (error.status === 403) return text(`Not allowed: ${error.message}.`, true);
         if (error.status === 429) return text("Rate limited: too many requests with this token. Wait a minute and try again.", true);
-        if (error.status === 401) return text("This token is invalid, expired or revoked. Create a new one in Settings, Coding agents.", true);
+        if (error.status === 401) return text("This token is invalid, expired or revoked. Create a new one in Settings, MCP & coding agents.", true);
         return text(`CostKey returned an error (${error.status}): ${error.message}`, true);
       }
-      console.error("[costkey] MCP tool error:", error);
+      // "fetch failed" hides why in `cause` (refused, unreachable, timed out).
+      console.error("[costkey] MCP tool error:", error, (error as { cause?: unknown })?.cause ?? "");
       return text("CostKey couldn't answer that. Try again.", true);
     }
   };

@@ -186,3 +186,10 @@ test("a run tree nests calls under their spans and marks where it first failed",
   assert.equal(roots[1]!.unpriced, 1);
   assert.equal(firstFailure(roots)?.id, "c2", "the agent errored because its tool's call did");
 });
+
+test("tools loop back to this server on 127.0.0.1, never the request's local address", async () => {
+  const { loopbackOrigin } = await import("../mcp/client.js");
+  // Behind Cloud Run the request arrives on the sandbox interface, which can't be dialled back.
+  const req = { socket: { localAddress: "169.254.8.1", localPort: 4100 } } as never;
+  assert.equal(loopbackOrigin(req), "http://127.0.0.1:4100");
+});

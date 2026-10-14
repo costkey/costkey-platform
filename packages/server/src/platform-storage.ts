@@ -484,6 +484,24 @@ export async function ensurePlatformSchema(pool: pg.Pool): Promise<void> {
     INSERT INTO finding_thresholds(project_id)
       SELECT id FROM projects ON CONFLICT (project_id) DO NOTHING;
 
+    -- Personal access tokens for coding agents (MCP). Only a SHA-256 hash of
+    -- the token is stored; the token itself is shown once, at creation.
+    CREATE TABLE IF NOT EXISTS api_tokens (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      token_hash TEXT NOT NULL UNIQUE,
+      token_hint TEXT,
+      scopes TEXT[] NOT NULL DEFAULT ARRAY['read']::text[],
+      project_ids TEXT[],
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      last_used_at TIMESTAMPTZ,
+      expires_at TIMESTAMPTZ,
+      revoked_at TIMESTAMPTZ
+    );
+    CREATE INDEX IF NOT EXISTS idx_api_tokens_user ON api_tokens(user_id, created_at DESC);
+
     ALTER TABLE alerts ADD COLUMN IF NOT EXISTS webhook_secret_ciphertext TEXT;
     ALTER TABLE team_invites ADD COLUMN IF NOT EXISTS project_ids TEXT[];
     ALTER TABLE projects ADD COLUMN IF NOT EXISTS description TEXT;

@@ -11,6 +11,10 @@ export interface ChargeScope {
   environment?: ScopeValues | null;
   feature?: ScopeValues | null;
   function?: ScopeValues | null;
+  /** A source file: the exact recorded path, or a path it ends with ("src/agents/summarize.ts"). */
+  file?: ScopeValues | null;
+  /** A bare function name ("summarize", or a method "Summarizer.run"). */
+  functionName?: ScopeValues | null;
   customer?: ScopeValues | null;
   service?: ScopeValues | null;
   release?: ScopeValues | null;
@@ -206,6 +210,41 @@ function values(item: ScopeValues | null | undefined): string[] {
   return typeof item === "string" && item.length > 0 ? [item] : [];
 }
 
+/** Escape LIKE wildcards so a path matches literally. */
+function likeLiteral(value: string): string {
+  return value.replace(/[\\%_]/g, (char) => `\\${char}`);
+}
+
+/** A path as typed by a person or an agent: no leading "./" or "/". */
+export function relativeFile(value: string): string {
+  return value.trim().replace(/\\/g, "/").replace(/^(\.\/)+/, "").replace(/^\/+/, "");
+}
+
+/**
+ * Source-file filter: the recorded path equals the value, or ends with it at
+ * a path boundary, so a repo-relative path matches an absolute stack path.
+ */
+function addFileValues(params: unknown[], expression: string, item: ScopeValues | null | undefined, clauses: string[]): void {
+  const items = values(item).map(relativeFile).filter(Boolean);
+  if (items.length === 0) return;
+  params.push(items);
+  const exact = params.length;
+  params.push(items.map((file) => `%/${likeLiteral(file)}`));
+  const suffix = params.length;
+  clauses.push(`(${expression} = ANY($${exact}::text[]) OR ${expression} LIKE ANY($${suffix}::text[]))`);
+}
+
+/** A bare function name, or the method of that name on any class. */
+function addFunctionNameValues(params: unknown[], expression: string, item: ScopeValues | null | undefined, clauses: string[]): void {
+  const items = values(item).map((name) => name.trim()).filter(Boolean);
+  if (items.length === 0) return;
+  params.push(items);
+  const exact = params.length;
+  params.push(items.map((name) => `%.${likeLiteral(name)}`));
+  const method = params.length;
+  clauses.push(`(${expression} = ANY($${exact}::text[]) OR ${expression} LIKE ANY($${method}::text[]))`);
+}
+
 function addValues(params: unknown[], expression: string, item: ScopeValues | null | undefined, clauses: string[]): void {
   const items = values(item);
   if (items.length === 0) return;
@@ -239,6 +278,8 @@ export function scopeClauses(scope: ChargeScope, params: unknown[], alias = "c")
     clauses.push(`((COALESCE(${alias}.bl_file, '') || ':' || COALESCE(${alias}.bl_function, '')) = ANY($${plainParam}::text[])
       OR ((COALESCE(${alias}.context->>'service', '') || ':' || COALESCE(${alias}.bl_file, '') || ':' || COALESCE(${alias}.bl_function, '')) = ANY($${serviceParam}::text[])))`);
   }
+  addFileValues(params, `${alias}.bl_file`, scope.file, clauses);
+  addFunctionNameValues(params, `${alias}.bl_function`, scope.functionName, clauses);
   addValues(params, `${alias}.context->>'customer'`, scope.customer, clauses);
   addValues(params, `${alias}.context->>'service'`, scope.service, clauses);
   addValues(params, `${alias}.context->>'release'`, scope.release, clauses);
@@ -417,6 +458,17 @@ export async function loadDailyAggregates(
   add(`a.environment`, scope.environment);
   add(`a.feature`, scope.feature);
   add(`a.function_key`, scope.function);
+  // A daily row keeps its function as "file:function" (after any service).
+  const files = values(scope.file).map(relativeFile).filter(Boolean);
+  if (files.length > 0) {
+    detailParams.push(files.flatMap((file) => [`${likeLiteral(file)}:%`, `%/${likeLiteral(file)}:%`, `%:${likeLiteral(file)}:%`]));
+    aggregateClauses.push(`a.function_key LIKE ANY($${detailParams.length}::text[])`);
+  }
+  const functionNames = values(scope.functionName).map((name) => name.trim()).filter(Boolean);
+  if (functionNames.length > 0) {
+    detailParams.push(functionNames.flatMap((name) => [`%:${likeLiteral(name)}`, `%.${likeLiteral(name)}`]));
+    aggregateClauses.push(`a.function_key LIKE ANY($${detailParams.length}::text[])`);
+  }
   add(`a.customer`, scope.customer);
   add(`a.service`, scope.service);
   add(`a.release`, scope.release);

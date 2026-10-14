@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@costkey/shared": "*",
+    "@modelcontextprotocol/sdk": "^1.30.1",
     "bcryptjs": "^3.0.3",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
@@ -21,7 +22,8 @@
     "jsonwebtoken": "^9.0.3",
     "pg": "^8.20.0",
     "resend": "^6.10.0",
-    "source-map": "^0.7.6"
+    "source-map": "^0.7.6",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",

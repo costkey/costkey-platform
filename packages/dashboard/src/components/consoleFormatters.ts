@@ -1,13 +1,13 @@
 import { formatCost } from "../utils";
 
-export type ConsolePeriod = "24h" | "mtd" | "7d" | "30d" | "custom";
+export type ConsolePeriod = "1h" | "today" | "24h" | "mtd" | "7d" | "30d" | "custom";
 
 export function parsePeriod(value: string | null | undefined): ConsolePeriod {
-  return value === "24h" || value === "7d" || value === "30d" || value === "custom" ? value : "mtd";
+  return value === "1h" || value === "today" || value === "24h" || value === "7d" || value === "30d" || value === "custom" ? value : "mtd";
 }
 
 export function periodLabel(period: ConsolePeriod): string {
-  return ({ "24h": "last 24 hours", mtd: "month to date", "7d": "last 7 days", "30d": "last 30 days", custom: "custom range" })[period];
+  return ({ "1h": "last hour", today: "today", "24h": "last 24 hours", mtd: "month to date", "7d": "last 7 days", "30d": "last 30 days", custom: "custom range" })[period];
 }
 
 /** Convert a date-input day in the workspace timezone to an exclusive UTC range boundary. */
@@ -18,6 +18,34 @@ export function dateInputToIso(value: string, timezone: string | undefined, end 
   try {
     const parts = new Intl.DateTimeFormat("en-US", { timeZone: timezone ?? "UTC", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" }).formatToParts(new Date(wall));
     const atZone = Date.UTC(Number(parts.find((part) => part.type === "year")?.value), Number(parts.find((part) => part.type === "month")?.value) - 1, Number(parts.find((part) => part.type === "day")?.value), Number(parts.find((part) => part.type === "hour")?.value), Number(parts.find((part) => part.type === "minute")?.value), Number(parts.find((part) => part.type === "second")?.value));
+    return new Date(wall - (atZone - wall)).toISOString();
+  } catch {
+    return new Date(wall).toISOString();
+  }
+}
+
+/** An instant as a datetime-local value ("2026-10-14T09:30") in the workspace time zone. */
+export function isoToZonedInput(iso: string, timezone?: string | null): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", { timeZone: timezone ?? undefined, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(date);
+    const get = (type: string) => parts.find((part) => part.type === type)?.value ?? "";
+    return `${get("year")}-${get("month")}-${get("day")}T${get("hour")}:${get("minute")}`;
+  } catch {
+    return date.toISOString().slice(0, 16);
+  }
+}
+
+/** A datetime-local value read as wall time in the workspace time zone. */
+export function zonedInputToIso(value: string, timezone?: string | null): string | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(value);
+  if (!match) return null;
+  const wall = Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]), Number(match[4]), Number(match[5]));
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", { timeZone: timezone ?? "UTC", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" }).formatToParts(new Date(wall));
+    const get = (type: string) => Number(parts.find((part) => part.type === type)?.value);
+    const atZone = Date.UTC(get("year"), get("month") - 1, get("day"), get("hour"), get("minute"), get("second"));
     return new Date(wall - (atZone - wall)).toISOString();
   } catch {
     return new Date(wall).toISOString();
@@ -145,6 +173,7 @@ export function formatDayDate(value: string | null | undefined, timeZone?: strin
 export function periodDates(period: ConsolePeriod, timezone = Intl.DateTimeFormat().resolvedOptions().timeZone): { from: string; to: string } {
   const to = new Date();
   if (period === "24h") return { from: new Date(to.getTime() - 24 * 60 * 60 * 1000).toISOString(), to: to.toISOString() };
+  if (period === "1h") return { from: new Date(to.getTime() - 60 * 60 * 1000).toISOString(), to: to.toISOString() };
   const dateParts = new Intl.DateTimeFormat("en-US", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(to);
   const year = Number(dateParts.find((part) => part.type === "year")?.value);
   const month = Number(dateParts.find((part) => part.type === "month")?.value);

@@ -645,3 +645,8 @@ export async function uploadSourcemap(projectId: string, release: string, file: 
     body: { release, fileName: file.name, sourcemapJson },
   });
 }
+
+/** The repository releases link to when the SDK doesn't report one; null clears it. */
+export function updateRepository(projectId: string, url: string | null): Promise<{ repository: string | null }> {
+  return request(`/projects/${encodeURIComponent(projectId)}/repository`, { method: "PUT", body: { url: url ?? "" } });
+}

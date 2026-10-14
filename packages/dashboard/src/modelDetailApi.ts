@@ -99,6 +99,7 @@ export interface ModelDetail {
 function scopeQuery(scope: InsightScope): URLSearchParams {
   const params = new URLSearchParams({ from: scope.from, to: scope.to });
   if (scope.environment && scope.environment !== "all") params.set("environment", scope.environment);
+  if (scope.release) params.set("release", scope.release);
   return params;
 }
 

@@ -1072,11 +1072,14 @@ export interface InsightScope {
   from: string;
   to: string;
   environment?: string;
+  /** One release (deploy) only. */
+  release?: string;
 }
 
 function scopeQuery(scope: InsightScope): string {
   const params = new URLSearchParams({ from: scope.from, to: scope.to });
   if (scope.environment && scope.environment !== "all") params.set("environment", scope.environment);
+  if (scope.release) params.set("release", scope.release);
   return params.toString();
 }
 
@@ -1183,29 +1186,20 @@ export function getOverviewBoard(projectId: string, scope: InsightScope): Promis
   return get(`/projects/${encodeURIComponent(projectId)}/insights/board?${scopeQuery(scope)}`);
 }
 
-/** Latency and errors of the provider calls in one window. Rates are 0..1. */
-export interface ReliabilityRow {
+/** A deploy: the release the SDK sent, linked to its commit when the repository is known. */
+export interface Release {
+  release: string;
+  commit: string | null;
+  repository: string | null;
+  commitUrl: string | null;
+  firstSeen: string;
+  lastSeen: string;
   calls: number;
-  p50DurationMs: number | null;
-  p95DurationMs: number | null;
-  p95TtftMs: number | null;
-  streams: number;
-  errors: number;
-  errorRate: number | null;
-  retries: number;
-  retryRate: number | null;
-  cost: number | null;
-  wastedCost: number | null;
 }
 
-export interface Reliability {
-  from: string;
-  to: string;
-  totals: ReliabilityRow;
-  byModel: Array<ReliabilityRow & { provider: string; model: string }>;
-  byAgent: Array<ReliabilityRow & { agent: string; runs: number; failedRuns: number }>;
-}
-
-export function getReliability(projectId: string, scope: InsightScope): Promise<Reliability> {
-  return get(`/projects/${encodeURIComponent(projectId)}/quality/reliability?${scopeQuery(scope)}`);
+export function getReleases(projectId: string, environment?: string): Promise<{ repository: string | null; releases: Release[] }> {
+  const params = new URLSearchParams();
+  if (environment && environment !== "all") params.set("environment", environment);
+  const qs = params.toString();
+  return get(`/projects/${encodeURIComponent(projectId)}/releases${qs ? `?${qs}` : ""}`);
 }

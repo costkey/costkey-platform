@@ -1,4 +1,4 @@
-import { projectDsn } from "../basePath";
+import { appUrl, projectDsn } from "../basePath";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import {
@@ -27,10 +27,14 @@ import {
   createCustomProvider,
   deleteCustomProvider,
   getCustomProviders,
+  getReleases,
   updateCustomProvider,
   type CustomProvider,
+  type Release,
 } from "../api";
+import { ReleaseLink } from "../components/Releases";
 import {
+  updateRepository,
   createProject,
   createTeamInvite,
   createCredit,
@@ -347,6 +351,7 @@ export default function Settings() {
             {previewState === "error" && <div className="ck-alert ck-alert-error" role="alert"><AlertTriangle size={15} /><span>Couldn’t refresh settings. Nothing was changed.</span></div>}
             {previewState === "restricted" && <div className="ck-alert" role="status"><Lock size={15} /><div><strong>Some settings are view only for you.</strong> Owners and Admins can change them.</div></div>}
             {section === "projects" && <ProjectsConnections projects={projectItems} role={role} refresh={refresh} currentProjectId={currentProjectId} />}
+            {section === "projects" && <ProjectRepository projects={projectItems} role={role} currentProjectId={currentProjectId} />}
             {section === "team" && <TeamAccess projects={projectItems} members={memberItems} userId={user?.id ?? ""} role={role} orgName={org?.name ?? "Workspace"} refresh={refresh} />}
             {section === "notifications" && <NotificationsSettings projects={projectItems} role={role} userEmail={user?.email ?? ""} />}
             {section === "data" && <DataSourceSettings projects={projectItems} role={role} currentProjectId={currentProjectId} />}
@@ -357,6 +362,61 @@ export default function Settings() {
       </div>
     </div>
   );
+}
+
+/** Where releases link to: the commit's page in this repository. */
+function ProjectRepository({ projects, role, currentProjectId }: { projects: SettingsProject[]; role: Role; currentProjectId: string | null }) {
+  const [selectedId, setSelectedId] = useState(currentProjectId ?? projects[0]?.id ?? "");
+  const [value, setValue] = useState("");
+  const [saved, setSaved] = useState<string | null>(null);
+  const [latest, setLatest] = useState<Release | null>(null);
+  const [server, setServer] = useState<{ version?: string; commit?: string | null } | null>(null);
+  const [status, setStatus] = useState<{ tone: "error" | "success"; text: string } | null>(null);
+  const [saving, setSaving] = useState(false);
+  const canEdit = canManage(role);
+  useEffect(() => {
+    if (!selectedId) return;
+    let cancelled = false;
+    getReleases(selectedId).then((response) => {
+      if (cancelled) return;
+      setSaved(response.repository);
+      setValue(response.repository ?? "");
+      setLatest(response.releases[0] ?? null);
+    }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [selectedId]);
+  useEffect(() => {
+    fetch(appUrl("/health")).then((response) => response.json()).then((body: { version?: string; commit?: string | null }) => setServer(body)).catch(() => undefined);
+  }, []);
+  const save = async () => {
+    setSaving(true);
+    setStatus(null);
+    try {
+      const result = await updateRepository(selectedId, value.trim() || null);
+      setSaved(result.repository);
+      setValue(result.repository ?? "");
+      setStatus({ tone: "success", text: result.repository ? "Saved. Releases link to their commits." : "Cleared." });
+    } catch (error) {
+      setStatus({ tone: "error", text: error instanceof Error ? error.message : "Couldn’t save the repository." });
+    } finally {
+      setSaving(false);
+    }
+  };
+  const serverCommit = server?.commit ?? null;
+  return <Panel title="Releases" subtitle="Each call carries the release it ran on, usually the commit SHA. Set the repository to link releases to their commits.">
+    <div className="settings-card-body">
+      {projects.length > 1 && <div className="settings-project-picker"><label htmlFor="repository-project">Project</label><select id="repository-project" value={selectedId} onChange={(event) => setSelectedId(event.target.value)}>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></div>}
+      <div className="settings-form-grid" style={{ marginTop: projects.length > 1 ? 16 : 0 }}>
+        <div className="settings-form-field full"><label htmlFor="repository-url">Repository</label><input id="repository-url" value={value} placeholder="https://github.com/acme/app" disabled={!canEdit} onChange={(event) => setValue(event.target.value)} /><small>SDKs 0.7.7 and later send the commit and repository themselves when CI or the platform sets them (GITHUB_SHA, VERCEL_GIT_COMMIT_SHA, COSTKEY_COMMIT and others).</small></div>
+      </div>
+      {latest && <div className="settings-definition-list" style={{ marginTop: 14 }}><div className="settings-definition-row"><dt>Latest release</dt><dd><ReleaseLink release={latest.release} info={latest} /> <span className="muted">since {new Date(latest.firstSeen).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</span></dd></div></div>}
+      {status && <div className={`settings-status-line ${status.tone}`} role={status.tone === "error" ? "alert" : "status"}>{status.text}</div>}
+      <div className="settings-form-footer">
+        <button className="ck-button ck-button-secondary" type="button" onClick={() => void save()} disabled={!canEdit || saving || value.trim() === (saved ?? "")}>{saving ? "Saving" : "Save repository"}</button>
+        {server?.version && <span className="settings-footnote ck-server-build">CostKey {server.version}{serverCommit && <> · <a href={`https://github.com/costkey/platform/commit/${serverCommit}`} target="_blank" rel="noreferrer" className="mono">{serverCommit.slice(0, 7)}</a></>}</span>}
+      </div>
+    </div>
+  </Panel>;
 }
 
 function ProjectsConnections({ projects, role, refresh, currentProjectId }: { projects: SettingsProject[]; role: Role; refresh: () => Promise<void>; currentProjectId: string | null }) {

@@ -34,6 +34,7 @@ import { UserId } from "../components/UserId";
 import { featureHref, userHref } from "../components/links";
 import { useLiveQuery, useNewIds, usePointerHold } from "../hooks/useLiveQuery";
 import { eventDisplayName, inspectorTab, isCallEvent, parseJson, PRICE_PENDING_HINT, RunFlow, runModel, runStatus, RunStatusPill, RunSummaryStrip, useRunDetail } from "../components/RunFlow";
+import { ProjectRelease } from "../components/Releases";
 import { prototypeRole, prototypeState, PrototypeStateNotice, PrototypeStatePanel } from "../components/PrototypeState";
 import { isPrototypePreview } from "../prototypePreview";
 import "./PrototypeRoute.css";
@@ -517,7 +518,8 @@ function TraceDetail({ projectId, traceId }: { projectId: string; traceId: strin
     <div className="ck-detail-header prototype-trace-header"><div><Link className="ck-back-link" to={returnTo}><ArrowLeft size={13} aria-hidden="true" /> {backLabel}</Link><h1 className="ck-detail-title">{traceName}</h1><div className="ck-detail-id">{start ? `${formatAbsoluteDate(start)}${timeZoneLabel ? ` ${timeZoneLabel}` : ""} · ` : ""}<span className="mono">{traceId}</span></div>{shareFallback && <label className="ck-share-fallback">Copy this authenticated link manually<input readOnly value={shareFallback} onFocus={(event) => event.currentTarget.select()} /></label>}<div className="ck-pill-row ck-run-chips" style={{ marginTop: 12, marginBottom: 0 }}>
       {feature && <Link className="ck-chip-link" to={featureHref(feature)} title="Costs for this feature"><StatusPill tone="neutral" icon={false}>{feature}</StatusPill></Link>}
       {customer ? <Link className="ck-chip-link" to={userHref(customer)} title={`Usage for ${customer}`}><StatusPill tone="neutral" icon={false}><UserId id={customer} /></StatusPill></Link> : service && <StatusPill tone="neutral" icon={false}>{service}</StatusPill>}
-      {[typeof summary.environment === "string" ? summary.environment : null, release ? `Release ${release}` : null].filter(Boolean).map((value) => <StatusPill tone="neutral" icon={false} key={String(value)}>{String(value)}</StatusPill>)}
+      {typeof summary.environment === "string" && summary.environment && <StatusPill tone="neutral" icon={false}>{summary.environment}</StatusPill>}
+      {release && <ProjectRelease projectId={projectId} release={release} />}
     </div></div><div className="ck-detail-actions"><LiveStatus status={liveStatus} updatedAt={updatedAt} onRefresh={refreshRun} /><button className="ck-button ck-button-secondary" type="button" onClick={share}>{copied ? <Check size={13} /> : <Share size={13} />}{copied ? "Link copied" : shareFallback ? "Try copy again" : "Share"}</button><Link className="ck-button ck-button-secondary" to={`/compare?ids=${encodeURIComponent(traceId)}&project=${encodeURIComponent(projectId)}`}><GitCompare size={13} /> Compare</Link></div></div>
     <RunSummaryStrip model={model} currency={reportingCurrency} fx={fx} className="prototype-trace-summary" />
     {retryEvents.length > 0 && <div className="ck-alert ck-trace-context-notice"><Info size={15} aria-hidden="true" /><span><strong>{retryEvents.length} retr{retryEvents.length === 1 ? "y" : "ies"}:</strong> {formatReportedAmount(retrySubtotal, reportingCurrency, fx)}</span></div>}

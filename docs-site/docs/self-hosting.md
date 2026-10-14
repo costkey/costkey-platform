@@ -82,6 +82,8 @@ All settings live in `.env` next to `docker-compose.yml`.
 | `COSTKEY_QUALITY_SETTLE_SECONDS` | Optional. Seconds a run must be idle before [quality checks](./quality-checks) score it. Default `120`. |
 | `COSTKEY_QUALITY_JUDGE_RPM` | Optional. Most LLM judge calls per minute for each project. Default `30`. |
 | `COSTKEY_QUALITY_WORKER_INTERVAL_SECONDS` | Optional. Seconds between runs of the quality check worker. Default `15`. |
+| `COSTKEY_MCP_ENABLED` | Optional. The [MCP endpoint](./mcp) for coding agents at `PUBLIC_URL/mcp`. Set `false` to turn it off. Default on. |
+| `COSTKEY_TOKEN_RATE_LIMIT` | Optional. Reads a minute for each coding agent token. Default `300`. |
 
 ## Sign-in
 
@@ -135,7 +137,7 @@ SDKs cannot pass IAP, so route these paths to CostKey around IAP. For example, u
 - `/api/v1/projects/*/config`
 - `/api/v1/projects/*/callgraph`
 
-They still need the project DSN. Set the Cloud Run service's ingress to internal and Cloud Load Balancing, so nobody can reach it around the load balancer.
+They still need the project DSN. Coding agents can't pass IAP either: route `/mcp` around it the same way if you use [MCP](./mcp). It accepts only a coding agent token. Set the Cloud Run service's ingress to internal and Cloud Load Balancing, so nobody can reach it around the load balancer.
 
 Signing out of CostKey also sends the browser to `/_gcp_iap/clear_login_cookie` under `PUBLIC_URL`, so IAP asks for the Google account again.
 
@@ -166,6 +168,10 @@ CostKey uses the authorization code flow with PKCE, state and nonce. It verifies
 ### When something is wrong
 
 The server log says what is missing or wrong, such as an unset `COSTKEY_IAP_AUDIENCE` or a rejected IAP header. A misconfigured SSO mode lets nobody sign in, but SDK ingest keeps working. An unknown `COSTKEY_AUTH` value stops the server at startup.
+
+## Coding agents
+
+Claude Code, Cursor, Codex and VS Code can read your calls, runs and costs from `PUBLIC_URL/mcp` with a read-only token from **Settings, Coding agents**. The console shows setup with your server's address. The agent connects from where it runs, so the server must be reachable from there. See [Debug with coding agents](./mcp).
 
 ## Put it behind HTTPS
 

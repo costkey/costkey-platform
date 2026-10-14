@@ -10,6 +10,7 @@ const sidebars = {
     'providers',
     'dashboard',
     'quality-checks',
+    'mcp',
 
     'sourcemaps',
     'self-hosting',

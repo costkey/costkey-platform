@@ -296,7 +296,7 @@ export async function loadOverviewBoard(pool: pg.Pool, projectId: string, window
   const unitTotals = `SELECT u.key AS unit, SUM(u.value::float) AS total FROM events e ${UNIT_ROWS("e")} AND ${eventFilter} GROUP BY 1`;
   const [modelCosts, modelUnits, unitsNow, unitsBefore, ownerUnits] = await Promise.all([
     pool.query(
-      `${chargesCte()}
+      `${chargesCte(chargeParams)}
        SELECT c.provider, COALESCE(c.model, 'unknown') AS model, COUNT(*)::int AS charges,
               SUM(c.cost_usd) FILTER (WHERE c.cost_usd IS NOT NULL) AS cost,
               COUNT(*) FILTER (WHERE c.cost_usd IS NULL)::int AS unpriced

@@ -107,7 +107,23 @@ export interface DailyAggregateRow {
  * revisions remain separate records; only the active cumulative snapshot is
  * included. Unknown USD amounts stay NULL.
  */
-export function chargesCte(): string {
+/** Where scopeClauses put a query's window, so chargesCte can read only that slice. */
+const queryBounds = new WeakMap<unknown[], { from?: string; to?: string }>();
+
+/**
+ * The canonical charges. Given the params a scopeClauses call filled ($1 is the
+ * project), it reads only that project's records in that window, instead of
+ * every record of every project and then filtering: a full scan and sort that
+ * grows with the database. Without params it reads everything, as before.
+ */
+export function chargesCte(scopedParams?: unknown[]): string {
+  const bounds = scopedParams ? queryBounds.get(scopedParams) : undefined;
+  const eventBounds = scopedParams
+    ? ` AND e.project_id = $1${bounds?.from ? ` AND e.timestamp >= ${bounds.from}` : ""}${bounds?.to ? ` AND e.timestamp < ${bounds.to}` : ""}`
+    : "";
+  const usageBounds = scopedParams
+    ? ` AND u.project_id = $1${bounds?.from ? ` AND COALESCE(u.accounting_at, u.observed_at) >= ${bounds.from}` : ""}${bounds?.to ? ` AND COALESCE(u.accounting_at, u.observed_at) < ${bounds.to}` : ""}`
+    : "";
   return `
     WITH auto_raw AS (
       SELECT e.project_id, e.id AS record_id,
@@ -127,7 +143,7 @@ export function chargesCte(): string {
              (e.cost_usd IS NULL AND (COALESCE(e.lifecycle_state, '') IN ('failed', 'cancelled')
                OR COALESCE(e.status_code, 200) >= 400)) AS no_charge
       FROM events e
-      WHERE COALESCE(e.event_type, 'call') = 'call'
+      WHERE COALESCE(e.event_type, 'call') = 'call'${eventBounds}
     ), auto_charges AS (
       SELECT DISTINCT ON (project_id, charge_key) *
       FROM auto_raw
@@ -186,7 +202,7 @@ export function chargesCte(): string {
       ) anchor ON TRUE
       LEFT JOIN auto_charges a
         ON a.project_id = u.project_id AND a.charge_key = u.charge_id
-      WHERE (u.aggregation = 'delta' OR u.active = TRUE)
+      WHERE (u.aggregation = 'delta' OR u.active = TRUE)${usageBounds}
     ), all_charges AS (
       SELECT a.*, 0::int AS source_order FROM auto_charges a
       UNION ALL
@@ -259,14 +275,18 @@ function addValues(params: unknown[], expression: string, item: ScopeValues | nu
 /** Add the same scope predicates to a `charges c` or `events e` relation. */
 export function scopeClauses(scope: ChargeScope, params: unknown[], alias = "c"): string[] {
   const clauses: string[] = [`${alias}.project_id = $1`];
+  const bounds: { from?: string; to?: string } = {};
   if (scope.from) {
     params.push(scope.from);
+    bounds.from = `$${params.length}`;
     clauses.push(`${alias}.timestamp >= $${params.length}`);
   }
   if (scope.to) {
     params.push(scope.to);
+    bounds.to = `$${params.length}`;
     clauses.push(`${alias}.timestamp < $${params.length}`);
   }
+  queryBounds.set(params, bounds);
   addValues(params, `${alias}.context->>'environment'`, scope.environment, clauses);
   addValues(params, `${alias}.context->>'feature'`, scope.feature, clauses);
   const functionValues = values(scope.function);
@@ -392,7 +412,7 @@ export async function loadCanonicalCharges(
     : ` LIMIT $${params.length + 1}`;
   if (options.limit !== undefined) params.push(Math.min(Math.max(Math.trunc(options.limit), 1), 100_001));
   const result = await pool.query(
-    `${chargesCte()}
+    `${chargesCte(params)}
      SELECT c.* FROM charges c WHERE ${clauses.join(" AND ")}
      ORDER BY c.timestamp ${order}, c.record_id ${order}${limit}`,
     params,

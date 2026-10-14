@@ -559,7 +559,7 @@ async function loadFinancialTotals(pool: pg.Pool, projectId: string, scope: Char
   const detailClauses = scopeClauses({ ...scope, groupBy: undefined, groupValue: undefined }, detailParams, "c");
   const [totals, functions, releases, aggregates] = await Promise.all([
     pool.query(
-      `${chargesCte()}
+      `${chargesCte(detailParams)}
        SELECT COUNT(*)::int AS observations,
               COUNT(*) FILTER (WHERE c.record_type = 'call')::int AS calls,
               COUNT(*) FILTER (WHERE c.cost_usd IS NOT NULL)::int AS priced,
@@ -569,7 +569,7 @@ async function loadFinancialTotals(pool: pg.Pool, projectId: string, scope: Char
       detailParams,
     ),
     pool.query(
-      `${chargesCte()}
+      `${chargesCte(detailParams)}
        SELECT c.bl_function AS function_name, c.bl_file AS file_name,
               SUM(c.cost_usd) FILTER (WHERE c.cost_usd IS NOT NULL) AS cost,
               COUNT(*) FILTER (WHERE c.record_type = 'call')::int AS calls
@@ -579,7 +579,7 @@ async function loadFinancialTotals(pool: pg.Pool, projectId: string, scope: Char
       detailParams,
     ),
     pool.query(
-      `${chargesCte()}
+      `${chargesCte(detailParams)}
        SELECT COALESCE(NULLIF(c.release, ''), NULLIF(c.context->>'release', ''), '(unassigned)') AS release,
               COUNT(*)::int AS observations,
               COUNT(*) FILTER (WHERE c.record_type = 'call')::int AS calls,
@@ -930,7 +930,7 @@ export function createAccountingRouter(pool: pg.Pool): Router {
       const detailClauses = scopeClauses(detailScope, detailParams, "c");
       const [totalsResult, modelResult, providerResult, aggregateRows] = await Promise.all([
         pool.query(
-          `${chargesCte()}
+          `${chargesCte(detailParams)}
            SELECT COUNT(*)::int AS observations,
                   COUNT(*) FILTER (WHERE c.record_type = 'call')::int AS calls,
                   -- A failed call without a price cost nothing: it counts as settled, not unpriced.
@@ -944,7 +944,7 @@ export function createAccountingRouter(pool: pg.Pool): Router {
           detailParams,
         ),
         pool.query(
-          `${chargesCte()}
+          `${chargesCte(detailParams)}
            SELECT c.provider, COALESCE(c.model, 'unknown') AS model,
                   COUNT(*)::int AS observations,
                   COUNT(*) FILTER (WHERE c.record_type = 'call')::int AS calls,
@@ -957,7 +957,7 @@ export function createAccountingRouter(pool: pg.Pool): Router {
           detailParams,
         ),
         pool.query(
-          `${chargesCte()}
+          `${chargesCte(detailParams)}
            SELECT c.provider, COUNT(*)::int AS observations,
                   COUNT(*) FILTER (WHERE c.record_type = 'call')::int AS calls,
                   COUNT(*) FILTER (WHERE c.cost_usd IS NOT NULL OR c.no_charge)::int AS priced,
@@ -2038,7 +2038,7 @@ export function createAccountingRouter(pool: pg.Pool): Router {
         const clauses = scopeClauses(period, params, "c");
         const expression = dimensionExpression(period, "c");
         const detail = await pool.query(
-          `${chargesCte()},
+          `${chargesCte(params)},
            scoped AS (
              SELECT c.*, ${expression} AS group_key
              FROM charges c WHERE ${clauses.join(" AND ")}

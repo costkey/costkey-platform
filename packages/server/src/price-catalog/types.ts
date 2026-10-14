@@ -1,5 +1,5 @@
 /** Where a catalog price came from. */
-export type PriceSource = "litellm" | "models_dev" | "openrouter" | "costkey";
+export type PriceSource = "litellm" | "models_dev" | "openrouter" | "vercel" | "costkey";
 
 /**
  * USD per unit. Token rates are per single token. Every field is optional:

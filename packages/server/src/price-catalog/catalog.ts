@@ -2,7 +2,8 @@ import { costFromRates } from "./compute.js";
 import { modelCandidates, normalizeModelId, stripModelVersion } from "./normalize.js";
 import type { CatalogCost, CatalogMatch, CatalogPrice, MatchKind, PricedUsage, PriceRates, PriceSource } from "./types.js";
 
-const SOURCE_RANK: Record<PriceSource, number> = { costkey: 0, litellm: 1, models_dev: 2, openrouter: 3 };
+// Vercel only prices calls made through its own gateway, so it never competes with the others.
+const SOURCE_RANK: Record<PriceSource, number> = { costkey: 0, vercel: 1, litellm: 1, models_dev: 2, openrouter: 3 };
 const AZURE_HOST = /(\.openai\.azure\.com|\.cognitiveservices\.azure\.com|\.services\.ai\.azure\.com|\.models\.ai\.azure\.com)$/;
 
 function key(provider: string, model: string): string {

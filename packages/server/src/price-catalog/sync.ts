@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import type pg from "pg";
 import { PriceCatalog, setPriceCatalog, getPriceCatalog } from "./catalog.js";
 import { curatedPrices } from "./curated.js";
-import { normalizeLiteLlm, normalizeModelsDev, normalizeOpenRouter } from "./normalize.js";
+import { normalizeLiteLlm, normalizeModelsDev, normalizeOpenRouter, normalizeVercelGateway } from "./normalize.js";
 import type { CatalogEntry, CatalogPrice, PriceRates, PriceSource } from "./types.js";
 
 /** Public catalogs, in order of precedence. */
@@ -11,6 +11,7 @@ export const PRICE_SOURCES: Array<{ source: PriceSource; url: string; normalize:
   { source: "litellm", url: "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json", normalize: normalizeLiteLlm },
   { source: "models_dev", url: "https://models.dev/api.json", normalize: normalizeModelsDev },
   { source: "openrouter", url: "https://openrouter.ai/api/v1/models", normalize: normalizeOpenRouter },
+  { source: "vercel", url: "https://ai-gateway.vercel.sh/v1/models", normalize: normalizeVercelGateway },
 ];
 
 const SNAPSHOT_URL = new URL("../../data/price-catalog.snapshot.json", import.meta.url);
@@ -305,10 +306,15 @@ async function runSync(
   }
 }
 
-/** Seed an empty catalog from the snapshot shipped with the server. */
-export async function importSnapshotIfEmpty(pool: pg.Pool): Promise<number> {
-  const count = await pool.query("SELECT COUNT(*)::int AS count FROM model_prices");
-  if (Number(count.rows[0]?.count ?? 0) > 0) return 0;
+/**
+ * Seed the catalog from the snapshot shipped with the server: every source
+ * when it is empty, and a source this release adds (Vercel's gateway, say)
+ * when the catalog has never had it, so its prices apply from the deploy
+ * rather than the next sync.
+ */
+export async function importSnapshotSources(pool: pg.Pool): Promise<number> {
+  const present = await pool.query<{ source: string }>("SELECT DISTINCT source FROM model_prices");
+  const known = new Set(present.rows.map((row) => row.source));
   let snapshot: { entries?: CatalogEntry[] };
   try {
     snapshot = JSON.parse(await readFile(SNAPSHOT_URL, "utf8")) as { entries?: CatalogEntry[] };
@@ -317,10 +323,12 @@ export async function importSnapshotIfEmpty(pool: pg.Pool): Promise<number> {
   }
   const bySource = new Map<PriceSource, CatalogEntry[]>();
   for (const entry of snapshot.entries ?? []) {
+    if (known.has(entry.source)) continue;
     const list = bySource.get(entry.source) ?? [];
     list.push(entry);
     bySource.set(entry.source, list);
   }
+  if (bySource.size === 0) return 0;
   const client = await pool.connect();
   let added = 0;
   try {
@@ -486,7 +494,7 @@ export async function refreshPriceCatalogIfChanged(pool: pg.Pool): Promise<void>
 export async function initPriceCatalog(pool: pg.Pool, options: { schedule: boolean }): Promise<NodeJS.Timeout | null> {
   if (!priceCatalogEnabled()) return null;
   await ensurePriceCatalogSchema(pool);
-  const imported = await importSnapshotIfEmpty(pool);
+  const imported = await importSnapshotSources(pool);
   const catalog = await loadPriceCatalog(pool);
   console.log(`[costkey] Price catalog: ${catalog.size} prices${imported ? ` (${imported} from the bundled snapshot)` : ""}`);
   // Calls that arrived before the catalog loaded (or before this deploy

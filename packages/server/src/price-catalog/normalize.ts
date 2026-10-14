@@ -300,3 +300,40 @@ export function normalizeOpenRouter(json: unknown): CatalogEntry[] {
   }
   return out;
 }
+
+/**
+ * Vercel AI Gateway's own model list: what the gateway bills, per token, for
+ * each `vendor/model` it serves. Calls through the gateway are provider
+ * `vercel` with that id as the model. Base rates only; priority, flex and
+ * regional rates are opt-in per request.
+ */
+export function normalizeVercelGateway(json: unknown): CatalogEntry[] {
+  const data = json && typeof json === "object" ? (json as Record<string, unknown>)["data"] : null;
+  if (!Array.isArray(data)) return [];
+  const out: CatalogEntry[] = [];
+  for (const raw of data) {
+    if (!raw || typeof raw !== "object") continue;
+    const id = String((raw as Record<string, unknown>)["id"] ?? "");
+    const pricing = (raw as Record<string, unknown>)["pricing"] as Record<string, unknown> | undefined;
+    if (!id || !pricing) continue;
+    // A tier starts at `min` prompt tokens; long-context rates apply above `min - 1`.
+    const tiers = (key: string) => Array.isArray(pricing[key]) ? (pricing[key] as Array<Record<string, unknown>>) : [];
+    const starts = [...new Set(["input_tiers", "output_tiers", "input_cache_read_tiers", "input_cache_write_tiers"]
+      .flatMap((key) => tiers(key).map((tier) => Number(tier["min"]))).filter((min) => Number.isFinite(min) && min > 0))].sort((a, b) => a - b);
+    const tierRate = (key: string, min: number) => rate(tiers(key).find((tier) => Number(tier["min"]) === min)?.["cost"]);
+    const webSearch = rate(pricing["web_search"]);
+    const rates = compact({
+      input: rate(pricing["input"]),
+      output: rate(pricing["output"]),
+      cacheRead: rate(pricing["input_cache_read"]),
+      cacheWrite: rate(pricing["input_cache_write"]),
+      perOutputImage: rate(pricing["image"]),
+      // Published per thousand searches.
+      searchPerQuery: webSearch === undefined ? undefined : webSearch / 1000,
+      longContext: starts.map((min) => ({ threshold: min - 1, ...compact({ input: tierRate("input_tiers", min), output: tierRate("output_tiers", min), cacheRead: tierRate("input_cache_read_tiers", min), cacheWrite: tierRate("input_cache_write_tiers", min) }) })),
+    });
+    if (Object.keys(rates).length === 0 || !plausibleRates(rates)) continue;
+    out.push({ source: "vercel", provider: "vercel", model: normalizeModelId(id), sourceKey: id, mode: null, rates });
+  }
+  return out;
+}

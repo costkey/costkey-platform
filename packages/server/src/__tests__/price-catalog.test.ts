@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { PriceCatalog, modelVendor, providerChain } from "../price-catalog/catalog.js";
 import { costFromRates, maxTokenRates } from "../price-catalog/compute.js";
 import { curatedPrices } from "../price-catalog/curated.js";
-import { modelCandidates, normalizeLiteLlm, normalizeModelsDev, normalizeOpenRouter, stripModelVersion } from "../price-catalog/normalize.js";
+import { modelCandidates, normalizeLiteLlm, normalizeModelsDev, normalizeOpenRouter, normalizeVercelGateway, stripModelVersion } from "../price-catalog/normalize.js";
 import type { CatalogEntry, CatalogPrice } from "../price-catalog/types.js";
 
 const EPOCH = "1970-01-01T00:00:00.000Z";
@@ -188,5 +188,34 @@ describe("price catalog resolution", () => {
     ]);
     assert.equal(versions.resolve({ provider: "anthropic", model: "claude-sonnet-5", at: "2026-09-15T00:00:00Z" })?.price.id, "v1");
     assert.equal(versions.resolve({ provider: "anthropic", model: "claude-sonnet-5", at: "2026-10-05T00:00:00Z" })?.price.id, "v2");
+  });
+});
+
+describe("Vercel AI Gateway prices", () => {
+  const vercel = normalizeVercelGateway({ data: [
+    { id: "typesafe-ai/jev", type: "evaluation", pricing: { input: "0.000000042", output: "0" } },
+    { id: "alibaba/qwen3-max-thinking", pricing: {
+      input: "0.0000012", output: "0.000006", input_cache_read: "0.00000024", web_search: "10",
+      input_tiers: [{ cost: "0.0000012", min: 0, max: 32001 }, { cost: "0.0000024", min: 32001 }],
+      output_tiers: [{ cost: "0.000006", min: 0, max: 32001 }, { cost: "0.000012", min: 32001 }],
+      service_tiers: { priority: { input: "0.0000024" } },
+    } },
+    { id: "bfl/flux-kontext-pro", type: "image", pricing: { image: "0.04" } },
+    { id: "openai/gpt-video", type: "video", pricing: { video_duration_pricing: [{ cost: "0.1" }] } },
+    { id: "broken/model", pricing: { input: "5" } },
+  ] });
+
+  it("prices calls through the gateway by its vendor/model id, base rates only", () => {
+    assert.deepEqual(vercel.map((entry) => entry.sourceKey), ["typesafe-ai/jev", "alibaba/qwen3-max-thinking", "bfl/flux-kontext-pro"]);
+    assert.deepEqual(vercel[0], { source: "vercel", provider: "vercel", model: "typesafe-ai/jev", sourceKey: "typesafe-ai/jev", mode: null, rates: { input: 4.2e-8, output: 0 } });
+    assert.deepEqual(vercel[1]!.rates, { input: 1.2e-6, output: 6e-6, cacheRead: 2.4e-7, searchPerQuery: 0.01, longContext: [{ threshold: 32000, input: 2.4e-6, output: 1.2e-5 }] });
+    assert.deepEqual(vercel[2]!.rates, { perOutputImage: 0.04 });
+  });
+
+  it("prices a Jev call made through Vercel", () => {
+    const priced = catalog(vercel).price({ provider: "vercel", model: "typesafe-ai/jev", usage: { inputTokens: 18_600, outputTokens: 1_001 } });
+    assert.ok(priced, "a Vercel call to Jev has a price");
+    assert.ok(Math.abs(priced.cost - 18_600 * 4.2e-8) < 1e-12);
+    assert.equal(priced.source, "vercel");
   });
 });

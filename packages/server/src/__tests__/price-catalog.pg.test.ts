@@ -8,7 +8,7 @@ import { createIngestRouter } from "../ingest.js";
 import { createEffectivePrice } from "../effective-prices.js";
 import { invalidateProjectPrices } from "../billing.js";
 import { getPriceCatalog, PriceCatalog, setPriceCatalog } from "../price-catalog/catalog.js";
-import { ensurePriceCatalogSchema, repriceUnpricedEvents, syncPriceCatalog } from "../price-catalog/sync.js";
+import { ensurePriceCatalogSchema, importSnapshotSources, repriceUnpricedEvents, syncPriceCatalog } from "../price-catalog/sync.js";
 
 const connectionString = process.env["ACCOUNTING_TEST_DATABASE_URL"];
 
@@ -65,7 +65,7 @@ test("price catalog sync stores versions, guards against broken feeds and repric
       assert.equal(unpriced.rows[0].count, 4, "nothing knows these models yet");
 
       // A new model lands in the catalogs: the sync prices the waiting calls.
-      const first = await syncPriceCatalog(pool, { trigger: "test", payloads: { litellm: litellm(1e-6), models_dev: {}, openrouter: { data: [] } } });
+      const first = await syncPriceCatalog(pool, { trigger: "test", payloads: { litellm: litellm(1e-6), models_dev: {}, openrouter: { data: [] }, vercel: { data: [] } } });
       assert.equal(first.sources["litellm"]?.status, "ok");
       assert.equal(first.sources["models_dev"]?.status, "rejected", "an empty feed never wipes prices");
       assert.equal(first.added, 2);
@@ -81,7 +81,7 @@ test("price catalog sync stores versions, guards against broken feeds and repric
       assert.ok(Math.abs(Number(byId.get("tts").cost_usd) - 0.1) < 1e-12);
 
       // A price change opens a new version; history keeps the old rate.
-      const second = await syncPriceCatalog(pool, { trigger: "test", payloads: { litellm: litellm(2e-6), models_dev: {}, openrouter: { data: [] } } });
+      const second = await syncPriceCatalog(pool, { trigger: "test", payloads: { litellm: litellm(2e-6), models_dev: {}, openrouter: { data: [] }, vercel: { data: [] } } });
       assert.equal(second.changed, 1);
       const versions = await pool.query(
         "SELECT effective_from, effective_to FROM model_prices WHERE source_key = 'gpt-test-9' ORDER BY effective_from",
@@ -122,6 +122,27 @@ test("price catalog sync stores versions, guards against broken feeds and repric
     await pool.query("DELETE FROM pricing_sync_runs").catch(() => undefined);
     await pool.query("DELETE FROM projects WHERE id = $1", [projectId]).catch(() => undefined);
     await pool.query("DELETE FROM orgs WHERE id = $1", [orgId]).catch(() => undefined);
+    await pool.end();
+  }
+});
+
+test("a price source a release adds is seeded from the snapshot even when the catalog has prices", { skip: !connectionString }, async () => {
+  const pool = new pg.Pool({ connectionString });
+  try {
+    await initDatabase();
+    await ensurePriceCatalogSchema(pool);
+    // The catalog is global; this test database starts it from nothing.
+    await pool.query("DELETE FROM model_prices");
+    assert.ok(await importSnapshotSources(pool) > 1000, "an empty catalog takes the whole snapshot");
+    // A catalog synced before Vercel's gateway was a source.
+    await pool.query("DELETE FROM model_prices WHERE source = 'vercel'");
+    const added = await importSnapshotSources(pool);
+    assert.ok(added > 100, `Vercel's prices are added (${added})`);
+    const jev = await pool.query("SELECT rates FROM model_prices WHERE source = 'vercel' AND provider = 'vercel' AND model = 'typesafe-ai/jev'");
+    assert.equal(jev.rowCount, 1, "Jev through Vercel has a price");
+    assert.equal(await importSnapshotSources(pool), 0, "sources the catalog has are left to sync");
+  } finally {
+    await pool.query("DELETE FROM model_prices").catch(() => undefined);
     await pool.end();
   }
 });

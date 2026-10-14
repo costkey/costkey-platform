@@ -425,10 +425,22 @@ export async function startServer(options: AppOptions = {}): Promise<{ server: R
     ?? (process.env["NODE_ENV"] === "test" ? "127.0.0.1" : "0.0.0.0");
   const server = runtime.app.listen(port, host, () => {
     console.log(`[costkey] Listening on ${host}:${port}`);
-    void runtime.initialize().catch((error) => {
-      console.error("[costkey] Init error:", error);
-      server.close(() => undefined);
-    });
+    // During a rollout the old revision keeps writing while this one migrates, and
+    // Postgres can pick the migration as a deadlock victim. Startup is safe to re-run,
+    // so try again instead of shutting down.
+    const start = (attempt: number): void => {
+      void runtime.initialize().catch((error) => {
+        const code = (error as { code?: unknown } | null)?.code;
+        if ((code === "40P01" || code === "55P03") && attempt < 5) {
+          console.warn(`[costkey] Init hit a lock conflict (${String(code)}), retrying (${attempt + 1} of 5)`);
+          setTimeout(() => start(attempt + 1), 1000 * 2 ** attempt).unref();
+          return;
+        }
+        console.error("[costkey] Init error:", error);
+        server.close(() => undefined);
+      });
+    };
+    start(0);
   });
   server.requestTimeout = 60_000;
   server.headersTimeout = 65_000;

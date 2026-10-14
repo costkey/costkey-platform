@@ -52,6 +52,9 @@ class ToolInputError extends Error {}
 
 const READ_ONLY = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } as const;
 
+/** A yes/no option. Some clients send "true" and "false" as text, so those count too. */
+const flag = () => z.preprocess((value) => (value === "true" ? true : value === "false" ? false : value), z.boolean().optional());
+
 // ── Shared inputs ────────────────────────────────────────────────────────
 
 const projectInput = z.string().optional()
@@ -888,7 +891,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
       release: z.string().optional().describe("Release or version the app reported."),
       status: z.string().optional().describe('"failed" for failed or cancelled calls, or HTTP codes: "429", "500,503", "5xx".'),
       trace_id: z.string().optional().describe("Only calls in this run (searches the last 30 days unless since/from is given)."),
-      unpriced: z.boolean().optional().describe("Only calls with no cost recorded: a model without a price, no usage reported, or a failed call. get_call says which."),
+      unpriced: flag().describe("Only calls with no cost recorded: a model without a price, no usage reported, or a failed call. get_call says which."),
       search: z.string().optional().describe("Free text matched against ids, run name, model, feature, customer and code location."),
       sort: z.enum(["newest", "cost", "duration"]).optional().describe("newest (default), cost (most expensive first) or duration (slowest first)."),
       limit: limitInput(20, 100),
@@ -916,7 +919,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
     inputSchema: {
       project: projectInput,
       since: sinceInput, from: fromInput, to: toInput,
-      failed_only: z.boolean().optional().describe("Only runs that went wrong: ended failed, a step or tool errored, or a call failed and wasn't retried successfully."),
+      failed_only: flag().describe("Only runs that went wrong: ended failed, a step or tool errored, or a call failed and wasn't retried successfully."),
       feature: z.string().optional().describe("Feature the run is attributed to."),
       file: z.string().optional().describe("Source file that made the run's calls (path or its ending)."),
       function: z.string().optional().describe("Function that made the run's calls."),
@@ -924,7 +927,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
       environment: z.string().optional().describe("Environment."),
       release: z.string().optional().describe("Release."),
       search: z.string().optional().describe("Free text matched against run id, run name, model, feature and customer."),
-      include_idle: z.boolean().optional().describe("Also list runs that made no model calls (hidden by default)."),
+      include_idle: flag().describe("Also list runs that made no model calls (hidden by default)."),
       sort: z.enum(["newest", "cost", "duration", "calls"]).optional().describe("newest (default), cost, duration or calls."),
       limit: limitInput(20, 100),
       offset: offsetInput,

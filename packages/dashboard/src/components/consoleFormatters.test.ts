@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { formatReportedAmount, periodDates, reportingCurrencyNote, sourceAttributionStatus } from "./consoleFormatters";
+import { formatReportedAmount, parsePeriod, periodDates, periodLabel, relativeMs, reportingCurrencyNote, sourceAttributionStatus } from "./consoleFormatters";
 
 describe("periodDates", () => {
   afterEach(() => vi.useRealTimers());
@@ -38,5 +38,32 @@ describe("reported money", () => {
     expect(sourceAttributionStatus({ featureSource: "inferred", functionName: "run" })).toBe("Inferred");
     expect(sourceAttributionStatus({ functionName: "run" })).toBe("Recorded location");
     expect(sourceAttributionStatus(null)).toBe("Unavailable");
+  });
+});
+
+describe("time ranges", () => {
+  it("reads any rolling window, today, the month, the last deploy and custom", () => {
+    expect(parsePeriod("15m")).toBe("15m");
+    expect(parsePeriod("3h")).toBe("3h");
+    expect(parsePeriod("2w")).toBe("2w");
+    expect(parsePeriod("deploy")).toBe("deploy");
+    expect(parsePeriod("today")).toBe("today");
+    expect(parsePeriod("0h")).toBe("mtd");
+    expect(parsePeriod("9999d")).toBe("mtd");
+    expect(parsePeriod("nonsense")).toBe("mtd");
+  });
+
+  it("words a period the way the picker shows it", () => {
+    expect(periodLabel("1h")).toBe("last hour");
+    expect(periodLabel("45m")).toBe("last 45 minutes");
+    expect(periodLabel("deploy")).toBe("since the last deploy");
+  });
+
+  it("ends rolling windows now and keeps 7 and 30 days on local midnight", () => {
+    const { from, to } = periodDates("15m", "UTC");
+    expect(Date.parse(to) - Date.parse(from)).toBe(15 * 60_000);
+    expect(relativeMs("3h")).toBe(3 * 3_600_000);
+    expect(relativeMs("today")).toBeNull();
+    expect(periodDates("7d", "UTC").from.endsWith("T00:00:00.000Z")).toBe(true);
   });
 });

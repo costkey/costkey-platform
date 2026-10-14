@@ -66,6 +66,14 @@ function windowFrom(req: Request): Window {
 /** The work item a run is an attempt of: runs that share it are retries of one job. */
 export const WORK_ID_SQL = (e: string) => `NULLIF(COALESCE(${e}.context->>'work_id', ${e}.context->>'workId', ${e}.context->>'attempt_key'), '')`;
 
+/**
+ * What calls cost: the priced ones' total, and 0 when every unpriced call
+ * failed (a failed call without a price costs nothing). Null only while some
+ * call that went through has no price yet.
+ */
+export const KNOWN_COST_SQL = (cost: string, failed: string) =>
+  `COALESCE(SUM(${cost}), CASE WHEN COUNT(*) FILTER (WHERE ${cost} IS NULL AND NOT ${failed}) = 0 THEN 0 END)`;
+
 /** One row per run in the window, with its root span. Params: $1 project, $2 from, $3 to, $4 scope (scopeParam). */
 export const RUNS_CTE = `
   calls AS (
@@ -87,7 +95,7 @@ export const RUNS_CTE = `
   ),
   runs AS (
     SELECT trace_id, MAX(trace_name) AS trace_name,
-           SUM(cost_usd) AS cost, COUNT(*)::int AS calls,
+           ${KNOWN_COST_SQL("cost_usd", "call_failed")} AS cost, COUNT(*)::int AS calls,
            -- A failed call without a price cost nothing; it isn't unpriced.
            COUNT(*) FILTER (WHERE cost_usd IS NULL AND NOT call_failed)::int AS unpriced,
            MIN(timestamp) AS started_at,
@@ -346,7 +354,7 @@ export async function loadOverviewBoard(pool: pg.Pool, projectId: string, window
       `WITH ${RUNS_CTE}
        SELECT r.root_name AS name, COUNT(DISTINCT r.trace_id)::int AS runs,
               COALESCE(SUM(c.input_tokens), 0)::bigint AS input, COALESCE(SUM(c.output_tokens), 0)::bigint AS output,
-              SUM(c.cost_usd) AS cost, COUNT(*) FILTER (WHERE c.cost_usd IS NULL)::int AS unpriced
+              ${KNOWN_COST_SQL("c.cost_usd", "c.call_failed")} AS cost, COUNT(*) FILTER (WHERE c.cost_usd IS NULL AND NOT c.call_failed)::int AS unpriced
        FROM run_rows r JOIN calls c ON c.trace_id = r.trace_id
        WHERE r.root_kind = 'agent'
        GROUP BY r.root_name
@@ -403,7 +411,7 @@ export async function loadOverviewBoard(pool: pg.Pool, projectId: string, window
      SELECT ${WORKFLOW_NAME.replaceAll("root_kind", "r.root_kind").replaceAll("root_name", "r.root_name").replaceAll("group_name", "r.group_name").replaceAll("trace_name", "r.trace_name")} AS name,
             COUNT(DISTINCT r.trace_id)::int AS runs,
             COALESCE(SUM(c.input_tokens), 0)::bigint AS input, COALESCE(SUM(c.output_tokens), 0)::bigint AS output,
-            SUM(c.cost_usd) AS cost, COUNT(*) FILTER (WHERE c.cost_usd IS NULL AND NOT c.call_failed)::int AS unpriced
+            ${KNOWN_COST_SQL("c.cost_usd", "c.call_failed")} AS cost, COUNT(*) FILTER (WHERE c.cost_usd IS NULL AND NOT c.call_failed)::int AS unpriced
      FROM run_rows r JOIN calls c ON c.trace_id = r.trace_id
      WHERE r.root_kind IS DISTINCT FROM 'agent'
      GROUP BY 1

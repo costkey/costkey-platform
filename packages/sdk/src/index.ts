@@ -44,6 +44,7 @@ import { randomBytes } from "node:crypto";
 import { CostKeyPolicyClient, CostKeyPolicyRefused, type PolicyAdmissionClient } from "./policy.js";
 import { recordLiveKitUsage, recordLiveKitSessionUsage } from "./livekit.js";
 import { instrumentBedrockClient } from "./bedrock-client.js";
+import { detectSource } from "./release.js";
 
 export type {
   BeforeSendEventHook,
@@ -155,13 +156,18 @@ function init(options: import("./types.js").CostKeyOptions): void {
       })
     : null;
 
+  // The deploy: the commit and repository link a release to its code in the console.
+  const source = detectSource({ commit: options.commit, repository: options.repository });
+  const envRelease = typeof process !== "undefined" ? process.env?.["COSTKEY_RELEASE"] : undefined;
   transport = new Transport({
     endpoint: dsn.endpoint,
     authKey: dsn.authKey,
     maxBatchSize: options.maxBatchSize ?? 50,
     flushInterval: options.flushInterval ?? 5000,
     debug: options.debug ?? false,
-    release: options.release,
+    release: options.release || envRelease || source.commit,
+    commit: source.commit,
+    repository: source.repository,
   });
 
   setLifecycleEmitter((record) => {

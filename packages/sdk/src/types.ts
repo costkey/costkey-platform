@@ -626,16 +626,27 @@ export interface CostKeyOptions {
   debug?: boolean;
   /** Additional default context applied to all events */
   defaultContext?: EventContext;
-  /** Release version — used for sourcemap translation on the server */
+  /**
+   * Release version — used for sourcemap translation on the server, and to
+   * compare deploys. Defaults to COSTKEY_RELEASE, then the commit SHA.
+   */
   release?: string;
+  /** Commit SHA of the running code. Detected from CI/platform variables or .git when unset. */
+  commit?: string;
+  /** Source repository URL, so the console links releases to commits. Detected when unset. */
+  repository?: string;
 }
 
 /** Batched payload sent to the ingest API */
 export interface TransportPayload {
   /** SDK version */
   sdkVersion: string;
-  /** Release version (for sourcemap translation) */
+  /** Release version (for sourcemap translation); the commit SHA unless set */
   release?: string;
+  /** Full commit SHA of the running code, when known */
+  commit?: string;
+  /** Source repository as an https URL, when known */
+  repository?: string;
   /** Events in this batch */
   events: CostKeyTelemetryEvent[];
 }

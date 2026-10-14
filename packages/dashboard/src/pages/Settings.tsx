@@ -99,12 +99,13 @@ import {
   StatusPill,
 } from "../components/ConsolePrimitives";
 import { prototypeState, PrototypeStateNotice } from "../components/PrototypeState";
+import CodingAgents from "../components/CodingAgents";
 import { formatDateTime } from "../components/consoleFormatters";
 import { isValidFxBasis, parseFindingThresholdForm, type FindingThresholdFormValues } from "../settingsGuards";
 import "./Settings.css";
 
 type Role = "owner" | "admin" | "developer" | "viewer";
-type SettingSection = "projects" | "team" | "notifications" | "data" | "pricing" | "billing";
+type SettingSection = "projects" | "team" | "notifications" | "data" | "pricing" | "agents" | "billing";
 
 interface SettingsProject {
   id: string;
@@ -128,6 +129,7 @@ const sections: Array<{ id: SettingSection; label: string }> = [
   { id: "notifications", label: "Notifications" },
   { id: "data", label: "Privacy & data" },
   { id: "pricing", label: "Prices & credits" },
+  { id: "agents", label: "Coding agents" },
   { id: "billing", label: "Billing" },
 ];
 
@@ -351,6 +353,7 @@ export default function Settings() {
             {section === "notifications" && <NotificationsSettings projects={projectItems} role={role} userEmail={user?.email ?? ""} />}
             {section === "data" && <DataSourceSettings projects={projectItems} role={role} currentProjectId={currentProjectId} />}
             {section === "pricing" && <PricingCredits projects={projectItems} role={role} currentProjectId={currentProjectId} />}
+            {section === "agents" && <CodingAgents projects={projectItems} />}
             {section === "billing" && <BillingSettings role={role} orgId={user?.orgId ?? org?.id ?? null} billingQuery={searchParams.get("billing")} />}
           </>}
         </div>

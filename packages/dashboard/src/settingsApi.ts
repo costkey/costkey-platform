@@ -638,6 +638,38 @@ export async function deleteProject(projectId: string): Promise<{ ok: true; dele
   return request(`/projects/${encodeURIComponent(projectId)}`, { method: "DELETE", body: { confirmProjectId: projectId } });
 }
 
+/** A personal access token a coding agent uses to read this workspace (MCP). */
+export interface AgentToken {
+  id: string;
+  name: string;
+  /** The token's last four characters. */
+  hint: string | null;
+  scopes: string[];
+  projectIds: string[] | null;
+  createdAt: string | null;
+  lastUsedAt: string | null;
+  expiresAt: string | null;
+}
+
+export interface AgentTokenList {
+  tokens: AgentToken[];
+  mcpUrl: string;
+  mcpEnabled: boolean;
+}
+
+export async function getAgentTokens(): Promise<AgentTokenList> {
+  const body = await request<Partial<AgentTokenList>>("/agent-tokens");
+  return { tokens: arrayOrEmpty<AgentToken>(body.tokens), mcpUrl: String(body.mcpUrl ?? ""), mcpEnabled: body.mcpEnabled !== false };
+}
+
+export async function createAgentToken(input: { name: string; projectIds?: string[] | null; expiresAt?: string | null }): Promise<{ token: AgentToken; secret: string; mcpUrl: string }> {
+  return request("/agent-tokens", { method: "POST", body: input });
+}
+
+export async function revokeAgentToken(tokenId: string): Promise<{ revoked: true }> {
+  return request(`/agent-tokens/${encodeURIComponent(tokenId)}`, { method: "DELETE" });
+}
+
 export async function uploadSourcemap(projectId: string, release: string, file: File): Promise<{ uploaded: boolean; release: string; fileName: string }> {
   const sourcemapJson = await file.text();
   return request(`/projects/${encodeURIComponent(projectId)}/sourcemaps`, {

@@ -133,7 +133,7 @@ const sections: Array<{ id: SettingSection; label: string }> = [
   { id: "notifications", label: "Notifications" },
   { id: "data", label: "Privacy & data" },
   { id: "pricing", label: "Prices & credits" },
-  { id: "agents", label: "Coding agents" },
+  { id: "agents", label: "MCP & coding agents" },
   { id: "billing", label: "Billing" },
 ];
 
@@ -985,7 +985,9 @@ function PriceList({ projectId, canEdit }: { projectId: string; canEdit: boolean
     {unpriced === null ? <LoadingRows count={2} columns={4} /> : unpriced.length === 0
       ? null
       : <div className="settings-table-wrap"><table className="settings-table"><thead><tr><th>Model without a price</th><th>Calls</th><th>Last seen</th><th /></tr></thead><tbody>{unpriced.map((item) => <Fragment key={rowKey(item)}>
-          <tr><td className="primary">{item.model ?? "Model not recorded"}<div className="muted">{item.provider}</div></td><td>{item.calls.toLocaleString()}</td><td className="muted">{formatDateTime(item.lastSeen)}</td><td className="actions">{canEdit && item.model && open !== rowKey(item) && <button className="ck-button ck-button-secondary" type="button" onClick={() => setOpen(rowKey(item))}>Set price</button>}</td></tr>
+          <tr><td className="primary">{item.model ?? "Model not recorded"}<div className="muted">{item.provider}</div></td><td>{item.calls.toLocaleString()}</td><td className="muted">{formatDateTime(item.lastSeen)}</td><td className="actions">{item.reason === "no_usage" ? <span className="muted" title="The provider sent no token counts, so there is nothing to price">No usage reported</span>
+            : item.reason === "pending" ? <span className="muted" title="This model has a price; Refresh prices these calls">Priced on refresh</span>
+              : canEdit && item.model && open !== rowKey(item) && <button className="ck-button ck-button-secondary" type="button" onClick={() => setOpen(rowKey(item))}>Set price</button>}</td></tr>
           {open === rowKey(item) && <tr className="settings-expanded-row"><td colSpan={4}><PriceModelForm projectId={projectId} item={item} onCancel={() => setOpen(null)} onDone={(repriced) => { setOpen(null); setMessage(`Priced ${repriced.toLocaleString()} call${repriced === 1 ? "" : "s"}.`); void load(); }} /></td></tr>}
         </Fragment>)}</tbody></table></div>}
   </div></Panel>;

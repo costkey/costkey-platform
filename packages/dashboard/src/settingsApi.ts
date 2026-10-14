@@ -489,6 +489,8 @@ export interface UnpricedModel {
   firstSeen: string;
   lastSeen: string;
   units: string[];
+  /** Why these calls have no cost: the catalog doesn't know the model, the calls reported no usage, or they're waiting to be repriced. */
+  reason?: "no_price" | "no_usage" | "pending";
 }
 
 export interface CatalogModel {

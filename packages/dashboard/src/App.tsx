@@ -19,6 +19,7 @@ const Budgets = lazy(() => loadChunk(() => import("./pages/Budgets")));
 const Costs = lazy(() => loadChunk(() => import("./pages/Costs")));
 const Dashboard = lazy(() => loadChunk(() => import("./pages/Dashboard")));
 const Forecast = lazy(() => loadChunk(() => import("./pages/Forecast")));
+const ComparePeriods = lazy(() => loadChunk(() => import("./pages/ComparePeriods")));
 const Executions = lazy(() => loadChunk(() => import("./pages/Executions")));
 const Finding = lazy(() => loadChunk(() => import("./pages/Finding")));
 const Invite = lazy(() => loadChunk(() => import("./pages/Invite")));
@@ -297,7 +298,7 @@ function AppShell() {
   ], []);
 
   function navSection(pathname: string): string {
-    if (pathname === "/" || pathname === "/overview" || pathname.startsWith("/finding")) return "/";
+    if (pathname === "/" || pathname.startsWith("/overview") || pathname.startsWith("/finding")) return "/";
     if (pathname.startsWith("/workflows")) return "/workflows";
     if (pathname.startsWith("/agents")) return "/agents";
     if (pathname.startsWith("/traces") || pathname === "/trace" || pathname.startsWith("/compare")) return "/traces";
@@ -413,6 +414,7 @@ export default function App() {
           <RouterRoute element={<ProtectedRoute />}>
             <RouterRoute path="/" element={<Dashboard />} />
             <RouterRoute path="/overview" element={<Dashboard />} />
+            <RouterRoute path="/overview/compare" element={<ComparePeriods />} />
             <RouterRoute path="/traces" element={<Traces />} />
             <RouterRoute path="/traces/:traceId" element={<Traces />} />
             <RouterRoute path="/trace" element={<Traces />} />

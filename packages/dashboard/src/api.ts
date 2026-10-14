@@ -1182,3 +1182,30 @@ export interface OverviewBoard {
 export function getOverviewBoard(projectId: string, scope: InsightScope): Promise<OverviewBoard> {
   return get(`/projects/${encodeURIComponent(projectId)}/insights/board?${scopeQuery(scope)}`);
 }
+
+/** Latency and errors of the provider calls in one window. Rates are 0..1. */
+export interface ReliabilityRow {
+  calls: number;
+  p50DurationMs: number | null;
+  p95DurationMs: number | null;
+  p95TtftMs: number | null;
+  streams: number;
+  errors: number;
+  errorRate: number | null;
+  retries: number;
+  retryRate: number | null;
+  cost: number | null;
+  wastedCost: number | null;
+}
+
+export interface Reliability {
+  from: string;
+  to: string;
+  totals: ReliabilityRow;
+  byModel: Array<ReliabilityRow & { provider: string; model: string }>;
+  byAgent: Array<ReliabilityRow & { agent: string; runs: number; failedRuns: number }>;
+}
+
+export function getReliability(projectId: string, scope: InsightScope): Promise<Reliability> {
+  return get(`/projects/${encodeURIComponent(projectId)}/quality/reliability?${scopeQuery(scope)}`);
+}

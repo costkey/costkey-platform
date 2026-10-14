@@ -4846,3 +4846,17 @@ a.ck-metric-link > .ck-metric-card { height: 100%; }
 /* The project switcher sits at the foot of the sidebar, above the account; its menu opens upward. */
 .ck-sidebar-bottom .ck-project-switcher { position: relative; margin: 4px 0; }
 .ck-sidebar-bottom .ck-project-menu { top: auto; bottom: calc(100% + 6px); }
+
+/* Compare periods: two windows side by side with the change. */
+.ck-period-compare-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 16px; }
+.ck-period-compare-days { display: flex; flex-wrap: wrap; gap: 12px; }
+.ck-period-compare-days strong { color: var(--ck-ink); font-size: 12px; font-weight: 600; }
+.ck-period-compare .ck-compare-row { grid-template-columns: minmax(130px, 1.1fr) repeat(3, minmax(90px, 1fr)); align-items: baseline; color: var(--ck-ink); font-size: 13px; font-variant-numeric: tabular-nums lining-nums; }
+.ck-period-compare .ck-compare-row.head strong { display: flex; flex-direction: column; gap: 2px; }
+.ck-period-compare-range { color: var(--ck-slate); font-size: 12px; font-weight: 400; }
+.ck-period-compare-section { background: var(--ck-paper); color: var(--ck-slate) !important; font-size: 11px !important; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; padding-top: 8px !important; padding-bottom: 8px !important; }
+.ck-period-compare-value { display: flex; flex-direction: column; gap: 2px; }
+.ck-period-compare-note { color: var(--ck-slate); font-size: 12px; }
+@media (max-width: 767px) {
+  .ck-period-compare .ck-compare-table .ck-compare-row { grid-template-columns: minmax(0, 1fr) repeat(3, minmax(0, 0.9fr)); }
+}

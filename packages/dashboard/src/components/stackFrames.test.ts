@@ -63,4 +63,14 @@ describe("frame source", () => {
     expect(defaultOpenFrame(views)).toBe(2);
     expect(defaultOpenFrame(frameViews([{ functionName: "a", fileName: "/app/a.ts", lineNumber: 1 }], {}))).toBeNull();
   });
+
+  it("opens the frame the call is attributed to, not just the first of your code", async () => {
+    const { defaultOpenFrame } = await import("./stackFrames");
+    const views = frameViews([
+      { ...withCode, functionName: "stream_response", fileName: "/app/src/claude_model.py", lineNumber: 225 },
+      { ...withCode, functionName: "run", fileName: "/app/src/run_loop.py", lineNumber: 251 },
+    ], { functionName: "run", file: "/app/src/run_loop.py", line: 251 });
+    expect(views.map((view) => view.isCallSite)).toEqual([false, true]);
+    expect(defaultOpenFrame(views)).toBe(1);
+  });
 });

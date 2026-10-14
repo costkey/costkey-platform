@@ -4898,3 +4898,8 @@ a.ck-metric-link > .ck-metric-card { height: 100%; }
   .ck-trp-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .ck-trp-label { max-width: 200px; }
 }
+
+/* The frame the call's cost is attributed to (the server's call-graph pick). */
+.ck-callstack-attributed { flex: 0 0 auto; margin-left: 6px; padding: 0 6px; border-radius: 5px; background: #fdf3d7; color: #7a5a14; font: 600 10.5px var(--font); font-style: normal; }
+.ck-callstack li.is-attributed > .ck-callstack-row { box-shadow: inset 3px 0 0 #e8c46a; }
+.ck-callstack li.is-attributed .ck-callstack-fn { font-weight: 600; color: var(--ck-ink); }

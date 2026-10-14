@@ -14,7 +14,9 @@
 #
 # The console goes through IAP. Only the endpoints SDKs call (events, policy,
 # runtime config and call graph uploads) skip IAP: they authenticate with a
-# DSN key and can't sign in with Google. Every console path, /auth/me
+# DSN key and can't sign in with Google. So does /mcp: coding agents
+# authenticate with a read-only agent token and can't sign in with Google
+# either. Every console path, /auth/me
 # included, must stay behind IAP, or the console sees no identity. Run
 # CostKey with COSTKEY_AUTH=iap so the console signs people in from IAP.
 #
@@ -86,7 +88,7 @@ if rule is None:
     sys.exit(f"{host} is not a host on this URL map")
 matcher = next(m for m in url_map["pathMatchers"] if m["name"] == rule["pathMatcher"])
 
-sdk_paths = [f"{prefix}/api/v1/events", f"{prefix}/api/v1/sdk/*"]
+sdk_paths = [f"{prefix}/api/v1/events", f"{prefix}/api/v1/sdk/*", f"{prefix}/mcp"]
 if matcher.get("pathRules"):
     # Path rules can't match /projects/<id>/config, so those go through IAP;
     # SDKs then keep their last runtime config.
@@ -109,6 +111,7 @@ else:
         "matchRules": [
             {"prefixMatch": f"{prefix}/api/v1/events"},
             {"prefixMatch": f"{prefix}/api/v1/sdk/"},
+            {"fullPathMatch": f"{prefix}/mcp"},
             {"pathTemplateMatch": f"{prefix}/api/v1/projects/{{project=*}}/config"},
             {"pathTemplateMatch": f"{prefix}/api/v1/projects/{{project=*}}/callgraph"},
         ],

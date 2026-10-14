@@ -537,7 +537,8 @@ function mergeFinancialRollups(
       ? Number(row.known_cost) / Number(row.priced_observations) : null;
     row.mean_cost_per_trace = Number(row.fully_priced_trace_count) > 0
       ? Number(row.fully_priced_trace_cost_usd) / Number(row.fully_priced_trace_count) : null;
-    row.unpriced_observations = Number(row.observations) - Number(row.priced_observations);
+    // Keep the queries' own count: it leaves out failed calls, which cost nothing.
+    row.unpriced_observations = Number(row.unpriced_observations ?? Number(row.observations) - Number(row.priced_observations));
   }
   return [...merged.values()];
 }
@@ -932,7 +933,8 @@ export function createAccountingRouter(pool: pg.Pool): Router {
           `${chargesCte()}
            SELECT COUNT(*)::int AS observations,
                   COUNT(*) FILTER (WHERE c.record_type = 'call')::int AS calls,
-                  COUNT(*) FILTER (WHERE c.cost_usd IS NOT NULL)::int AS priced,
+                  -- A failed call without a price cost nothing: it counts as settled, not unpriced.
+                  COUNT(*) FILTER (WHERE c.cost_usd IS NOT NULL OR c.no_charge)::int AS priced,
                   COUNT(DISTINCT c.trace_id)::int AS traces,
                   SUM(c.cost_usd) FILTER (WHERE c.cost_usd IS NOT NULL) AS known_cost,
                   COALESCE(SUM(c.input_tokens),0)::bigint AS input_tokens,
@@ -946,7 +948,7 @@ export function createAccountingRouter(pool: pg.Pool): Router {
            SELECT c.provider, COALESCE(c.model, 'unknown') AS model,
                   COUNT(*)::int AS observations,
                   COUNT(*) FILTER (WHERE c.record_type = 'call')::int AS calls,
-                  COUNT(*) FILTER (WHERE c.cost_usd IS NOT NULL)::int AS priced,
+                  COUNT(*) FILTER (WHERE c.cost_usd IS NOT NULL OR c.no_charge)::int AS priced,
                   SUM(c.cost_usd) FILTER (WHERE c.cost_usd IS NOT NULL) AS known_cost,
                   COALESCE(SUM(c.input_tokens),0)::bigint AS input_tokens,
                   COALESCE(SUM(c.output_tokens),0)::bigint AS output_tokens
@@ -958,7 +960,7 @@ export function createAccountingRouter(pool: pg.Pool): Router {
           `${chargesCte()}
            SELECT c.provider, COUNT(*)::int AS observations,
                   COUNT(*) FILTER (WHERE c.record_type = 'call')::int AS calls,
-                  COUNT(*) FILTER (WHERE c.cost_usd IS NOT NULL)::int AS priced,
+                  COUNT(*) FILTER (WHERE c.cost_usd IS NOT NULL OR c.no_charge)::int AS priced,
                   SUM(c.cost_usd) FILTER (WHERE c.cost_usd IS NOT NULL) AS known_cost,
                   COALESCE(SUM(c.input_tokens),0)::bigint AS input_tokens,
                   COALESCE(SUM(c.output_tokens),0)::bigint AS output_tokens

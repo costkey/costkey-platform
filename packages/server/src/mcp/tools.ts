@@ -274,7 +274,7 @@ async function listProjectsTool(ctx: ToolContext): Promise<string> {
 interface FindCallsArgs {
   project?: string; since?: string; from?: string; to?: string; file?: string; function?: string; feature?: string;
   model?: string; provider?: string; environment?: string; release?: string; status?: string; trace_id?: string;
-  search?: string; sort?: "newest" | "cost" | "duration"; limit?: number; offset?: number;
+  search?: string; sort?: "newest" | "cost" | "duration"; limit?: number; offset?: number; unpriced?: boolean;
 }
 
 async function findCallsTool(ctx: ToolContext, args: FindCallsArgs): Promise<string> {
@@ -290,6 +290,7 @@ async function findCallsTool(ctx: ToolContext, args: FindCallsArgs): Promise<str
     feature: args.feature, model: args.model, provider: args.provider, environment: args.environment,
     release: args.release, traceId: args.trace_id, q: args.search,
     ...statusQuery(args.status),
+    accounting: args.unpriced ? "partial" : undefined,
     sort: args.sort === "cost" ? "cost_desc" : args.sort === "duration" ? "duration_desc" : "newest",
     limit, offset,
   });
@@ -298,6 +299,7 @@ async function findCallsTool(ctx: ToolContext, args: FindCallsArgs): Promise<str
   const filters = joinParts([
     args.file && `file ${args.file}`, args.function && `function ${args.function}`, args.feature && `feature ${args.feature}`,
     args.model && `model ${args.model}`, args.provider && `provider ${args.provider}`, args.environment && `env ${args.environment}`,
+    args.unpriced && "no cost recorded",
     args.release && `release ${args.release}`, args.status && `status ${args.status}`, args.trace_id && `run ${args.trace_id}`,
     args.search && `matching "${args.search}"`,
   ]);
@@ -886,6 +888,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
       release: z.string().optional().describe("Release or version the app reported."),
       status: z.string().optional().describe('"failed" for failed or cancelled calls, or HTTP codes: "429", "500,503", "5xx".'),
       trace_id: z.string().optional().describe("Only calls in this run (searches the last 30 days unless since/from is given)."),
+      unpriced: z.boolean().optional().describe("Only calls with no cost recorded: a model without a price, no usage reported, or a failed call. get_call says which."),
       search: z.string().optional().describe("Free text matched against ids, run name, model, feature, customer and code location."),
       sort: z.enum(["newest", "cost", "duration"]).optional().describe("newest (default), cost (most expensive first) or duration (slowest first)."),
       limit: limitInput(20, 100),

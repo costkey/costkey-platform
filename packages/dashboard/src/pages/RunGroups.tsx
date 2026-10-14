@@ -9,7 +9,7 @@ import { UserId } from "../components/UserId";
 import { modelHref, ownerHref, toolHref, userHref } from "../components/links";
 import { useNewIds, usePointerHold } from "../hooks/useLiveQuery";
 import { billedUnitsText, formatHitRate, formatTokenCount } from "../components/tokenUsage";
-import { EmptyPanel, LoadingRows, MetricCard, PageHeader, Panel, StatusPill } from "../components/ConsolePrimitives";
+import { EmptyPanel, LoadingRows, MetricCard, PageHeader, Pagination, Panel, StatusPill } from "../components/ConsolePrimitives";
 import { formatDateTime, formatReportedAmount, type ReportingFx } from "../components/consoleFormatters";
 import { useAuth } from "../contexts/useAuth";
 import { formatDuration } from "../utils";
@@ -232,7 +232,17 @@ function GroupDetailPage({ kind }: { kind: GroupKind }) {
   const { projectId, scope, scopeKey, currency, fx, toolbar } = useInsightScope();
   const [params, setParams] = useSearchParams();
   const runsHold = usePointerHold();
-  const { data, error, loading, status: liveStatus, updatedAt, refresh } = useScopedLoad(projectId && name ? `${kind}|${name}|${scopeKey}` : null, () => (kind === "agent" ? getAgentDetail : getWorkflowDetail)(projectId!, name, scope), { shouldDefer: runsHold.held });
+  // Runs are paged in the URL so a shared link opens on the same page.
+  const pageLimit = [25, 50, 100, 200].includes(Number(params.get("limit"))) ? Number(params.get("limit")) : 50;
+  const pageOffset = Math.max(0, Math.floor(Number(params.get("offset"))) || 0);
+  const { data, error, loading, status: liveStatus, updatedAt, refresh } = useScopedLoad(projectId && name ? `${kind}|${name}|${scopeKey}|${pageOffset}|${pageLimit}` : null, () => (kind === "agent" ? getAgentDetail : getWorkflowDetail)(projectId!, name, scope, { offset: pageOffset, limit: pageLimit }), { shouldDefer: runsHold.held });
+  const setPage = (offset: number, limit = pageLimit) => setParams((current) => {
+    if (offset > 0) current.set("offset", String(offset)); else current.delete("offset");
+    if (limit !== 50) current.set("limit", String(limit)); else current.delete("limit");
+    current.delete("run");
+    current.delete("call");
+    return current;
+  });
   const freshRuns = useNewIds(data?.runs.map((run) => run.traceId) ?? []);
   const agent = data?.agent;
   const openRun = params.get("run");
@@ -266,7 +276,9 @@ function GroupDetailPage({ kind }: { kind: GroupKind }) {
       </div>
       <ScopeBudgetCard projectId={projectId} dimension={kind} name={name} />
       {openRun && data && !runListed && projectId && <Panel title="Run" className="ck-run-panel"><InlineRun projectId={projectId} traceId={openRun} currency={currency} fx={fx} initialCallId={callId} onCallChange={changeCall} /></Panel>}
-      <Panel title="Runs" subtitle={data && data.runs.length > 0 ? "Select a run to see its steps, tools and calls." : undefined}>{loading && !data ? <LoadingRows count={5} columns={6} /> : (data?.runs.length ?? 0) === 0 ? <EmptyPanel title="No runs in this period" /> : <div {...runsHold.bind}><AgentRunsTable runs={data!.runs} fresh={freshRuns} projectId={projectId!} openRun={openRun} onToggle={toggleRun} currency={currency} fx={fx} callId={callId} onCallChange={changeCall} /></div>}</Panel>
+      <Panel title="Runs" subtitle={data && data.runs.length > 0 ? "Select a run to see its steps, tools and calls." : undefined}>{loading && !data ? <LoadingRows count={5} columns={6} /> : (data?.runs.length ?? 0) === 0 ? (pageOffset > 0 && (data?.runsPage?.total ?? 0) > 0
+        ? <><EmptyPanel title="No runs on this page" /><Pagination offset={pageOffset} limit={pageLimit} total={data!.runsPage!.total} onOffsetChange={(offset) => setPage(offset)} onLimitChange={(limit) => setPage(0, limit)} /></>
+        : <EmptyPanel title="No runs in this period" />) : <div {...runsHold.bind}><AgentRunsTable runs={data!.runs} fresh={freshRuns} projectId={projectId!} openRun={openRun} onToggle={toggleRun} currency={currency} fx={fx} callId={callId} onCallChange={changeCall} /><Pagination offset={data!.runsPage?.offset ?? pageOffset} limit={data!.runsPage?.limit ?? pageLimit} total={data!.runsPage?.total ?? data!.runs.length} onOffsetChange={(offset) => setPage(offset)} onLimitChange={(limit) => setPage(0, limit)} /></div>}</Panel>
       <Panel title="Models" subtitle={usage?.reasoningTokens ? `${formatTokenCount(usage.outputTokens)} output tokens, ${formatTokenCount(usage.reasoningTokens)} of them reasoning` : undefined}>{loading && !data ? <LoadingRows count={2} columns={5} /> : (data?.models.length ?? 0) === 0 ? <EmptyPanel title="No model calls" /> : <ModelUsageTable models={data!.models} currency={currency} fx={fx} />}{(data?.subagents.length ?? 0) > 0 && <p className="ck-table-note">Sub-agents it runs: {data!.subagents.map((agent, index) => <span key={agent.name}>{index > 0 && ", "}<Link to={ownerHref("agents", agent.name)}>{agent.name}</Link> in {agent.runs.toLocaleString()} run{agent.runs === 1 ? "" : "s"}</span>)}. Their calls are counted here too.</p>}</Panel>
       {(data?.users?.length ?? 0) > 0 && <Panel title="Users" subtitle="Who the runs were for, by spend">{<UsersPanel users={data!.users!} total={agent?.cost ?? null} currency={currency} fx={fx} />}</Panel>}
       <Panel title="Tools">{loading && !data ? <LoadingRows count={2} columns={5} /> : (data?.tools.length ?? 0) === 0 ? <EmptyPanel title="No tool calls" /> : <div className="ck-table-wrap"><table className="ck-table">

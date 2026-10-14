@@ -552,6 +552,9 @@ function fail(res: Response, label: string, error: unknown): void {
 async function loadGroupDetail(pool: pg.Pool, req: Request, kind: "agent" | "workflow", name: string) {
   const window = windowFrom(req);
   const params = [req.params["projectId"], window.from, window.to, scopeParam(window), name];
+  // The runs list is paged: `limit` (1-200, default 50) newest runs from `offset`.
+  const runsLimit = Math.min(200, Math.max(1, Math.floor(Number(req.query["limit"])) || 50));
+  const runsOffset = Math.max(0, Math.floor(Number(req.query["offset"])) || 0);
   // "agent_runs" holds the runs of this agent or workflow.
   const scoped = `WITH ${RUNS_CTE}, agent_runs AS (SELECT * FROM run_rows WHERE ${kind === "agent" ? "root_kind = 'agent' AND root_name = $5" : `root_kind IS DISTINCT FROM 'agent' AND ${WORKFLOW_NAME} = $5`})`;
   const [summary, runs, tools, models, subagents, cacheHits, modelUnits, users, userUnits] = await Promise.all([
@@ -560,7 +563,7 @@ async function loadGroupDetail(pool: pg.Pool, req: Request, kind: "agent" | "wor
       `${scoped}
        SELECT trace_id, started_at, cost, unpriced, calls, steps, tools, failed, retried, retried_by, retried_on_attempt, attempt, work_id, error_type, duration_ms, user_id,
               prompt_tokens, cache_read_tokens, cache_write_tokens, completion_tokens, reasoning_tokens, cache_reported
-       FROM agent_runs ORDER BY started_at DESC LIMIT 50`,
+       FROM agent_runs ORDER BY started_at DESC, trace_id LIMIT ${runsLimit} OFFSET ${runsOffset}`,
       params,
     ),
     pool.query(
@@ -638,6 +641,7 @@ async function loadGroupDetail(pool: pg.Pool, req: Request, kind: "agent" | "wor
       retry: retryInfo(row),
       usage: usageFrom(row),
     })),
+    runsPage: { offset: runsOffset, limit: runsLimit, total: Number(agent.runs) || 0 },
     tools: tools.rows.map((row) => ({ name: row.name, calls: number(row.calls) ?? 0, avgMs: number(row.avg_ms), failed: number(row.failed) ?? 0, cost: number(row.cost) })),
     models: models.rows.map((row) => ({
       model: row.model, provider: row.provider, calls: number(row.calls) ?? 0, cost: number(row.cost),

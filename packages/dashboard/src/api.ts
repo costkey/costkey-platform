@@ -1054,6 +1054,8 @@ export interface AgentRun {
 export interface AgentDetail {
   agent: RunGroup;
   runs: AgentRun[];
+  /** Which page of runs this is: `total` runs in the period, newest first. */
+  runsPage?: { offset: number; limit: number; total: number };
   tools: Array<{ name: string; calls: number; avgMs: number | null; failed: number; cost: number | null }>;
   models: Array<{ model: string; provider: string; calls: number; cost: number | null; usage?: TokenUsage; units?: Record<string, number> }>;
   subagents: Array<{ name: string; runs: number }>;
@@ -1091,13 +1093,20 @@ export function getAgents(projectId: string, scope: InsightScope): Promise<{ age
   return get(`/projects/${encodeURIComponent(projectId)}/agents?${scopeQuery(scope)}`);
 }
 
-export function getAgentDetail(projectId: string, name: string, scope: InsightScope): Promise<AgentDetail> {
-  return get(`/projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(name)}?${scopeQuery(scope)}`);
+/** A page of runs: `limit` newest from `offset`. */
+export interface RunsPage { offset?: number; limit?: number }
+
+function pageQuery(page?: RunsPage): string {
+  return `${page?.offset ? `&offset=${page.offset}` : ""}${page?.limit ? `&limit=${page.limit}` : ""}`;
+}
+
+export function getAgentDetail(projectId: string, name: string, scope: InsightScope, page?: RunsPage): Promise<AgentDetail> {
+  return get(`/projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(name)}?${scopeQuery(scope)}${pageQuery(page)}`);
 }
 
 /** A workflow's page: the same shape as an agent's. */
-export function getWorkflowDetail(projectId: string, name: string, scope: InsightScope): Promise<AgentDetail> {
-  return get(`/projects/${encodeURIComponent(projectId)}/workflows/${encodeURIComponent(name)}?${scopeQuery(scope)}`);
+export function getWorkflowDetail(projectId: string, name: string, scope: InsightScope, page?: RunsPage): Promise<AgentDetail> {
+  return get(`/projects/${encodeURIComponent(projectId)}/workflows/${encodeURIComponent(name)}?${scopeQuery(scope)}${pageQuery(page)}`);
 }
 
 export function getErrors(projectId: string, scope: InsightScope): Promise<ErrorSummary> {

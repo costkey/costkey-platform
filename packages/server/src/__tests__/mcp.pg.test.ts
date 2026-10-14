@@ -348,7 +348,7 @@ test("MCP: tools list, read-only, and answer through the real endpoint", { skip:
     assert.match(metadataOnly.text, /Not captured: this project records metadata only/);
 
     const runs = await tool(client, "find_runs", { failed_only: true, since: "1h" });
-    assert.match(runs.text, new RegExp(`^1 failed run in Atlas[\\s\\S]*run_bad_${suffix} "research"`));
+    assert.match(runs.text, new RegExp(`^1 failed run in Atlas[\\s\\S]*run_bad_${suffix} "research" · .* · FAILED \\(the run's root span errored\\)`));
     assert.doesNotMatch(runs.text, new RegExp(`run_ok_${suffix}`));
 
     const run = await tool(client, "get_run", { run_id: `run_bad_${suffix}` });

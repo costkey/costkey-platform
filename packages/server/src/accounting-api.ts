@@ -687,6 +687,8 @@ function traceCte(): string {
              MAX(e.context->>'conversationId') AS conversation_id,
              SUM(e.input_tokens)::bigint AS total_input_tokens,
              SUM(e.output_tokens)::bigint AS total_output_tokens,
+             COUNT(*) FILTER (WHERE COALESCE(e.lifecycle_state, '') IN ('failed', 'cancelled', 'canceled')
+               OR COALESCE(e.status_code, 200) >= 400)::int AS failed_call_count,
              MIN(e.timestamp) AS observed_started_at,
              MAX(e.timestamp + COALESCE(e.duration_ms, 0) * INTERVAL '1 millisecond') AS observed_ended_at
       FROM events e
@@ -699,7 +701,8 @@ function traceCte(): string {
              COUNT(*) FILTER (WHERE kind = 'step')::int AS step_count,
              COUNT(*) FILTER (WHERE kind = 'tool')::int AS tool_count,
              MIN(name) FILTER (WHERE kind = 'agent' AND parent_span_id IS NULL) AS root_agent,
-             BOOL_OR(status = 'error') AS has_error
+             BOOL_OR(status = 'error') AS has_error,
+             BOOL_OR(status = 'error' AND parent_span_id IS NULL) AS root_error
       FROM spans
       WHERE trace_id IS NOT NULL
       GROUP BY project_id, trace_id
@@ -744,6 +747,8 @@ function traceCte(): string {
              COALESCE(sr.step_count, 0) AS step_count,
              COALESCE(sr.tool_count, 0) AS tool_count,
              COALESCE(sr.has_error, FALSE) AS span_error,
+             COALESCE(sr.root_error, FALSE) AS root_span_error,
+             COALESCE(cr.failed_call_count, 0)::int AS failed_call_count,
              COALESCE(CASE WHEN jsonb_typeof(t.context) = 'object' THEN t.context ELSE NULL END, '{}'::jsonb)
              || jsonb_strip_nulls(jsonb_build_object(
                'feature', COALESCE(cr.feature, rr.feature),
@@ -831,6 +836,8 @@ function serializeTrace(row: Record<string, unknown>): Record<string, unknown> {
     step_count: number(row.step_count, 0),
     tool_count: number(row.tool_count, 0),
     span_error: row.span_error === true,
+    root_span_error: row.root_span_error === true,
+    failed_calls: number(row.failed_call_count, 0),
   };
 }
 

@@ -478,8 +478,10 @@ function runState(trace: Row, rootFailed = false): string {
   if (execution === "failed" || execution === "error") return `FAILED${retry?.["errorType"] ? ` (${String(retry["errorType"])})` : ""}${retry?.["willRetry"] ? ", will retry" : ""}`;
   if (execution === "cancelled" || execution === "canceled") return "CANCELLED";
   if (execution === "running" || execution === "started" || execution === "in_progress") return "running";
-  if (rootFailed) return "FAILED (the run's root span errored)";
-  if (trace["span_error"] === true) return "finished, a step errored";
+  if (rootFailed || trace["root_span_error"] === true) return "FAILED (the run's root span errored)";
+  const failedCalls = num(trace["failed_calls"]) ?? 0;
+  if (trace["span_error"] === true) return `finished, a step errored${failedCalls ? `, ${failedCalls} call${failedCalls === 1 ? "" : "s"} failed` : ""}`;
+  if (failedCalls > 0) return `finished, ${failedCalls} call${failedCalls === 1 ? "" : "s"} failed`;
   return "succeeded";
 }
 

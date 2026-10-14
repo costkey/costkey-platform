@@ -4,6 +4,7 @@ import { basename, join } from "node:path";
 import { createServer } from "node:http";
 import { randomBytes } from "node:crypto";
 import { exec } from "node:child_process";
+import { withCostkeyMcp } from "./mcp-config.js";
 
 type Framework =
   | "next"
@@ -45,7 +46,8 @@ function getHost(): string {
 function loadToken(): string | null {
   const flag = arg("--token");
   if (flag) return flag;
-  if (process.env["COSTKEY_TOKEN"]) return process.env["COSTKEY_TOKEN"];
+  // COSTKEY_TOKEN may hold a read-only agent token for .mcp.json; it can't create projects.
+  if (process.env["COSTKEY_TOKEN"] && !process.env["COSTKEY_TOKEN"].startsWith("ck_pat_")) return process.env["COSTKEY_TOKEN"];
   try {
     if (existsSync(TOKEN_FILE)) return readFileSync(TOKEN_FILE, "utf8").trim();
   } catch {
@@ -355,6 +357,25 @@ function printSnippet(detection: Detection, dsn: string | undefined): void {
   console.log();
 }
 
+/** Add CostKey to the project's .mcp.json so coding agents can read its calls. */
+function writeMcpConfig(host: string): void {
+  const path = ".mcp.json";
+  const current = readJson(path);
+  if (existsSync(path) && !current) {
+    console.log("[skip] .mcp.json isn't valid JSON. Add CostKey to it by hand: https://costkey.dev/docs/mcp");
+    return;
+  }
+  const next = withCostkeyMcp(current, host);
+  if (!next) {
+    console.log("[ok] .mcp.json already has a costkey server");
+  } else {
+    writeFileSync(path, `${JSON.stringify(next, null, 2)}\n`);
+    console.log("[ok] Added CostKey to .mcp.json (it reads the token from COSTKEY_TOKEN)");
+  }
+  console.log(`\nCreate a token in ${host.replace(/\/+$/, "")}/settings?section=agents, then start your agent with:`);
+  console.log("  export COSTKEY_TOKEN=ck_pat_...\n");
+}
+
 async function login(host: string): Promise<string> {
   const existing = loadToken();
   if (existing) {
@@ -461,10 +482,13 @@ async function setup(): Promise<void> {
   ensureEnv(dsn);
   writeGuide(detection, dsn);
   printSnippet(detection, dsn);
-  console.log("Done. Run your app and open the CostKey dashboard to watch events land.\n");
+  console.log("Done. Run your app and open the CostKey dashboard to watch events land.");
+  console.log("Let Claude Code, Cursor or Codex read these calls: npx costkey mcp\n");
 }
 
-if (command === "setup") {
+if (command === "mcp") {
+  writeMcpConfig(getHost());
+} else if (command === "setup") {
   setup().catch((err) => {
     console.error(`\nSetup failed: ${err instanceof Error ? err.message : String(err)}\n`);
     process.exit(1);
@@ -474,6 +498,7 @@ if (command === "setup") {
 
 Usage:
   costkey setup [--host <your CostKey URL>] [--name <project-name>] [--dsn <dsn>]
+  costkey mcp [--host <your CostKey URL>]    add CostKey to this project's .mcp.json
 
 The host defaults to http://localhost:4100, a local self-hosted install.
 Set --host or COSTKEY_HOST for any other address.

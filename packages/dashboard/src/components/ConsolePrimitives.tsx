@@ -1,6 +1,6 @@
 import { appUrl } from "../basePath";
 import type { ReactNode } from "react";
-import { ArrowDown, ArrowUp, Minus, RefreshCw, X } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, Minus, RefreshCw, X } from "lucide-react";
 import type { Release } from "../api";
 import { TimeRangePicker } from "./TimeRangePicker";
 import type { ConsolePeriod } from "./consoleFormatters";
@@ -242,4 +242,15 @@ export function RefreshButton({ onClick, loading = false }: { onClick: () => voi
       {loading ? "Updating" : "Refresh"}
     </button>
   );
+}
+
+/** "Showing 51–100 of 452", rows per page, and previous and next. Nothing when one page holds everything. */
+export function Pagination({ offset, limit, total, onOffsetChange, onLimitChange }: { offset: number; limit: number; total: number; onOffsetChange: (offset: number) => void; onLimitChange: (limit: number) => void }) {
+  if (total <= 0) return null;
+  if (total <= limit && offset === 0) return null;
+  const first = Math.min(offset + 1, total);
+  const last = Math.min(offset + limit, total);
+  const canPrevious = offset > 0;
+  const canNext = last < total;
+  return <nav className="ck-pagination" aria-label="Pages"><span>Showing {first.toLocaleString()}–{last.toLocaleString()} of {total.toLocaleString()}</span><div><label className="ck-pagination-size">Rows <select className="ck-select" value={limit} onChange={(event) => onLimitChange(Number(event.target.value))}><option value={25}>25</option><option value={50}>50</option><option value={100}>100</option><option value={200}>200</option></select></label><button className="ck-button ck-button-quiet" type="button" aria-label="Previous page" disabled={!canPrevious} onClick={() => onOffsetChange(Math.max(0, offset - limit))}><ChevronLeft size={13} /> Previous</button><span className="ck-pagination-page">Page {Math.floor(offset / limit) + 1} of {Math.max(1, Math.ceil(total / limit))}</span><button className="ck-button ck-button-quiet" type="button" aria-label="Next page" disabled={!canNext} onClick={() => onOffsetChange(offset + limit)}>Next <ChevronRight size={13} /></button></div></nav>;
 }

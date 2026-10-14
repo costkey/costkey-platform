@@ -217,6 +217,11 @@ test("agents and models report cache reads, hit rate, reasoning and checked cach
     const close = (actual: number | null | undefined, expected: number, label: string) => assert.ok(actual != null && Math.abs(actual - expected) < 1e-9, `${label}: ${actual} != ${expected}`);
 
     let body = await detail();
+    // Runs are paged: one per page, the second page holds the older run and says there are two.
+    const paged = await (await fetch(`${baseUrl}/api/v1/projects/${projectId}/agents/dash?${range}&limit=1&offset=1`)).json() as { runs: Array<{ traceId: string }>; runsPage: { offset: number; limit: number; total: number } };
+    assert.deepEqual(paged.runsPage, { offset: 1, limit: 1, total: 2 });
+    assert.equal(paged.runs.length, 1);
+    assert.equal(paged.runs[0]!.traceId, body.runs[1]!.traceId, "page two is the next run, newest first");
     const usage = body.agent.usage;
     assert.equal(usage.inputTokens, 7_000, "input counts the whole prompt, Anthropic cache included");
     assert.equal(usage.cacheReadTokens, 4_000);

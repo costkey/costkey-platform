@@ -213,8 +213,7 @@ export default function Dashboard() {
   const periodDays = pace?.periodDays ?? zonedDaysInMonth(now, timezone);
   const dayOfMonth = zonedDateParts(now, timezone).day;
   const unpriced = Number(overview?.unpriced_count ?? forecastObserved?.unpricedObservations) || 0;
-  // Only calls whose model has no price need one; the rest reported no usage.
-  const noUsage = Number(resource.data.overview?.unpriced_no_usage_count) || 0;
+  // Only calls whose model has no price need one: setting a price is the only fix.
   const needsPrice = resource.data.overview?.unpriced_no_price_count != null ? Number(resource.data.overview.unpriced_no_price_count) || 0 : unpriced;
   const explicitState = prototypeState(searchParams);
   const activeFindings = explicitState === "healthy" ? [] : resource.data.findings.filter((finding) => finding.state !== "no_longer_outside_threshold" && finding.state !== "acknowledged");
@@ -315,7 +314,6 @@ export default function Dashboard() {
     }
     if (finding) return { tone: "warn", text: <>{findingTitle(finding)}. Worth a look.</>, right: <Link className="ck-text-link" to={findingHref}>Review <ArrowRight size={12} /></Link> };
     if (needsPrice > 0) return { tone: "warn", text: `${needsPrice.toLocaleString()} call${needsPrice === 1 ? " has" : "s have"} no price yet, so totals are partial.`, right: <Link className="ck-text-link" to="/settings?section=pricing">Set prices <ArrowRight size={12} /></Link> };
-    if (noUsage > 0) return { tone: "warn", text: `${noUsage.toLocaleString()} call${noUsage === 1 ? "" : "s"} reported no token usage, so ${noUsage === 1 ? "its" : "their"} cost isn't counted.`, right: <Link className="ck-text-link" to={`/traces?tab=calls&accounting=partial&${scopeSearch.slice(1)}`}>See calls <ArrowRight size={12} /></Link> };
     if (budgetLimit != null && budgetSpent != null && budgetSpent >= budgetLimit) return { tone: "critical", text: `${projectName} is over its ${money(budgetLimit)} budget.`, right: <Link className="ck-text-link" to={`/budgets${scopeSearch}`}>Review budget</Link> };
     if (budgetLimit != null && projected != null && projected > budgetLimit) return { tone: "warn", text: `At this pace, ${projectName} passes its ${money(budgetLimit)} budget this month.`, right: <Link className="ck-text-link" to={`/forecast${scopeSearch}`}>See estimate</Link> };
     if (budgetLimit != null) return { tone: "good", text: `${projectName} is within its monthly budget.` };

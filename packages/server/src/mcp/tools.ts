@@ -891,7 +891,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
       release: z.string().optional().describe("Release or version the app reported."),
       status: z.string().optional().describe('"failed" for failed or cancelled calls, or HTTP codes: "429", "500,503", "5xx".'),
       trace_id: z.string().optional().describe("Only calls in this run (searches the last 30 days unless since/from is given)."),
-      unpriced: flag().describe("Only calls with no cost recorded: a model without a price, no usage reported, or a failed call. get_call says which."),
+      unpriced: flag().describe("Only calls that went through with no cost: a model without a price, or no usage reported. Failed calls are never charged, so they are left out. get_call says which."),
       search: z.string().optional().describe("Free text matched against ids, run name, model, feature, customer and code location."),
       sort: z.enum(["newest", "cost", "duration"]).optional().describe("newest (default), cost (most expensive first) or duration (slowest first)."),
       limit: limitInput(20, 100),

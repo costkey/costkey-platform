@@ -15,6 +15,7 @@ const CANCELLATION_NAMES = new Set([
   "canceledexception",
   "operationcanceledexception",
   "taskcanceledexception",
+  "generatorexit",         // Python: the app closed or dropped a stream before its end
 ]);
 
 const CANCELLATION_CODES = new Set(["abort_err", "err_canceled", "err_cancelled"]);

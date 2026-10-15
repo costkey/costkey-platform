@@ -111,6 +111,8 @@ describe("server extraction details", () => {
   it("maps raw error names to cancelled or failed", () => {
     assert.deepEqual(classifyError("AbortError"), { outcome: "cancelled", errorType: null });
     assert.deepEqual(classifyError("CancelledError"), { outcome: "cancelled", errorType: null });
+    // A Python stream the app closed or dropped before its end.
+    assert.deepEqual(classifyError("GeneratorExit"), { outcome: "cancelled", errorType: null });
     assert.deepEqual(classifyError("asyncio.exceptions.CancelledError"), { outcome: "cancelled", errorType: null });
     assert.deepEqual(classifyError("Error", "ABORT_ERR"), { outcome: "cancelled", errorType: null });
     assert.deepEqual(classifyError("RateLimitError"), { outcome: "failed", errorType: "RateLimitError" });

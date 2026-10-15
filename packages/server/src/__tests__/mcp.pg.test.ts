@@ -289,6 +289,9 @@ test("calls filter by source file: the exact path or its ending, at a path bound
   assert.deepEqual(await ids("file=marize.ts"), []);
   assert.deepEqual(await ids("functionName=classify"), [`call_expired_${suffix}`]);
   assert.deepEqual(await ids("outcome=failed"), [`call_429_${suffix}`]);
+  // A failed call is never charged: it is never in the "no cost" list.
+  assert.deepEqual(await ids("accounting=partial"), [], "call_429 failed with no cost; it isn't unpriced");
+  assert.ok((await ids("accounting=complete")).includes(`call_429_${suffix}`), "a failed call is settled");
   const runs = await call(`/api/v1/projects/${projectA}/traces?outcome=failed`, { bearer: secret });
   assert.deepEqual(runs.body.traces.map((trace: { trace_id: string }) => trace.trace_id), [`run_bad_${suffix}`]);
   // Without source access a file filter is not applied, as for the console.

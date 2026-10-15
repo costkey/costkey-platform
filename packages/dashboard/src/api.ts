@@ -16,8 +16,6 @@ export interface Overview {
   unpriced_count?: number;
   /** Calls with no cost whose model has no price: setting one prices them. */
   unpriced_no_price_count?: number;
-  /** Calls with no cost whose model has a price: they reported no usage. */
-  unpriced_no_usage_count?: number;
   pricing_coverage?: number | null;
   average_cost_per_trace?: number | null;
   trace_count?: number;

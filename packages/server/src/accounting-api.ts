@@ -1034,7 +1034,6 @@ export function createAccountingRouter(pool: pg.Pool): Router {
           priced_observations: total.priced,
           unpriced_count: unpriced,
           unpriced_no_price_count: unpriced - unpricedNoUsage,
-          unpriced_no_usage_count: unpricedNoUsage,
           pricing_coverage: observations > 0 ? total.priced / observations : null,
           accounting_state: observations === 0 ? "pending" : unpriced > 0 ? "partial" : "complete",
         },
@@ -1177,20 +1176,22 @@ export function createAccountingRouter(pool: pg.Pool): Router {
       if (value(req.query["outcome"]) === "failed") {
         clauses.push("(COALESCE(e.lifecycle_state, '') IN ('failed', 'cancelled', 'canceled') OR COALESCE(e.status_code, 200) >= 400)");
       }
+      // A failed call is never charged, so it is settled, never unpriced.
+      const settled = "(e.cost_usd IS NOT NULL OR COALESCE(e.lifecycle_state, '') IN ('failed', 'cancelled', 'canceled') OR COALESCE(e.status_code, 200) >= 400)";
       const accountingStates = queryValues(req.query["accounting"]);
       if (accountingStates) {
         const items = Array.isArray(accountingStates) ? accountingStates : [accountingStates];
         const accountingClauses: string[] = [];
-        if (items.includes("partial") || items.includes("pending")) accountingClauses.push("e.cost_usd IS NULL");
-        if (items.includes("complete")) accountingClauses.push("e.cost_usd IS NOT NULL");
+        if (items.includes("partial") || items.includes("pending")) accountingClauses.push(`NOT ${settled}`);
+        if (items.includes("complete")) accountingClauses.push(settled);
         if (accountingClauses.length > 0) clauses.push(`(${accountingClauses.join(" OR ")})`);
       }
       const coverageValues = queryValues(req.query["coverage"]);
       if (coverageValues) {
         const items = Array.isArray(coverageValues) ? coverageValues : [coverageValues];
         const coverageClauses: string[] = [];
-        if (items.includes("partial")) coverageClauses.push("e.cost_usd IS NULL");
-        if (items.includes("complete")) coverageClauses.push("e.cost_usd IS NOT NULL");
+        if (items.includes("partial")) coverageClauses.push(`NOT ${settled}`);
+        if (items.includes("complete")) coverageClauses.push(settled);
         if (coverageClauses.length > 0) clauses.push(`(${coverageClauses.join(" OR ")})`);
       }
       const result = await pool.query(

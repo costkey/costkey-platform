@@ -11,6 +11,36 @@ export const LIVE_INTERVAL_MS = 10_000;
 export const LIVE_FAST_INTERVAL_MS = 3_000;
 export const LIVE_BACKOFF_MS = 60_000;
 export const LIVE_BACKOFF_AFTER = 3;
+/** A refresh runs at least this often even with no new calls, so "last 15 minutes" still moves. */
+export const LIVE_MAX_SKIP_MS = 60_000;
+/** One version check serves every live query refreshing within this long. */
+const VERSION_REUSE_MS = 5_000;
+
+/**
+ * What the data on screen was computed from: the project's latest call. A
+ * refresh with nothing new skips its query, so a page of ten panels costs one
+ * cheap check every 10 s instead of ten heavy queries.
+ */
+let versionSource: (() => Promise<string | null>) | null = null;
+let versionCache: { value: string | null; at: number; pending: Promise<string | null> | null } = { value: null, at: -Infinity, pending: null };
+
+export function setLiveVersionSource(source: (() => Promise<string | null>) | null): void {
+  versionSource = source;
+  versionCache = { value: null, at: -Infinity, pending: null };
+}
+
+async function currentVersion(now: number): Promise<string | null> {
+  const source = versionSource;
+  if (!source) return null;
+  if (now - versionCache.at < VERSION_REUSE_MS) return versionCache.value;
+  if (!versionCache.pending) {
+    const cache = versionCache;
+    cache.pending = source()
+      .catch(() => null)
+      .then((value) => { if (versionCache === cache) Object.assign(cache, { value, at: now, pending: null }); return value; });
+  }
+  return versionCache.pending;
+}
 
 export type LiveStatus = "loading" | "live" | "reconnecting" | "paused";
 
@@ -70,6 +100,10 @@ export class LivePoller<T> {
   private pending: T | null = null;
   private stopped = true;
   private unsubscribeVisibility: (() => void) | null = null;
+  /** The version the data on screen was loaded at, and when. */
+  private loadedVersion: string | null = null;
+  private loadedAt = -Infinity;
+  private forceNext = false;
   private readonly env: LiveEnvironment;
 
   private readonly load: () => Promise<T>;
@@ -111,6 +145,7 @@ export class LivePoller<T> {
   refresh(): void {
     if (this.stopped) return;
     this.clearTimer();
+    this.forceNext = true;
     void this.fetch();
   }
 
@@ -146,6 +181,7 @@ export class LivePoller<T> {
     if (this.env.visible()) {
       // Back in view: catch up at once.
       this.clearTimer();
+      this.forceNext = true;
       void this.fetch();
     } else {
       this.clearTimer();
@@ -170,9 +206,23 @@ export class LivePoller<T> {
     if (!this.env.visible() && !this.state.loading) { this.schedule(); return; }
     this.inFlight = true;
     const generation = this.generation;
+    const force = this.forceNext;
+    this.forceNext = false;
     try {
+      const now = this.env.now();
+      const version = await currentVersion(now);
+      if (generation !== this.generation || this.stopped) return;
+      // Nothing new since this data was loaded: keep it, check again next time.
+      const fast = this.state.data != null && Boolean(this.options.isFast?.(this.state.data));
+      if (!force && !this.state.loading && !fast && version !== null && version === this.loadedVersion
+        && now - this.loadedAt < LIVE_MAX_SKIP_MS && this.state.failures === 0) {
+        this.schedule();
+        return;
+      }
       const data = await this.load();
       if (generation !== this.generation || this.stopped) return;
+      this.loadedVersion = version;
+      this.loadedAt = now;
       // The first load always shows; later ones wait for the pointer to leave.
       if (this.state.loading) { this.apply(data); this.schedule(); } else this.applyWhenFree(data);
     } catch (reason) {

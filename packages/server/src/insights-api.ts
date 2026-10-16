@@ -573,7 +573,8 @@ async function loadGroupDetail(pool: pg.Pool, req: Request, kind: "agent" | "wor
               COUNT(*) FILTER (WHERE s.status = 'error')::int AS failed,
               COALESCE(SUM(c.cost), 0) AS cost
        FROM spans s
-       LEFT JOIN LATERAL (SELECT SUM(cl.cost_usd) AS cost FROM calls cl WHERE cl.span_id = s.id) c ON TRUE
+       -- Each span's calls summed once, not rescanned per span.
+       LEFT JOIN (SELECT span_id, SUM(cost_usd) AS cost FROM calls WHERE span_id IS NOT NULL GROUP BY span_id) c ON c.span_id = s.id
        WHERE s.project_id = $1 AND s.kind = 'tool' AND s.trace_id IN (SELECT trace_id FROM agent_runs)
        GROUP BY s.name ORDER BY COUNT(*) DESC LIMIT 50`,
       params,

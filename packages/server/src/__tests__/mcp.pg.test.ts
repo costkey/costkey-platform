@@ -292,6 +292,10 @@ test("calls filter by source file: the exact path or its ending, at a path bound
   // A failed call is never charged: it is never in the "no cost" list.
   assert.deepEqual(await ids("accounting=partial"), [], "call_429 failed with no cost; it isn't unpriced");
   assert.ok((await ids("accounting=complete")).includes(`call_429_${suffix}`), "a failed call is settled");
+  // The project's setup hints never ask for a price because of a failed call.
+  const health = await call(`/api/v1/projects/${projectA}/health`, { bearer: secret });
+  assert.equal(health.status, 200);
+  assert.ok(!(health.body.hints ?? []).some((hint: { type: string }) => hint.type === "unpriced_calls"), "call_429 failed; nothing needs a price");
   const runs = await call(`/api/v1/projects/${projectA}/traces?outcome=failed`, { bearer: secret });
   assert.deepEqual(runs.body.traces.map((trace: { trace_id: string }) => trace.trace_id), [`run_bad_${suffix}`]);
   // Without source access a file filter is not applied, as for the console.

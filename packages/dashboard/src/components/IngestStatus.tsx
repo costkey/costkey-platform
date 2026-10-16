@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { getHealth, type PipelineHealth } from "../api";
 import { useLiveQuery } from "../hooks/useLiveQuery";
+import { setLiveVersionSource } from "../hooks/liveQuery";
 import { formatDateTime } from "./consoleFormatters";
 
 export type IngestTone = "live" | "idle" | "warn" | "error";
@@ -23,6 +24,14 @@ export function ingestStatus(health: PipelineHealth | null, now: number): { tone
 
 /** A small live dot for the current project's ingest health, by the account block. */
 export function IngestStatus({ projectId }: { projectId: string | null }) {
+  // Live pages refresh only when the project has new calls: its latest call is the version.
+  useEffect(() => {
+    setLiveVersionSource(projectId ? async () => {
+      const health = await getHealth(projectId, true);
+      return `${health.lastEventAt ?? ""}|${health.eventsLastHour}`;
+    } : null);
+    return () => setLiveVersionSource(null);
+  }, [projectId]);
   const { data } = useLiveQuery(projectId ? `health|${projectId}` : null, () => getHealth(projectId!, true));
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {

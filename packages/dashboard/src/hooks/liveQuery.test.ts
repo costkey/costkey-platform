@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { LIVE_BACKOFF_MS, LIVE_FAST_INTERVAL_MS, LIVE_INTERVAL_MS, LivePoller, type LiveEnvironment } from "./liveQuery";
+import { LIVE_BACKOFF_MS, LIVE_FAST_INTERVAL_MS, LIVE_INTERVAL_MS, LIVE_MAX_SKIP_MS, LivePoller, setLiveVersionSource, type LiveEnvironment } from "./liveQuery";
 import { liveStatusText } from "../components/LiveStatus";
 
 /** A clock and visibility we control. */
@@ -124,5 +124,49 @@ describe("live queries", () => {
     expect(liveStatusText("live", 0, 2_000)).toBe("Updated just now");
     expect(liveStatusText("live", 0, 12_000)).toBe("Updated 12 s ago");
     expect(liveStatusText("reconnecting", 0, 12_000)).toBe("Reconnecting");
+  });
+
+  it("skips a refresh when the project has no new calls, and reloads when it does", async () => {
+    const clock = fakeEnvironment();
+    let version = "a";
+    let checks = 0;
+    setLiveVersionSource(async () => { checks += 1; return version; });
+    let loads = 0;
+    const poller = new LivePoller(async () => { loads += 1; return { loads }; }, { environment: clock.env });
+    poller.start();
+    await flush();
+    expect(loads).toBe(1);
+    await clock.advance(LIVE_INTERVAL_MS);
+    expect(loads).toBe(1);                      // nothing new: the heavy query didn't run
+    expect(checks).toBeGreaterThan(1);
+    version = "b";                              // a new call arrived
+    await clock.advance(LIVE_INTERVAL_MS);
+    expect(loads).toBe(2);
+    poller.stop();
+    setLiveVersionSource(null);
+  });
+
+  it("reloads at least once a minute, on Refresh, and while something is running", async () => {
+    const clock = fakeEnvironment();
+    setLiveVersionSource(async () => "same");
+    let loads = 0;
+    const poller = new LivePoller(async () => { loads += 1; return { loads }; }, { environment: clock.env });
+    poller.start();
+    await flush();
+    await clock.advance(LIVE_MAX_SKIP_MS + LIVE_INTERVAL_MS);
+    expect(loads).toBe(2);                      // a sliding window still moves
+    poller.refresh();
+    await flush();
+    expect(loads).toBe(3);                      // the Refresh button always reloads
+    poller.stop();
+
+    let fastLoads = 0;
+    const running = new LivePoller(async () => { fastLoads += 1; return { running: true }; }, { environment: clock.env, isFast: () => true });
+    running.start();
+    await flush();
+    await clock.advance(LIVE_FAST_INTERVAL_MS);
+    expect(fastLoads).toBe(2);                  // a run in progress refreshes regardless
+    running.stop();
+    setLiveVersionSource(null);
   });
 });

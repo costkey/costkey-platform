@@ -3,6 +3,7 @@ import { Router as createRouter } from "express";
 import type pg from "pg";
 import { Resend } from "resend";
 import { groupIntoFeatures } from "./grouping.js";
+import { getPriceCatalog } from "./price-catalog/catalog.js";
 import { getAnomalies, dismissAnomaly } from "./anomaly.js";
 import { orgScope } from "./middleware.js";
 import { requireAuth } from "./auth.js";
@@ -210,73 +211,8 @@ export function createApiRouter(pool: pg.Pool): Router {
         return;
       }
 
-      // Detect minified/bundled code without sourcemaps
-      const hints: Array<{ type: string; message: string; link: string }> = [];
-      const unpriced = await pool.query(
-        "SELECT COUNT(*)::int AS cnt FROM events WHERE project_id = $1 AND cost_usd IS NULL",
-        [projectId],
-      );
-      if (unpriced.rows[0].cnt > 0) {
-        hints.push({
-          type: "unpriced_calls",
-          message: `${unpriced.rows[0].cnt} calls have no price yet.`,
-          link: "/docs/providers",
-        });
-      }
-
-      const minifiedCheck = await pool.query(
-        `SELECT COUNT(*)::int as cnt FROM events
-         WHERE project_id = $1 AND call_site_frames IS NOT NULL
-         AND timestamp > NOW() - INTERVAL '7 days'
-         AND (
-           call_site_frames::text LIKE '%/.next/%' OR
-           call_site_frames::text LIKE '%/dist/%' OR
-           call_site_frames::text LIKE '%/.output/%' OR
-           call_site_frames::text LIKE '%.chunk.%' OR
-           call_site_frames::text LIKE '%webpack%' OR
-           call_site_frames::text LIKE '%/chunks/%' OR
-           call_site_frames::text LIKE '%__next%'
-         )`,
-        [projectId],
-      );
-
-      if (minifiedCheck.rows[0].cnt > 0) {
-        const hasSourcemaps = await pool.query(
-          "SELECT COUNT(*)::int as cnt FROM sourcemaps WHERE project_id = $1",
-          [projectId],
-        );
-        if (hasSourcemaps.rows[0].cnt === 0) {
-          hints.push({
-            type: "sourcemaps_missing",
-            message: "Your code appears to be bundled/minified. Upload sourcemaps to see real function names instead of minified ones.",
-            link: "/docs/sourcemaps",
-          });
-        }
-      }
-
-      // Empty-stack hint: if a meaningful fraction of recent events have zero
-      // frames at all, the SDK couldn't capture a stack (usually Vercel Edge
-      // runtime or a similarly restricted environment). Sourcemaps don't help
-      // here — the user needs to tag calls via CostKey.withContext.
-      const stackShape = await pool.query(
-        `SELECT
-           COUNT(*) FILTER (WHERE call_site_frames IS NULL OR jsonb_array_length(call_site_frames) = 0) AS no_frames,
-           COUNT(*) AS total
-         FROM events
-         WHERE project_id = $1
-           AND timestamp > NOW() - INTERVAL '7 days'`,
-        [projectId],
-      );
-      const { no_frames, total } = stackShape.rows[0] ?? { no_frames: 0, total: 0 };
-      if (Number(total) >= 20 && Number(no_frames) / Number(total) >= 0.3) {
-        hints.push({
-          type: "empty_stacks",
-          message: `${Math.round((Number(no_frames) / Number(total)) * 100)}% of recent AI calls arrive with empty stack traces — usually Edge runtime or restricted environments. Use CostKey.withContext({ taskName }) at your route handlers so we can attribute without relying on stack capture.`,
-          link: "/docs/context",
-        });
-      }
-
-      res.json({ status, lastEventAt: lastAt, eventsLastHour, hints });
+      res.json({ status, lastEventAt: lastAt, eventsLastHour, hints: await healthHints(pool, projectId) });
+      return;
     } catch (err) {
       console.error("[costkey] Health check error:", err);
       res.status(500).json({ error: "Internal server error" });
@@ -1307,4 +1243,78 @@ function randomId(): string {
   const bytes = new Uint8Array(12);
   crypto.getRandomValues(bytes);
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+
+type HealthHint = { type: string; message: string; link: string };
+
+/** Hints are cheap to keep and costly to work out: each project's are reused for a few minutes. */
+const HINTS_TTL_MS = 5 * 60_000;
+const hintsCache = new Map<string, { at: number; hints: HealthHint[] }>();
+
+/**
+ * Setup hints from the project's latest calls: models without a price, bundled
+ * code without sourcemaps, and calls that arrive with no stack. Read from a
+ * recent sample, not by scanning every call, and cached per project.
+ */
+async function healthHints(pool: pg.Pool, projectId: string): Promise<HealthHint[]> {
+  const cached = hintsCache.get(projectId);
+  if (cached && Date.now() - cached.at < HINTS_TTL_MS) return cached.hints;
+  const hints: HealthHint[] = [];
+
+  // Only a model with no price needs one; a failed call is never charged, and a
+  // priced model's call with no usage can't be fixed by a price.
+  const unpriced = await pool.query(
+    `SELECT provider, model, COUNT(*)::int AS cnt FROM events
+     WHERE project_id = $1 AND timestamp > NOW() - INTERVAL '30 days'
+       AND COALESCE(event_type, 'call') = 'call' AND cost_usd IS NULL
+       AND COALESCE(lifecycle_state, '') NOT IN ('failed', 'cancelled', 'canceled') AND COALESCE(status_code, 200) < 400
+     GROUP BY 1, 2`,
+    [projectId],
+  );
+  const catalog = getPriceCatalog();
+  const needsPrice = unpriced.rows
+    .filter((row) => !row.model || !catalog.resolve({ provider: String(row.provider ?? ""), model: String(row.model) }))
+    .reduce((sum, row) => sum + Number(row.cnt), 0);
+  if (needsPrice > 0) {
+    hints.push({ type: "unpriced_calls", message: `${needsPrice} calls have no price yet.`, link: "/docs/providers" });
+  }
+
+  const sample = await pool.query(
+    `SELECT
+       COUNT(*)::int AS total,
+       COUNT(*) FILTER (WHERE call_site_frames IS NULL OR jsonb_array_length(call_site_frames) = 0)::int AS no_frames,
+       COUNT(*) FILTER (WHERE call_site_frames::text ~ '/\\.next/|/dist/|/\\.output/|\\.chunk\\.|webpack|/chunks/|__next')::int AS bundled
+     FROM (
+       SELECT call_site_frames FROM events
+       WHERE project_id = $1 AND timestamp > NOW() - INTERVAL '7 days'
+       ORDER BY timestamp DESC LIMIT 500
+     ) recent`,
+    [projectId],
+  );
+  const { total, no_frames: noFrames, bundled } = sample.rows[0] ?? { total: 0, no_frames: 0, bundled: 0 };
+
+  if (Number(bundled) > 0) {
+    const hasSourcemaps = await pool.query("SELECT 1 FROM sourcemaps WHERE project_id = $1 LIMIT 1", [projectId]);
+    if (hasSourcemaps.rowCount === 0) {
+      hints.push({
+        type: "sourcemaps_missing",
+        message: "Your code appears to be bundled/minified. Upload sourcemaps to see real function names instead of minified ones.",
+        link: "/docs/sourcemaps",
+      });
+    }
+  }
+
+  // Calls with no stack at all (Vercel Edge and similar runtimes): sourcemaps
+  // don't help; route handlers can name the work with CostKey.withContext.
+  if (Number(total) >= 20 && Number(noFrames) / Number(total) >= 0.3) {
+    hints.push({
+      type: "empty_stacks",
+      message: `${Math.round((Number(noFrames) / Number(total)) * 100)}% of recent AI calls arrive with empty stack traces — usually Edge runtime or restricted environments. Use CostKey.withContext({ taskName }) at your route handlers so we can attribute without relying on stack capture.`,
+      link: "/docs/context",
+    });
+  }
+
+  hintsCache.set(projectId, { at: Date.now(), hints });
+  return hints;
 }

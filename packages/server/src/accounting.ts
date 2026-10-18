@@ -1076,8 +1076,9 @@ export async function reconcileDailyCostAggregates(
                 COUNT(*) FILTER (WHERE cost_usd IS NOT NULL AND cost_basis = 'reported')::int AS reported_observations,
                 COUNT(*) FILTER (WHERE cost_usd IS NOT NULL AND cost_basis = 'estimated')::int AS estimated_observations,
                 COUNT(*) FILTER (WHERE cost_usd IS NULL OR cost_basis NOT IN ('reported','estimated'))::int AS unknown_observations,
-                COALESCE(SUM(input_tokens), 0)::bigint AS input_tokens,
-                COALESCE(SUM(output_tokens), 0)::bigint AS output_tokens
+                -- The whole prompt and output with reasoning, as the console counts tokens.
+                COALESCE(SUM(prompt_tokens), 0)::bigint AS input_tokens,
+                COALESCE(SUM(completion_tokens), 0)::bigint AS output_tokens
          FROM scoped
          GROUP BY environment, feature, function_key, customer, service_key, release_key, provider_key, model_key
        )

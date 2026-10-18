@@ -5,6 +5,7 @@ import { randomBytes } from "node:crypto";
 import { initDatabase } from "../db.js";
 import { ensurePlatformSchema } from "../platform-storage.js";
 import express from "express";
+import { createAccountingRouter } from "../accounting-api.js";
 import { boardBucket, createInsightsRouter, GROUP_COLUMNS, loadOverviewBoard, previousWindow, RUNS_CTE } from "../insights-api.js";
 import { getPriceCatalog, PriceCatalog, setPriceCatalog } from "../price-catalog/catalog.js";
 import { costFromRates } from "../price-catalog/compute.js";
@@ -143,9 +144,10 @@ test("the overview board reads runs, scores, model tokens, agents, tools and lat
     assert.equal(board.models.length, 1);
     assert.deepEqual(
       { calls: board.models[0].calls, input: board.models[0].input, output: board.models[0].output, cacheRead: board.models[0].cacheRead, cacheWrite: board.models[0].cacheWrite, unpriced: board.models[0].unpriced },
-      { calls: 3, input: 4_500, output: 850, cacheRead: 400, cacheWrite: 100, unpriced: 1 },
+      // Input is the whole prompt: c1's 1,000 plus its 400 cache reads and 100 cache writes.
+      { calls: 3, input: 5_000, output: 850, cacheRead: 400, cacheWrite: 100, unpriced: 1 },
     );
-    assert.deepEqual(board.agents.map((agent) => [agent.name, agent.runs, agent.input, agent.output]), [["support", 2, 4_000, 800]]);
+    assert.deepEqual(board.agents.map((agent) => [agent.name, agent.runs, agent.input, agent.output]), [["support", 2, 4_500, 800]]);
     assert.ok(Math.abs((board.agents[0].cost ?? 0) - 0.04) < 1e-9);
     assert.deepEqual(board.volume.agents, [{ name: "support", runs: 2, calls: 2 }]);
     assert.deepEqual(board.volume.workflows, [{ name: "t3", runs: 1, calls: 1 }]);
@@ -176,6 +178,7 @@ test("agents and models report cache reads, hit rate, reasoning and checked cach
   const app = express();
   app.use((req, _res, next) => { (req as any).user = { id: `owner-${suffix}`, orgId, role: "owner" }; next(); });
   app.use(createInsightsRouter(pool));
+  app.use(createAccountingRouter(pool));
   const server = await new Promise<ReturnType<typeof app.listen>>((resolve) => { const listening = app.listen(0, "127.0.0.1", () => resolve(listening)); });
   try {
     await initDatabase();
@@ -229,6 +232,10 @@ test("agents and models report cache reads, hit rate, reasoning and checked cach
     close(usage.cacheHitRate, 4_000 / 7_000, "agent hit rate");
     assert.equal(usage.outputTokens, 650, "Gemini thinking adds to output; OpenAI reasoning is already in it");
     assert.equal(usage.reasoningTokens, 150);
+    // The Overview counts tokens the same way: whole prompt, output with reasoning.
+    const overview = await (await fetch(`${baseUrl}/api/v1/projects/${projectId}/overview?${range}`)).json() as { overview: { total_input_tokens: number; total_output_tokens: number } };
+    assert.equal(overview.overview.total_input_tokens, usage.inputTokens, "Overview input matches the agent page");
+    assert.equal(overview.overview.total_output_tokens, usage.outputTokens, "Overview output matches the agent page");
     // Saved: 3,000 reads at $3 - $0.30 per 1M, and 1,000 at $2.50 - $1.25 per 1M.
     close(usage.cacheSavings, 3_000 * 2.7e-6 + 1_000 * 1.25e-6, "agent savings");
 

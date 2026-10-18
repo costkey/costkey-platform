@@ -1,4 +1,5 @@
 import type pg from "pg";
+import { OUTPUT_TOKENS_SQL, PROMPT_TOKENS_SQL } from "./token-sql.js";
 
 /** Shared filters for every financial view. Keep dimensions/lens filters here
  * so overview, Costs, Findings and Forecast cannot silently count different
@@ -137,6 +138,9 @@ export function chargesCte(scopedParams?: unknown[]): string {
              e.phase, e.case_id, e.bl_file, e.bl_function, e.bl_line,
              'call'::text AS record_type,
              e.input_tokens, e.output_tokens, e.total_tokens,
+             -- Tokens as the console counts them everywhere: the whole prompt (cache
+             -- reads and writes included) and output with reasoning.
+             ${PROMPT_TOKENS_SQL("e")} AS prompt_tokens, ${OUTPUT_TOKENS_SQL("e")} AS completion_tokens,
              NULL::double precision AS unit_value, NULL::text AS unit,
              NULL::text AS unit_kind, NULL::integer AS revision,
              -- A failed call without a price cost nothing: it is not unpriced.
@@ -179,6 +183,7 @@ export function chargesCte(scopedParams?: unknown[]): string {
              anchor.bl_file, anchor.bl_function, anchor.bl_line,
              'usage'::text AS record_type, NULL::integer AS input_tokens,
              NULL::integer AS output_tokens, NULL::integer AS total_tokens,
+             NULL::integer AS prompt_tokens, NULL::integer AS completion_tokens,
              u.unit_value, u.unit, u.unit_kind, u.revision,
              FALSE AS no_charge
       FROM usage_components u

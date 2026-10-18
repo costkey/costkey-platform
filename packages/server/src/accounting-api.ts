@@ -565,7 +565,7 @@ async function loadFinancialTotals(pool: pg.Pool, projectId: string, scope: Char
               COUNT(*) FILTER (WHERE c.record_type = 'call')::int AS calls,
               COUNT(*) FILTER (WHERE c.cost_usd IS NOT NULL)::int AS priced,
               SUM(c.cost_usd) FILTER (WHERE c.cost_usd IS NOT NULL) AS known_cost,
-              COALESCE(SUM(c.total_tokens),0)::bigint AS tokens
+              COALESCE(SUM(COALESCE(c.prompt_tokens, 0) + COALESCE(c.completion_tokens, 0)),0)::bigint AS tokens
        FROM charges c WHERE ${detailClauses.join(" AND ")}`,
       detailParams,
     ),
@@ -938,8 +938,8 @@ export function createAccountingRouter(pool: pg.Pool): Router {
                   COUNT(*) FILTER (WHERE c.cost_usd IS NOT NULL OR c.no_charge)::int AS priced,
                   COUNT(DISTINCT c.trace_id)::int AS traces,
                   SUM(c.cost_usd) FILTER (WHERE c.cost_usd IS NOT NULL) AS known_cost,
-                  COALESCE(SUM(c.input_tokens),0)::bigint AS input_tokens,
-                  COALESCE(SUM(c.output_tokens),0)::bigint AS output_tokens,
+                  COALESCE(SUM(c.prompt_tokens),0)::bigint AS input_tokens,
+                  COALESCE(SUM(c.completion_tokens),0)::bigint AS output_tokens,
                   AVG(c.duration_ms) FILTER (WHERE c.record_type = 'call' AND c.duration_ms IS NOT NULL) AS avg_duration_ms
            FROM charges c WHERE ${detailClauses.join(" AND ")}`,
           detailParams,
@@ -951,8 +951,8 @@ export function createAccountingRouter(pool: pg.Pool): Router {
                   COUNT(*) FILTER (WHERE c.record_type = 'call')::int AS calls,
                   COUNT(*) FILTER (WHERE c.cost_usd IS NOT NULL OR c.no_charge)::int AS priced,
                   SUM(c.cost_usd) FILTER (WHERE c.cost_usd IS NOT NULL) AS known_cost,
-                  COALESCE(SUM(c.input_tokens),0)::bigint AS input_tokens,
-                  COALESCE(SUM(c.output_tokens),0)::bigint AS output_tokens
+                  COALESCE(SUM(c.prompt_tokens),0)::bigint AS input_tokens,
+                  COALESCE(SUM(c.completion_tokens),0)::bigint AS output_tokens
            FROM charges c WHERE ${detailClauses.join(" AND ")}
            GROUP BY c.provider, COALESCE(c.model, 'unknown')`,
           detailParams,
@@ -963,8 +963,8 @@ export function createAccountingRouter(pool: pg.Pool): Router {
                   COUNT(*) FILTER (WHERE c.record_type = 'call')::int AS calls,
                   COUNT(*) FILTER (WHERE c.cost_usd IS NOT NULL OR c.no_charge)::int AS priced,
                   SUM(c.cost_usd) FILTER (WHERE c.cost_usd IS NOT NULL) AS known_cost,
-                  COALESCE(SUM(c.input_tokens),0)::bigint AS input_tokens,
-                  COALESCE(SUM(c.output_tokens),0)::bigint AS output_tokens
+                  COALESCE(SUM(c.prompt_tokens),0)::bigint AS input_tokens,
+                  COALESCE(SUM(c.completion_tokens),0)::bigint AS output_tokens
            FROM charges c WHERE ${detailClauses.join(" AND ")}
            GROUP BY c.provider`,
           detailParams,
@@ -1262,8 +1262,8 @@ export function createAccountingRouter(pool: pg.Pool): Router {
                 COUNT(*) FILTER (WHERE c.record_type = 'call')::int AS calls,
                 COUNT(*) FILTER (WHERE c.cost_usd IS NOT NULL)::int AS priced,
                 SUM(c.cost_usd) FILTER (WHERE c.cost_usd IS NOT NULL) AS known_cost,
-                COALESCE(SUM(c.input_tokens),0)::bigint AS input_tokens,
-                COALESCE(SUM(c.output_tokens),0)::bigint AS output_tokens,
+                COALESCE(SUM(c.prompt_tokens),0)::bigint AS input_tokens,
+                COALESCE(SUM(c.completion_tokens),0)::bigint AS output_tokens,
                 AVG(c.duration_ms) FILTER (WHERE c.record_type = 'call' AND c.duration_ms IS NOT NULL) AS avg_duration_ms
          FROM charges c WHERE ${clauses.join(" AND ")}
          GROUP BY 1, 2 ORDER BY 1 ASC, 2 ASC`,

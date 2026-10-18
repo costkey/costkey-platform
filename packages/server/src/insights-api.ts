@@ -341,8 +341,9 @@ export async function loadOverviewBoard(pool: pg.Pool, projectId: string, window
     ),
     pool.query(
       `SELECT e.provider, COALESCE(e.model, e.request_model, 'unknown') AS model, COUNT(*)::int AS calls,
-              SUM(e.input_tokens)::bigint AS input, SUM(e.output_tokens)::bigint AS output,
-              SUM(e.cache_read_tokens)::bigint AS cache_read, SUM(e.cache_creation_tokens)::bigint AS cache_write
+              -- The whole prompt and output with reasoning, as every token count in the console.
+              SUM(${PROMPT_TOKENS_SQL("e")})::bigint AS input, SUM(${OUTPUT_TOKENS_SQL("e")})::bigint AS output,
+              SUM(e.cache_read_tokens)::bigint AS cache_read, SUM(${CACHE_WRITE_SQL("e")})::bigint AS cache_write
        FROM events e
        WHERE e.project_id = $1 AND COALESCE(e.event_type, 'call') = 'call'
          AND e.timestamp >= $2 AND e.timestamp < $3
@@ -353,7 +354,7 @@ export async function loadOverviewBoard(pool: pg.Pool, projectId: string, window
     pool.query(
       `WITH ${RUNS_CTE}
        SELECT r.root_name AS name, COUNT(DISTINCT r.trace_id)::int AS runs,
-              COALESCE(SUM(c.input_tokens), 0)::bigint AS input, COALESCE(SUM(c.output_tokens), 0)::bigint AS output,
+              COALESCE(SUM(c.prompt_tokens), 0)::bigint AS input, COALESCE(SUM(c.completion_tokens), 0)::bigint AS output,
               ${KNOWN_COST_SQL("c.cost_usd", "c.call_failed")} AS cost, COUNT(*) FILTER (WHERE c.cost_usd IS NULL AND NOT c.call_failed)::int AS unpriced
        FROM run_rows r JOIN calls c ON c.trace_id = r.trace_id
        WHERE r.root_kind = 'agent'
@@ -410,7 +411,7 @@ export async function loadOverviewBoard(pool: pg.Pool, projectId: string, window
     `WITH ${RUNS_CTE}
      SELECT ${WORKFLOW_NAME.replaceAll("root_kind", "r.root_kind").replaceAll("root_name", "r.root_name").replaceAll("group_name", "r.group_name").replaceAll("trace_name", "r.trace_name")} AS name,
             COUNT(DISTINCT r.trace_id)::int AS runs,
-            COALESCE(SUM(c.input_tokens), 0)::bigint AS input, COALESCE(SUM(c.output_tokens), 0)::bigint AS output,
+            COALESCE(SUM(c.prompt_tokens), 0)::bigint AS input, COALESCE(SUM(c.completion_tokens), 0)::bigint AS output,
             ${KNOWN_COST_SQL("c.cost_usd", "c.call_failed")} AS cost, COUNT(*) FILTER (WHERE c.cost_usd IS NULL AND NOT c.call_failed)::int AS unpriced
      FROM run_rows r JOIN calls c ON c.trace_id = r.trace_id
      WHERE r.root_kind IS DISTINCT FROM 'agent'

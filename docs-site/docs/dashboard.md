@@ -38,7 +38,7 @@ Open a run to see its cost, duration, calls and status, plus a timeline of its c
 
 ## Quality
 
-Quality shows how runs went. The **Checks** view lists your quality checks with each one's pass rate, average score and runs scored. Rule checks such as Run succeeded need no prompt text; LLM judges score runs against a rubric when the project captures text. Each run's results are on its **Checks** tab. See [Quality checks](./quality-checks).
+Quality shows how runs went. The **Checks** view lists your quality checks with each one's pass rate, average score and runs scored. Rule checks such as Run succeeded need no prompt text; rubric checks score runs against your rubric when the project captures text. Each run's results are on its **Checks** tab. See [Quality checks](./quality-checks).
 
 ## Costs
 

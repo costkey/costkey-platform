@@ -32,7 +32,7 @@ export function formatSampleRate(rate: number): string {
 export function kindLabel(check: Pick<QualityCheck, "kind" | "judgeProvider" | "judgeModel">): string {
   if (check.kind === "rule") return "Rule";
   const provider = check.judgeProvider ? PROVIDER_LABELS[check.judgeProvider] : "Judge";
-  return `LLM judge · ${provider}${check.judgeModel ? ` ${check.judgeModel}` : ""}`;
+  return `Rubric · ${provider}${check.judgeModel ? ` ${check.judgeModel}` : ""}`;
 }
 
 export function appliesToLabel(check: Pick<QualityCheck, "appliesTo" | "appliesToNames">): string {
@@ -45,7 +45,7 @@ export function appliesToLabel(check: Pick<QualityCheck, "appliesTo" | "appliesT
 export function statusView(check: Pick<QualityCheckWithStats, "status" | "lastError">): { tone: Tone; label: string; hint: string | null } {
   switch (check.status) {
     case "paused": return { tone: "neutral", label: "Off", hint: null };
-    case "needs_capture": return { tone: "warn", label: "Needs prompt capture", hint: "LLM judges read prompts and responses. Turn on text capture for this project in Settings, Data." };
+    case "needs_capture": return { tone: "warn", label: "Needs prompt capture", hint: "Rubric checks read prompts and responses. Turn on text capture for this project in Settings, Data." };
     case "needs_key": return { tone: "warn", label: "Add an API key", hint: "Edit the check and add a key for the judge provider." };
     case "error": return { tone: "critical", label: "Errors", hint: check.lastError };
     default: return { tone: "good", label: "On", hint: null };

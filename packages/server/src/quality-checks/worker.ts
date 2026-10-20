@@ -412,7 +412,7 @@ export async function processJob(pool: pg.Pool, job: QualityJob, options: Qualit
     return "done";
   }
 
-  // LLM judges read captured text. Metadata-only projects never send any.
+  // Rubric checks read captured text. Metadata-only projects never send any.
   if (!capture.textCapture) {
     await finishJob(pool, job, "skipped", { skipReason: "needs_capture" });
     return "skipped";

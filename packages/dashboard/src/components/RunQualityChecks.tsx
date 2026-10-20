@@ -11,7 +11,7 @@ export function RunCheckList({ results }: { results: RunCheckResult[] }) {
     const view = runStateView(result);
     return <li key={result.checkId} className="qc-run-item">
       <div className="qc-run-head">
-        <span className="qc-run-name">{result.name}<small>{result.kind === "judge" ? "LLM judge" : "Rule"}</small></span>
+        <span className="qc-run-name">{result.name}<small>{result.kind === "judge" ? "Rubric" : "Rule"}</small></span>
         <span className="qc-run-verdict">
           {result.score != null && <span className="qc-run-score">{result.score.toFixed(2)}</span>}
           <StatusPill tone={view.tone}>{view.label}</StatusPill>

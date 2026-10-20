@@ -1,6 +1,6 @@
 ---
 title: Quality checks
-description: Score every finished run on the server with rule checks and LLM judges.
+description: Score every finished run on the server with rule checks and rubric checks.
 ---
 
 # Quality checks
@@ -12,13 +12,13 @@ on the **Quality** page and in the Overview.
 Quality checks need CostKey server 0.7.0 or later. Set them up on
 **Quality, Checks**. Owners and admins can create, edit and delete checks.
 
-## Rules and judges
+## Rules and rubrics
 
 There are two kinds of check.
 
 - **Rules** are computed from data CostKey already stores for the run: calls,
   spans, timing and cost. They need no prompt text and cost nothing to run.
-- **LLM judges** send a transcript of the run to a model you choose, with a
+- **Rubric checks** send a transcript of the run to a model you choose, with a
   rubric, and record the model's score and reason. They need prompt capture
   and an API key.
 
@@ -40,9 +40,9 @@ on a run with no tool calls, Retries on a run with no model calls, Latency on
 a run with no recorded duration, and Cost per run when no call in the run has
 a price yet.
 
-### LLM judges
+### Rubric checks
 
-Start a judge from a template, or write a custom rubric.
+Start a rubric check from a template, or write a custom rubric.
 
 | Template | What it checks |
 | --- | --- |
@@ -52,18 +52,18 @@ Start a judge from a template, or write a custom rubric.
 | Instruction following | The answer follows the system prompt and the user's constraints. |
 | Safety | Nothing harmful, private or overconfident reached the user. |
 
-The template fills in the rubric, which you can edit. The judge reads a
+The template fills in the rubric, which you can edit. The model reads a
 transcript of the run (the system prompt, the user's question, up to 24 tool
 and model steps, and the final answer, each trimmed to a fixed length) and
 replies with a score from 0 to 1 and a short reason. A score of 0.5 or more
-passes. Judge calls use temperature 0.
+passes. Rubric check calls use temperature 0.
 
 ## Prompt capture
 
-LLM judges only run when the project has prompt capture on (**Settings,
+Rubric checks only run when the project has prompt capture on (**Settings,
 Privacy & data**, text capture). A metadata-only project never stores prompt
-or response text, so there is nothing to judge. Until text capture is on,
-judge checks show **Needs prompt capture** and runs are skipped. Rule checks
+or response text, so there is nothing to score. Until text capture is on,
+rubric checks show **Needs prompt capture** and runs are skipped. Rule checks
 still run.
 
 A run whose calls carry no captured text is marked **No text captured**.
@@ -147,11 +147,11 @@ Set these in the CostKey server's environment, for example the `.env` beside
 | Setting | Default | What it does |
 | --- | --- | --- |
 | `COSTKEY_QUALITY_SETTLE_SECONDS` | `120` | Seconds a run must be idle before it is checked. |
-| `COSTKEY_QUALITY_JUDGE_RPM` | `30` | Most judge calls per minute for each project. |
+| `COSTKEY_QUALITY_JUDGE_RPM` | `30` | Most rubric check calls per minute for each project. |
 | `COSTKEY_QUALITY_WORKER_INTERVAL_SECONDS` | `15` | Seconds between runs of the quality check worker. |
 
 ## Moving from `score()`
 
 SDK 0.6 had `CostKey.score()` and `costkey.score()` for sending scores from
 your code. SDK 0.7 removes them. Rebuild those checks here: as a rule if the
-score came from counts, timing or cost, or as a judge with your rubric.
+score came from counts, timing or cost, or as a rubric check.

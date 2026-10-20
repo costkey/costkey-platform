@@ -153,11 +153,11 @@ function CheckEditor({
       </div>
       <div className="qc-form">
         {!existing && <div className="ck-segmented qc-kind" role="radiogroup" aria-label="Kind of check">
-          {(["judge", "rule"] as const).map((kind) => <button key={kind} type="button" role="radio" aria-checked={form.kind === kind} className={form.kind === kind ? "active" : ""} onClick={() => setForm(emptyForm(kind, catalog))}>{kind === "judge" ? "LLM judge" : "Rule"}</button>)}
+          {(["judge", "rule"] as const).map((kind) => <button key={kind} type="button" role="radio" aria-checked={form.kind === kind} className={form.kind === kind ? "active" : ""} onClick={() => setForm(emptyForm(kind, catalog))}>{kind === "judge" ? "Rubric" : "Rule"}</button>)}
         </div>}
 
         {form.kind === "judge" ? <>
-          {!textCapture && <StatusLine tone="warn">LLM judges need prompt capture. Until it is on, this check is skipped.</StatusLine>}
+          {!textCapture && <StatusLine tone="warn">Rubric checks need prompt capture. Until it is on, this check is skipped.</StatusLine>}
           <Field id="qc-template" label="Start from">
             <select id="qc-template" className="ck-select" value={form.template} onChange={(event) => setForm(applyTemplate(form, event.target.value, catalog))}>
               {catalog.templates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
@@ -165,18 +165,18 @@ function CheckEditor({
             </select>
           </Field>
           <Field id="qc-name" label="Name"><input id="qc-name" className="ck-input" value={form.name} maxLength={120} onChange={(event) => update({ name: event.target.value })} /></Field>
-          <Field id="qc-rubric" label="Rubric" hint="The judge scores each run from 0 to 1 and writes a short reason. A score of 0.5 or more passes.">
+          <Field id="qc-rubric" label="Rubric" hint="The model scores each run from 0 to 1 and writes a short reason. A score of 0.5 or more passes.">
             <textarea id="qc-rubric" className="ck-textarea qc-rubric" rows={9} value={form.rubric} onChange={(event) => update({ rubric: event.target.value })} />
           </Field>
           <div className="qc-row">
-            <Field id="qc-provider" label="Judge provider">
+            <Field id="qc-provider" label="Provider">
               <select id="qc-provider" className="ck-select" value={form.provider} onChange={(event) => setForm(applyProvider(form, event.target.value as JudgeProvider, catalog))}>
                 {catalog.providers.map((provider) => <option key={provider.id} value={provider.id}>{PROVIDER_LABELS[provider.id]}</option>)}
               </select>
             </Field>
-            <Field id="qc-model" label="Judge model"><input id="qc-model" className="ck-input" value={form.model} onChange={(event) => update({ model: event.target.value })} spellCheck={false} /></Field>
+            <Field id="qc-model" label="Model"><input id="qc-model" className="ck-input" value={form.model} onChange={(event) => update({ model: event.target.value })} spellCheck={false} /></Field>
           </div>
-          <Field id="qc-key" label="API key" hint="Stored encrypted. It can't be shown again. Judge calls are billed to this key and show in Costs under the feature quality-checks.">
+          <Field id="qc-key" label="API key" hint="Stored encrypted. It can't be shown again. Check calls are billed to this key and show in Costs under the feature quality-checks.">
             <input id="qc-key" className="ck-input" type="password" autoComplete="off" spellCheck={false} placeholder={keyPlaceholder(existing)} value={form.apiKey} onChange={(event) => update({ apiKey: event.target.value, removeKey: false })} />
           </Field>
           {existing?.hasKey && <label className="qc-checkbox"><input type="checkbox" checked={form.removeKey} onChange={(event) => update({ removeKey: event.target.checked, apiKey: "" })} /> Remove the saved key</label>}
@@ -272,7 +272,7 @@ export function QualityChecksPanel({ projectId, scope, scopeKey }: { projectId: 
   const hasJudges = data?.checks.some((check) => check.kind === "judge") ?? false;
   return <>
     {flash && <StatusLine tone={flash.tone} right={<button className="ck-button ck-button-quiet" type="button" onClick={() => setFlash(null)}>Dismiss</button>}>{flash.text}</StatusLine>}
-    {data && !data.textCapture && hasJudges && <StatusLine tone="warn" right={<Link className="ck-button ck-button-quiet" to="/settings?section=data">Open settings</Link>}>This project is metadata only, so LLM judges are skipped. Rule checks still run.</StatusLine>}
+    {data && !data.textCapture && hasJudges && <StatusLine tone="warn" right={<Link className="ck-button ck-button-quiet" to="/settings?section=data">Open settings</Link>}>This project is metadata only, so rubric checks are skipped. Rule checks still run.</StatusLine>}
     <Panel
       title="Checks"
       subtitle={data ? `Scores each finished run on the server. Results show on the run and in Overview. Run on recent runs scores up to ${data.maxBackfillRuns} runs.` : undefined}
@@ -282,7 +282,7 @@ export function QualityChecksPanel({ projectId, scope, scopeKey }: { projectId: 
         : loading && !data ? <LoadingRows count={4} columns={6} />
           : data && data.checks.length === 0 ? <EmptyPanel
             title="No checks yet"
-            body={data.canManage ? "Add an LLM judge with a rubric, or a rule such as Run succeeded. Each finished run gets a score." : "Owners and admins can add checks."}
+            body={data.canManage ? "Add a rubric check, or a rule such as Run succeeded. Each finished run gets a score." : "Owners and admins can add checks."}
             action={data.canManage ? <button className="ck-button ck-button-primary" type="button" onClick={() => setEditing("new")}>New check</button> : undefined}
           />
             : data && <ChecksTable checks={data.checks} canManage={data.canManage} busyId={busyId} onEdit={(check) => setEditing(check)} onToggle={(check) => void toggle(check)} onBackfill={(check) => void backfill(check)} />}

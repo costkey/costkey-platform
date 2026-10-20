@@ -6,7 +6,7 @@ description: Run CostKey on your own machines with Docker Compose. Postgres plus
 
 # Self-hosting
 
-CostKey is MIT licensed. A self-hosted install is two containers: Postgres, and one image that serves both the API and the console on a single port. For Kubernetes, Render, Railway, Fly.io, Cloud Run or AWS, see [Deploy anywhere](./deploy).
+A self-hosted install is two containers: Postgres, and one image that serves both the API and the console on a single port. For Kubernetes, Render, Railway, Fly.io, Cloud Run or AWS, see [Deploy anywhere](./deploy).
 
 ## Start it
 

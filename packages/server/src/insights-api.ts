@@ -274,7 +274,7 @@ const BUCKET = (column: string) => `to_char(date_trunc($5::text, ${column} AT TI
 const RUNS_AFTER_CALLS = RUNS_CTE.slice(RUNS_CTE.indexOf("runs AS ("));
 
 /** `sql` with only the parameters it references, renumbered from $1, and their values. */
-function onlyUsedParams(sql: string, values: readonly unknown[]): [string, unknown[]] {
+export function onlyUsedParams(sql: string, values: readonly unknown[]): [string, unknown[]] {
   const used = [...new Set([...sql.matchAll(/\$(\d+)/g)].map((match) => Number(match[1])))].sort((a, b) => a - b);
   const position = new Map(used.map((index, i) => [index, i + 1]));
   return [sql.replace(/\$(\d+)/g, (_, index: string) => `$${position.get(Number(index))}`), used.map((index) => values[index - 1])];

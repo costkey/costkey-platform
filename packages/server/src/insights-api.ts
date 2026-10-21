@@ -270,6 +270,47 @@ function unitsByKey(rows: Array<Record<string, unknown>>, keyOf: (row: Record<st
 /** Local bucket label for a timestamp. Params: $5 bucket unit, $6 timezone. */
 const BUCKET = (column: string) => `to_char(date_trunc($5::text, ${column} AT TIME ZONE $6::text), 'YYYY-MM-DD"T"HH24:MI')`;
 
+/** RUNS_CTE after its `calls`: the steps that read `calls`, ending in `run_rows`. */
+const RUNS_AFTER_CALLS = RUNS_CTE.slice(RUNS_CTE.indexOf("runs AS ("));
+
+/** `sql` with only the parameters it references, renumbered from $1, and their values. */
+function onlyUsedParams(sql: string, values: readonly unknown[]): [string, unknown[]] {
+  const used = [...new Set([...sql.matchAll(/\$(\d+)/g)].map((match) => Number(match[1])))].sort((a, b) => a - b);
+  const position = new Map(used.map((index, i) => [index, i + 1]));
+  return [sql.replace(/\$(\d+)/g, (_, index: string) => `$${position.get(Number(index))}`), used.map((index) => values[index - 1])];
+}
+
+type RunsQuery = (sql: string, values?: readonly unknown[]) => Promise<pg.QueryResult>;
+
+/**
+ * Runs `work` on one connection where the window's `calls`, `runs` and
+ * `run_rows` are temporary tables, built once. Queries written as
+ * `WITH ${RUNS_CTE} ...` read those instead of rebuilding every run per
+ * query; one client runs them one at a time. Params: $1 project, $2 from,
+ * $3 to, $4 scope (scopeParam).
+ */
+async function withRuns<T>(pool: pg.Pool, params: readonly unknown[], work: (query: RunsQuery) => Promise<T>): Promise<T> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(`CREATE TEMP TABLE calls ON COMMIT DROP AS WITH ${RUNS_CTE} SELECT * FROM calls`, params.slice(0, 4));
+    await client.query(...onlyUsedParams(`CREATE TEMP TABLE runs ON COMMIT DROP AS WITH ${RUNS_AFTER_CALLS} SELECT * FROM runs`, params));
+    await client.query(...onlyUsedParams(`CREATE TEMP TABLE run_rows ON COMMIT DROP AS WITH ${RUNS_AFTER_CALLS} SELECT * FROM run_rows`, params));
+    const query: RunsQuery = (sql, values = []) => {
+      const shared = sql.replace(`WITH ${RUNS_CTE},`, "WITH").replace(`WITH ${RUNS_CTE}`, "");
+      return client.query(...onlyUsedParams(shared, values));
+    };
+    const result = await work(query);
+    await client.query("COMMIT");
+    return result;
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 export interface BoardWindow { from: string; to: string; environment: string | null; release?: string | null }
 
 /** Everything the Overview board needs beyond spend totals, for one window and the one before it. */
@@ -294,8 +335,17 @@ export async function loadOverviewBoard(pool: pg.Pool, projectId: string, window
     AND e.timestamp >= $2 AND e.timestamp < $3
     AND ${SCOPE_FILTER("e")}`;
   const unitTotals = `SELECT u.key AS unit, SUM(u.value::float) AS total FROM events e ${UNIT_ROWS("e")} AND ${eventFilter} GROUP BY 1`;
-  const [modelCosts, modelUnits, unitsNow, unitsBefore, ownerUnits] = await Promise.all([
-    pool.query(
+  // Each window's runs are built once on its own connection and every section
+  // reads them; rebuilding every run per section, a dozen at once, took the
+  // whole pool. The charges and events queries share the connection too.
+  const before = withRuns(pool, previousParams, (q) => Promise.all([
+    q(runCounts, previousParams),
+    q(scoreTotals, previousParams),
+    q(unitTotals, previousParams),
+  ]));
+  const current = withRuns(pool, params, (q) => Promise.all([
+  Promise.all([
+    q(
       `${chargesCte(chargeParams)}
        SELECT c.provider, COALESCE(c.model, 'unknown') AS model, COUNT(*)::int AS charges,
               SUM(c.cost_usd) FILTER (WHERE c.cost_usd IS NOT NULL) AS cost,
@@ -304,11 +354,10 @@ export async function loadOverviewBoard(pool: pg.Pool, projectId: string, window
        GROUP BY 1, 2`,
       chargeParams,
     ),
-    pool.query(`SELECT e.provider, COALESCE(e.model, e.request_model, 'unknown') AS model, u.key AS unit, SUM(u.value::float) AS total
+    q(`SELECT e.provider, COALESCE(e.model, e.request_model, 'unknown') AS model, u.key AS unit, SUM(u.value::float) AS total
        FROM events e ${UNIT_ROWS("e")} AND ${eventFilter} GROUP BY 1, 2, 3`, params),
-    pool.query(unitTotals, params),
-    pool.query(unitTotals, previousParams),
-    pool.query(
+    q(unitTotals, params),
+    q(
       `WITH ${RUNS_CTE}
        SELECT CASE WHEN r.root_kind = 'agent' THEN 'agents' ELSE 'workflows' END AS kind,
               CASE WHEN r.root_kind = 'agent' THEN r.root_name ELSE ${WORKFLOW_NAME.replaceAll("root_kind", "r.root_kind").replaceAll("root_name", "r.root_name").replaceAll("group_name", "r.group_name").replaceAll("trace_name", "r.trace_name")} END AS name,
@@ -317,20 +366,18 @@ export async function loadOverviewBoard(pool: pg.Pool, projectId: string, window
        GROUP BY 1, 2, 3`,
       params,
     ),
-  ]);
-  const [runsNow, runsBefore, scoresNow, scoresBefore, checks, scoreSeries, buckets, models, agents, volume, tools, latency] = await Promise.all([
-    pool.query(runCounts, params),
-    pool.query(runCounts, previousParams),
-    pool.query(scoreTotals, params),
-    pool.query(scoreTotals, previousParams),
-    pool.query(`WITH ${RUNS_CTE}, ${SCORED_CTE} SELECT * FROM checks ORDER BY count DESC, name LIMIT 20`, params),
-    pool.query(
+  ]),
+  Promise.all([
+    q(runCounts, params),
+    q(scoreTotals, params),
+    q(`WITH ${RUNS_CTE}, ${SCORED_CTE} SELECT * FROM checks ORDER BY count DESC, name LIMIT 20`, params),
+    q(
       `WITH ${RUNS_CTE}, ${SCORED_CTE}
        SELECT name, ${BUCKET("started_at")} AS bucket, AVG(value) AS avg, COUNT(*)::int AS count
        FROM scored GROUP BY 1, 2 ORDER BY 1, 2`,
       bucketParams,
     ),
-    pool.query(
+    q(
       `SELECT to_char(b, 'YYYY-MM-DD"T"HH24:MI') AS bucket
        FROM generate_series(
          date_trunc($1::text, $2::timestamptz AT TIME ZONE $4::text),
@@ -339,7 +386,7 @@ export async function loadOverviewBoard(pool: pg.Pool, projectId: string, window
        LIMIT 2000`,
       [bucket, window.from, window.to, timezone],
     ),
-    pool.query(
+    q(
       `SELECT e.provider, COALESCE(e.model, e.request_model, 'unknown') AS model, COUNT(*)::int AS calls,
               -- The whole prompt and output with reasoning, as every token count in the console.
               SUM(${PROMPT_TOKENS_SQL("e")})::bigint AS input, SUM(${OUTPUT_TOKENS_SQL("e")})::bigint AS output,
@@ -351,7 +398,7 @@ export async function loadOverviewBoard(pool: pg.Pool, projectId: string, window
        GROUP BY 1, 2`,
       params,
     ),
-    pool.query(
+    q(
       `WITH ${RUNS_CTE}
        SELECT r.root_name AS name, COUNT(DISTINCT r.trace_id)::int AS runs,
               COALESCE(SUM(c.prompt_tokens), 0)::bigint AS input, COALESCE(SUM(c.completion_tokens), 0)::bigint AS output,
@@ -363,7 +410,7 @@ export async function loadOverviewBoard(pool: pg.Pool, projectId: string, window
        LIMIT 20`,
       params,
     ),
-    pool.query(
+    q(
       `WITH ${RUNS_CTE},
        owned AS (
          SELECT CASE WHEN root_kind = 'agent' THEN 'agents' ELSE 'workflows' END AS kind,
@@ -378,7 +425,7 @@ export async function loadOverviewBoard(pool: pg.Pool, projectId: string, window
        SELECT kind, name, runs, calls FROM grouped WHERE rank <= 20 ORDER BY kind, rank`,
       params,
     ),
-    pool.query(
+    q(
       `WITH ${RUNS_CTE}
        SELECT s.name, COUNT(*)::int AS calls, COUNT(DISTINCT s.trace_id)::int AS runs
        FROM spans s
@@ -386,7 +433,7 @@ export async function loadOverviewBoard(pool: pg.Pool, projectId: string, window
        GROUP BY s.name ORDER BY COUNT(*) DESC, s.name LIMIT 20`,
       params,
     ),
-    pool.query(
+    q(
       `WITH ${RUNS_CTE},
        samples AS (
          SELECT CASE WHEN root_kind = 'agent' THEN 'agents' ELSE 'workflows' END AS kind, ${BUCKET("started_at")} AS bucket, duration_ms
@@ -405,9 +452,8 @@ export async function loadOverviewBoard(pool: pg.Pool, projectId: string, window
        ORDER BY kind, bucket NULLS FIRST`,
       bucketParams,
     ),
-  ]);
-
-  const workflowUsage = await pool.query(
+  ]),
+  q(
     `WITH ${RUNS_CTE}
      SELECT ${WORKFLOW_NAME.replaceAll("root_kind", "r.root_kind").replaceAll("root_name", "r.root_name").replaceAll("group_name", "r.group_name").replaceAll("trace_name", "r.trace_name")} AS name,
             COUNT(DISTINCT r.trace_id)::int AS runs,
@@ -419,7 +465,9 @@ export async function loadOverviewBoard(pool: pg.Pool, projectId: string, window
      ORDER BY SUM(c.cost_usd) DESC NULLS LAST, COUNT(*) DESC
      LIMIT 20`,
     params,
-  );
+  ),
+  ]));
+  const [[runsBefore, scoresBefore, unitsBefore], [[modelCosts, modelUnits, unitsNow, ownerUnits], [runsNow, scoresNow, checks, scoreSeries, buckets, models, agents, volume, tools, latency], workflowUsage]] = await Promise.all([before, current]);
   const ownerUnitMap = unitsByKey(ownerUnits.rows, (unit) => `${String(unit.kind)}\u0000${String(unit.name)}`);
   const counts = (row: Record<string, unknown> | undefined) => ({ runs: number(row?.runs) ?? 0, agentRuns: number(row?.agent_runs) ?? 0 });
   const scoreTotal = (row: Record<string, unknown> | undefined) => ({ avg: number(row?.avg), count: number(row?.count) ?? 0, allCount: number(row?.all_count) ?? 0 });

@@ -47,6 +47,7 @@ import {
   financialFields,
   loadDailyAggregates,
   loadCanonicalCharges,
+  type ChargeBounds,
   numeric,
   scopeClauses,
   type ChargeScope,
@@ -331,7 +332,7 @@ async function loadAvailableFilters(
                   'charges'::text AS count_unit
            FROM base c GROUP BY 1, 2`;
   const result = await pool.query(
-    `${chargesCte()},
+    `${chargesCte(params)},
        base AS (
          SELECT c.* FROM charges c WHERE ${clauses.join(" AND ")}
        ), trace_rollup AS (
@@ -642,8 +643,9 @@ async function loadFinancialTotals(pool: pg.Pool, projectId: string, scope: Char
   };
 }
 
-function traceCte(): string {
-  return `${chargesCte()},
+/** Runs with their charges. `scoped`: the project and window to read, widened a day so a run's late calls still count. */
+function traceCte(scoped?: unknown[] | ChargeBounds): string {
+  return `${chargesCte(scoped, { marginDays: 1 })},
     charge_rollup AS (
       SELECT project_id, trace_id,
              MAX(execution_id) AS execution_id,
@@ -1255,7 +1257,7 @@ export function createAccountingRouter(pool: pg.Pool): Router {
       params.push(timezone);
       const timezoneParam = params.length;
       const bucketRows = await pool.query(
-        `${chargesCte()}
+        `${chargesCte(params)}
          SELECT date_trunc('${bucket}', c.timestamp AT TIME ZONE $${timezoneParam}::text) AS bucket,
                 COALESCE(c.model, 'unknown') AS model,
                 COUNT(*)::int AS observations,
@@ -1446,12 +1448,12 @@ export function createAccountingRouter(pool: pg.Pool): Router {
         if (values.includes("complete")) coverageClauses.push("tb.unpriced_observations = 0");
         if (coverageClauses.length > 0) clauses.push(`(${coverageClauses.join(" OR ")})`);
       }
-      const listSql = `${traceCte()}
+      const listSql = `${traceCte(params)}
         SELECT tb.* FROM trace_base tb WHERE ${clauses.join(" AND ")}
         ORDER BY ${sort.orderBy}
         LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
       const result = await pool.query(listSql, [...params, limit, offset]);
-      const total = await pool.query(`${traceCte()}
+      const total = await pool.query(`${traceCte(params)}
         SELECT COUNT(*)::int AS count FROM trace_base tb WHERE ${clauses.join(" AND ")}`, params);
       // A failed attempt that a later attempt of the same work item completed is "retried".
       const retries = await loadRetries(pool, projectId, result.rows.map((row) => String(row.trace_id)));
@@ -1473,7 +1475,7 @@ export function createAccountingRouter(pool: pg.Pool): Router {
       const projectId = req.params["projectId"] as string;
       const traceId = req.params["traceId"] as string;
       const params: unknown[] = [projectId, traceId];
-      const summaryResult = await pool.query(`${traceCte()}
+      const summaryResult = await pool.query(`${traceCte({ project: "$1" })}
         SELECT tb.* FROM trace_base tb
         WHERE tb.project_id = $1 AND tb.trace_id = $2`, params);
       if (summaryResult.rows.length === 0) {
@@ -1637,7 +1639,7 @@ export function createAccountingRouter(pool: pg.Pool): Router {
           OR COALESCE(eb.effective_context->>'environment', '') ILIKE $${params.length}
           OR COALESCE(eb.effective_context->>'customer', '') ILIKE $${params.length})`);
       }
-      const cte = `${chargesCte()},
+      const cte = `${chargesCte({ project: "$1" })},
         charge_rollup AS (
           SELECT project_id, execution_id,
                  COUNT(*)::int AS observations,
@@ -1767,7 +1769,7 @@ export function createAccountingRouter(pool: pg.Pool): Router {
         [projectId, executionId],
       );
       const phaseRows = await pool.query(
-        `${chargesCte()}
+        `${chargesCte({ project: "$1" })}
          SELECT COALESCE(phase, 'unassigned') AS phase,
                 COUNT(*)::int AS observations,
                 COUNT(*) FILTER (WHERE cost_usd IS NULL AND NOT no_charge)::int AS unpriced_count,
@@ -1819,7 +1821,7 @@ export function createAccountingRouter(pool: pg.Pool): Router {
     try {
       const projectId = req.params["projectId"] as string;
       const result = await pool.query(
-        `${chargesCte()},
+        `${chargesCte({ project: "$1" })},
          group_rollup AS (
            SELECT project_id, group_id,
                   COUNT(*)::int AS observations,
@@ -1917,7 +1919,7 @@ export function createAccountingRouter(pool: pg.Pool): Router {
           OR COALESCE(COALESCE(x.context->>'feature', r.feature), '') ILIKE $${params.length}
           OR COALESCE(COALESCE(x.context->>'environment', r.environment), '') ILIKE $${params.length})`);
       }
-      const cte = `${chargesCte()}, rollup AS (
+      const cte = `${chargesCte({ project: "$1" })}, rollup AS (
            SELECT project_id, execution_id,
                   COUNT(*)::int AS observations,
                   COUNT(*) FILTER (WHERE cost_usd IS NOT NULL)::int AS priced_observations,
@@ -2226,7 +2228,7 @@ export function createAccountingRouter(pool: pg.Pool): Router {
         const metricParams: unknown[] = [projectId];
         const metricClauses = scopeClauses(periodScope, metricParams, "c");
         const result = await pool.query(
-          `${chargesCte()}, scoped AS (
+          `${chargesCte(metricParams)}, scoped AS (
              SELECT c.* FROM charges c WHERE ${metricClauses.join(" AND ")}
            ), trace_groups AS (
              SELECT trace_id, BOOL_AND(cost_usd IS NOT NULL) AS fully_priced,
@@ -2259,7 +2261,7 @@ export function createAccountingRouter(pool: pg.Pool): Router {
       // scopeClauses appends the group value as the final parameter. The
       // contributor endpoint intentionally returns both history and evidence.
       const history = await pool.query(
-        `${chargesCte()}
+        `${chargesCte(params)}
          SELECT date_trunc('day', c.timestamp) AS day,
                 COUNT(*)::int AS observations,
                 COUNT(*) FILTER (WHERE c.cost_usd IS NOT NULL)::int AS priced_observations,
@@ -2270,7 +2272,7 @@ export function createAccountingRouter(pool: pg.Pool): Router {
         params,
       );
       const traces = await pool.query(
-        `${chargesCte()}
+        `${chargesCte(params)}
          SELECT c.trace_id, MAX(c.trace_name) AS trace_name,
                 COUNT(*) FILTER (WHERE c.record_type = 'call')::int AS call_count,
                 COUNT(*) FILTER (WHERE c.cost_usd IS NOT NULL)::int AS priced_observations,
@@ -2295,7 +2297,7 @@ export function createAccountingRouter(pool: pg.Pool): Router {
         ...(restricted ? [] : [`SELECT 'function'::text, ${functionExpression}, c.cost_usd FROM scoped c`]),
       ];
       const distribution = await pool.query(
-        `${chargesCte()}, scoped AS (
+        `${chargesCte(distributionParams)}, scoped AS (
            SELECT c.* FROM charges c WHERE ${distributionClauses.join(" AND ")}
          ), dimensions AS (
            ${distributionDimensions.join(" UNION ALL ")}

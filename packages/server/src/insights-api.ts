@@ -556,79 +556,66 @@ async function loadGroupDetail(pool: pg.Pool, req: Request, kind: "agent" | "wor
   // The runs list is paged: `limit` (1-200, default 50) newest runs from `offset`.
   const runsLimit = Math.min(200, Math.max(1, Math.floor(Number(req.query["limit"])) || 50));
   const runsOffset = Math.max(0, Math.floor(Number(req.query["offset"])) || 0);
-  // "agent_runs" holds the runs of this agent or workflow.
-  const scoped = `WITH ${RUNS_CTE}, agent_runs AS (SELECT * FROM run_rows WHERE ${kind === "agent" ? "root_kind = 'agent' AND root_name = $5" : `root_kind IS DISTINCT FROM 'agent' AND ${WORKFLOW_NAME} = $5`})`;
-  const [summary, runs, tools, models, subagents, cacheHits, modelUnits, users, userUnits] = await Promise.all([
-    pool.query(`${scoped} SELECT $5::text AS name, ${GROUP_COLUMNS} FROM agent_runs`, params),
-    pool.query(
-      `${scoped}
-       SELECT trace_id, started_at, cost, unpriced, calls, steps, tools, failed, retried, retried_by, retried_on_attempt, attempt, work_id, error_type, duration_ms, user_id,
+  // The agent's or workflow's runs, and only their calls, are worked out once
+  // into temporary tables on one connection; every section below reads those.
+  // Building them per section ran the whole window's runs nine times at once,
+  // spilled each to disk and took every connection in the pool.
+  const groupFilter = kind === "agent" ? "root_kind = 'agent' AND root_name = $5" : `root_kind IS DISTINCT FROM 'agent' AND ${WORKFLOW_NAME} = $5`;
+  const client = await pool.connect();
+  let results: pg.QueryResult[];
+  try {
+    await client.query("BEGIN");
+    await client.query(`CREATE TEMP TABLE gd_runs ON COMMIT DROP AS WITH ${RUNS_CTE} SELECT * FROM run_rows WHERE ${groupFilter}`, params);
+    await client.query(`CREATE TEMP TABLE gd_calls ON COMMIT DROP AS WITH ${RUNS_CTE} SELECT * FROM calls WHERE trace_id IN (SELECT trace_id FROM pg_temp.gd_runs)`, params.slice(0, 4));
+    const projectId = params[0];
+    const sections: Array<[string, unknown[]]> = [
+      [`SELECT $1::text AS name, ${GROUP_COLUMNS} FROM gd_runs`, [name]],
+      [`SELECT trace_id, started_at, cost, unpriced, calls, steps, tools, failed, retried, retried_by, retried_on_attempt, attempt, work_id, error_type, duration_ms, user_id,
               prompt_tokens, cache_read_tokens, cache_write_tokens, completion_tokens, reasoning_tokens, cache_reported
-       FROM agent_runs ORDER BY started_at DESC, trace_id LIMIT ${runsLimit} OFFSET ${runsOffset}`,
-      params,
-    ),
-    pool.query(
-      `${scoped}
-       SELECT s.name, COUNT(*)::int AS calls,
+       FROM gd_runs ORDER BY started_at DESC, trace_id LIMIT ${runsLimit} OFFSET ${runsOffset}`, []],
+      [`SELECT s.name, COUNT(*)::int AS calls,
               AVG(EXTRACT(EPOCH FROM (s.ended_at - s.started_at)) * 1000) AS avg_ms,
               COUNT(*) FILTER (WHERE s.status = 'error')::int AS failed,
               COALESCE(SUM(c.cost), 0) AS cost
        FROM spans s
-       -- Each span's calls summed once, not rescanned per span.
-       LEFT JOIN (SELECT span_id, SUM(cost_usd) AS cost FROM calls WHERE span_id IS NOT NULL GROUP BY span_id) c ON c.span_id = s.id
-       WHERE s.project_id = $1 AND s.kind = 'tool' AND s.trace_id IN (SELECT trace_id FROM agent_runs)
-       GROUP BY s.name ORDER BY COUNT(*) DESC LIMIT 50`,
-      params,
-    ),
-    pool.query(
-      `${scoped}
-       SELECT COALESCE(cl.model, 'unknown') AS model, cl.provider, COUNT(*)::int AS calls, SUM(cl.cost_usd) AS cost,
+       LEFT JOIN (SELECT span_id, SUM(cost_usd) AS cost FROM gd_calls WHERE span_id IS NOT NULL GROUP BY span_id) c ON c.span_id = s.id
+       WHERE s.project_id = $1 AND s.kind = 'tool' AND s.trace_id IN (SELECT trace_id FROM gd_runs)
+       GROUP BY s.name ORDER BY COUNT(*) DESC LIMIT 50`, [projectId]],
+      [`SELECT COALESCE(cl.model, 'unknown') AS model, cl.provider, COUNT(*)::int AS calls, SUM(cl.cost_usd) AS cost,
               ${USAGE_SUM_COLUMNS("cl.")}
-       FROM calls cl WHERE cl.trace_id IN (SELECT trace_id FROM agent_runs)
-       GROUP BY 1, 2 ORDER BY SUM(cl.cost_usd) DESC NULLS LAST LIMIT 20`,
-      params,
-    ),
-    pool.query(
-      `${scoped}
-       SELECT s.name, COUNT(DISTINCT s.trace_id)::int AS runs
+       FROM gd_calls cl
+       GROUP BY 1, 2 ORDER BY SUM(cl.cost_usd) DESC NULLS LAST LIMIT 20`, []],
+      [`SELECT s.name, COUNT(DISTINCT s.trace_id)::int AS runs
        FROM spans s
        WHERE s.project_id = $1 AND s.kind = 'agent' AND s.parent_span_id IS NOT NULL
-         AND s.trace_id IN (SELECT trace_id FROM agent_runs)${kind === "agent" ? " AND s.name <> $5" : ""}
-       GROUP BY s.name ORDER BY COUNT(*) DESC LIMIT 20`,
-      params,
-    ),
-    pool.query(
-      `${scoped}
-       SELECT ${SAVINGS_COLUMNS("cl")}
-       FROM calls cl WHERE cl.trace_id IN (SELECT trace_id FROM agent_runs) AND cl.cache_read_tokens > 0
-       LIMIT ${SAVINGS_ROW_LIMIT + 1}`,
-      params,
-    ),
-    pool.query(
-      `${scoped}
-       SELECT COALESCE(cl.model, 'unknown') AS model, cl.provider, u.key AS unit, SUM(u.value::float) AS total
-       FROM calls cl ${UNIT_ROWS("cl")} AND cl.trace_id IN (SELECT trace_id FROM agent_runs)
-       GROUP BY 1, 2, 3`,
-      params,
-    ),
-    // Who the runs were for: context.customer or userId on their calls.
-    pool.query(
-      `${scoped}
-       SELECT user_id, COUNT(*)::int AS runs, SUM(calls)::int AS calls, SUM(cost) AS cost,
+         AND s.trace_id IN (SELECT trace_id FROM gd_runs)${kind === "agent" ? " AND s.name <> $2" : ""}
+       GROUP BY s.name ORDER BY COUNT(*) DESC LIMIT 20`, kind === "agent" ? [projectId, name] : [projectId]],
+      [`SELECT ${SAVINGS_COLUMNS("cl")}
+       FROM gd_calls cl WHERE cl.cache_read_tokens > 0
+       LIMIT ${SAVINGS_ROW_LIMIT + 1}`, []],
+      [`SELECT COALESCE(cl.model, 'unknown') AS model, cl.provider, u.key AS unit, SUM(u.value::float) AS total
+       FROM gd_calls cl ${UNIT_ROWS("cl")}
+       GROUP BY 1, 2, 3`, []],
+      // Who the runs were for: context.customer or userId on their calls.
+      [`SELECT user_id, COUNT(*)::int AS runs, SUM(calls)::int AS calls, SUM(cost) AS cost,
               COUNT(*) FILTER (WHERE failed)::int AS failed_runs, MAX(started_at) AS last_run,
               ${USAGE_SUM_COLUMNS()}
-       FROM agent_runs WHERE user_id IS NOT NULL
-       GROUP BY user_id ORDER BY SUM(cost) DESC NULLS LAST, COUNT(*) DESC LIMIT 20`,
-      params,
-    ),
-    pool.query(
-      `${scoped}
-       SELECT r.user_id, u.key AS unit, SUM(u.value::float) AS total
-       FROM agent_runs r JOIN calls c ON c.trace_id = r.trace_id ${UNIT_ROWS("c")} AND r.user_id IS NOT NULL
-       GROUP BY 1, 2`,
-      params,
-    ),
-  ]);
+       FROM gd_runs WHERE user_id IS NOT NULL
+       GROUP BY user_id ORDER BY SUM(cost) DESC NULLS LAST, COUNT(*) DESC LIMIT 20`, []],
+      [`SELECT r.user_id, u.key AS unit, SUM(u.value::float) AS total
+       FROM gd_runs r JOIN gd_calls c ON c.trace_id = r.trace_id ${UNIT_ROWS("c")} AND r.user_id IS NOT NULL
+       GROUP BY 1, 2`, []],
+    ];
+    results = [];
+    for (const [sql, values] of sections) results.push(await client.query(sql, values));
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+  const [summary, runs, tools, models, subagents, cacheHits, modelUnits, users, userUnits] = results as [pg.QueryResult, pg.QueryResult, pg.QueryResult, pg.QueryResult, pg.QueryResult, pg.QueryResult, pg.QueryResult, pg.QueryResult, pg.QueryResult];
   const unitsByUser = unitsByKey(userUnits.rows, (row) => String(row.user_id));
   const unitsByModel = unitsByKey(modelUnits.rows, modelKey);
   const savings = sumCacheSavings(cacheHits.rows, modelKey);

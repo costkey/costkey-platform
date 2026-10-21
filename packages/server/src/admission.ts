@@ -1030,7 +1030,7 @@ export function createPostgresObservedUsageSource(pool: pg.Pool): ObservedUsageS
     )`);
     params.push(policy.id);
     const result = await pool.query(
-      `${chargesCte()}
+      `${chargesCte({ project: "$1" })}
        SELECT c.record_id, c.charge_key, c.timestamp, c.record_type,
               c.cost_usd, c.cost_currency, c.total_tokens,
               c.input_tokens, c.output_tokens, c.unit_value, c.unit,
@@ -1147,7 +1147,7 @@ export async function perCallUsageSummary(pool: pg.Pool, policy: SpendingPolicy,
   params.push(policy.allowance);
   const capRef = `$${params.length}::double precision`;
   const result = await pool.query(
-    `${chargesCte()}
+    `${chargesCte({ project: "$1" })}
      SELECT MAX(quantity) AS largest,
             COUNT(*) FILTER (WHERE quantity > ${capRef})::int AS over_limit,
             MAX(occurred_at) FILTER (WHERE quantity > ${capRef}) AS last_over_at

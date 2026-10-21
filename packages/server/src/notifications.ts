@@ -1624,7 +1624,7 @@ async function aggregateChargesForProjects(
 ): Promise<DigestAggregates> {
   if (projectIds.length === 0) return { current: emptyChargeStats(), previous: emptyChargeStats(), contributors: [] };
   const result = await pool.query(
-    `${chargesCte()}
+    `${chargesCte({ project: "ANY($1::text[])", from: "$4", to: "$3" })}
      , period_rows AS (
        SELECT 'current'::text AS period, c.*
        FROM charges c
@@ -2128,7 +2128,7 @@ interface RankedCost {
 async function topModelsForProjects(pool: pg.Pool, projectIds: string[], from: Date, to: Date): Promise<RankedCost[]> {
   if (projectIds.length === 0) return [];
   const result = await pool.query(
-    `${chargesCte()}
+    `${chargesCte({ project: "ANY($1::text[])", from: "$2", to: "$3" })}
      SELECT COALESCE(NULLIF(c.model, ''), '(unknown)') AS label,
             COUNT(*)::int AS calls,
             COUNT(*) FILTER (WHERE c.cost_usd IS NOT NULL)::int AS priced_calls,

@@ -3,7 +3,7 @@ import type pg from "pg";
 import { requireAuth } from "./auth.js";
 import { orgScope } from "./middleware.js";
 import { workspaceTimezone } from "./quality-api.js";
-import { BILLED_UNITS, boardBucket, KNOWN_COST_SQL, RUNS_CTE, SCOPE_FILTER, scopeParam } from "./insights-api.js";
+import { BILLED_UNITS, onlyUsedParams, boardBucket, KNOWN_COST_SQL, RUNS_CTE, SCOPE_FILTER, scopeParam } from "./insights-api.js";
 import { getPriceCatalog } from "./price-catalog/catalog.js";
 import type { PriceRates } from "./price-catalog/types.js";
 import {
@@ -122,8 +122,20 @@ function currentPrice(provider: string, model: string) {
 export async function loadModelDetail(pool: pg.Pool, projectId: string, query: ModelDetailQuery) {
   const params = [projectId, query.from, query.to, scopeParam(query), query.provider, query.model];
   const bucket = boardBucket(query.from, query.to);
-  const [summary, units, series, owners, recent, sources, cacheHits, pricedCalls] = await Promise.all([
-    pool.query(
+  // This model's calls in the window are read once, into a temporary table on
+  // one connection, and every section reads that: eight sections scanning the
+  // events table side by side took eight connections and slowed each other.
+  const client = await pool.connect();
+  let results: pg.QueryResult[];
+  try {
+    await client.query("BEGIN");
+    await client.query(`CREATE TEMP TABLE mcalls ON COMMIT DROP AS SELECT e.* FROM events e WHERE ${MODEL_CALLS}`, params);
+    const q = (sql: string, values: readonly unknown[]) => client.query(...onlyUsedParams(
+      sql.replaceAll(`FROM events e WHERE ${MODEL_CALLS}`, "FROM mcalls e WHERE TRUE").replaceAll(`WHERE ${MODEL_CALLS}`, "WHERE TRUE"),
+      values,
+    ));
+    results = await Promise.all([
+    q(
       `WITH c AS (
          SELECT e.cost_usd, e.duration_ms, e.cache_read_tokens, e.reasoning_tokens,
                 ${CACHE_WRITE_SQL("e")} AS cache_write_tokens,
@@ -146,15 +158,15 @@ export async function loadModelDetail(pool: pg.Pool, projectId: string, query: M
        FROM c`,
       params,
     ),
-    pool.query(
+    q(
       `SELECT u.key AS unit, SUM(u.value::float) AS total
-       FROM events e
+       FROM mcalls e
        CROSS JOIN LATERAL jsonb_each_text(CASE WHEN jsonb_typeof(e.native_units) = 'object' THEN e.native_units ELSE '{}'::jsonb END) u
        WHERE ${MODEL_CALLS} AND u.key = ANY($7::text[]) AND u.value ~ '^[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$'
        GROUP BY 1`,
       [...params, [...BILLED_UNITS]],
     ),
-    pool.query(
+    q(
       `WITH buckets AS (
          SELECT to_char(b, 'YYYY-MM-DD"T"HH24:MI') AS bucket
          FROM generate_series(
@@ -174,7 +186,7 @@ export async function loadModelDetail(pool: pg.Pool, projectId: string, query: M
        ORDER BY b.bucket`,
       [...params, bucket, query.timezone],
     ),
-    pool.query(
+    q(
       `WITH ${modelRunsCte()},
        model_calls AS (
          SELECT c.trace_id, c.cost_usd FROM calls c
@@ -189,7 +201,7 @@ export async function loadModelDetail(pool: pg.Pool, projectId: string, query: M
        LIMIT 50`,
       params,
     ),
-    pool.query(
+    q(
       `SELECT e.id, e.timestamp, e.trace_id, e.trace_name, e.cost_usd, e.cost_basis, e.cost_source, e.duration_ms,
               e.input_tokens, e.output_tokens, e.cache_read_tokens, e.native_units,
               e.lifecycle_state, e.lifecycle_error_type, e.status_code, ${FAILED_SQL("e")} AS failed
@@ -198,7 +210,7 @@ export async function loadModelDetail(pool: pg.Pool, projectId: string, query: M
        LIMIT 25`,
       params,
     ),
-    pool.query(
+    q(
       // A failed call with no price cost nothing: it is its own row, not "no price".
       `SELECT CASE WHEN e.cost_usd IS NULL AND ${FAILED_SQL("e")} THEN 'failed' WHEN e.cost_usd IS NULL THEN 'unpriced' ELSE COALESCE(e.cost_basis, 'unknown') END AS basis,
               e.cost_source AS source,
@@ -208,20 +220,29 @@ export async function loadModelDetail(pool: pg.Pool, projectId: string, query: M
        ORDER BY COUNT(*) DESC, 1, 2`,
       params,
     ),
-    pool.query(
+    q(
       `SELECT ${SAVINGS_COLUMNS("e")}
        FROM events e WHERE ${MODEL_CALLS} AND e.cache_read_tokens > 0
        LIMIT ${SAVINGS_ROW_LIMIT + 1}`,
       params,
     ),
     // Every priced call, to show how the period's cost adds up.
-    pool.query(
+    q(
       `SELECT ${SAVINGS_COLUMNS("e")}
        FROM events e WHERE ${MODEL_CALLS} AND e.cost_usd IS NOT NULL
        LIMIT ${SAVINGS_ROW_LIMIT + 1}`,
       params,
     ),
   ]);
+
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+  const [summary, units, series, owners, recent, sources, cacheHits, pricedCalls] = results as [pg.QueryResult, pg.QueryResult, pg.QueryResult, pg.QueryResult, pg.QueryResult, pg.QueryResult, pg.QueryResult, pg.QueryResult];
 
   const total = (summary.rows[0] ?? {}) as Record<string, unknown>;
   const usage: TokenUsage = { ...usageFrom(total), cacheSavings: sumCacheSavings(cacheHits.rows).total };

@@ -7,6 +7,7 @@ import { Router as createRouter } from "express";
 import type pg from "pg";
 import { randomBytes } from "node:crypto";
 import { orgScope } from "./middleware.js";
+import { cachedSummaries } from "./response-cache.js";
 import { requireAuth } from "./auth.js";
 import { roleCanManageWorkspace, roleCanPublishSharedView, roleCanReadContent } from "./permissions.js";
 import {
@@ -912,6 +913,11 @@ function parseFindingThresholds(body: Record<string, unknown>, current: FindingT
 export function createAccountingRouter(pool: pg.Pool): Router {
   const router = createRouter();
   router.use("/api/v1/projects/:projectId", requireAuth, orgScope(pool));
+  // Heavy summaries the Overview asks for at once: served from a short-lived cache (response-cache.ts).
+  router.get("/api/v1/projects/:projectId/overview", cachedSummaries());
+  router.get("/api/v1/projects/:projectId/costs", cachedSummaries());
+  router.get("/api/v1/projects/:projectId/forecast", cachedSummaries());
+  router.get("/api/v1/projects/:projectId/filter-options", cachedSummaries());
   router.use("/api/v1/projects/:projectId", (req, res, next) => {
     if (validateContextKey(req, res)) next();
   });

@@ -2,6 +2,7 @@ import { Router, type Request, type Response } from "express";
 import type pg from "pg";
 import { requireAuth } from "./auth.js";
 import { orgScope } from "./middleware.js";
+import { cachedSummaries } from "./response-cache.js";
 import { workspaceTimezone } from "./quality-api.js";
 import { BILLED_UNITS, retryInfo, RUNS_CTE, scopeParam } from "./insights-api.js";
 import { USAGE_SUM_COLUMNS, usageFrom, type TokenUsage } from "./token-usage.js";
@@ -298,6 +299,8 @@ function fail(res: Response, label: string, error: unknown): void {
 export function createUsersRouter(pool: pg.Pool): Router {
   const router = Router();
   router.use("/api/v1/projects/:projectId", requireAuth, orgScope(pool));
+  // Heavy summaries the Overview asks for at once: served from a short-lived cache (response-cache.ts).
+  router.get("/api/v1/projects/:projectId/users", cachedSummaries());
 
   router.get("/api/v1/projects/:projectId/users", async (req: Request, res: Response) => {
     const window = windowFrom(req);

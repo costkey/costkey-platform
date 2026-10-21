@@ -2,6 +2,7 @@ import { Router, type Request, type Response } from "express";
 import type pg from "pg";
 import { requireAuth } from "./auth.js";
 import { orgScope } from "./middleware.js";
+import { cachedSummaries } from "./response-cache.js";
 import { workspaceTimezone } from "./quality-api.js";
 import { chargesCte, scopeClauses } from "./charge-cohort.js";
 import {
@@ -702,6 +703,10 @@ async function loadGroupDetail(pool: pg.Pool, req: Request, kind: "agent" | "wor
 export function createInsightsRouter(pool: pg.Pool): Router {
   const router = Router();
   router.use("/api/v1/projects/:projectId", requireAuth, orgScope(pool));
+  // Heavy summaries the Overview asks for at once: served from a short-lived cache (response-cache.ts).
+  router.get("/api/v1/projects/:projectId/insights/board", cachedSummaries());
+  router.get("/api/v1/projects/:projectId/agents", cachedSummaries());
+  router.get("/api/v1/projects/:projectId/workflows", cachedSummaries());
 
   router.get("/api/v1/projects/:projectId/workflows", async (req: Request, res: Response) => {
     const window = windowFrom(req);

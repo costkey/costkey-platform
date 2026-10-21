@@ -535,7 +535,7 @@ export async function loadDailyAggregates(
   }
   try {
     const result = await pool.query(
-      `${chargesCte()},
+      `${chargesCte(detailParams)},
        detail_days AS (
          SELECT DISTINCT (c.timestamp AT TIME ZONE $${timezoneParam}::text)::date AS day
          FROM charges c WHERE ${detailClauses.join(" AND ")}

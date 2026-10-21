@@ -261,10 +261,12 @@ async function loadFindingChargeWindow(
   pool: pg.Pool | pg.PoolClient,
   projectId: string,
 ): Promise<FindingChargeWindow> {
+  // The latest call or usage record; building every charge to read one timestamp scanned all of them.
   const latest = await pool.query(
-    `${chargesCte()}
-     SELECT MAX(c.timestamp) AS latest_timestamp
-     FROM charges c WHERE c.project_id = $1`,
+    `SELECT GREATEST(
+       (SELECT MAX(e.timestamp) FROM events e WHERE e.project_id = $1 AND COALESCE(e.event_type, 'call') = 'call'),
+       (SELECT MAX(COALESCE(u.accounting_at, u.observed_at)) FROM usage_components u WHERE u.project_id = $1)
+     ) AS latest_timestamp`,
     [projectId],
   );
   const latestTimestamp = asDate(latest.rows?.[0]?.latest_timestamp);
@@ -734,6 +736,21 @@ export function scheduleFindingsRefresh(pool: pg.Pool, projectId: string, delayM
 }
 
 /** Refresh every project with captured activity for a periodic worker. */
+/** The latest call each project's findings were refreshed at, in this process. */
+const lastRefreshedAt = new Map<string, string>();
+
+async function latestChargeAt(pool: pg.Pool, projectId: string): Promise<string | null> {
+  const result = await pool.query(
+    `SELECT GREATEST(
+       (SELECT MAX(e.timestamp) FROM events e WHERE e.project_id = $1),
+       (SELECT MAX(COALESCE(u.accounting_at, u.observed_at)) FROM usage_components u WHERE u.project_id = $1)
+     ) AS latest`,
+    [projectId],
+  );
+  const latest = result.rows?.[0]?.latest;
+  return latest == null ? null : new Date(latest).toISOString();
+}
+
 export async function refreshAllFindings(pool: pg.Pool): Promise<{ refreshed: number; skipped: number; failed: number }> {
   const projects = await pool.query(
     `SELECT DISTINCT p.id
@@ -746,8 +763,14 @@ export async function refreshAllFindings(pool: pg.Pool): Promise<{ refreshed: nu
   let failed = 0;
   for (const row of projects.rows ?? []) {
     try {
-      if (await refreshFindingsLocked(pool, String(row.id))) refreshed++;
-      else skipped++;
+      // Findings only change with new calls: skip a project with none since its last refresh.
+      const projectId = String(row.id);
+      const latest = await latestChargeAt(pool, projectId);
+      if (latest !== null && lastRefreshedAt.get(projectId) === latest) { skipped++; continue; }
+      if (await refreshFindingsLocked(pool, projectId)) {
+        refreshed++;
+        if (latest !== null) lastRefreshedAt.set(projectId, latest);
+      } else skipped++;
     } catch (error) {
       failed++;
       console.error("[costkey] Periodic findings refresh error:", error instanceof Error ? error.message : error);

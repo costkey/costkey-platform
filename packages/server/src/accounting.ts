@@ -1035,7 +1035,7 @@ export async function reconcileDailyCostAggregates(
     catch { timezone = "UTC"; }
     await client.query("DELETE FROM daily_cost_aggregates WHERE project_id = $1 AND day = $2", [projectId, day]);
     const rollup = await client.query(
-      `${chargesCte()},
+      `${chargesCte({ project: "$1", from: "(($2::date - INTERVAL '1 day')::timestamp AT TIME ZONE $3::text)", to: "(($2::date + INTERVAL '2 days')::timestamp AT TIME ZONE $3::text)" })},
        scoped AS (
          SELECT c.*,
                 COALESCE(c.context->>'environment', '(unassigned)') AS environment,

@@ -258,7 +258,7 @@ async function exportEvents(pool: pg.Pool, req: Request, res: Response): Promise
     );
     const hasContentStatus = Boolean(contentStatusColumn.rows[0]?.available);
     const canonical = usageTable.rows[0]?.table_name
-      ? chargesCte()
+      ? chargesCte({ project: "$1" })
       : `WITH charges AS (
            SELECT e.project_id, e.id AS record_id, COALESCE(e.charge_id, e.id) AS charge_key,
                   e.timestamp, e.provider, e.model, e.request_model, e.pricing_id,

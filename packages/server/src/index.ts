@@ -33,6 +33,7 @@ import { createSavedViewsRouter } from "./saved-views.js";
 import { createNotificationsRouter, runWeeklyDigests } from "./notifications.js";
 import { createSubscriptionRouter } from "./subscription.js";
 import { refreshAllFindings } from "./findings.js";
+import { invalidateOnChange } from "./response-cache.js";
 import { reconcileDailyCostAggregates } from "./accounting.js";
 import { startQualityCheckWorker } from "./quality-checks/worker.js";
 import { startEmptyRunSweeper } from "./empty-runs.js";
@@ -277,6 +278,8 @@ export function createApp(options: AppOptions = {}): Express & AppRuntime {
   // DSN-only SDK routers must precede every router with a global requireAuth.
   // They are safe to import because admission has no optional email client;
   // the legacy budget/API routers remain lazy until database initialization.
+  // A change through the API drops the cached summaries it affects (response-cache.ts).
+  app.use(invalidateOnChange());
   app.use(createSdkAdmissionRouter(pool));
   // Coding agents: read-only tokens and the MCP endpoint they use.
   app.use(createApiTokensRouter(pool));

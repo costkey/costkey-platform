@@ -637,6 +637,16 @@ export async function initDatabase(): Promise<void> {
       PRIMARY KEY (project_id, id)
     );
     CREATE INDEX IF NOT EXISTS idx_spans_trace ON spans(project_id, trace_id);
+    -- Walking a span's children (attributing calls to the span that holds them)
+    -- scanned every span per step without this.
+    CREATE INDEX IF NOT EXISTS idx_spans_parent ON spans(project_id, parent_span_id) WHERE parent_span_id IS NOT NULL;
+    -- Every call query filters COALESCE(event_type, 'call') = 'call'; without
+    -- statistics on that expression Postgres guesses 0.5% of rows match (it is
+    -- nearly all of them) and plans the larger queries badly. Postgres 14+.
+    DO $$ BEGIN
+      CREATE STATISTICS IF NOT EXISTS events_call_kind ON (COALESCE(event_type, 'call')) FROM events;
+    EXCEPTION WHEN OTHERS THEN NULL;
+    END $$;
     -- Where the span was opened (filtered frames); calls with no code of their own take it.
     ALTER TABLE spans ADD COLUMN IF NOT EXISTS call_site_frames JSONB;
     CREATE INDEX IF NOT EXISTS idx_spans_project_started ON spans(project_id, started_at DESC);

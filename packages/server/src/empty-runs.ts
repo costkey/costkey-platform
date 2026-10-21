@@ -33,9 +33,15 @@ export async function sweepEmptyRuns(
       .join("\n          ");
     await client.query("BEGIN");
     const empty = await client.query<{ project_id: string; trace_id: string }>(
-      `SELECT e.project_id, e.trace_id
-         FROM events e
-        WHERE e.trace_id IS NOT NULL
+      // Only runs active in the last two days: grouping every event ever
+      // recorded by trace, every minute, scanned the whole table. This runs
+      // each minute, so a run past its grace period is seen well inside that.
+      `WITH recent AS (
+         SELECT t.project_id, t.id FROM traces t
+          WHERE COALESCE(t.updated_at, t.created_at) > NOW() - make_interval(secs => $1) - INTERVAL '2 days'
+       )
+       SELECT e.project_id, e.trace_id
+         FROM recent r JOIN events e ON e.project_id = r.project_id AND e.trace_id = r.id
         GROUP BY e.project_id, e.trace_id
        HAVING bool_and(e.event_type = 'lifecycle')
           AND max(e.timestamp) < NOW() - make_interval(secs => $1)

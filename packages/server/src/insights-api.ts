@@ -146,6 +146,18 @@ export const RUNS_CTE = `
     WHERE t.project_id = $1 AND ${WORK_ID_SQL("t")} IN (SELECT work_id FROM run_base WHERE work_id IS NOT NULL)
       AND t.id NOT IN (SELECT trace_id FROM run_base)
   ),
+  -- Each work item's attempts in order, numbered once (a correlated count per
+  -- run was quadratic in the runs sharing a work id), with the attempt number
+  -- of the first later one that completed.
+  numbered AS (
+    SELECT a.*, ROW_NUMBER() OVER (PARTITION BY work_id ORDER BY started_at, trace_id)::int AS attempt
+    FROM attempts a
+  ),
+  next_done AS (
+    SELECT n.*, MIN(CASE WHEN NOT n.failed AND NOT n.running THEN n.attempt END)
+             OVER (PARTITION BY n.work_id ORDER BY n.attempt ROWS BETWEEN 1 FOLLOWING AND UNBOUNDED FOLLOWING) AS done_attempt
+    FROM numbered n
+  ),
   -- A failed attempt that a later attempt completed is "retried", not failed:
   -- failure counts only the work item's last attempt.
   run_rows AS (
@@ -154,17 +166,11 @@ export const RUNS_CTE = `
            (b.raw_failed AND later.trace_id IS NULL) AS failed,
            later.trace_id AS retried_by,
            later.attempt AS retried_on_attempt,
-           CASE WHEN b.work_id IS NULL THEN 1
-                ELSE (SELECT COUNT(*) FROM attempts o WHERE o.work_id = b.work_id AND (o.started_at, o.trace_id) <= (b.started_at, b.trace_id))::int END AS attempt
+           COALESCE(own.attempt, 1) AS attempt
     FROM run_base b
-    LEFT JOIN LATERAL (
-      SELECT o.trace_id,
-             (SELECT COUNT(*) FROM attempts p WHERE p.work_id = o.work_id AND (p.started_at, p.trace_id) <= (o.started_at, o.trace_id))::int AS attempt
-      FROM attempts o
-      WHERE b.raw_failed AND b.work_id IS NOT NULL AND o.work_id = b.work_id
-        AND (o.started_at, o.trace_id) > (b.started_at, b.trace_id) AND NOT o.failed AND NOT o.running
-      ORDER BY o.started_at, o.trace_id LIMIT 1
-    ) later ON TRUE
+    LEFT JOIN next_done own ON b.work_id IS NOT NULL AND own.work_id = b.work_id AND own.trace_id = b.trace_id
+    LEFT JOIN numbered later ON b.raw_failed AND own.done_attempt IS NOT NULL
+      AND later.work_id = b.work_id AND later.attempt = own.done_attempt
   )`;
 
 export const GROUP_COLUMNS = `

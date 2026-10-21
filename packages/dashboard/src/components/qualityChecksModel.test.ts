@@ -57,7 +57,7 @@ describe("quality check labels", () => {
     expect(formatAverage(0.756)).toBe("0.76");
     expect(formatSampleRate(100)).toBe("Every run");
     expect(formatSampleRate(12.5)).toBe("12.5% of runs");
-    expect(kindLabel(check())).toBe("LLM judge · OpenAI gpt-4o-mini");
+    expect(kindLabel(check())).toBe("Rubric · OpenAI gpt-4o-mini");
     expect(kindLabel(check({ kind: "rule" }))).toBe("Rule");
     expect(appliesToLabel(check({ appliesTo: "named", appliesToNames: ["a", "b", "c", "d"] }))).toBe("a, b and 2 more");
     expect(appliesToLabel(check())).toBe("All runs");

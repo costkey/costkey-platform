@@ -22,6 +22,12 @@ export function getPool(): pg.Pool {
     pool.on("error", (err) => {
       console.error("[costkey] Postgres pool error:", err.message);
     });
+    // Small Postgres tiers sort in 4 MB, so a month of runs spills to disk on
+    // every query; 16 MB a sort keeps it in memory (COSTKEY_DB_WORK_MEM_MB).
+    const workMemMb = Math.min(256, Math.max(4, Number(process.env["COSTKEY_DB_WORK_MEM_MB"]) || 16));
+    pool.on("connect", (client) => {
+      client.query(`SET work_mem = '${workMemMb}MB'`).catch(() => undefined);
+    });
     logSlowQueries(pool);
   }
   return pool;

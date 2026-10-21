@@ -222,7 +222,7 @@ export async function loadScoreQuality(
       params,
     ),
     pool.query(
-      `${chargesCte()}, ${SCORE_CTES}, latest AS (
+      `${chargesCte({ project: "$1", from: "$2", to: "$3" }, { marginDays: 1 })}, ${SCORE_CTES}, latest AS (
          SELECT DISTINCT ON (name, trace_id) name, trace_id, passed
          FROM judged WHERE trace_id IS NOT NULL
          ORDER BY name, trace_id, timestamp DESC, id DESC

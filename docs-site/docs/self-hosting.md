@@ -6,7 +6,7 @@ description: Run CostKey on your own machines with Docker Compose. Postgres plus
 
 # Self-hosting
 
-CostKey is MIT licensed. A self-hosted install is two containers: Postgres, and one image that serves both the API and the console on a single port. For Kubernetes, Render, Railway, Fly.io, Cloud Run or AWS, see [Deploy anywhere](./deploy).
+A self-hosted install is two containers: Postgres, and one image that serves both the API and the console on a single port. For Kubernetes, Render, Railway, Fly.io, Cloud Run or AWS, see [Deploy anywhere](./deploy).
 
 ## Start it
 
@@ -80,7 +80,7 @@ All settings live in `.env` next to `docker-compose.yml`.
 | `COSTKEY_COOKIE_SECURE` | Optional. Sign-in cookies are Secure when `PUBLIC_URL` is `https://`. Set `true` or `false` to override. |
 | `COSTKEY_VERSION` | Optional. The image tag to run, such as `0.7.0`. Default `latest`. |
 | `COSTKEY_QUALITY_SETTLE_SECONDS` | Optional. Seconds a run must be idle before [quality checks](./quality-checks) score it. Default `120`. |
-| `COSTKEY_QUALITY_JUDGE_RPM` | Optional. Most LLM judge calls per minute for each project. Default `30`. |
+| `COSTKEY_QUALITY_JUDGE_RPM` | Optional. Most rubric check calls per minute for each project. Default `30`. |
 | `COSTKEY_QUALITY_WORKER_INTERVAL_SECONDS` | Optional. Seconds between runs of the quality check worker. Default `15`. |
 | `COSTKEY_MCP_ENABLED` | Optional. The [MCP endpoint](./mcp) for coding agents at `PUBLIC_URL/mcp`. Set `false` to turn it off. Default on. |
 | `COSTKEY_TOKEN_RATE_LIMIT` | Optional. Reads a minute for each coding agent token. Default `300`. |
@@ -207,6 +207,6 @@ docker compose exec postgres pg_dump -U costkey costkey > costkey-backup.sql
 
 - **Prices.** The server syncs model prices every six hours from LiteLLM, models.dev and OpenRouter. The image includes a snapshot, so a fresh install has prices before its first sync.
 - **Email and GitHub sign-in**, only if you set them up.
-- **LLM judges.** [Quality checks](./quality-checks) that use a judge call the provider you pick (OpenAI, Anthropic or Google) from the server.
+- **Rubric checks.** [Quality checks](./quality-checks) that score against a rubric call the provider you pick (OpenAI, Anthropic or Google) from the server.
 
 Calls from your app go straight to your providers. CostKey never sits in between.

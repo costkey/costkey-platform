@@ -260,5 +260,5 @@ await CostKey.shutdown()
 - [Providers](/providers): built-in provider endpoints and transport coverage
 - [Agents and frameworks](/agents): framework integrations and agent spans
 - [Dashboard](/dashboard): what each tab shows
-- [Quality checks](/quality-checks): score every run with rules and LLM judges
+- [Quality checks](/quality-checks): score every run with rules and rubrics
 - [Privacy & security](/privacy-security): what data is captured, credential scrubbing, data retention

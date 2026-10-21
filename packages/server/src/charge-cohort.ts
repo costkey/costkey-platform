@@ -108,6 +108,9 @@ export interface DailyAggregateRow {
  * revisions remain separate records; only the active cumulative snapshot is
  * included. Unknown USD amounts stay NULL.
  */
+/** Placeholders for the project and, optionally, the window a charges query reads. */
+export interface ChargeBounds { project: string; from?: string; to?: string }
+
 /** Where scopeClauses put a query's window, so chargesCte can read only that slice. */
 const queryBounds = new WeakMap<unknown[], { from?: string; to?: string }>();
 
@@ -117,13 +120,21 @@ const queryBounds = new WeakMap<unknown[], { from?: string; to?: string }>();
  * every record of every project and then filtering: a full scan and sort that
  * grows with the database. Without params it reads everything, as before.
  */
-export function chargesCte(scopedParams?: unknown[]): string {
-  const bounds = scopedParams ? queryBounds.get(scopedParams) : undefined;
-  const eventBounds = scopedParams
-    ? ` AND e.project_id = $1${bounds?.from ? ` AND e.timestamp >= ${bounds.from}` : ""}${bounds?.to ? ` AND e.timestamp < ${bounds.to}` : ""}`
+export function chargesCte(scoped?: unknown[] | ChargeBounds, options: { marginDays?: number } = {}): string {
+  // Params filled by scopeClauses carry their window; explicit bounds name it.
+  const given: ChargeBounds | undefined = Array.isArray(scoped)
+    ? { project: "$1", ...(queryBounds.get(scoped) ?? {}) }
+    : scoped;
+  // A run's cost needs its calls just outside the window too: widen by a margin.
+  const widen = (bound: string | undefined, sign: "-" | "+") => bound && options.marginDays
+    ? `(${bound}::timestamptz ${sign} INTERVAL '${Math.max(0, Math.floor(options.marginDays))} days')` : bound;
+  const from = widen(given?.from, "-");
+  const to = widen(given?.to, "+");
+  const eventBounds = given
+    ? ` AND e.project_id = ${given.project}${from ? ` AND e.timestamp >= ${from}` : ""}${to ? ` AND e.timestamp < ${to}` : ""}`
     : "";
-  const usageBounds = scopedParams
-    ? ` AND u.project_id = $1${bounds?.from ? ` AND COALESCE(u.accounting_at, u.observed_at) >= ${bounds.from}` : ""}${bounds?.to ? ` AND COALESCE(u.accounting_at, u.observed_at) < ${bounds.to}` : ""}`
+  const usageBounds = given
+    ? ` AND u.project_id = ${given.project}${from ? ` AND COALESCE(u.accounting_at, u.observed_at) >= ${from}` : ""}${to ? ` AND COALESCE(u.accounting_at, u.observed_at) < ${to}` : ""}`
     : "";
   return `
     WITH auto_raw AS (

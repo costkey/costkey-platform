@@ -1,7 +1,7 @@
 import type { JudgeProvider } from "./templates.js";
 
 /**
- * One LLM judge call over plain fetch. The judge returns a score in 0..1, a
+ * One rubric check call over plain fetch. The judge returns a score in 0..1, a
  * short label and a reason; the caller records the provider usage as a
  * CostKey event so evaluation spend is priced like any other call.
  */

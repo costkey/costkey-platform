@@ -102,7 +102,7 @@ const config = {
             ],
           },
         ],
-        copyright: `Copyright ${new Date().getFullYear()} CostKey. MIT License.`,
+        copyright: `Copyright ${new Date().getFullYear()} CostKey.`,
       },
       prism: {
         theme: inkCodeTheme,

@@ -64,6 +64,12 @@ export function getDb() {
 
 const MIGRATION_LOCK_KEY = "costkey:schema";
 
+/** How long DDL may wait for a table lock; startup raises it on each retry. */
+let migrationLockTimeoutMs = 3_000;
+export function setMigrationLockTimeout(ms: number): void {
+  migrationLockTimeoutMs = Math.max(1_000, Math.floor(ms));
+}
+
 /**
  * Serialize structural migrations and one-shot backfills across app instances.
  * ponytail: one database-wide lock keeps startup safe; shard only if migration
@@ -76,11 +82,23 @@ export async function withMigrationLock<T>(
   const client = await p.connect();
   try {
     await client.query("SELECT pg_advisory_lock(hashtextextended($1, 0))", [MIGRATION_LOCK_KEY]);
+    // DDL waiting for a table lock makes every later query on that table wait
+    // behind it. Give up after a bounded wait instead (55P03); startup retries.
+    await client.query(`SET lock_timeout = '${migrationLockTimeoutMs}ms'`);
     return await fn(client);
   } finally {
+    await client.query("RESET lock_timeout").catch(() => undefined);
     await client.query("SELECT pg_advisory_unlock(hashtextextended($1, 0))", [MIGRATION_LOCK_KEY]).catch(() => undefined);
     client.release();
   }
+}
+
+/** Whether a one-time step (a runOnce name, or a build's schema stamp) is recorded. */
+export async function migrationRecorded(p: pg.Pool, name: string): Promise<boolean> {
+  const table = await p.query("SELECT to_regclass('migrations') AS name");
+  if (!table.rows[0]?.name) return false;
+  const found = await p.query("SELECT 1 FROM migrations WHERE name = $1", [name]);
+  return found.rows.length > 0;
 }
 
 /** Keep the accounting rollup shape current for callers that inject a pool. */

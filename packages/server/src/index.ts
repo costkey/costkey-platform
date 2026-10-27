@@ -5,7 +5,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import type pg from "pg";
-import { ensureAccountingChangeSchema, ensureDailyAggregateSchema, ensureQualityCheckSchema, getPool, initDatabase, runOnce, withMigrationLock } from "./db.js";
+import { ensureAccountingChangeSchema, ensureDailyAggregateSchema, ensureQualityCheckSchema, getPool, initDatabase, migrationRecorded, runOnce, setMigrationLockTimeout, withMigrationLock } from "./db.js";
 import { ensureSsoSchema } from "./sso/provision.js";
 import { createIngestRouter, loadCallGraphCache } from "./ingest.js";
 import { createAuthRouter, authMiddleware } from "./auth.js";
@@ -266,17 +266,23 @@ export function createApp(options: AppOptions = {}): Express & AppRuntime {
     initializationError = null;
     initialization = (async () => {
       console.log("[costkey] DATABASE_URL:", process.env["DATABASE_URL"]?.replace(/:[^@]+@/, ":***@") ?? "not set");
+      // Schema setup locks tables, so a build runs it once: later boots of the
+      // same build (restarts, scale-ups) skip it and serve right away.
       // A supplied pool belongs to a harness and owns its own schema setup;
       // the production pool uses the legacy initializer before platform DDL.
-      if (!options.pool) await initDatabase();
-      await ensurePlatformSchema(pool);
-      await ensureReleaseSchema(pool);
-      await ensurePolicySchema(pool);
-      await ensureQualityCheckSchema(pool);
-      // Every table exists from the first boot; nothing is created on first use.
-      await ensureSsoSchema(pool);
-      await ensureDailyAggregateSchema(pool);
-      await withMigrationLock(pool, (client) => ensureAccountingChangeSchema(client));
+      const schemaStamp = SERVER_COMMIT && !options.pool ? `schema@${SERVER_COMMIT}` : null;
+      if (!schemaStamp || !await migrationRecorded(pool, schemaStamp)) {
+        if (!options.pool) await initDatabase();
+        await ensurePlatformSchema(pool);
+        await ensureReleaseSchema(pool);
+        await ensurePolicySchema(pool);
+        await ensureQualityCheckSchema(pool);
+        // Every table exists from the first boot; nothing is created on first use.
+        await ensureSsoSchema(pool);
+        await ensureDailyAggregateSchema(pool);
+        await withMigrationLock(pool, (client) => ensureAccountingChangeSchema(client));
+        if (schemaStamp) await pool.query("INSERT INTO migrations (name) VALUES ($1) ON CONFLICT (name) DO NOTHING", [schemaStamp]);
+      }
       // Rollups taken before changes were tracked may have missed late calls
       // or repricing: mark every stored period once so the scheduler redoes them.
       await runOnce(pool, "refresh_daily_rollup_v1", async () => {
@@ -413,11 +419,15 @@ export async function startServer(options: AppOptions = {}): Promise<{ server: R
     // Postgres can pick the migration as a deadlock victim. Startup is safe to re-run,
     // so try again instead of shutting down.
     const start = (attempt: number): void => {
+      // Each retry lets schema changes wait longer for their table locks.
+      setMigrationLockTimeout(Math.min(3_000 * 2 ** attempt, 60_000));
       void runtime.initialize().catch((error) => {
         const code = (error as { code?: unknown } | null)?.code;
-        if ((code === "40P01" || code === "55P03") && attempt < 5) {
-          console.warn(`[costkey] Init hit a lock conflict (${String(code)}), retrying (${attempt + 1} of 5)`);
-          setTimeout(() => start(attempt + 1), 1000 * 2 ** attempt).unref();
+        // A lock conflict ends when the other work does: keep trying rather
+        // than shutting down, and /ready answers 503 until startup is done.
+        if (code === "40P01" || code === "55P03") {
+          console.warn(`[costkey] Init hit a lock conflict (${String(code)}), retry ${attempt + 1}`);
+          setTimeout(() => start(attempt + 1), Math.min(1000 * 2 ** attempt, 30_000)).unref();
           return;
         }
         console.error("[costkey] Init error:", error);

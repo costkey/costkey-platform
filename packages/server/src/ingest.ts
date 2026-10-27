@@ -14,7 +14,7 @@ import {
   recordAccountingEvent,
 } from "./accounting.js";
 import { enrichFeatureContext } from "./feature-mappings.js";
-import { scheduleFindingsRefresh } from "./findings.js";
+import { scheduleFindingsRefreshAfterIngest } from "./findings.js";
 import { redactCapturedContent, stripIngestEventPrivacy } from "./privacy.js";
 import { applyCallTelemetry, hasCallTelemetry, type AppliedTelemetry } from "./telemetry/event.js";
 import { expandLiveKitEvent, isLiveKitTelemetry, LiveKitPayloadError } from "./telemetry/livekit.js";
@@ -1297,7 +1297,7 @@ export function createIngestRouter(pool: pg.Pool): Router {
         invalidateImplicitGraph(projectId);
         // Findings are generated after durable accounting commit, coalesced so
         // a burst of events cannot trigger one full scan per request.
-        scheduleFindingsRefresh(pool, projectId);
+        scheduleFindingsRefreshAfterIngest(pool, projectId);
       } catch (err) {
         await client.query("ROLLBACK");
         throw err;

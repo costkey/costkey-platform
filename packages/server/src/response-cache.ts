@@ -6,7 +6,9 @@
  *
  * A result is served at once for up to MAX_AGE_MS. Past FRESH_MS it is
  * refreshed in the background by asking this server again with the same
- * request, so the next load gets current numbers without waiting. Identical
+ * request, so the next load gets current numbers without waiting. A cold
+ * summary takes seconds to build, so coming back to the console within the
+ * hour shows the last numbers at once instead of an empty page. Identical
  * requests in flight share one computation. Any change to a project (a price,
  * budget or mapping) drops that project's entries.
  *
@@ -16,7 +18,7 @@
 import type { NextFunction, Request, Response } from "express";
 
 const FRESH_MS = 30_000;
-const MAX_AGE_MS = 5 * 60_000;
+const MAX_AGE_MS = 60 * 60_000;
 const MAX_ENTRIES = 500;
 /** Marks the server's own background refresh, which must not be answered from the cache. */
 const REFRESH_HEADER = "x-costkey-cache-refresh";

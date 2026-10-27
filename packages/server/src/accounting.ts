@@ -1162,8 +1162,7 @@ export async function reconcileDailyAccounting(pool: pg.Pool): Promise<void> {
   const projects = await pool.query(
     `SELECT p.id, COALESCE(ws.timezone, 'UTC') AS timezone,
             COALESCE(ps.aggregate_retention_days, 395) AS aggregate_retention_days,
-            ps.metadata_retention_days,
-            cp.through_day::text AS through_day
+            cp.through_day::text AS through_day, cp.purged_before
      FROM projects p
      LEFT JOIN workspace_settings ws ON ws.org_id = p.org_id
      LEFT JOIN project_settings ps ON ps.project_id = p.id
@@ -1182,12 +1181,11 @@ export async function reconcileDailyAccounting(pool: pg.Pool): Promise<void> {
     const yesterday = addDays(today, -1);
     const retentionDays = Math.min(Math.max(Number(row.aggregate_retention_days ?? 395), 30), 395);
     let firstDay = addDays(yesterday, -(retentionDays - 1));
-    // Retention deletes calls older than the metadata window; the day holding
-    // that cutoff may already be partly gone, so start the day after it.
-    if (row.metadata_retention_days != null) {
-      const cutoff = new Date(startedAt.getTime() - Number(row.metadata_retention_days) * 86_400_000);
-      const cutoffParts = localDateParts(cutoff, timezone);
-      const firstWholeDay = addDays(dateKey(cutoffParts.year, cutoffParts.month, cutoffParts.day), 1);
+    // Retention has deleted calls before purged_before; the day holding it may
+    // be partly gone, so rebuilding starts the day after.
+    if (row.purged_before) {
+      const purgedParts = localDateParts(new Date(row.purged_before), timezone);
+      const firstWholeDay = addDays(dateKey(purgedParts.year, purgedParts.month, purgedParts.day), 1);
       if (firstWholeDay > firstDay) firstDay = firstWholeDay;
     }
 
@@ -1197,12 +1195,20 @@ export async function reconcileDailyAccounting(pool: pg.Pool): Promise<void> {
     if (nextNewDay < firstDay) nextNewDay = firstDay;
     for (let day = nextNewDay; day <= yesterday; day = addDays(day, 1)) days.add(day);
 
+    // Changes to completed days. Their exact rows are deleted after the
+    // rebuild; a change committed meanwhile, or made again, stays for next run.
     const changed = await pool.query(
-      `SELECT DISTINCT ((period_start AT TIME ZONE $2::text)::date)::text AS day
-       FROM accounting_changed_periods WHERE project_id = $1`,
-      [projectId, timezone],
+      `SELECT period_start::text AS period_start, changed_at::text AS changed_at,
+              ((period_start AT TIME ZONE $2::text)::date)::text AS day
+       FROM accounting_changed_periods
+       WHERE project_id = $1 AND (period_start AT TIME ZONE $2::text)::date < $3::date`,
+      [projectId, timezone, today],
     );
+    const seenPeriods: string[] = [];
+    const seenChangedAt: string[] = [];
     for (const period of changed.rows) {
+      seenPeriods.push(String(period.period_start));
+      seenChangedAt.push(String(period.changed_at));
       const day = String(period.day);
       if (day >= firstDay && day <= yesterday) days.add(day);
     }
@@ -1220,13 +1226,12 @@ export async function reconcileDailyAccounting(pool: pg.Pool): Promise<void> {
       await reconcileDailyCostAggregates(pool, projectId, day, { advanceCheckpoint: false });
     }
 
-    // Changes this run has reconciled, or that fell in days already purged.
-    // Today's periods, and anything changed after the run started, wait.
+    // The changes this run has reconciled, or that fell in days already purged.
     await pool.query(
-      `DELETE FROM accounting_changed_periods
-       WHERE project_id = $1 AND changed_at < $2
-         AND period_start < ($3::date::timestamp AT TIME ZONE $4::text)`,
-      [projectId, startedAt, today, timezone],
+      `DELETE FROM accounting_changed_periods c
+       USING unnest($2::timestamptz[], $3::timestamptz[]) AS seen(period_start, changed_at)
+       WHERE c.project_id = $1 AND c.period_start = seen.period_start AND c.changed_at = seen.changed_at`,
+      [projectId, seenPeriods, seenChangedAt],
     );
     await pool.query(
       `INSERT INTO daily_cost_aggregate_checkpoints (

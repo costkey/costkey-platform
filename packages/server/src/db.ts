@@ -152,6 +152,8 @@ export async function ensureAccountingChangeSchema(client: pg.Pool | pg.PoolClie
       changed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       PRIMARY KEY (project_id, period_start)
     );
+    -- How far retention has deleted detail: days before it can no longer be rebuilt.
+    ALTER TABLE daily_cost_aggregate_checkpoints ADD COLUMN IF NOT EXISTS purged_before TIMESTAMPTZ;
 
     CREATE OR REPLACE FUNCTION costkey_mark_changed_event_periods() RETURNS trigger
     LANGUAGE plpgsql AS $mark_events$
@@ -160,12 +162,14 @@ export async function ensureAccountingChangeSchema(client: pg.Pool | pg.PoolClie
         INSERT INTO accounting_changed_periods (project_id, period_start)
         SELECT DISTINCT r.project_id, date_bin('15 minutes', r.timestamp, TIMESTAMPTZ '2000-01-01 00:00:00+00')
         FROM changed_new r WHERE r.timestamp IS NOT NULL
+        ORDER BY 1, 2
         ON CONFLICT (project_id, period_start) DO UPDATE SET changed_at = NOW();
       END IF;
       IF TG_OP = 'UPDATE' OR TG_OP = 'DELETE' THEN
         INSERT INTO accounting_changed_periods (project_id, period_start)
         SELECT DISTINCT r.project_id, date_bin('15 minutes', r.timestamp, TIMESTAMPTZ '2000-01-01 00:00:00+00')
         FROM changed_old r WHERE r.timestamp IS NOT NULL
+        ORDER BY 1, 2
         ON CONFLICT (project_id, period_start) DO UPDATE SET changed_at = NOW();
       END IF;
       RETURN NULL;
@@ -179,12 +183,14 @@ export async function ensureAccountingChangeSchema(client: pg.Pool | pg.PoolClie
         INSERT INTO accounting_changed_periods (project_id, period_start)
         SELECT DISTINCT r.project_id, date_bin('15 minutes', COALESCE(r.accounting_at, r.observed_at), TIMESTAMPTZ '2000-01-01 00:00:00+00')
         FROM changed_new r WHERE COALESCE(r.accounting_at, r.observed_at) IS NOT NULL
+        ORDER BY 1, 2
         ON CONFLICT (project_id, period_start) DO UPDATE SET changed_at = NOW();
       END IF;
       IF TG_OP = 'UPDATE' OR TG_OP = 'DELETE' THEN
         INSERT INTO accounting_changed_periods (project_id, period_start)
         SELECT DISTINCT r.project_id, date_bin('15 minutes', COALESCE(r.accounting_at, r.observed_at), TIMESTAMPTZ '2000-01-01 00:00:00+00')
         FROM changed_old r WHERE COALESCE(r.accounting_at, r.observed_at) IS NOT NULL
+        ORDER BY 1, 2
         ON CONFLICT (project_id, period_start) DO UPDATE SET changed_at = NOW();
       END IF;
       RETURN NULL;

@@ -464,10 +464,10 @@ function aggregateValues(params: unknown[], expression: string, item: ScopeValue
 }
 
 /**
- * Read durable daily rows only for workspace-local days that have no matching
- * detailed canonical charge. It is intentionally a separate seam: aggregates
- * cannot fabricate traces/content, but they can preserve financial totals
- * after retention removes detail.
+ * Read durable daily rows only for workspace-local days whose detail is gone.
+ * It is intentionally a separate seam: aggregates cannot fabricate
+ * traces/content, but they can preserve financial totals after retention
+ * removes detail.
  */
 export async function loadDailyAggregates(
   pool: pg.Pool | pg.PoolClient,
@@ -478,17 +478,17 @@ export async function loadDailyAggregates(
   // IDs/names/source q cannot be reconstructed from a daily row. Returning no
   // aggregate rows keeps q semantics truthful; detail rows still answer it.
   if (scope.q || values(scope.traceId).length > 0 || values(scope.executionId).length > 0) return [];
-  const detailParams: unknown[] = [projectId];
-  // A retained day is all-or-nothing: if any detailed charge remains for the
-  // day, do not mix a full daily snapshot with that day's partial detail.
-  const detailDayScope: ChargeScope = { ...scope, groupBy: undefined, groupValue: undefined };
-  const detailClauses = scopeClauses(detailDayScope, detailParams, "c");
-  detailParams.push(timezone);
-  const timezoneParam = detailParams.length;
+  const detailParams: unknown[] = [projectId, timezone];
+  const timezoneParam = 2;
+  // A retained day is all-or-nothing: if any call or usage of the project is
+  // still stored for the day, detail answers it and the snapshot is not mixed
+  // in. Asked per day through the (project, time) index, not by building
+  // every charge of the window.
+  const dayStart = `(d.day::timestamp AT TIME ZONE $${timezoneParam}::text)`;
+  const dayEnd = `((d.day + 1)::timestamp AT TIME ZONE $${timezoneParam}::text)`;
   const aggregateClauses: string[] = [
     `a.project_id = $1`,
     `a.timezone = $${timezoneParam}::text`,
-    `NOT EXISTS (SELECT 1 FROM detail_days d WHERE d.day = a.day)`,
   ];
   const add = (expression: string, item: ScopeValues | null | undefined): void => aggregateValues(detailParams, expression, item, aggregateClauses);
   add(`a.environment`, scope.environment);
@@ -535,10 +535,15 @@ export async function loadDailyAggregates(
   }
   try {
     const result = await pool.query(
-      `${chargesCte(detailParams)},
-       detail_days AS (
-         SELECT DISTINCT (c.timestamp AT TIME ZONE $${timezoneParam}::text)::date AS day
-         FROM charges c WHERE ${detailClauses.join(" AND ")}
+      `WITH matched AS (
+         SELECT a.* FROM daily_cost_aggregates a
+         WHERE ${aggregateClauses.join(" AND ")}
+       ), expired_days AS (
+         SELECT d.day FROM (SELECT DISTINCT day FROM matched) d
+         WHERE NOT EXISTS (SELECT 1 FROM events e WHERE e.project_id = $1 AND e.timestamp >= ${dayStart} AND e.timestamp < ${dayEnd}
+                             AND COALESCE(e.event_type, 'call') = 'call')
+           AND NOT EXISTS (SELECT 1 FROM usage_components u WHERE u.project_id = $1
+                             AND COALESCE(u.accounting_at, u.observed_at) >= ${dayStart} AND COALESCE(u.accounting_at, u.observed_at) < ${dayEnd})
        )
        SELECT a.project_id, a.day::text AS day, a.timezone,
               a.environment, a.feature, a.function_key, a.customer, a.provider, a.model,
@@ -547,8 +552,8 @@ export async function loadDailyAggregates(
               a.trace_count, a.fully_priced_trace_count, a.fully_priced_trace_cost_usd,
               a.reported_observations, a.estimated_observations, a.unknown_observations,
               a.input_tokens, a.output_tokens
-       FROM daily_cost_aggregates a
-       WHERE ${aggregateClauses.join(" AND ")}
+       FROM matched a
+       WHERE a.day IN (SELECT day FROM expired_days)
        ORDER BY a.day ASC, a.feature ASC, a.function_key ASC, a.provider ASC, a.model ASC`,
       detailParams,
     );

@@ -298,15 +298,6 @@ export async function initDatabase(): Promise<void> {
     ALTER TABLE events ADD COLUMN IF NOT EXISTS feature_mapping_id TEXT;
     ALTER TABLE events ADD COLUMN IF NOT EXISTS feature_mapping_action_id TEXT;
     ALTER TABLE events ADD COLUMN IF NOT EXISTS feature_original TEXT;
-    UPDATE events SET content_status = CASE
-      WHEN request_body IS NOT NULL OR response_body IS NOT NULL OR system_prompt IS NOT NULL
-        OR metadata ? 'prompt' OR metadata ? 'prompts' OR metadata ? 'completion' OR metadata ? 'response' THEN 'captured'
-      ELSE 'unknown'
-    END WHERE content_status IS NULL OR content_status = 'unknown';
-    UPDATE events SET feature_source = CASE
-      WHEN context ? 'feature' AND NULLIF(BTRIM(context->>'feature'), '') IS NOT NULL THEN 'explicit'
-      ELSE 'unknown'
-    END WHERE feature_source IS NULL OR feature_source = 'unknown';
     CREATE INDEX IF NOT EXISTS idx_events_execution ON events(project_id, execution_id);
     CREATE INDEX IF NOT EXISTS idx_events_charge ON events(project_id, charge_id);
     -- Retries: attempts of one work item share context.work_id (retries.ts, WORK_ID_SQL).
@@ -314,22 +305,6 @@ export async function initDatabase(): Promise<void> {
       WHERE NULLIF(COALESCE(context->>'work_id', context->>'workId', context->>'attempt_key'), '') IS NOT NULL;
     ALTER TABLE call_site_stats ADD COLUMN IF NOT EXISTS priced_calls INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE call_site_stats ADD COLUMN IF NOT EXISTS unpriced_calls INTEGER NOT NULL DEFAULT 0;
-    UPDATE call_site_stats cs SET
-      priced_calls = totals.priced_calls,
-      unpriced_calls = totals.unpriced_calls
-    FROM (
-      SELECT project_id,
-             CONCAT(COALESCE(bl_file, 'unknown'), ':', COALESCE(bl_function, 'anonymous'), ':', COALESCE(bl_line::text, '0')) AS call_site_key,
-             COALESCE(model, 'unknown') AS model,
-             COUNT(*) FILTER (WHERE cost_usd IS NOT NULL)::int AS priced_calls,
-             COUNT(*) FILTER (WHERE cost_usd IS NULL)::int AS unpriced_calls
-      FROM events
-      WHERE COALESCE(event_type, 'call') = 'call' AND bl_function IS NOT NULL
-      GROUP BY project_id, call_site_key, model
-    ) totals
-    WHERE cs.project_id = totals.project_id
-      AND cs.call_site_key = totals.call_site_key
-      AND COALESCE(cs.model, 'unknown') = totals.model;
 
     -- GitHub OAuth: add github_id, make password_hash nullable
     ALTER TABLE users ADD COLUMN IF NOT EXISTS github_id TEXT;
@@ -978,6 +953,47 @@ export async function initDatabase(): Promise<void> {
   await withMigrationLock(p, (client) => client.query(`
     ALTER TABLE events ADD COLUMN IF NOT EXISTS raw_telemetry JSONB;
   `));
+
+  // Ingest sets content_status and feature_source on every new event, so only
+  // rows stored before those columns existed need them. Run this once: as a
+  // startup statement it rewrote every 'unknown' row on each boot while the
+  // schema transaction held an exclusive lock on events.
+  await runOnce(p, "backfill_event_content_and_feature_source_v1", async () => {
+    await p.query(`
+      UPDATE events SET content_status = 'captured'
+      WHERE content_status = 'unknown'
+        AND (request_body IS NOT NULL OR response_body IS NOT NULL OR system_prompt IS NOT NULL
+          OR metadata ? 'prompt' OR metadata ? 'prompts' OR metadata ? 'completion' OR metadata ? 'response')
+    `);
+    await p.query(`
+      UPDATE events SET feature_source = 'explicit'
+      WHERE feature_source = 'unknown'
+        AND context ? 'feature' AND NULLIF(BTRIM(context->>'feature'), '') IS NOT NULL
+    `);
+  });
+
+  // Ingest and repricing keep priced_calls and unpriced_calls current; only call
+  // sites stored before those columns existed need a recount from events.
+  await runOnce(p, "backfill_call_site_priced_counts_v1", async () => {
+    await p.query(`
+      UPDATE call_site_stats cs SET
+        priced_calls = totals.priced_calls,
+        unpriced_calls = totals.unpriced_calls
+      FROM (
+        SELECT project_id,
+               CONCAT(COALESCE(bl_file, 'unknown'), ':', COALESCE(bl_function, 'anonymous'), ':', COALESCE(bl_line::text, '0')) AS call_site_key,
+               COALESCE(model, 'unknown') AS model,
+               COUNT(*) FILTER (WHERE cost_usd IS NOT NULL)::int AS priced_calls,
+               COUNT(*) FILTER (WHERE cost_usd IS NULL)::int AS unpriced_calls
+        FROM events
+        WHERE COALESCE(event_type, 'call') = 'call' AND bl_function IS NOT NULL
+        GROUP BY project_id, call_site_key, model
+      ) totals
+      WHERE cs.project_id = totals.project_id
+        AND cs.call_site_key = totals.call_site_key
+        AND COALESCE(cs.model, 'unknown') = totals.model
+    `);
+  });
 
   console.log("[costkey] Database schema initialized");
 }

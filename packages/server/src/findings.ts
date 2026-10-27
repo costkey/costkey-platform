@@ -725,6 +725,7 @@ export function scheduleFindingsRefresh(pool: pg.Pool, projectId: string, delayM
   if (prior) clearTimeout(prior);
   const timer = setTimeout(() => {
     scheduledRefreshes.delete(projectId);
+    lastIngestRefreshAt.set(projectId, Date.now());
     void refreshFindingsLocked(pool, projectId).then((acquired) => {
       if (!acquired) scheduleFindingsRefresh(pool, projectId, delayMs);
     }).catch((error) => {
@@ -733,6 +734,23 @@ export function scheduleFindingsRefresh(pool: pg.Pool, projectId: string, delayM
   }, Math.max(0, delayMs));
   timer.unref();
   scheduledRefreshes.set(projectId, timer);
+}
+
+/** The most a project's findings are recomputed because calls keep arriving. */
+const INGEST_REFRESH_INTERVAL_MS = 60_000;
+const lastIngestRefreshAt = new Map<string, number>();
+
+/**
+ * Refresh findings after new calls, at most once a minute per project. A
+ * refresh rebuilds the window's charges; started after every batch, a
+ * project that sends calls every few seconds kept one running all the time,
+ * and the console's own requests waited behind it.
+ */
+export function scheduleFindingsRefreshAfterIngest(pool: pg.Pool, projectId: string): void {
+  // A refresh already waiting will include these calls.
+  if (scheduledRefreshes.has(projectId)) return;
+  const sinceLast = Date.now() - (lastIngestRefreshAt.get(projectId) ?? 0);
+  scheduleFindingsRefresh(pool, projectId, Math.max(1000, INGEST_REFRESH_INTERVAL_MS - sinceLast));
 }
 
 /** Refresh every project with captured activity for a periodic worker. */

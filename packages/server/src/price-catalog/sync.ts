@@ -456,7 +456,7 @@ export async function repriceUnpricedEvents(pool: pg.Pool, options: { projectId?
   }
   for (const [projectId, set] of days) {
     for (const day of [...set].sort()) {
-      await reconcileDailyCostAggregates(pool, projectId, day).catch((error) => {
+      await reconcileDailyCostAggregates(pool, projectId, day, { advanceCheckpoint: false }).catch((error) => {
         const code = (error as { code?: string }).code;
         if (code !== "42P01" && code !== "42703") console.error("[costkey] Daily aggregate reprice error:", error);
       });

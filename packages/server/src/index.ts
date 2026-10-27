@@ -5,7 +5,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import type pg from "pg";
-import { ensureDailyAggregateSchema, ensureQualityCheckSchema, getPool, initDatabase } from "./db.js";
+import { ensureAccountingChangeSchema, ensureDailyAggregateSchema, ensureQualityCheckSchema, getPool, initDatabase, runOnce, withMigrationLock } from "./db.js";
 import { ensureSsoSchema } from "./sso/provision.js";
 import { createIngestRouter, loadCallGraphCache } from "./ingest.js";
 import { createAuthRouter, authMiddleware } from "./auth.js";
@@ -34,7 +34,7 @@ import { createNotificationsRouter, runWeeklyDigests } from "./notifications.js"
 import { createSubscriptionRouter } from "./subscription.js";
 import { refreshAllFindings } from "./findings.js";
 import { invalidateOnChange } from "./response-cache.js";
-import { reconcileDailyCostAggregates } from "./accounting.js";
+import { reconcileDailyAccounting } from "./accounting.js";
 import { startQualityCheckWorker } from "./quality-checks/worker.js";
 import { startEmptyRunSweeper } from "./empty-runs.js";
 import { seedDemoQualityChecks } from "./quality-checks/seed.js";
@@ -68,50 +68,6 @@ export interface AppRuntime {
   pool: pg.Pool;
   initialize: () => Promise<void>;
   stopSchedulers: () => void;
-}
-
-function localDateParts(date: Date, timezone: string): { year: number; month: number; day: number } {
-  const parts = new Intl.DateTimeFormat("en-US", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(date);
-  return {
-    year: Number(parts.find((part) => part.type === "year")?.value),
-    month: Number(parts.find((part) => part.type === "month")?.value),
-    day: Number(parts.find((part) => part.type === "day")?.value),
-  };
-}
-
-function dateKey(year: number, month: number, day: number): string {
-  return `${year.toString().padStart(4, "0")}-${month.toString().padStart(2, "0")}-${day.toString().padStart(2, "0")}`;
-}
-
-/** Publish every missing completed local day before retention is allowed to purge detail. */
-async function reconcileDailyAccounting(pool: pg.Pool): Promise<void> {
-  const projects = await pool.query(
-    `SELECT p.id, COALESCE(ws.timezone, 'UTC') AS timezone,
-            COALESCE(ps.aggregate_retention_days, 395) AS aggregate_retention_days,
-            cp.through_day::text AS through_day
-     FROM projects p
-     LEFT JOIN workspace_settings ws ON ws.org_id = p.org_id
-     LEFT JOIN project_settings ps ON ps.project_id = p.id
-     LEFT JOIN daily_cost_aggregate_checkpoints cp ON cp.project_id = p.id
-     ORDER BY p.id`,
-  );
-  const now = new Date();
-  for (const row of projects.rows ?? []) {
-    const timezone = String(row.timezone ?? "UTC");
-    let local: { year: number; month: number; day: number };
-    try { local = localDateParts(now, timezone); }
-    catch { local = localDateParts(now, "UTC"); }
-    const yesterday = new Date(Date.UTC(local.year, local.month - 1, local.day - 1));
-    const checkpoint = row.through_day ? new Date(`${String(row.through_day).slice(0, 10)}T00:00:00Z`) : null;
-    const retentionDays = Math.min(Math.max(Number(row.aggregate_retention_days ?? 395), 30), 395);
-    const retentionStart = new Date(yesterday.getTime() - (retentionDays - 1) * 86_400_000);
-    const start = checkpoint && !Number.isNaN(checkpoint.getTime())
-      ? new Date(Math.max(checkpoint.getTime() + 86_400_000, retentionStart.getTime()))
-      : retentionStart;
-    for (let cursor = start; cursor <= yesterday; cursor = new Date(cursor.getTime() + 86_400_000)) {
-      await reconcileDailyCostAggregates(pool, String(row.id), dateKey(cursor.getUTCFullYear(), cursor.getUTCMonth() + 1, cursor.getUTCDate()));
-    }
-  }
 }
 
 function escapeHtmlAttribute(value: string): string {
@@ -320,6 +276,20 @@ export function createApp(options: AppOptions = {}): Express & AppRuntime {
       // Every table exists from the first boot; nothing is created on first use.
       await ensureSsoSchema(pool);
       await ensureDailyAggregateSchema(pool);
+      await withMigrationLock(pool, (client) => ensureAccountingChangeSchema(client));
+      // Rollups taken before changes were tracked may have missed late calls
+      // or repricing: mark every stored period once so the scheduler redoes them.
+      await runOnce(pool, "refresh_daily_rollup_v1", async () => {
+        await pool.query(`
+          INSERT INTO accounting_changed_periods (project_id, period_start)
+          SELECT DISTINCT project_id, date_bin('15 minutes', timestamp, TIMESTAMPTZ '2000-01-01 00:00:00+00')
+          FROM events WHERE timestamp IS NOT NULL
+          UNION
+          SELECT DISTINCT project_id, date_bin('15 minutes', COALESCE(accounting_at, observed_at), TIMESTAMPTZ '2000-01-01 00:00:00+00')
+          FROM usage_components WHERE COALESCE(accounting_at, observed_at) IS NOT NULL
+          ON CONFLICT (project_id, period_start) DO NOTHING
+        `);
+      });
       console.log("[costkey] Database ready");
       await loadCallGraphCache(pool);
       // Demo data is opt-in and never runs in production. Existing customer
@@ -359,6 +329,16 @@ export function createApp(options: AppOptions = {}): Express & AppRuntime {
           void refreshAllFindings(pool).catch((error) => console.error("[costkey] Findings refresh worker error:", error));
           void refreshPriceCatalogIfChanged(pool).catch((error) => console.error("[costkey] Price catalog refresh error:", error));
         }, 5 * 60 * 1000);
+        // Summaries read the rollup for settled days, so keep it current:
+        // a run with nothing changed is a few small reads per project.
+        let reconciling = false;
+        const dailyAccounting = setInterval(() => {
+          if (reconciling) return;
+          reconciling = true;
+          void reconcileDailyAccounting(pool)
+            .catch((error) => console.error("[costkey] Daily accounting error:", error))
+            .finally(() => { reconciling = false; });
+        }, 5 * 60 * 1000);
         const dailyRetention = setInterval(() => {
           void reconcileDailyAccounting(pool)
             .then(() => runRetention(pool))
@@ -368,9 +348,10 @@ export function createApp(options: AppOptions = {}): Express & AppRuntime {
           void runWeeklyDigests(pool).catch((error) => console.error("[costkey] Notification digest error:", error));
         }, 60 * 60 * 1000);
         periodic.unref();
+        dailyAccounting.unref();
         dailyRetention.unref();
         hourlyNotifications.unref();
-        schedulerHandles.push(periodic, dailyRetention, hourlyNotifications);
+        schedulerHandles.push(periodic, dailyAccounting, dailyRetention, hourlyNotifications);
         schedulerHandles.push(startQualityCheckWorker(pool));
         schedulerHandles.push(startEmptyRunSweeper(pool));
         // Generate findings even when nobody opens the console. Ingest also

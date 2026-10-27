@@ -101,7 +101,7 @@ export async function ensureDailyAggregateSchema(
       END IF;
       EXECUTE 'ALTER TABLE daily_cost_aggregates ADD COLUMN IF NOT EXISTS service TEXT';
       EXECUTE 'ALTER TABLE daily_cost_aggregates ADD COLUMN IF NOT EXISTS release TEXT';
-      EXECUTE 'UPDATE daily_cost_aggregates SET service = COALESCE(service, ''(unassigned)''), release = COALESCE(release, ''(unassigned)'')';
+      EXECUTE 'UPDATE daily_cost_aggregates SET service = COALESCE(service, ''(unassigned)''), release = COALESCE(release, ''(unassigned)'') WHERE service IS NULL OR release IS NULL';
       EXECUTE 'ALTER TABLE daily_cost_aggregates ALTER COLUMN service SET DEFAULT ''(unassigned)''';
       EXECUTE 'ALTER TABLE daily_cost_aggregates ALTER COLUMN release SET DEFAULT ''(unassigned)''';
       EXECUTE 'ALTER TABLE daily_cost_aggregates ALTER COLUMN service SET NOT NULL';
@@ -132,6 +132,103 @@ export async function ensureDailyAggregateSchema(
         EXECUTE 'ALTER TABLE daily_cost_aggregates ADD CONSTRAINT daily_cost_aggregates_full_pkey PRIMARY KEY (project_id, day, environment, feature, function_key, customer, service, release, provider, model)';
       END IF;
     END $daily_aggregate_compat$;
+  `);
+}
+
+/**
+ * Record which quarter-hours of a project's calls and usage changed, whoever
+ * changed them: ingest, repricing, call-site resolution, feature mappings,
+ * cleanup. The daily rollup scheduler re-reconciles the days they fall in, and
+ * summaries read a changed day from detail until it has been reconciled
+ * (reconcileDailyAccounting in index.ts, rollupPlan in charge-cohort.ts).
+ * Every timezone offset is a whole number of quarter-hours, so a period
+ * never straddles a local day.
+ */
+export async function ensureAccountingChangeSchema(client: pg.Pool | pg.PoolClient): Promise<void> {
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS accounting_changed_periods (
+      project_id TEXT NOT NULL,
+      period_start TIMESTAMPTZ NOT NULL,
+      changed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (project_id, period_start)
+    );
+    -- How far retention has deleted detail: days before it can no longer be rebuilt.
+    ALTER TABLE daily_cost_aggregate_checkpoints ADD COLUMN IF NOT EXISTS purged_before TIMESTAMPTZ;
+
+    CREATE OR REPLACE FUNCTION costkey_mark_changed_event_periods() RETURNS trigger
+    LANGUAGE plpgsql AS $mark_events$
+    BEGIN
+      IF TG_OP = 'INSERT' OR TG_OP = 'UPDATE' THEN
+        INSERT INTO accounting_changed_periods (project_id, period_start)
+        SELECT DISTINCT r.project_id, date_bin('15 minutes', r.timestamp, TIMESTAMPTZ '2000-01-01 00:00:00+00')
+        FROM changed_new r WHERE r.timestamp IS NOT NULL
+        ORDER BY 1, 2
+        ON CONFLICT (project_id, period_start) DO UPDATE SET changed_at = NOW();
+      END IF;
+      IF TG_OP = 'UPDATE' OR TG_OP = 'DELETE' THEN
+        INSERT INTO accounting_changed_periods (project_id, period_start)
+        SELECT DISTINCT r.project_id, date_bin('15 minutes', r.timestamp, TIMESTAMPTZ '2000-01-01 00:00:00+00')
+        FROM changed_old r WHERE r.timestamp IS NOT NULL
+        ORDER BY 1, 2
+        ON CONFLICT (project_id, period_start) DO UPDATE SET changed_at = NOW();
+      END IF;
+      RETURN NULL;
+    END
+    $mark_events$;
+
+    CREATE OR REPLACE FUNCTION costkey_mark_changed_usage_periods() RETURNS trigger
+    LANGUAGE plpgsql AS $mark_usage$
+    BEGIN
+      IF TG_OP = 'INSERT' OR TG_OP = 'UPDATE' THEN
+        INSERT INTO accounting_changed_periods (project_id, period_start)
+        SELECT DISTINCT r.project_id, date_bin('15 minutes', COALESCE(r.accounting_at, r.observed_at), TIMESTAMPTZ '2000-01-01 00:00:00+00')
+        FROM changed_new r WHERE COALESCE(r.accounting_at, r.observed_at) IS NOT NULL
+        ORDER BY 1, 2
+        ON CONFLICT (project_id, period_start) DO UPDATE SET changed_at = NOW();
+      END IF;
+      IF TG_OP = 'UPDATE' OR TG_OP = 'DELETE' THEN
+        INSERT INTO accounting_changed_periods (project_id, period_start)
+        SELECT DISTINCT r.project_id, date_bin('15 minutes', COALESCE(r.accounting_at, r.observed_at), TIMESTAMPTZ '2000-01-01 00:00:00+00')
+        FROM changed_old r WHERE COALESCE(r.accounting_at, r.observed_at) IS NOT NULL
+        ORDER BY 1, 2
+        ON CONFLICT (project_id, period_start) DO UPDATE SET changed_at = NOW();
+      END IF;
+      RETURN NULL;
+    END
+    $mark_usage$;
+
+    -- Created once: CREATE TRIGGER locks the table against writes, so a boot
+    -- never re-creates a trigger that already exists.
+    DO $change_triggers$
+    DECLARE
+      spec RECORD;
+    BEGIN
+      FOR spec IN
+        SELECT * FROM (VALUES
+          ('events', 'INSERT', 'costkey_mark_changed_event_periods', 'REFERENCING NEW TABLE AS changed_new'),
+          ('events', 'UPDATE', 'costkey_mark_changed_event_periods', 'REFERENCING OLD TABLE AS changed_old NEW TABLE AS changed_new'),
+          ('events', 'DELETE', 'costkey_mark_changed_event_periods', 'REFERENCING OLD TABLE AS changed_old'),
+          ('usage_components', 'INSERT', 'costkey_mark_changed_usage_periods', 'REFERENCING NEW TABLE AS changed_new'),
+          ('usage_components', 'UPDATE', 'costkey_mark_changed_usage_periods', 'REFERENCING OLD TABLE AS changed_old NEW TABLE AS changed_new'),
+          ('usage_components', 'DELETE', 'costkey_mark_changed_usage_periods', 'REFERENCING OLD TABLE AS changed_old')
+        ) AS t(table_name, operation, function_name, referencing)
+      LOOP
+        IF to_regclass(format('%I.%I', current_schema(), spec.table_name)) IS NOT NULL
+           AND NOT EXISTS (
+             SELECT 1 FROM pg_trigger tr
+             JOIN pg_class c ON c.oid = tr.tgrelid
+             JOIN pg_namespace n ON n.oid = c.relnamespace
+             WHERE c.relname = spec.table_name AND n.nspname = current_schema()
+               AND tr.tgname = 'costkey_changed_periods_' || lower(spec.operation)
+           ) THEN
+          EXECUTE format(
+            'CREATE TRIGGER %I AFTER %s ON %I %s FOR EACH STATEMENT EXECUTE FUNCTION %I()',
+            'costkey_changed_periods_' || lower(spec.operation), spec.operation, spec.table_name,
+            spec.referencing, spec.function_name
+          );
+        END IF;
+      END LOOP;
+    END $change_triggers$;
   `);
 }
 

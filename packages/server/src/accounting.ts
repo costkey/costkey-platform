@@ -1012,6 +1012,7 @@ export async function reconcileDailyCostAggregates(
   pool: pg.Pool,
   projectId: string,
   day: string,
+  options: { advanceCheckpoint?: boolean } = {},
 ): Promise<number> {
   const start = new Date(`${day}T00:00:00.000Z`);
   if (Number.isNaN(start.getTime())) throw new InvalidAccountingEventError("day must be an ISO date");
@@ -1103,7 +1104,9 @@ export async function reconcileDailyCostAggregates(
       [projectId, day, timezone],
     );
     aggregateRows = rollup.rowCount ?? 0;
-    await client.query(
+    // Refreshing a day (a repricing, the scheduler's own runs) leaves the
+    // checkpoint alone: only a caller publishing a completed day moves it.
+    if (options.advanceCheckpoint !== false) await client.query(
       `INSERT INTO daily_cost_aggregate_checkpoints (
          project_id, through_day, source_created_before, generation, completed_at
        ) VALUES ($1,$2,NOW(),1,NOW())
@@ -1122,4 +1125,124 @@ export async function reconcileDailyCostAggregates(
     client.release();
   }
   return aggregateRows;
+}
+
+function localDateParts(date: Date, timezone: string): { year: number; month: number; day: number } {
+  const parts = new Intl.DateTimeFormat("en-US", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(date);
+  return {
+    year: Number(parts.find((part) => part.type === "year")?.value),
+    month: Number(parts.find((part) => part.type === "month")?.value),
+    day: Number(parts.find((part) => part.type === "day")?.value),
+  };
+}
+
+function dateKey(year: number, month: number, day: number): string {
+  return `${year.toString().padStart(4, "0")}-${month.toString().padStart(2, "0")}-${day.toString().padStart(2, "0")}`;
+}
+
+function addDays(day: string, count: number): string {
+  const date = new Date(`${day}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + count);
+  return date.toISOString().slice(0, 10);
+}
+
+/**
+ * Keep the daily rollup true for every completed workspace-local day, so
+ * summaries can read it instead of rebuilding charges from every call.
+ * Each run reconciles:
+ *  - completed days the checkpoint has not reached yet;
+ *  - days whose calls or usage changed since they were reconciled
+ *    (accounting_changed_periods, kept by triggers on every writer);
+ *  - days whose rollup was taken before the day had ended.
+ * Days retention may have started purging are never rebuilt: their rollup is
+ * all that is left of them. The checkpoint's fence is the time this run
+ * started, so a call that arrives mid-run is never counted as covered.
+ */
+export async function reconcileDailyAccounting(pool: pg.Pool): Promise<void> {
+  const projects = await pool.query(
+    `SELECT p.id, COALESCE(ws.timezone, 'UTC') AS timezone,
+            COALESCE(ps.aggregate_retention_days, 395) AS aggregate_retention_days,
+            cp.through_day::text AS through_day, cp.purged_before
+     FROM projects p
+     LEFT JOIN workspace_settings ws ON ws.org_id = p.org_id
+     LEFT JOIN project_settings ps ON ps.project_id = p.id
+     LEFT JOIN daily_cost_aggregate_checkpoints cp ON cp.project_id = p.id
+     ORDER BY p.id`,
+  );
+  for (const row of projects.rows ?? []) {
+    const projectId = String(row.id);
+    let timezone = String(row.timezone ?? "UTC");
+    try { new Intl.DateTimeFormat("en-US", { timeZone: timezone }).format(); }
+    catch { timezone = "UTC"; }
+    const startedResult = await pool.query("SELECT NOW() AS started_at");
+    const startedAt = startedResult.rows[0].started_at as Date;
+    const local = localDateParts(startedAt, timezone);
+    const today = dateKey(local.year, local.month, local.day);
+    const yesterday = addDays(today, -1);
+    const retentionDays = Math.min(Math.max(Number(row.aggregate_retention_days ?? 395), 30), 395);
+    let firstDay = addDays(yesterday, -(retentionDays - 1));
+    // Retention has deleted calls before purged_before; the day holding it may
+    // be partly gone, so rebuilding starts the day after.
+    if (row.purged_before) {
+      const purgedParts = localDateParts(new Date(row.purged_before), timezone);
+      const firstWholeDay = addDays(dateKey(purgedParts.year, purgedParts.month, purgedParts.day), 1);
+      if (firstWholeDay > firstDay) firstDay = firstWholeDay;
+    }
+
+    const days = new Set<string>();
+    const checkpointDay = row.through_day ? String(row.through_day).slice(0, 10) : null;
+    let nextNewDay = checkpointDay ? addDays(checkpointDay, 1) : firstDay;
+    if (nextNewDay < firstDay) nextNewDay = firstDay;
+    for (let day = nextNewDay; day <= yesterday; day = addDays(day, 1)) days.add(day);
+
+    // Changes to completed days. Their exact rows are deleted after the
+    // rebuild; a change committed meanwhile, or made again, stays for next run.
+    const changed = await pool.query(
+      `SELECT period_start::text AS period_start, changed_at::text AS changed_at,
+              ((period_start AT TIME ZONE $2::text)::date)::text AS day
+       FROM accounting_changed_periods
+       WHERE project_id = $1 AND (period_start AT TIME ZONE $2::text)::date < $3::date`,
+      [projectId, timezone, today],
+    );
+    const seenPeriods: string[] = [];
+    const seenChangedAt: string[] = [];
+    for (const period of changed.rows) {
+      seenPeriods.push(String(period.period_start));
+      seenChangedAt.push(String(period.changed_at));
+      const day = String(period.day);
+      if (day >= firstDay && day <= yesterday) days.add(day);
+    }
+
+    const early = await pool.query(
+      `SELECT day::text AS day FROM daily_cost_aggregates
+       WHERE project_id = $1 AND day >= $3::date AND day <= $4::date
+       GROUP BY day
+       HAVING MIN(reconciled_at) < ((day + 1)::timestamp AT TIME ZONE $2::text)`,
+      [projectId, timezone, firstDay, yesterday],
+    );
+    for (const day of early.rows) days.add(String(day.day));
+
+    for (const day of [...days].sort()) {
+      await reconcileDailyCostAggregates(pool, projectId, day, { advanceCheckpoint: false });
+    }
+
+    // The changes this run has reconciled, or that fell in days already purged.
+    await pool.query(
+      `DELETE FROM accounting_changed_periods c
+       USING unnest($2::timestamptz[], $3::timestamptz[]) AS seen(period_start, changed_at)
+       WHERE c.project_id = $1 AND c.period_start = seen.period_start AND c.changed_at = seen.changed_at`,
+      [projectId, seenPeriods, seenChangedAt],
+    );
+    await pool.query(
+      `INSERT INTO daily_cost_aggregate_checkpoints (
+         project_id, through_day, source_created_before, generation, completed_at
+       ) VALUES ($1, $2::date, $3, 1, NOW())
+       ON CONFLICT (project_id) DO UPDATE SET
+         through_day = EXCLUDED.through_day,
+         source_created_before = EXCLUDED.source_created_before,
+         generation = daily_cost_aggregate_checkpoints.generation + 1,
+         completed_at = NOW()`,
+      [projectId, yesterday, startedAt],
+    );
+  }
 }

@@ -689,7 +689,7 @@ export async function repriceHistoricalForEffectivePrice(
   }
   const reconciledDays = [...days].sort();
   for (const day of reconciledDays) {
-    await reconcileDailyCostAggregates(pool, projectId, day).catch((error) => {
+    await reconcileDailyCostAggregates(pool, projectId, day, { advanceCheckpoint: false }).catch((error) => {
       const code = (error as { code?: string }).code;
       if (code !== "42P01" && code !== "42703") throw error;
     });

@@ -103,6 +103,7 @@ export async function runRetention(pool: pg.Pool, now = new Date(), orgId?: stri
     // and the production public schema use the same fence logic.
     const aggregateTable = await client.query("SELECT to_regclass('daily_cost_aggregates') AS table_name");
     const checkpointTable = await client.query("SELECT to_regclass('daily_cost_aggregate_checkpoints') AS table_name");
+    const changeTable = await client.query("SELECT to_regclass('accounting_changed_periods') AS table_name");
     const contentStatusColumn = await client.query(
       `SELECT EXISTS (
          SELECT 1 FROM information_schema.columns
@@ -120,6 +121,16 @@ export async function runRetention(pool: pg.Pool, now = new Date(), orgId?: stri
     const rawTelemetryPresent = rawTelemetryColumn.rows[0]?.available ? "OR e.raw_telemetry IS NOT NULL" : "";
     const aggregateAvailable = Boolean(aggregateTable.rows[0]?.table_name);
     const checkpointAvailable = Boolean(checkpointTable.rows[0]?.table_name);
+    // A period whose change the rollup has not taken in yet keeps its detail.
+    const changeTracked = Boolean(changeTable.rows[0]?.table_name);
+    const eventsSettled = changeTracked
+      ? `AND NOT EXISTS (SELECT 1 FROM accounting_changed_periods c WHERE c.project_id = events.project_id
+           AND c.period_start = date_bin('15 minutes', events.timestamp, TIMESTAMPTZ '2000-01-01 00:00:00+00'))`
+      : "";
+    const usageSettled = changeTracked
+      ? `AND NOT EXISTS (SELECT 1 FROM accounting_changed_periods c WHERE c.project_id = usage_components.project_id
+           AND c.period_start = date_bin('15 minutes', COALESCE(usage_components.accounting_at, usage_components.observed_at), TIMESTAMPTZ '2000-01-01 00:00:00+00'))`
+      : "";
     const contentStatusAvailable = Boolean(contentStatusColumn.rows[0]?.available);
     const expiredStatusSet = contentStatusAvailable
       ? `, content_status = CASE
@@ -195,23 +206,27 @@ export async function runRetention(pool: pg.Pool, now = new Date(), orgId?: stri
          WHERE e.project_id = $1
            AND e.timestamp < $2
            AND e.created_at < $3
+           -- Only rows the scrub still changes: a scrubbed row is never rewritten again.
            AND (e.request_body IS NOT NULL OR e.response_body IS NOT NULL OR e.system_prompt IS NOT NULL
              ${rawTelemetryPresent}
-             OR e.metadata IS NOT NULL OR e.configuration IS NOT NULL OR e.context IS NOT NULL)`,
+             OR (e.metadata IS NOT NULL AND e.metadata <> '{}'::jsonb) OR e.configuration IS NOT NULL
+             OR e.context IS DISTINCT FROM ${scrubJsonExpression("e.context")})`,
         [project.id, bodyCutoff, sourceFence],
       ) : { rowCount: 0 };
       redactedBodies += bodyResult.rowCount ?? 0;
 
-      const usageBodyResult = kinds.body ? await client.query(
-        `UPDATE usage_components u
-         SET metadata = CASE
+      const usageMetadataScrub = `CASE
                WHEN u.metadata IS NULL OR jsonb_typeof(u.metadata) <> 'object' THEN u.metadata
                WHEN u.metadata ? 'metadata' THEN jsonb_set(u.metadata, '{metadata}', ${scrubJsonExpression("u.metadata->'metadata'")}, TRUE)
                ELSE u.metadata
-             END,
+             END`;
+      const usageBodyResult = kinds.body ? await client.query(
+        `UPDATE usage_components u
+         SET metadata = ${usageMetadataScrub},
              context = ${scrubJsonExpression("u.context")}
          WHERE u.project_id = $1 AND u.observed_at < $2 AND u.created_at < $3
-           AND (u.metadata IS NOT NULL OR u.context IS NOT NULL)`,
+           AND (u.metadata IS DISTINCT FROM ${usageMetadataScrub}
+             OR u.context IS DISTINCT FROM ${scrubJsonExpression("u.context")})`,
         [project.id, bodyCutoff, sourceFence],
       ) : { rowCount: 0 };
       redactedBodies += usageBodyResult.rowCount ?? 0;
@@ -240,16 +255,25 @@ export async function runRetention(pool: pg.Pool, now = new Date(), orgId?: stri
 
       const eventResult = canPurgeDetail && kinds.detail ? await client.query(
         `DELETE FROM events
-         WHERE project_id = $1 AND timestamp < $2 AND created_at < $3`,
+         WHERE project_id = $1 AND timestamp < $2 AND created_at < $3 ${eventsSettled}`,
         [project.id, metadataCutoff, sourceFence],
       ) : { rowCount: 0 };
       deletedEvents += eventResult.rowCount ?? 0;
       const usageResult = canPurgeDetail && kinds.detail ? await client.query(
         `DELETE FROM usage_components
-         WHERE project_id = $1 AND observed_at < $2 AND created_at < $3`,
+         WHERE project_id = $1 AND observed_at < $2 AND created_at < $3 ${usageSettled}`,
         [project.id, metadataCutoff, sourceFence],
       ) : { rowCount: 0 };
       deletedUsageComponents += usageResult.rowCount ?? 0;
+      if (canPurgeDetail && kinds.detail && changeTracked) {
+        // The rollup scheduler never rebuilds a day this purge may have reached.
+        await client.query(
+          `UPDATE daily_cost_aggregate_checkpoints
+           SET purged_before = GREATEST(COALESCE(purged_before, '-infinity'::timestamptz), $2)
+           WHERE project_id = $1`,
+          [project.id, metadataCutoff],
+        );
+      }
       const traceResult = canPurgeDetail && kinds.detail ? await client.query(
         `DELETE FROM traces
          WHERE project_id = $1 AND COALESCE(ended_at, started_at, created_at) < $2 AND created_at < $3`,

@@ -937,10 +937,14 @@ export function createAccountingRouter(pool: pg.Pool): Router {
       const detailScope: ChargeScope = { ...scope, groupBy: undefined, groupValue: undefined };
       const detailParams: unknown[] = [projectId];
       const detailClauses = scopeClauses(detailScope, detailParams, "c");
-      const [totalsResult, modelResult, providerResult, aggregateRows] = await Promise.all([
+      // Totals, models and providers from one build of the charges: each build
+      // reads and de-duplicates every call of the window.
+      const [groupedResult, aggregateRows] = await Promise.all([
         pool.query(
           `${chargesCte(detailParams)}
-           SELECT COUNT(*)::int AS observations,
+           SELECT GROUPING(c.provider, COALESCE(c.model, 'unknown')) AS grouping_level,
+                  c.provider, COALESCE(c.model, 'unknown') AS model,
+                  COUNT(*)::int AS observations,
                   COUNT(*) FILTER (WHERE c.record_type = 'call')::int AS calls,
                   -- A failed call without a price cost nothing: it counts as settled, not unpriced.
                   COUNT(*) FILTER (WHERE c.cost_usd IS NOT NULL OR c.no_charge)::int AS priced,
@@ -949,36 +953,31 @@ export function createAccountingRouter(pool: pg.Pool): Router {
                   COALESCE(SUM(c.prompt_tokens),0)::bigint AS input_tokens,
                   COALESCE(SUM(c.completion_tokens),0)::bigint AS output_tokens,
                   AVG(c.duration_ms) FILTER (WHERE c.record_type = 'call' AND c.duration_ms IS NOT NULL) AS avg_duration_ms
-           FROM charges c WHERE ${detailClauses.join(" AND ")}`,
-          detailParams,
-        ),
-        pool.query(
-          `${chargesCte(detailParams)}
-           SELECT c.provider, COALESCE(c.model, 'unknown') AS model,
-                  COUNT(*)::int AS observations,
-                  COUNT(*) FILTER (WHERE c.record_type = 'call')::int AS calls,
-                  COUNT(*) FILTER (WHERE c.cost_usd IS NOT NULL OR c.no_charge)::int AS priced,
-                  SUM(c.cost_usd) FILTER (WHERE c.cost_usd IS NOT NULL) AS known_cost,
-                  COALESCE(SUM(c.prompt_tokens),0)::bigint AS input_tokens,
-                  COALESCE(SUM(c.completion_tokens),0)::bigint AS output_tokens
            FROM charges c WHERE ${detailClauses.join(" AND ")}
-           GROUP BY c.provider, COALESCE(c.model, 'unknown')`,
-          detailParams,
-        ),
-        pool.query(
-          `${chargesCte(detailParams)}
-           SELECT c.provider, COUNT(*)::int AS observations,
-                  COUNT(*) FILTER (WHERE c.record_type = 'call')::int AS calls,
-                  COUNT(*) FILTER (WHERE c.cost_usd IS NOT NULL OR c.no_charge)::int AS priced,
-                  SUM(c.cost_usd) FILTER (WHERE c.cost_usd IS NOT NULL) AS known_cost,
-                  COALESCE(SUM(c.prompt_tokens),0)::bigint AS input_tokens,
-                  COALESCE(SUM(c.completion_tokens),0)::bigint AS output_tokens
-           FROM charges c WHERE ${detailClauses.join(" AND ")}
-           GROUP BY c.provider`,
+           GROUP BY GROUPING SETS ((), (c.provider), (c.provider, COALESCE(c.model, 'unknown')))`,
           detailParams,
         ),
         loadDailyAggregates(pool, projectId, detailScope, scope.timezone ?? "UTC"),
       ]);
+      // GROUPING() sets a bit for each column a row is not grouped by:
+      // 0 = provider and model, 1 = provider only, 3 = the whole window.
+      const totalsRows: Array<Record<string, unknown>> = [];
+      const modelRows: Array<Record<string, unknown>> = [];
+      const providerRows: Array<Record<string, unknown>> = [];
+      for (const row of groupedResult.rows as Array<Record<string, unknown>>) {
+        const level = Number(row.grouping_level);
+        if (level === 3) {
+          totalsRows.push(row);
+        } else if (level === 1) {
+          const { model: _model, ...providerRow } = row;
+          providerRows.push(providerRow);
+        } else {
+          modelRows.push(row);
+        }
+      }
+      const totalsResult = { rows: totalsRows };
+      const modelResult = { rows: modelRows };
+      const providerResult = { rows: providerRows };
       type OverviewBucket = { provider: string; model?: string; observations: number; calls: number; priced: number; cost: number; input: number; output: number };
       const total = {
         observations: Number(totalsResult.rows[0]?.observations ?? 0),

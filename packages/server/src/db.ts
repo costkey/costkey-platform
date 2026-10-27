@@ -586,6 +586,7 @@ export async function initDatabase(): Promise<void> {
     ALTER TABLE usage_components ADD COLUMN IF NOT EXISTS caller_id TEXT;
     ALTER TABLE usage_components ADD COLUMN IF NOT EXISTS context JSONB;
     ALTER TABLE usage_components ADD COLUMN IF NOT EXISTS accounting_at TIMESTAMPTZ;
+    CREATE INDEX IF NOT EXISTS idx_usage_components_project_accounted ON usage_components(project_id, (COALESCE(accounting_at, observed_at)));
     CREATE UNIQUE INDEX IF NOT EXISTS idx_usage_components_charge_revision
       ON usage_components(project_id, charge_id, revision)
       WHERE charge_id IS NOT NULL AND revision IS NOT NULL;

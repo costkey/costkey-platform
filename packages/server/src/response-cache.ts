@@ -86,9 +86,17 @@ export function cachedSummaries() {
   };
 }
 
+const invalidationListeners: Array<(projectId?: string) => void> = [];
+
+/** Other per-project caches (the SDK runtime config) drop their entries with the summaries. */
+export function onInvalidateSummaries(listener: (projectId?: string) => void): void {
+  invalidationListeners.push(listener);
+}
+
 /** Drop a project's cached summaries after it changes; no project id drops everything (a price list change). */
 export function invalidateSummaries(projectId?: string): void {
   for (const [key, entry] of entries) if (!projectId || entry.projectId === projectId) entries.delete(key);
+  for (const listener of invalidationListeners) listener(projectId);
 }
 
 /**

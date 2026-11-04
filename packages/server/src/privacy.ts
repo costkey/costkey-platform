@@ -1,6 +1,8 @@
 import type { Request, Response, Router } from "express";
 import { Router as createRouter } from "express";
+import { createHash } from "node:crypto";
 import type pg from "pg";
+import { onInvalidateSummaries } from "./response-cache.js";
 import { requireAuth } from "./auth.js";
 import {
   assertProjectAccess,
@@ -268,6 +270,67 @@ export function privacyIngestGuard(pool: pg.Pool) {
   };
 }
 
+/**
+ * Every SDK process polls its runtime config once a minute, so one service
+ * with 30 workers asks 30 times a minute for settings that rarely change.
+ * Answers are kept for RUNTIME_CONFIG_TTL_MS per project and key, and
+ * requests that miss together share one lookup. A change to the project
+ * through the API drops its entries here; another instance may answer from
+ * its copy until it expires, and ingest enforces the current settings anyway.
+ */
+const RUNTIME_CONFIG_TTL_MS = 30_000;
+type RuntimeConfig = Record<string, unknown>;
+const runtimeConfigs = new Map<string, { projectId: string; at: number; config: Promise<RuntimeConfig | null> }>();
+
+onInvalidateSummaries((projectId) => {
+  for (const [key, entry] of runtimeConfigs) if (!projectId || entry.projectId === projectId) runtimeConfigs.delete(key);
+});
+
+async function loadRuntimeConfig(pool: pg.Pool, projectId: string, authKey: string): Promise<RuntimeConfig | null> {
+  const project = await pool.query(
+    `SELECT p.id, s.capture_mode, s.body_capture_enabled, s.redaction_enabled,
+            s.body_retention_days, s.metadata_retention_days
+     FROM projects p LEFT JOIN project_settings s ON s.project_id = p.id
+     WHERE p.id = $1 AND p.auth_key = $2`,
+    [projectId, authKey],
+  );
+  if (!project.rows[0]) return null;
+  const providers = await pool.query(
+    `SELECT id, name, hostname, usage_input_path, usage_output_path, model_path
+     FROM custom_providers WHERE project_id = $1 AND enabled = TRUE ORDER BY created_at ASC`,
+    [projectId],
+  );
+  const row = project.rows[0] as Record<string, unknown>;
+  return {
+    projectId,
+    capture: {
+      mode: row.capture_mode ?? "metadata",
+      bodyCaptureEnabled: row.body_capture_enabled ?? false,
+      redactionEnabled: row.redaction_enabled ?? true,
+      bodyRetentionDays: row.body_retention_days ?? 7,
+      metadataRetentionDays: row.metadata_retention_days ?? 30,
+    },
+    providers: providers.rows,
+  };
+}
+
+function cachedRuntimeConfig(pool: pg.Pool, projectId: string, authKey: string): Promise<RuntimeConfig | null> {
+  const key = `${projectId}\0${createHash("sha256").update(authKey).digest("hex")}`;
+  const hit = runtimeConfigs.get(key);
+  if (hit && Date.now() - hit.at < RUNTIME_CONFIG_TTL_MS) return hit.config;
+  const entry = { projectId, at: Date.now(), config: loadRuntimeConfig(pool, projectId, authKey) };
+  runtimeConfigs.set(key, entry);
+  // Only a found project is kept: a wrong key or a failed lookup asks again next time.
+  const forget = () => { if (runtimeConfigs.get(key) === entry) runtimeConfigs.delete(key); };
+  entry.config.then((config) => { if (!config) forget(); }, forget);
+  return entry.config;
+}
+
+/** Drop cached runtime config for a project, e.g. after its capture settings change. */
+export function invalidateRuntimeConfig(projectId: string): void {
+  for (const [key, entry] of runtimeConfigs) if (entry.projectId === projectId) runtimeConfigs.delete(key);
+}
+
 /** DSN-authenticated runtime configuration consumed before an SDK captures bodies. */
 export function createIngestRuntimeConfigRouter(pool: pg.Pool): Router {
   const router = createRouter();
@@ -275,32 +338,9 @@ export function createIngestRuntimeConfigRouter(pool: pg.Pool): Router {
     try {
       const authHeader = req.headers.authorization;
       if (!authHeader?.startsWith("Bearer ")) { res.status(401).json({ error: "Missing or invalid authorization" }); return; }
-      const projectId = String(req.params.projectId);
-      const project = await pool.query(
-        `SELECT p.id, s.capture_mode, s.body_capture_enabled, s.redaction_enabled,
-                s.body_retention_days, s.metadata_retention_days
-         FROM projects p LEFT JOIN project_settings s ON s.project_id = p.id
-         WHERE p.id = $1 AND p.auth_key = $2`,
-        [projectId, authHeader.slice(7)],
-      );
-      if (!project.rows[0]) { res.status(401).json({ error: "Invalid auth key" }); return; }
-      const providers = await pool.query(
-        `SELECT id, name, hostname, usage_input_path, usage_output_path, model_path
-         FROM custom_providers WHERE project_id = $1 AND enabled = TRUE ORDER BY created_at ASC`,
-        [projectId],
-      );
-      const row = project.rows[0] as Record<string, unknown>;
-      res.set("Cache-Control", "private, max-age=60").json({
-        projectId,
-        capture: {
-          mode: row.capture_mode ?? "metadata",
-          bodyCaptureEnabled: row.body_capture_enabled ?? false,
-          redactionEnabled: row.redaction_enabled ?? true,
-          bodyRetentionDays: row.body_retention_days ?? 7,
-          metadataRetentionDays: row.metadata_retention_days ?? 30,
-        },
-        providers: providers.rows,
-      });
+      const config = await cachedRuntimeConfig(pool, String(req.params.projectId), authHeader.slice(7));
+      if (!config) { res.status(401).json({ error: "Invalid auth key" }); return; }
+      res.set("Cache-Control", "private, max-age=60").json(config);
     } catch (error) {
       console.error("[costkey] Runtime privacy config error:", error);
       res.status(500).json({ error: "Runtime config unavailable" });
@@ -422,6 +462,9 @@ export function createPrivacyRouter(pool: pg.Pool): Router {
         `UPDATE project_settings SET ${updates.join(", ")} WHERE project_id = $${index}`,
         params,
       );
+      // The change middleware dropped the cache before this update landed; a
+      // config read in between would have kept the old settings.
+      invalidateRuntimeConfig(projectId);
       const settings = await getProjectSettings(pool, projectId);
       res.json({ settings: settings ? settingsResponse(settings) : null });
     } catch (error) {

@@ -138,6 +138,7 @@ env -i \
   GITHUB_CLIENT_SECRET="" \
   PUBLIC_URL="$base_url" \
   COSTKEY_RETENTION_DAYS="3650" \
+  COSTKEY_INGEST_QUEUE="off" \
   COSTKEY_NOTIFICATION_SINK="memory" \
   NODE_OPTIONS="--import=$repo_root/scripts/acceptance/network-deny.mjs" \
   "$node_bin" --require "$tsx_preflight" --import "$tsx_loader" packages/server/src/index.ts >"$server_log" 2>&1 &

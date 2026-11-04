@@ -8,6 +8,7 @@ import type pg from "pg";
 import { ensureAccountingChangeSchema, ensureDailyAggregateSchema, ensureQualityCheckSchema, getPool, initDatabase, migrationRecorded, runOnce, setMigrationLockTimeout, withMigrationLock } from "./db.js";
 import { ensureSsoSchema } from "./sso/provision.js";
 import { createIngestRouter, loadCallGraphCache } from "./ingest.js";
+import { ensureIngestQueueSchema, startIngestWorker, type IngestWorker } from "./ingest-queue.js";
 import { createAuthRouter, authMiddleware } from "./auth.js";
 import { createSsoRouter, ssoSessionMiddleware } from "./sso/router.js"; // single sign-on
 import { reportAuthSettingsAtStartup } from "./sso/config.js"; // single sign-on
@@ -160,6 +161,10 @@ export function createApp(options: AppOptions = {}): Express & AppRuntime {
   reportAuthSettingsAtStartup();
   const app = express();
   const schedulerHandles: NodeJS.Timeout[] = [];
+  // Ingest goes through the Postgres queue whenever this process runs the
+  // workers; harnesses without schedulers store batches in the request.
+  const ingestQueue = options.startSchedulers !== false && process.env["COSTKEY_INGEST_QUEUE"] !== "off";
+  let ingestWorker: IngestWorker | null = null;
   let initialized = false;
   let initializationError: unknown = null;
   let initialization: Promise<void> | null = null;
@@ -246,7 +251,7 @@ export function createApp(options: AppOptions = {}): Express & AppRuntime {
   app.use(createSsoRouter(pool));
   app.use(createAuthRouter(pool));
   app.use(createIngestRuntimeConfigRouter(pool));
-  app.use(createIngestRouter(pool));
+  app.use(createIngestRouter(pool, { queue: ingestQueue }));
   // Public, token-scoped routes go before routers that require auth globally.
   app.use(createInvitePreviewRouter(pool));
   app.use(createSubscriptionRouter(pool));
@@ -277,6 +282,7 @@ export function createApp(options: AppOptions = {}): Express & AppRuntime {
         await ensureReleaseSchema(pool);
         await ensurePolicySchema(pool);
         await ensureQualityCheckSchema(pool);
+        await ensureIngestQueueSchema(pool);
         // Every table exists from the first boot; nothing is created on first use.
         await ensureSsoSchema(pool);
         await ensureDailyAggregateSchema(pool);
@@ -359,6 +365,7 @@ export function createApp(options: AppOptions = {}): Express & AppRuntime {
         hourlyNotifications.unref();
         schedulerHandles.push(periodic, dailyAccounting, dailyRetention, hourlyNotifications);
         schedulerHandles.push(startQualityCheckWorker(pool));
+        if (ingestQueue) ingestWorker = startIngestWorker(pool);
         schedulerHandles.push(startEmptyRunSweeper(pool));
         // Generate findings even when nobody opens the console. Ingest also
         // schedules a one-second project-local refresh; this startup pass
@@ -380,6 +387,8 @@ export function createApp(options: AppOptions = {}): Express & AppRuntime {
 
   const stopSchedulers = () => {
     for (const handle of schedulerHandles.splice(0)) clearInterval(handle);
+    ingestWorker?.stop();
+    ingestWorker = null;
   };
 
   if (options.initialize) void initialize().catch((error) => console.error("[costkey] Init error:", error));

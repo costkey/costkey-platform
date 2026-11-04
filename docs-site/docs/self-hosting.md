@@ -82,6 +82,8 @@ All settings live in `.env` next to `docker-compose.yml`.
 | `COSTKEY_QUALITY_SETTLE_SECONDS` | Optional. Seconds a run must be idle before [quality checks](./quality-checks) score it. Default `120`. |
 | `COSTKEY_QUALITY_JUDGE_RPM` | Optional. Most rubric check calls per minute for each project. Default `30`. |
 | `COSTKEY_QUALITY_WORKER_INTERVAL_SECONDS` | Optional. Seconds between runs of the quality check worker. Default `15`. |
+| `COSTKEY_INGEST_QUEUE` | Optional. SDK batches wait in a Postgres queue and background workers store them. Set to `off` to store each batch during its request instead. |
+| `COSTKEY_INGEST_WORKERS` | Optional. How many batches each server instance stores at once. Default `4`. |
 | `COSTKEY_MCP_ENABLED` | Optional. The [MCP endpoint](./mcp) for coding agents at `PUBLIC_URL/mcp`. Set `false` to turn it off. Default on. |
 | `COSTKEY_TOKEN_RATE_LIMIT` | Optional. Reads a minute for each coding agent token. Default `300`. |
 

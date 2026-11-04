@@ -23,6 +23,7 @@ import { callGraphFromUpload } from "./telemetry/callgraph.js";
 import { assembleStreamBody, streamEvents } from "./telemetry/stream-assembly.js";
 import { stripOtelContent } from "./telemetry/otel.js";
 import { recordRelease } from "./releases.js";
+import { enqueueIngestBatch } from "./ingest-queue.js";
 import type { ServerExtractor } from "./telemetry/types.js";
 
 function textFromContent(content: unknown): string | null {
@@ -804,7 +805,499 @@ export function stripSpanContent(event: Record<string, unknown>): void {
   }
 }
 
-export function createIngestRouter(pool: pg.Pool): Router {
+export type IngestRejection = { index: number; id: string | null; code: string; error: string };
+
+/**
+ * Store one SDK batch for a project: one transaction, one savepoint per
+ * event so a bad event is rejected alone. `beforeCommit` runs inside that
+ * transaction (the queue worker deletes its job there, so a batch is stored
+ * exactly once).
+ */
+export async function ingestBatch(
+  pool: pg.Pool,
+  projectId: string,
+  payload: TransportPayload,
+  options: { beforeCommit?: (client: pg.PoolClient) => Promise<void> } = {},
+): Promise<{ accepted: number; rejected: IngestRejection[] }> {
+  let projectSettings: {
+    capture_mode?: string | null;
+    body_capture_enabled?: boolean | null;
+    redaction_enabled?: boolean | null;
+    source_access_enabled?: boolean | null;
+  } = {};
+  try {
+    const settings = await pool.query(
+      "SELECT capture_mode, body_capture_enabled, redaction_enabled, source_access_enabled FROM project_settings WHERE project_id = $1",
+      [projectId],
+    );
+    projectSettings = (settings.rows[0] as typeof projectSettings | undefined) ?? {};
+  } catch {
+    // Unknown settings must fail closed for privacy. The normal startup
+    // path creates project_settings; this fallback only handles a staged
+    // migration or transient query failure.
+    projectSettings = { capture_mode: "metadata", body_capture_enabled: false, source_access_enabled: false };
+  }
+  const allowBody = projectSettings.capture_mode === "text" && projectSettings.body_capture_enabled !== false;
+  const allowSource = projectSettings.source_access_enabled === true;
+  const release = payload.release ?? null;
+
+  const sdkVersion = typeof payload.sdkVersion === "string" ? payload.sdkVersion.slice(0, 40) : null;
+  const legacyCallTimestamps = callTimestampIsEnd(sdkVersion);
+  // The deploy this batch came from, linked to its commit when the SDK knows it.
+  if (release) void recordRelease(pool, projectId, { release, commit: payload.commit, repository: payload.repository });
+
+  // Raw LiveKit rows (SDK 0.7) expand into one cumulative usage event per
+  // component; `index` keeps rejections pointing at the sent event.
+  const batch: Array<{ index: number; event: CostKeyEvent; expansionError?: Error }> = [];
+  for (const [index, event] of payload.events.entries()) {
+    const raw = event as unknown as Record<string, unknown>;
+    if (!raw || typeof raw !== "object" || !isLiveKitTelemetry(raw)) {
+      batch.push({ index, event });
+      continue;
+    }
+    try {
+      const expanded = expandLiveKitEvent(raw);
+      for (const item of expanded) batch.push({ index, event: item as unknown as CostKeyEvent });
+    } catch (error) {
+      batch.push({ index, event, expansionError: error instanceof Error ? error : new LiveKitPayloadError(String(error)) });
+    }
+  }
+  // Custom provider extractors are server config, read once per batch.
+  const customExtractors: ServerExtractor[] = batch.some(({ event }) => event && typeof event === "object"
+    && hasCallTelemetry(event as unknown as Record<string, unknown>))
+    ? await projectCustomExtractors(pool, projectId).catch(() => [])
+    : [];
+  let acceptedCount = 0;
+  const rejected: IngestRejection[] = [];
+
+  // Batch insert events
+  const client = await pool.connect();
+  const frameStatsBatch: Array<{
+    frames: Array<{ fileName: string | null; functionName: string | null; lineNumber: number | null }>;
+    callSiteKey: string;
+  }> = [];
+  try {
+    await client.query("BEGIN");
+    // Shared: concurrent batches for a project never wait on each other. The
+    // daily rollup and retention take this lock exclusively, so they still
+    // see either all of a batch or none of it.
+    await client.query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))", [accountingLockKey(projectId)]);
+
+    for (const { index, event, expansionError } of batch) {
+      const handleEvent = async (): Promise<void> => {
+          if (expansionError) throw expansionError;
+          const rawEvent = event as unknown as Record<string, unknown>;
+          // The OpenAI Agents SDK posts its own traces to api.openai.com.
+          // Those posts are not model calls; drop them (0.6 SDKs captured them).
+          if (isAgentsTraceExport(rawEvent)) return;
+          // SDK 0.7 sends raw telemetry: derive every normalized call field
+          // from it (telemetry wins). Without it the legacy fields stand.
+          const telemetry: AppliedTelemetry | null = rawEvent && typeof rawEvent === "object"
+            ? applyCallTelemetry(rawEvent, { customExtractors, isInternalFrame })
+            : null;
+          // The DSN clock is useful for near-real-time ordering, but must not
+          // select an arbitrary historical/future effective price interval.
+          rawEvent.timestamp = trustedEventTimestamp(rawEvent.timestamp);
+          // SDKs before 0.6 stamped calls when they finished. Store every
+          // call at its start so traces, waterfalls and pricing agree.
+          const rawType = rawEvent["eventType"] ?? rawEvent["event_type"];
+          const durationMs = typeof rawEvent["durationMs"] === "number" ? rawEvent["durationMs"] : null;
+          if (!telemetry && legacyCallTimestamps && (rawType === undefined || rawType === "call") && durationMs !== null && durationMs > 0) {
+            rawEvent.timestamp = new Date(Date.parse(String(rawEvent.timestamp)) - durationMs).toISOString();
+          }
+          // Release filters read context.release; carry the batch release there.
+          if (release) {
+            const ctx = rawEvent["context"] && typeof rawEvent["context"] === "object" && !Array.isArray(rawEvent["context"])
+              ? rawEvent["context"] as Record<string, unknown>
+              : null;
+            if (ctx && ctx["release"] === undefined) ctx["release"] = release;
+            else if (!ctx && (rawType === undefined || rawType === "call")) rawEvent["context"] = { release };
+          }
+          // A streamed response arrives as its events; store it assembled
+          // into the provider's non-streaming shape (before redaction, so a
+          // secret split across deltas is redacted whole). Content only:
+          // usage and cost already came from the telemetry envelope.
+          for (const key of ["responseBody", "response_body"]) {
+            if (allowBody && streamEvents(rawEvent[key])) {
+              rawEvent[key] = assembleStreamBody(rawEvent[key], {
+                provider: typeof rawEvent["provider"] === "string" ? rawEvent["provider"] : null,
+                url: typeof rawEvent["url"] === "string" ? rawEvent["url"] : null,
+                model: typeof rawEvent["model"] === "string" ? rawEvent["model"] : null,
+              });
+            }
+          }
+          // Enforce the setting again at the persistence boundary. This keeps
+          // direct router mounts and a failed/missing privacy middleware from
+          // ever writing captured body/source fields.
+          if (rawEvent && typeof rawEvent === "object") {
+            stripIngestEventPrivacy(rawEvent, {
+              allowBody,
+              allowSource,
+              redactionEnabled: projectSettings.redaction_enabled !== false,
+            });
+          }
+          const contentStatus = contentStatusForEvent(rawEvent, {
+            captureMode: projectSettings.capture_mode,
+            bodyCaptureEnabled: projectSettings.body_capture_enabled,
+          });
+          let featureSource: "explicit" | "mapping" | "mapping_override" | "unknown" = "unknown";
+          const initialContext = rawEvent["context"] && typeof rawEvent["context"] === "object"
+            ? rawEvent["context"] as Record<string, unknown>
+            : {};
+          if (typeof initialContext["feature"] === "string" && initialContext["feature"].trim()) featureSource = "explicit";
+          let featureMappingId: string | null = null;
+          let featureMappingActionId: string | null = null;
+          let featureOriginal: string | null = null;
+          let accounting = normalizeAccountingEvent(rawEvent);
+          if (accounting.eventType === "span") {
+            // Spans are structure, not billable rows: they upsert into the
+            // spans table and never touch events or call-site rollups.
+            if (!allowBody) stripSpanContent(rawEvent);
+            for (const key of ["startedAt", "endedAt"]) {
+              if (typeof rawEvent[key] === "string") rawEvent[key] = trustedEventTimestamp(rawEvent[key]);
+            }
+            await recordAccountingEvent(client, projectId, rawEvent);
+            // Where the span was opened: calls inside it with no code of their own take it.
+            const spanSite = (rawEvent["callSite"] ?? rawEvent["call_site"]) as { frames?: unknown } | undefined;
+            if (accounting.spanId && spanSite && await storeSpanSite(client, projectId, accounting.spanId, spanSite.frames)) {
+              await attributeCallsToSpan(client, projectId, accounting.spanId);
+            }
+            return;
+          }
+          if (accounting.eventType === "score") {
+            // Scores annotate runs: they upsert into the scores table only.
+            // A grader's comment is content, so it follows body capture.
+            if (!allowBody) delete rawEvent["comment"];
+            else if (projectSettings.redaction_enabled !== false && typeof rawEvent["comment"] === "string") {
+              rawEvent["comment"] = redactCapturedContent(rawEvent["comment"]);
+            }
+            await recordAccountingEvent(client, projectId, rawEvent);
+            return;
+          }
+          // Fallback: extract model from URL path if SDK didn't resolve it
+          // e.g. Google Gemini: /v1beta/models/gemini-2.5-flash:generateContent
+          if (!event.model && event.url) {
+            try {
+              const urlPath = new URL(event.url).pathname;
+              // Gemini: /models/<id>:generateContent; Bedrock: /model/<id>/invoke
+              const modelMatch = urlPath.match(/\/models?\/([^/:]+)/);
+              if (modelMatch) event.model = decodeURIComponent(modelMatch[1]);
+            } catch { /* invalid URL, ignore */ }
+          }
+
+          const explicitAmount = accounting.eventType === "usage" && accounting.amountPresent
+            && accounting.currency === "USD" ? accounting.amount : null;
+          const explicitUnitValue = accounting.eventType === "usage"
+            ? accounting.unitValue ?? (accounting.unitKind && accounting.usage
+              ? accounting.usage[accounting.unitKind] ?? accounting.usage[accounting.unit ?? ""] ?? null
+              : null)
+            : null;
+          if (accounting.eventType === "usage" && accounting.unitValue == null) accounting.unitValue = explicitUnitValue;
+          const resolved = accounting.eventType === "call"
+            ? await resolveEventCostWithOverrides(pool, projectId, event)
+            : accounting.eventType === "usage"
+              ? await resolveExplicitUsageCost(pool, projectId, event, {
+                provider: accounting.provider,
+                model: accounting.model,
+                unitKind: accounting.unitKind,
+                unitValue: explicitUnitValue,
+                currency: accounting.currency,
+                amount: accounting.amount,
+                amountPresent: accounting.amountPresent,
+                amountKind: accounting.amountKind,
+              })
+              : { cost: explicitAmount, basis: explicitAmount === null ? "unknown" as const : "reported" as const, source: explicitAmount === null ? null : "explicit", pricingId: null, pricingDate: null };
+          const costUsd = resolved.cost;
+          const cost = eventCostBasis(event, accounting.eventType, costUsd, resolved);
+          if (accounting.eventType === "usage") cost.currency = accounting.currency;
+          if (resolved.pricingId && !accounting.pricingId) accounting.pricingId = resolved.pricingId;
+
+          // Filter stack frames server-side (strips SDK/library internals for all languages)
+          const rawFrames = event.callSite?.frames ?? null;
+          let cleanFrames = rawFrames ? filterFrames(rawFrames) : null;
+          const filterCtx = rawFrames && cleanFrames
+            ? getFilterContext(rawFrames, cleanFrames) : undefined;
+
+          // Translate minified frames using sourcemaps (if release + maps uploaded)
+          if (cleanFrames && release) {
+            try {
+              const { translated, wasTranslated } = await translateFrames(
+                pool, projectId, release, cleanFrames,
+              );
+              if (wasTranslated) cleanFrames = translated;
+            } catch {
+              // Sourcemap translation failure is non-fatal
+            }
+          }
+
+          // Compute business logic frame (single source of truth)
+          // Priority: explicit call graph > implicit graph (from event data) > heuristic
+          let blFunction: string | null = null;
+          let blFile: string | null = null;
+          let blLine: number | null = null;
+          if (cleanFrames && cleanFrames.length > 0) {
+            const explicitGraph = callGraphCache.get(projectId);
+            let best;
+            if (explicitGraph) {
+              best = findBusinessLogicFrameWithGraph(cleanFrames, explicitGraph, filterCtx);
+            } else {
+              const implicitGraph = await getImplicitGraph(pool, projectId);
+              best = implicitGraph
+                ? findBusinessLogicFrameWithGraph(cleanFrames, implicitGraph, filterCtx)
+                : findBusinessLogicFrame(cleanFrames, filterCtx);
+            }
+            if (best) {
+              blFunction = (best.functionName ?? "").split("\n")[0].trim() || null;
+              blFile = best.fileName ?? null;
+              blLine = best.lineNumber ?? null;
+            }
+
+          }
+          // A call with no code of its own (made on a framework's task)
+          // takes the code that opened the span it ran in.
+          if (!blFunction && allowSource && accounting.eventType === "call" && accounting.spanId) {
+            const scope = await scopeSite(client, projectId, accounting.spanId);
+            if (scope) {
+              blFunction = firstLine(scope.frame.functionName);
+              blFile = scope.frame.fileName ?? null;
+              blLine = scope.frame.lineNumber ?? null;
+            }
+          }
+
+          // Reusable mappings supply only missing business meaning. Explicit
+          // SDK feature context remains authoritative unless a user performs
+          // a separate historical override action.
+          if (accounting.eventType === "call") {
+            const enriched = await enrichFeatureContext(client, projectId, rawEvent, {
+              file: blFile,
+              function: blFunction,
+              sourceAccessEnabled: allowSource,
+            });
+            if (enriched !== rawEvent) {
+              rawEvent["context"] = enriched["context"];
+              event.context = enriched["context"] as CostKeyEvent["context"];
+              featureSource = enriched["featureSource"] === "mapping_override" ? "mapping_override" : "mapping";
+              featureMappingId = typeof enriched["featureMappingId"] === "string" ? enriched["featureMappingId"] : null;
+              // Re-read context-derived trace/group identity after mapping.
+              accounting = normalizeAccountingEvent(rawEvent);
+            }
+          }
+
+          // A raw call that failed or was cancelled (AbortError, CancelledError,
+          // non-2xx) records that outcome on the call row only; trace
+          // lifecycle still comes from explicit lifecycle events.
+          if (telemetry?.derived.outcome && accounting.eventType === "call") {
+            accounting.lifecycle = telemetry.derived.outcome.lifecycle;
+            accounting.errorType = telemetry.derived.outcome.errorType;
+            const end = Date.parse(String(event.timestamp)) + (telemetry.derived.durationMs ?? 0);
+            if (Number.isFinite(end)) accounting.lifecycleAt = new Date(end).toISOString();
+          }
+          // The raw envelope is kept for reprocessing with the same privacy
+          // treatment as metadata: only where body capture is allowed, and
+          // through the same credential redaction.
+          const storedTelemetry = telemetry?.stored && allowBody
+            ? JSON.stringify(projectSettings.redaction_enabled !== false
+              ? redactCapturedContent(telemetry.stored)
+              : telemetry.stored)
+            : null;
+
+          const inserted = await client.query(
+            `INSERT INTO events (
+              id, timestamp, project_id, provider, model, url, method, status_code,
+              input_tokens, output_tokens, total_tokens, reasoning_tokens,
+              cache_read_tokens, cache_creation_tokens,
+              cost_usd, duration_ms, streaming,
+              ttft, tps, stream_duration, chunk_count,
+              call_site_raw, call_site_frames,
+              trace_id, trace_name, context, metadata, system_prompt, request_body, response_body, release,
+              bl_function, bl_file, bl_line, image_output_tokens,
+              event_type, source, request_model, attempt_id, parent_event_id,
+              charge_id, component_id, execution_id, group_id, group_name,
+              group_kind, phase, configuration, dataset_revision, case_id,
+              lifecycle_state, lifecycle_at, lifecycle_error_type, usage_event,
+              cost_basis, cost_source, cost_currency, unit_kind, unit_value,
+              unit, aggregation, revision, entity_type, entity_id, pricing_id, pricing_date, sequence,
+              content_status, feature_source, feature_mapping_id, feature_mapping_action_id, feature_original,
+              span_id, sdk_version, native_units, raw_telemetry
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,$51,$52,$53,$54,$55,$56,$57,$58,$59,$60,$61,$62,$63,$64,$65,$66,$67,$68,$69,$70,$71,$72,$73,$74,$75,$76)
+            ON CONFLICT (project_id, id) DO NOTHING`,
+            [
+              event.id, event.timestamp, projectId,
+              event.provider ?? accounting.provider, event.model ?? accounting.model,
+              sanitizeEventUrl(event.url) ?? "", event.method ?? "POST", event.statusCode,
+              event.usage?.inputTokens, event.usage?.outputTokens,
+              event.usage?.totalTokens, event.usage?.reasoningTokens,
+              event.usage?.cacheReadTokens, event.usage?.cacheCreationTokens,
+              costUsd, event.durationMs, event.streaming,
+              event.streamTiming?.ttft, event.streamTiming?.tps,
+              event.streamTiming?.streamDuration, event.streamTiming?.chunkCount,
+              event.callSite?.raw ?? null,
+              cleanFrames ? JSON.stringify(cleanFrames) : null,
+              accounting.traceId,
+              accounting.traceName,
+              event.context ? JSON.stringify(event.context) : null,
+              truncateBody(event.metadata ?? extractMetadata(event.requestBody, event.responseBody)),
+              event.systemPrompt ?? extractSystemPrompt(event.requestBody),
+              truncateBody(event.requestBody),
+              truncateBody(event.responseBody),
+              release,
+              blFunction, blFile, blLine,
+              event.usage?.imageOutputTokens ?? null,
+              accounting.eventType,
+              accounting.source,
+              accounting.requestModel,
+              rawEvent["attemptId"] ?? rawEvent["attempt_id"] ?? null,
+              rawEvent["parentEventId"] ?? rawEvent["parent_event_id"] ?? null,
+              accounting.chargeId,
+              accounting.componentId,
+              accounting.executionId,
+              accounting.groupId ?? null,
+              accounting.groupName,
+              accounting.groupKind,
+              accounting.phase,
+              accounting.configuration ? JSON.stringify(accounting.configuration) : null,
+              accounting.datasetRevision,
+              accounting.caseId,
+              accounting.lifecycle,
+              accounting.lifecycleAt,
+              accounting.errorType,
+              accounting.eventType === "usage" ? JSON.stringify({
+                usage: accounting.usage,
+                billingUnits: rawEvent["billingUnits"] ?? rawEvent["billing_units"] ?? undefined,
+                amount: accounting.amountPresent ? { value: accounting.amount, currency: accounting.currency } : undefined,
+                pricingId: accounting.pricingId,
+              }) : null,
+              cost.basis,
+              cost.source,
+              cost.currency,
+              accounting.unitKind,
+              accounting.unitValue,
+              accounting.unit,
+              accounting.aggregation,
+              accounting.revision,
+              accounting.entityType,
+              accounting.entityId,
+              accounting.pricingId,
+              resolved.pricingDate ?? rawEvent["pricingDate"] ?? rawEvent["pricing_date"] ?? null,
+              accounting.sequence,
+              contentStatus,
+              featureSource,
+              featureMappingId,
+              featureMappingActionId,
+              featureOriginal,
+              accounting.spanId,
+              sdkVersion,
+              nativeUnitsJson(event.usage),
+              storedTelemetry,
+            ],
+          );
+
+          if (inserted.rowCount === 0) return;
+
+          await recordAccountingEvent(client, projectId, rawEvent);
+
+          // Lifecycle and explicit usage envelopes are not provider calls and
+          // must never inflate call-site rollups or call counts.
+          if (accounting.eventType !== "call") return;
+
+          // Upsert call site stats and frame stats — use bl_ values (single source of truth)
+          const callSiteKey = blFunction ? `${blFile ?? "unknown"}:${blFunction}:${blLine ?? 0}` : null;
+
+
+          if (blFunction) {
+            const key = callSiteKey!;
+            const eventModel = event.model ?? "unknown";
+
+            await client.query(
+              `INSERT INTO call_site_stats (
+                project_id, call_site_key, file_name, function_name, line_number,
+                provider, model,
+                total_calls, total_cost_usd, total_input_tokens, total_output_tokens,
+                avg_duration_ms, avg_ttft, avg_tps, first_seen, last_seen,
+                priced_calls, unpriced_calls
+              ) VALUES ($1,$2,$3,$4,$5,$6,$7,1,$8,$9,$10,$11,$12,$13,$14,$14,$15,$16)
+              ON CONFLICT (project_id, call_site_key, model) DO UPDATE SET
+                total_calls = call_site_stats.total_calls + 1,
+                total_cost_usd = call_site_stats.total_cost_usd + EXCLUDED.total_cost_usd,
+                priced_calls = call_site_stats.priced_calls + EXCLUDED.priced_calls,
+                unpriced_calls = call_site_stats.unpriced_calls + EXCLUDED.unpriced_calls,
+                total_input_tokens = call_site_stats.total_input_tokens + EXCLUDED.total_input_tokens,
+                total_output_tokens = call_site_stats.total_output_tokens + EXCLUDED.total_output_tokens,
+                avg_duration_ms = (call_site_stats.avg_duration_ms * call_site_stats.total_calls + EXCLUDED.avg_duration_ms) / (call_site_stats.total_calls + 1),
+                avg_ttft = CASE WHEN EXCLUDED.avg_ttft IS NOT NULL
+                  THEN COALESCE((call_site_stats.avg_ttft * call_site_stats.total_calls + EXCLUDED.avg_ttft) / (call_site_stats.total_calls + 1), EXCLUDED.avg_ttft)
+                  ELSE call_site_stats.avg_ttft END,
+                avg_tps = CASE WHEN EXCLUDED.avg_tps IS NOT NULL
+                  THEN COALESCE((call_site_stats.avg_tps * call_site_stats.total_calls + EXCLUDED.avg_tps) / (call_site_stats.total_calls + 1), EXCLUDED.avg_tps)
+                  ELSE call_site_stats.avg_tps END,
+                last_seen = EXCLUDED.last_seen`,
+              [
+                projectId, key, blFile, blFunction, blLine,
+                event.provider, eventModel,
+                costUsd ?? 0,
+                event.usage?.inputTokens ?? 0, event.usage?.outputTokens ?? 0,
+                event.durationMs,
+                event.streamTiming?.ttft ?? null,
+                event.streamTiming?.tps ?? null,
+                event.timestamp,
+                costUsd == null ? 0 : 1,
+                costUsd == null ? 1 : 0,
+              ],
+            );
+          }
+
+          if (cleanFrames && cleanFrames.length > 0 && callSiteKey) {
+            frameStatsBatch.push({ frames: cleanFrames, callSiteKey });
+          }
+      };
+      // One savepoint per event: a bad or conflicting event is rejected on
+      // its own instead of discarding the rest of the batch.
+      await client.query("SAVEPOINT costkey_event");
+      try {
+        await handleEvent();
+        await client.query("RELEASE SAVEPOINT costkey_event");
+        acceptedCount += 1;
+      } catch (err) {
+        await client.query("ROLLBACK TO SAVEPOINT costkey_event");
+        const known = err instanceof InvalidAccountingEventError || err instanceof AccountingConflictError;
+        if (!known) console.error("[costkey] Ingest event error:", err);
+        rejected.push({
+          index,
+          id: typeof (event as { id?: unknown }).id === "string" ? (event as { id: string }).id : null,
+          code: known ? (err as InvalidAccountingEventError | AccountingConflictError).code : "ingest_error",
+          error: known ? (err as Error).message : "This event could not be stored.",
+        });
+      }
+    }
+
+    // Batch insert all frame stats in 2 queries (instead of 2 per event)
+    if (frameStatsBatch.length > 0) {
+      await updateFrameStatsBatch(client, projectId, frameStatsBatch);
+    }
+
+    if (options.beforeCommit) await options.beforeCommit(client);
+    await client.query("COMMIT");
+    // Invalidate implicit graph cache after new data
+    invalidateImplicitGraph(projectId);
+    // Findings are generated after durable accounting commit, coalesced so
+    // a burst of events cannot trigger one full scan per request.
+    scheduleFindingsRefreshAfterIngest(pool, projectId);
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+
+  return { accepted: acceptedCount, rejected };
+}
+
+/**
+ * `queue`: the endpoint only stores the batch in `ingest_jobs` and the ingest
+ * worker (ingest-queue.ts) stores it. Without it the request stores the batch
+ * itself and reports rejected events.
+ */
+export function createIngestRouter(pool: pg.Pool, options: { queue?: boolean } = {}): Router {
   const router = createRouter();
 
   // POST /api/v1/events — main SDK ingest endpoint
@@ -828,28 +1321,7 @@ export function createIngestRouter(pool: pg.Pool): Router {
       }
 
       const projectId = String((projResult.rows[0] as { id: string }).id);
-      let projectSettings: {
-        capture_mode?: string | null;
-        body_capture_enabled?: boolean | null;
-        redaction_enabled?: boolean | null;
-        source_access_enabled?: boolean | null;
-      } = {};
-      try {
-        const settings = await pool.query(
-          "SELECT capture_mode, body_capture_enabled, redaction_enabled, source_access_enabled FROM project_settings WHERE project_id = $1",
-          [projectId],
-        );
-        projectSettings = (settings.rows[0] as typeof projectSettings | undefined) ?? {};
-      } catch {
-        // Unknown settings must fail closed for privacy. The normal startup
-        // path creates project_settings; this fallback only handles a staged
-        // migration or transient query failure.
-        projectSettings = { capture_mode: "metadata", body_capture_enabled: false, source_access_enabled: false };
-      }
-      const allowBody = projectSettings.capture_mode === "text" && projectSettings.body_capture_enabled !== false;
-      const allowSource = projectSettings.source_access_enabled === true;
       const payload = req.body as TransportPayload;
-      const release = payload.release ?? null;
 
       if (!payload.events || !Array.isArray(payload.events)) {
         res.status(400).json({ error: "Invalid payload: missing events array" });
@@ -861,450 +1333,14 @@ export function createIngestRouter(pool: pg.Pool): Router {
         return;
       }
 
-      const sdkVersion = typeof payload.sdkVersion === "string" ? payload.sdkVersion.slice(0, 40) : null;
-      const legacyCallTimestamps = callTimestampIsEnd(sdkVersion);
-      // The deploy this batch came from, linked to its commit when the SDK knows it.
-      if (release) void recordRelease(pool, projectId, { release, commit: payload.commit, repository: payload.repository });
-
-      // Raw LiveKit rows (SDK 0.7) expand into one cumulative usage event per
-      // component; `index` keeps rejections pointing at the sent event.
-      const batch: Array<{ index: number; event: CostKeyEvent; expansionError?: Error }> = [];
-      for (const [index, event] of payload.events.entries()) {
-        const raw = event as unknown as Record<string, unknown>;
-        if (!raw || typeof raw !== "object" || !isLiveKitTelemetry(raw)) {
-          batch.push({ index, event });
-          continue;
-        }
-        try {
-          const expanded = expandLiveKitEvent(raw);
-          for (const item of expanded) batch.push({ index, event: item as unknown as CostKeyEvent });
-        } catch (error) {
-          batch.push({ index, event, expansionError: error instanceof Error ? error : new LiveKitPayloadError(String(error)) });
-        }
-      }
-      // Custom provider extractors are server config, read once per batch.
-      const customExtractors: ServerExtractor[] = batch.some(({ event }) => event && typeof event === "object"
-        && hasCallTelemetry(event as unknown as Record<string, unknown>))
-        ? await projectCustomExtractors(pool, projectId).catch(() => [])
-        : [];
-      let acceptedCount = 0;
-      const rejected: Array<{ index: number; id: string | null; code: string; error: string }> = [];
-
-      // Batch insert events
-      const client = await pool.connect();
-      const frameStatsBatch: Array<{
-        frames: Array<{ fileName: string | null; functionName: string | null; lineNumber: number | null }>;
-        callSiteKey: string;
-      }> = [];
-      try {
-        await client.query("BEGIN");
-        await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [accountingLockKey(projectId)]);
-
-        for (const { index, event, expansionError } of batch) {
-          const handleEvent = async (): Promise<void> => {
-              if (expansionError) throw expansionError;
-              const rawEvent = event as unknown as Record<string, unknown>;
-              // The OpenAI Agents SDK posts its own traces to api.openai.com.
-              // Those posts are not model calls; drop them (0.6 SDKs captured them).
-              if (isAgentsTraceExport(rawEvent)) return;
-              // SDK 0.7 sends raw telemetry: derive every normalized call field
-              // from it (telemetry wins). Without it the legacy fields stand.
-              const telemetry: AppliedTelemetry | null = rawEvent && typeof rawEvent === "object"
-                ? applyCallTelemetry(rawEvent, { customExtractors, isInternalFrame })
-                : null;
-              // The DSN clock is useful for near-real-time ordering, but must not
-              // select an arbitrary historical/future effective price interval.
-              rawEvent.timestamp = trustedEventTimestamp(rawEvent.timestamp);
-              // SDKs before 0.6 stamped calls when they finished. Store every
-              // call at its start so traces, waterfalls and pricing agree.
-              const rawType = rawEvent["eventType"] ?? rawEvent["event_type"];
-              const durationMs = typeof rawEvent["durationMs"] === "number" ? rawEvent["durationMs"] : null;
-              if (!telemetry && legacyCallTimestamps && (rawType === undefined || rawType === "call") && durationMs !== null && durationMs > 0) {
-                rawEvent.timestamp = new Date(Date.parse(String(rawEvent.timestamp)) - durationMs).toISOString();
-              }
-              // Release filters read context.release; carry the batch release there.
-              if (release) {
-                const ctx = rawEvent["context"] && typeof rawEvent["context"] === "object" && !Array.isArray(rawEvent["context"])
-                  ? rawEvent["context"] as Record<string, unknown>
-                  : null;
-                if (ctx && ctx["release"] === undefined) ctx["release"] = release;
-                else if (!ctx && (rawType === undefined || rawType === "call")) rawEvent["context"] = { release };
-              }
-              // A streamed response arrives as its events; store it assembled
-              // into the provider's non-streaming shape (before redaction, so a
-              // secret split across deltas is redacted whole). Content only:
-              // usage and cost already came from the telemetry envelope.
-              for (const key of ["responseBody", "response_body"]) {
-                if (allowBody && streamEvents(rawEvent[key])) {
-                  rawEvent[key] = assembleStreamBody(rawEvent[key], {
-                    provider: typeof rawEvent["provider"] === "string" ? rawEvent["provider"] : null,
-                    url: typeof rawEvent["url"] === "string" ? rawEvent["url"] : null,
-                    model: typeof rawEvent["model"] === "string" ? rawEvent["model"] : null,
-                  });
-                }
-              }
-              // Enforce the setting again at the persistence boundary. This keeps
-              // direct router mounts and a failed/missing privacy middleware from
-              // ever writing captured body/source fields.
-              if (rawEvent && typeof rawEvent === "object") {
-                stripIngestEventPrivacy(rawEvent, {
-                  allowBody,
-                  allowSource,
-                  redactionEnabled: projectSettings.redaction_enabled !== false,
-                });
-              }
-              const contentStatus = contentStatusForEvent(rawEvent, {
-                captureMode: projectSettings.capture_mode,
-                bodyCaptureEnabled: projectSettings.body_capture_enabled,
-              });
-              let featureSource: "explicit" | "mapping" | "mapping_override" | "unknown" = "unknown";
-              const initialContext = rawEvent["context"] && typeof rawEvent["context"] === "object"
-                ? rawEvent["context"] as Record<string, unknown>
-                : {};
-              if (typeof initialContext["feature"] === "string" && initialContext["feature"].trim()) featureSource = "explicit";
-              let featureMappingId: string | null = null;
-              let featureMappingActionId: string | null = null;
-              let featureOriginal: string | null = null;
-              let accounting = normalizeAccountingEvent(rawEvent);
-              if (accounting.eventType === "span") {
-                // Spans are structure, not billable rows: they upsert into the
-                // spans table and never touch events or call-site rollups.
-                if (!allowBody) stripSpanContent(rawEvent);
-                for (const key of ["startedAt", "endedAt"]) {
-                  if (typeof rawEvent[key] === "string") rawEvent[key] = trustedEventTimestamp(rawEvent[key]);
-                }
-                await recordAccountingEvent(client, projectId, rawEvent);
-                // Where the span was opened: calls inside it with no code of their own take it.
-                const spanSite = (rawEvent["callSite"] ?? rawEvent["call_site"]) as { frames?: unknown } | undefined;
-                if (accounting.spanId && spanSite && await storeSpanSite(client, projectId, accounting.spanId, spanSite.frames)) {
-                  await attributeCallsToSpan(client, projectId, accounting.spanId);
-                }
-                return;
-              }
-              if (accounting.eventType === "score") {
-                // Scores annotate runs: they upsert into the scores table only.
-                // A grader's comment is content, so it follows body capture.
-                if (!allowBody) delete rawEvent["comment"];
-                else if (projectSettings.redaction_enabled !== false && typeof rawEvent["comment"] === "string") {
-                  rawEvent["comment"] = redactCapturedContent(rawEvent["comment"]);
-                }
-                await recordAccountingEvent(client, projectId, rawEvent);
-                return;
-              }
-              // Fallback: extract model from URL path if SDK didn't resolve it
-              // e.g. Google Gemini: /v1beta/models/gemini-2.5-flash:generateContent
-              if (!event.model && event.url) {
-                try {
-                  const urlPath = new URL(event.url).pathname;
-                  // Gemini: /models/<id>:generateContent; Bedrock: /model/<id>/invoke
-                  const modelMatch = urlPath.match(/\/models?\/([^/:]+)/);
-                  if (modelMatch) event.model = decodeURIComponent(modelMatch[1]);
-                } catch { /* invalid URL, ignore */ }
-              }
-
-              const explicitAmount = accounting.eventType === "usage" && accounting.amountPresent
-                && accounting.currency === "USD" ? accounting.amount : null;
-              const explicitUnitValue = accounting.eventType === "usage"
-                ? accounting.unitValue ?? (accounting.unitKind && accounting.usage
-                  ? accounting.usage[accounting.unitKind] ?? accounting.usage[accounting.unit ?? ""] ?? null
-                  : null)
-                : null;
-              if (accounting.eventType === "usage" && accounting.unitValue == null) accounting.unitValue = explicitUnitValue;
-              const resolved = accounting.eventType === "call"
-                ? await resolveEventCostWithOverrides(pool, projectId, event)
-                : accounting.eventType === "usage"
-                  ? await resolveExplicitUsageCost(pool, projectId, event, {
-                    provider: accounting.provider,
-                    model: accounting.model,
-                    unitKind: accounting.unitKind,
-                    unitValue: explicitUnitValue,
-                    currency: accounting.currency,
-                    amount: accounting.amount,
-                    amountPresent: accounting.amountPresent,
-                    amountKind: accounting.amountKind,
-                  })
-                  : { cost: explicitAmount, basis: explicitAmount === null ? "unknown" as const : "reported" as const, source: explicitAmount === null ? null : "explicit", pricingId: null, pricingDate: null };
-              const costUsd = resolved.cost;
-              const cost = eventCostBasis(event, accounting.eventType, costUsd, resolved);
-              if (accounting.eventType === "usage") cost.currency = accounting.currency;
-              if (resolved.pricingId && !accounting.pricingId) accounting.pricingId = resolved.pricingId;
-
-              // Filter stack frames server-side (strips SDK/library internals for all languages)
-              const rawFrames = event.callSite?.frames ?? null;
-              let cleanFrames = rawFrames ? filterFrames(rawFrames) : null;
-              const filterCtx = rawFrames && cleanFrames
-                ? getFilterContext(rawFrames, cleanFrames) : undefined;
-
-              // Translate minified frames using sourcemaps (if release + maps uploaded)
-              if (cleanFrames && release) {
-                try {
-                  const { translated, wasTranslated } = await translateFrames(
-                    pool, projectId, release, cleanFrames,
-                  );
-                  if (wasTranslated) cleanFrames = translated;
-                } catch {
-                  // Sourcemap translation failure is non-fatal
-                }
-              }
-
-              // Compute business logic frame (single source of truth)
-              // Priority: explicit call graph > implicit graph (from event data) > heuristic
-              let blFunction: string | null = null;
-              let blFile: string | null = null;
-              let blLine: number | null = null;
-              if (cleanFrames && cleanFrames.length > 0) {
-                const explicitGraph = callGraphCache.get(projectId);
-                let best;
-                if (explicitGraph) {
-                  best = findBusinessLogicFrameWithGraph(cleanFrames, explicitGraph, filterCtx);
-                } else {
-                  const implicitGraph = await getImplicitGraph(pool, projectId);
-                  best = implicitGraph
-                    ? findBusinessLogicFrameWithGraph(cleanFrames, implicitGraph, filterCtx)
-                    : findBusinessLogicFrame(cleanFrames, filterCtx);
-                }
-                if (best) {
-                  blFunction = (best.functionName ?? "").split("\n")[0].trim() || null;
-                  blFile = best.fileName ?? null;
-                  blLine = best.lineNumber ?? null;
-                }
-
-              }
-              // A call with no code of its own (made on a framework's task)
-              // takes the code that opened the span it ran in.
-              if (!blFunction && allowSource && accounting.eventType === "call" && accounting.spanId) {
-                const scope = await scopeSite(client, projectId, accounting.spanId);
-                if (scope) {
-                  blFunction = firstLine(scope.frame.functionName);
-                  blFile = scope.frame.fileName ?? null;
-                  blLine = scope.frame.lineNumber ?? null;
-                }
-              }
-
-              // Reusable mappings supply only missing business meaning. Explicit
-              // SDK feature context remains authoritative unless a user performs
-              // a separate historical override action.
-              if (accounting.eventType === "call") {
-                const enriched = await enrichFeatureContext(client, projectId, rawEvent, {
-                  file: blFile,
-                  function: blFunction,
-                  sourceAccessEnabled: allowSource,
-                });
-                if (enriched !== rawEvent) {
-                  rawEvent["context"] = enriched["context"];
-                  event.context = enriched["context"] as CostKeyEvent["context"];
-                  featureSource = enriched["featureSource"] === "mapping_override" ? "mapping_override" : "mapping";
-                  featureMappingId = typeof enriched["featureMappingId"] === "string" ? enriched["featureMappingId"] : null;
-                  // Re-read context-derived trace/group identity after mapping.
-                  accounting = normalizeAccountingEvent(rawEvent);
-                }
-              }
-
-              // A raw call that failed or was cancelled (AbortError, CancelledError,
-              // non-2xx) records that outcome on the call row only; trace
-              // lifecycle still comes from explicit lifecycle events.
-              if (telemetry?.derived.outcome && accounting.eventType === "call") {
-                accounting.lifecycle = telemetry.derived.outcome.lifecycle;
-                accounting.errorType = telemetry.derived.outcome.errorType;
-                const end = Date.parse(String(event.timestamp)) + (telemetry.derived.durationMs ?? 0);
-                if (Number.isFinite(end)) accounting.lifecycleAt = new Date(end).toISOString();
-              }
-              // The raw envelope is kept for reprocessing with the same privacy
-              // treatment as metadata: only where body capture is allowed, and
-              // through the same credential redaction.
-              const storedTelemetry = telemetry?.stored && allowBody
-                ? JSON.stringify(projectSettings.redaction_enabled !== false
-                  ? redactCapturedContent(telemetry.stored)
-                  : telemetry.stored)
-                : null;
-
-              const inserted = await client.query(
-                `INSERT INTO events (
-                  id, timestamp, project_id, provider, model, url, method, status_code,
-                  input_tokens, output_tokens, total_tokens, reasoning_tokens,
-                  cache_read_tokens, cache_creation_tokens,
-                  cost_usd, duration_ms, streaming,
-                  ttft, tps, stream_duration, chunk_count,
-                  call_site_raw, call_site_frames,
-                  trace_id, trace_name, context, metadata, system_prompt, request_body, response_body, release,
-                  bl_function, bl_file, bl_line, image_output_tokens,
-                  event_type, source, request_model, attempt_id, parent_event_id,
-                  charge_id, component_id, execution_id, group_id, group_name,
-                  group_kind, phase, configuration, dataset_revision, case_id,
-                  lifecycle_state, lifecycle_at, lifecycle_error_type, usage_event,
-                  cost_basis, cost_source, cost_currency, unit_kind, unit_value,
-                  unit, aggregation, revision, entity_type, entity_id, pricing_id, pricing_date, sequence,
-                  content_status, feature_source, feature_mapping_id, feature_mapping_action_id, feature_original,
-                  span_id, sdk_version, native_units, raw_telemetry
-                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,$51,$52,$53,$54,$55,$56,$57,$58,$59,$60,$61,$62,$63,$64,$65,$66,$67,$68,$69,$70,$71,$72,$73,$74,$75,$76)
-                ON CONFLICT (project_id, id) DO NOTHING`,
-                [
-                  event.id, event.timestamp, projectId,
-                  event.provider ?? accounting.provider, event.model ?? accounting.model,
-                  sanitizeEventUrl(event.url) ?? "", event.method ?? "POST", event.statusCode,
-                  event.usage?.inputTokens, event.usage?.outputTokens,
-                  event.usage?.totalTokens, event.usage?.reasoningTokens,
-                  event.usage?.cacheReadTokens, event.usage?.cacheCreationTokens,
-                  costUsd, event.durationMs, event.streaming,
-                  event.streamTiming?.ttft, event.streamTiming?.tps,
-                  event.streamTiming?.streamDuration, event.streamTiming?.chunkCount,
-                  event.callSite?.raw ?? null,
-                  cleanFrames ? JSON.stringify(cleanFrames) : null,
-                  accounting.traceId,
-                  accounting.traceName,
-                  event.context ? JSON.stringify(event.context) : null,
-                  truncateBody(event.metadata ?? extractMetadata(event.requestBody, event.responseBody)),
-                  event.systemPrompt ?? extractSystemPrompt(event.requestBody),
-                  truncateBody(event.requestBody),
-                  truncateBody(event.responseBody),
-                  release,
-                  blFunction, blFile, blLine,
-                  event.usage?.imageOutputTokens ?? null,
-                  accounting.eventType,
-                  accounting.source,
-                  accounting.requestModel,
-                  rawEvent["attemptId"] ?? rawEvent["attempt_id"] ?? null,
-                  rawEvent["parentEventId"] ?? rawEvent["parent_event_id"] ?? null,
-                  accounting.chargeId,
-                  accounting.componentId,
-                  accounting.executionId,
-                  accounting.groupId ?? null,
-                  accounting.groupName,
-                  accounting.groupKind,
-                  accounting.phase,
-                  accounting.configuration ? JSON.stringify(accounting.configuration) : null,
-                  accounting.datasetRevision,
-                  accounting.caseId,
-                  accounting.lifecycle,
-                  accounting.lifecycleAt,
-                  accounting.errorType,
-                  accounting.eventType === "usage" ? JSON.stringify({
-                    usage: accounting.usage,
-                    billingUnits: rawEvent["billingUnits"] ?? rawEvent["billing_units"] ?? undefined,
-                    amount: accounting.amountPresent ? { value: accounting.amount, currency: accounting.currency } : undefined,
-                    pricingId: accounting.pricingId,
-                  }) : null,
-                  cost.basis,
-                  cost.source,
-                  cost.currency,
-                  accounting.unitKind,
-                  accounting.unitValue,
-                  accounting.unit,
-                  accounting.aggregation,
-                  accounting.revision,
-                  accounting.entityType,
-                  accounting.entityId,
-                  accounting.pricingId,
-                  resolved.pricingDate ?? rawEvent["pricingDate"] ?? rawEvent["pricing_date"] ?? null,
-                  accounting.sequence,
-                  contentStatus,
-                  featureSource,
-                  featureMappingId,
-                  featureMappingActionId,
-                  featureOriginal,
-                  accounting.spanId,
-                  sdkVersion,
-                  nativeUnitsJson(event.usage),
-                  storedTelemetry,
-                ],
-              );
-
-              if (inserted.rowCount === 0) return;
-
-              await recordAccountingEvent(client, projectId, rawEvent);
-
-              // Lifecycle and explicit usage envelopes are not provider calls and
-              // must never inflate call-site rollups or call counts.
-              if (accounting.eventType !== "call") return;
-
-              // Upsert call site stats and frame stats — use bl_ values (single source of truth)
-              const callSiteKey = blFunction ? `${blFile ?? "unknown"}:${blFunction}:${blLine ?? 0}` : null;
-
-
-              if (blFunction) {
-                const key = callSiteKey!;
-                const eventModel = event.model ?? "unknown";
-
-                await client.query(
-                  `INSERT INTO call_site_stats (
-                    project_id, call_site_key, file_name, function_name, line_number,
-                    provider, model,
-                    total_calls, total_cost_usd, total_input_tokens, total_output_tokens,
-                    avg_duration_ms, avg_ttft, avg_tps, first_seen, last_seen,
-                    priced_calls, unpriced_calls
-                  ) VALUES ($1,$2,$3,$4,$5,$6,$7,1,$8,$9,$10,$11,$12,$13,$14,$14,$15,$16)
-                  ON CONFLICT (project_id, call_site_key, model) DO UPDATE SET
-                    total_calls = call_site_stats.total_calls + 1,
-                    total_cost_usd = call_site_stats.total_cost_usd + EXCLUDED.total_cost_usd,
-                    priced_calls = call_site_stats.priced_calls + EXCLUDED.priced_calls,
-                    unpriced_calls = call_site_stats.unpriced_calls + EXCLUDED.unpriced_calls,
-                    total_input_tokens = call_site_stats.total_input_tokens + EXCLUDED.total_input_tokens,
-                    total_output_tokens = call_site_stats.total_output_tokens + EXCLUDED.total_output_tokens,
-                    avg_duration_ms = (call_site_stats.avg_duration_ms * call_site_stats.total_calls + EXCLUDED.avg_duration_ms) / (call_site_stats.total_calls + 1),
-                    avg_ttft = CASE WHEN EXCLUDED.avg_ttft IS NOT NULL
-                      THEN COALESCE((call_site_stats.avg_ttft * call_site_stats.total_calls + EXCLUDED.avg_ttft) / (call_site_stats.total_calls + 1), EXCLUDED.avg_ttft)
-                      ELSE call_site_stats.avg_ttft END,
-                    avg_tps = CASE WHEN EXCLUDED.avg_tps IS NOT NULL
-                      THEN COALESCE((call_site_stats.avg_tps * call_site_stats.total_calls + EXCLUDED.avg_tps) / (call_site_stats.total_calls + 1), EXCLUDED.avg_tps)
-                      ELSE call_site_stats.avg_tps END,
-                    last_seen = EXCLUDED.last_seen`,
-                  [
-                    projectId, key, blFile, blFunction, blLine,
-                    event.provider, eventModel,
-                    costUsd ?? 0,
-                    event.usage?.inputTokens ?? 0, event.usage?.outputTokens ?? 0,
-                    event.durationMs,
-                    event.streamTiming?.ttft ?? null,
-                    event.streamTiming?.tps ?? null,
-                    event.timestamp,
-                    costUsd == null ? 0 : 1,
-                    costUsd == null ? 1 : 0,
-                  ],
-                );
-              }
-
-              if (cleanFrames && cleanFrames.length > 0 && callSiteKey) {
-                frameStatsBatch.push({ frames: cleanFrames, callSiteKey });
-              }
-          };
-          // One savepoint per event: a bad or conflicting event is rejected on
-          // its own instead of discarding the rest of the batch.
-          await client.query("SAVEPOINT costkey_event");
-          try {
-            await handleEvent();
-            await client.query("RELEASE SAVEPOINT costkey_event");
-            acceptedCount += 1;
-          } catch (err) {
-            await client.query("ROLLBACK TO SAVEPOINT costkey_event");
-            const known = err instanceof InvalidAccountingEventError || err instanceof AccountingConflictError;
-            if (!known) console.error("[costkey] Ingest event error:", err);
-            rejected.push({
-              index,
-              id: typeof (event as { id?: unknown }).id === "string" ? (event as { id: string }).id : null,
-              code: known ? (err as InvalidAccountingEventError | AccountingConflictError).code : "ingest_error",
-              error: known ? (err as Error).message : "This event could not be stored.",
-            });
-          }
-        }
-
-        // Batch insert all frame stats in 2 queries (instead of 2 per event)
-        if (frameStatsBatch.length > 0) {
-          await updateFrameStatsBatch(client, projectId, frameStatsBatch);
-        }
-
-        await client.query("COMMIT");
-        // Invalidate implicit graph cache after new data
-        invalidateImplicitGraph(projectId);
-        // Findings are generated after durable accounting commit, coalesced so
-        // a burst of events cannot trigger one full scan per request.
-        scheduleFindingsRefreshAfterIngest(pool, projectId);
-      } catch (err) {
-        await client.query("ROLLBACK");
-        throw err;
-      } finally {
-        client.release();
+      if (options.queue) {
+        // Store the batch and answer; the ingest worker does the accounting.
+        await enqueueIngestBatch(pool, projectId, payload);
+        res.status(202).json({ accepted: payload.events.length, queued: true });
+        return;
       }
 
+      const { accepted: acceptedCount, rejected } = await ingestBatch(pool, projectId, payload);
       if (acceptedCount === 0 && rejected.length > 0) {
         // Nothing was stored: keep the single-event error contract older SDKs expect.
         const first = rejected[0];

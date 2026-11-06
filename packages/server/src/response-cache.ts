@@ -106,12 +106,17 @@ export function invalidateSummaries(projectId?: string): void {
  * and MCP calls change nothing cached (new calls refresh on their own).
  */
 export function invalidateOnChange() {
-  return (req: Request, _res: Response, next: NextFunction): void => {
+  return (req: Request, res: Response, next: NextFunction): void => {
     if (req.method !== "GET" && req.method !== "HEAD" && req.method !== "OPTIONS") {
       const path = new URL(req.originalUrl, "http://local").pathname;
       const project = /\/api\/v1\/projects\/([^/]+)\//.exec(path);
-      if (project) invalidateSummaries(decodeURIComponent(project[1]!));
-      else if (/\/api\/v1\/(pricing|workspace|settings|org)\b/.test(path)) invalidateSummaries();
+      const drop = () => {
+        if (project) invalidateSummaries(decodeURIComponent(project[1]!));
+        else if (/\/api\/v1\/(pricing|workspace|settings|org)\b/.test(path)) invalidateSummaries();
+      };
+      drop();
+      // Again once the change is saved: anything computed while it was being made is out of date too.
+      res.once("finish", drop);
     }
     next();
   };

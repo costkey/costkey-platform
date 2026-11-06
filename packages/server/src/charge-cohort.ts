@@ -109,6 +109,17 @@ export interface DailyAggregateRow {
   untraced_usage_cost_usd: number | null;
 }
 
+/** The earliest call of a usage row `u` matching `match`, one index lookup. Lower ranks win. */
+const ANCHOR_CANDIDATE = (rank: number, match: string) => `(
+            SELECT ${rank} AS anchor_rank, e.id, e.timestamp, e.trace_name, e.context, e.release, e.feature_source, e.feature_mapping_id,
+                   e.feature_mapping_action_id, e.feature_original, e.execution_id, e.group_id,
+                   e.group_name, e.group_kind, e.case_id, e.bl_file, e.bl_function, e.bl_line
+            FROM events e
+            WHERE e.project_id = u.project_id AND COALESCE(e.event_type, 'call') = 'call' AND ${match}
+            ORDER BY e.timestamp ASC, e.id ASC
+            LIMIT 1
+          )`;
+
 /**
  * One reconciled relation for automatic calls and explicit usage components.
  * Explicit components linked to an automatic charge are excluded. Delta
@@ -210,21 +221,24 @@ export function chargesCte(scoped?: unknown[] | ChargeBounds, options: { marginD
              FALSE AS no_charge
       FROM usage_components u
       LEFT JOIN LATERAL (
-        SELECT e.trace_name, e.context, e.release AS release, e.feature_source, e.feature_mapping_id,
-               e.feature_mapping_action_id, e.feature_original,
-               e.execution_id, e.group_id,
-               e.group_name, e.group_kind, e.case_id,
-               e.bl_file, e.bl_function, e.bl_line
-        FROM events e
-        WHERE e.project_id = u.project_id
-          AND COALESCE(e.event_type, 'call') = 'call'
-          AND (
-            (u.charge_id IS NOT NULL AND COALESCE(e.charge_id, e.id) = u.charge_id)
-            OR (u.trace_id IS NOT NULL AND e.trace_id = u.trace_id)
-            OR (u.execution_id IS NOT NULL AND e.execution_id = u.execution_id)
-          )
-        ORDER BY CASE WHEN u.charge_id IS NOT NULL AND COALESCE(e.charge_id, e.id) = u.charge_id THEN 0 ELSE 1 END,
-                 e.timestamp ASC, e.id ASC
+        -- The call this usage belongs to: the one it names, else the earliest of its
+        -- trace or execution. An index lookup each, since matching them together
+        -- read every call of the project for every usage row.
+        SELECT m.trace_name, m.context, m.release, m.feature_source, m.feature_mapping_id,
+               m.feature_mapping_action_id, m.feature_original,
+               m.execution_id, m.group_id,
+               m.group_name, m.group_kind, m.case_id,
+               m.bl_file, m.bl_function, m.bl_line
+        FROM (
+          ${ANCHOR_CANDIDATE(0, "e.charge_id = u.charge_id")}
+          UNION ALL
+          ${ANCHOR_CANDIDATE(0, "e.charge_id IS NULL AND e.id = u.charge_id")}
+          UNION ALL
+          ${ANCHOR_CANDIDATE(1, "e.trace_id = u.trace_id")}
+          UNION ALL
+          ${ANCHOR_CANDIDATE(1, "e.execution_id = u.execution_id")}
+        ) m
+        ORDER BY m.anchor_rank, m.timestamp ASC, m.id ASC
         LIMIT 1
       ) anchor ON TRUE
       LEFT JOIN auto_charges a

@@ -32,7 +32,7 @@ export function escapeHtml(value: unknown): string {
     .replace(/'/g, "&#39;");
 }
 
-export function createApiRouter(pool: pg.Pool): Router {
+export function createApiRouter(pool: pg.Pool, options: { boardSnapshots?: boolean } = {}): Router {
   const router = createRouter();
 
   // Apply org-scoping to ALL /api/v1/projects/:projectId/* routes
@@ -43,7 +43,7 @@ export function createApiRouter(pool: pg.Pool): Router {
   // grouped receipts) are authoritative while old response aliases remain.
   router.use(createAccountingRouter(pool));
   router.use(createPricingRouter(pool));
-  router.use(createInsightsRouter(pool));
+  router.use(createInsightsRouter(pool, { boardSnapshots: options.boardSnapshots }));
   router.use(createModelDetailRouter(pool));
   router.use(createUsersRouter(pool));
   router.use(createQualityRouter(pool));

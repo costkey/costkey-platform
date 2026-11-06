@@ -2,7 +2,8 @@ import { Router, type Request, type Response } from "express";
 import type pg from "pg";
 import { requireAuth } from "./auth.js";
 import { orgScope } from "./middleware.js";
-import { cachedSummaries } from "./response-cache.js";
+import { cachedSummaries, onInvalidateSummaries } from "./response-cache.js";
+import { markBoardsStale, standardBoard, standardBoardWindow, type BoardSource } from "./board-snapshots.js";
 import { workspaceTimezone } from "./quality-api.js";
 import { chargesCte, scopeClauses } from "./charge-cohort.js";
 import {
@@ -236,17 +237,22 @@ const WORKFLOW_NAME = "COALESCE(CASE WHEN root_kind = 'workflow' THEN root_name 
 
 /**
  * Scores on runs in the window. A score sent with only a span id takes that
- * span's trace. `checks.unit_scale` marks checks scored on 0..1, the only ones
- * that go into the overall average. Follows RUNS_CTE.
+ * span's trace. Read through the runs, not every score of the project. Follows
+ * RUNS_CTE; a board builds it once (withRuns).
  */
-const SCORED_CTE = `
-  scored AS (
+const SCORED_ROWS = `
+    SELECT sc.name, sc.value, r.trace_id, r.started_at
+    FROM run_rows r
+    JOIN scores sc ON sc.project_id = $1 AND sc.trace_id = r.trace_id
+    UNION ALL
     SELECT sc.name, sc.value, r.trace_id, r.started_at
     FROM scores sc
-    LEFT JOIN spans owner ON sc.trace_id IS NULL AND owner.project_id = sc.project_id AND owner.id = sc.span_id
-    JOIN run_rows r ON r.trace_id = COALESCE(sc.trace_id, owner.trace_id)
-    WHERE sc.project_id = $1
-  ),
+    JOIN spans owner ON owner.project_id = sc.project_id AND owner.id = sc.span_id
+    JOIN run_rows r ON r.trace_id = owner.trace_id
+    WHERE sc.project_id = $1 AND sc.trace_id IS NULL`;
+
+/** `checks.unit_scale` marks checks scored on 0..1, the only ones that go into the overall average. */
+const CHECKS_CTE = `
   checks AS (
     SELECT name, AVG(value) AS avg, COUNT(*)::int AS count, COUNT(DISTINCT trace_id)::int AS runs,
            (MIN(value) >= 0 AND MAX(value) <= 1) AS unit_scale
@@ -279,6 +285,8 @@ const BUCKET = (column: string) => `to_char(date_trunc($5::text, ${column} AT TI
 
 /** RUNS_CTE after its `calls`: the steps that read `calls`, ending in `run_rows`. */
 const RUNS_AFTER_CALLS = RUNS_CTE.slice(RUNS_CTE.indexOf("runs AS ("));
+/** RUNS_CTE after its `runs`: the steps that read `calls` and `runs`, ending in `run_rows`. */
+const RUNS_AFTER_RUNS = RUNS_CTE.slice(RUNS_CTE.indexOf("roots AS ("));
 
 /** `sql` with only the parameters it references, renumbered from $1, and their values. */
 export function onlyUsedParams(sql: string, values: readonly unknown[]): [string, unknown[]] {
@@ -290,8 +298,8 @@ export function onlyUsedParams(sql: string, values: readonly unknown[]): [string
 type RunsQuery = (sql: string, values?: readonly unknown[]) => Promise<pg.QueryResult>;
 
 /**
- * Runs `work` on one connection where the window's `calls`, `runs` and
- * `run_rows` are temporary tables, built once. Queries written as
+ * Runs `work` on one connection where the window's `calls`, `runs`, `run_rows`
+ * and `scored` are temporary tables, built once. Queries written as
  * `WITH ${RUNS_CTE} ...` read those instead of rebuilding every run per
  * query; one client runs them one at a time. Params: $1 project, $2 from,
  * $3 to, $4 scope (scopeParam).
@@ -302,7 +310,11 @@ async function withRuns<T>(pool: pg.Pool, params: readonly unknown[], work: (que
     await client.query("BEGIN");
     await client.query(`CREATE TEMP TABLE calls ON COMMIT DROP AS WITH ${RUNS_CTE} SELECT * FROM calls`, params.slice(0, 4));
     await client.query(...onlyUsedParams(`CREATE TEMP TABLE runs ON COMMIT DROP AS WITH ${RUNS_AFTER_CALLS} SELECT * FROM runs`, params));
-    await client.query(...onlyUsedParams(`CREATE TEMP TABLE run_rows ON COMMIT DROP AS WITH ${RUNS_AFTER_CALLS} SELECT * FROM run_rows`, params));
+    // Temporary tables have no statistics until asked: without them, joins plan for a few rows.
+    await client.query("ANALYZE calls; ANALYZE runs");
+    await client.query(...onlyUsedParams(`CREATE TEMP TABLE run_rows ON COMMIT DROP AS WITH ${RUNS_AFTER_RUNS} SELECT * FROM run_rows`, params));
+    await client.query("ANALYZE run_rows");
+    await client.query(...onlyUsedParams(`CREATE TEMP TABLE scored ON COMMIT DROP AS ${SCORED_ROWS}`, params));
     const query: RunsQuery = (sql, values = []) => {
       const shared = sql.replace(`WITH ${RUNS_CTE},`, "WITH").replace(`WITH ${RUNS_CTE}`, "");
       return client.query(...onlyUsedParams(shared, values));
@@ -329,7 +341,7 @@ export async function loadOverviewBoard(pool: pg.Pool, projectId: string, window
   const bucketParams = [...params, bucket, timezone];
   const runCounts = `WITH ${RUNS_CTE}
     SELECT COUNT(*)::int AS runs, COUNT(*) FILTER (WHERE root_kind = 'agent')::int AS agent_runs FROM run_rows`;
-  const scoreTotals = `WITH ${RUNS_CTE}, ${SCORED_CTE}
+  const scoreTotals = `WITH ${CHECKS_CTE}
     SELECT AVG(s.value) FILTER (WHERE c.unit_scale) AS avg,
            COUNT(*) FILTER (WHERE c.unit_scale)::int AS count,
            COUNT(*)::int AS all_count
@@ -377,10 +389,9 @@ export async function loadOverviewBoard(pool: pg.Pool, projectId: string, window
   Promise.all([
     q(runCounts, params),
     q(scoreTotals, params),
-    q(`WITH ${RUNS_CTE}, ${SCORED_CTE} SELECT * FROM checks ORDER BY count DESC, name LIMIT 20`, params),
+    q(`WITH ${CHECKS_CTE} SELECT * FROM checks ORDER BY count DESC, name LIMIT 20`, params),
     q(
-      `WITH ${RUNS_CTE}, ${SCORED_CTE}
-       SELECT name, ${BUCKET("started_at")} AS bucket, AVG(value) AS avg, COUNT(*)::int AS count
+      `SELECT name, ${BUCKET("started_at")} AS bucket, AVG(value) AS avg, COUNT(*)::int AS count
        FROM scored GROUP BY 1, 2 ORDER BY 1, 2`,
       bucketParams,
     ),
@@ -413,7 +424,7 @@ export async function loadOverviewBoard(pool: pg.Pool, projectId: string, window
        FROM run_rows r JOIN calls c ON c.trace_id = r.trace_id
        WHERE r.root_kind = 'agent'
        GROUP BY r.root_name
-       ORDER BY SUM(c.cost_usd) DESC NULLS LAST, COUNT(*) DESC
+       ORDER BY SUM(c.cost_usd) DESC NULLS LAST, COUNT(*) DESC, r.root_name
        LIMIT 20`,
       params,
     ),
@@ -469,7 +480,7 @@ export async function loadOverviewBoard(pool: pg.Pool, projectId: string, window
      FROM run_rows r JOIN calls c ON c.trace_id = r.trace_id
      WHERE r.root_kind IS DISTINCT FROM 'agent'
      GROUP BY 1
-     ORDER BY SUM(c.cost_usd) DESC NULLS LAST, COUNT(*) DESC
+     ORDER BY SUM(c.cost_usd) DESC NULLS LAST, COUNT(*) DESC, 1
      LIMIT 20`,
     params,
   ),
@@ -532,6 +543,9 @@ export async function loadOverviewBoard(pool: pg.Pool, projectId: string, window
     latency: { agents: latencyKind("agents"), workflows: latencyKind("workflows"), tools: latencyKind("tools") },
   };
 }
+
+/** What the board snapshot job computes: the same answer the endpoint gives. */
+export const boardSource: BoardSource = { load: loadOverviewBoard, timezoneOf: workspaceTimezone };
 
 /** How long after a retryable failure a retry is still expected. Queues retry within
  * minutes; past this, a run with no later attempt simply failed. */
@@ -596,7 +610,7 @@ function boardModels(tokenRows: Array<Record<string, unknown>>, costRows: Array<
     target.unpriced = number(source.unpriced) ?? 0;
     if (target.calls === 0) target.calls = number(source.charges) ?? 0;
   }
-  return [...rows.values()].sort((a, b) => (b.cost ?? -1) - (a.cost ?? -1) || b.calls - a.calls || a.model.localeCompare(b.model));
+  return [...rows.values()].sort((a, b) => (b.cost ?? -1) - (a.cost ?? -1) || b.calls - a.calls || a.model.localeCompare(b.model) || (a.provider ?? "").localeCompare(b.provider ?? ""));
 }
 
 function fail(res: Response, label: string, error: unknown): void {
@@ -700,9 +714,13 @@ async function loadGroupDetail(pool: pg.Pool, req: Request, kind: "agent" | "wor
   };
 }
 
-export function createInsightsRouter(pool: pg.Pool): Router {
+export function createInsightsRouter(pool: pg.Pool, options: { boardSnapshots?: boolean } = {}): Router {
   const router = Router();
   router.use("/api/v1/projects/:projectId", requireAuth, orgScope(pool));
+  // A price or mapping change drops stored boards as it drops the in-memory summaries.
+  if (options.boardSnapshots) onInvalidateSummaries((projectId) => {
+    void markBoardsStale(pool, projectId).catch((error) => console.error("[costkey] Board snapshot invalidation error:", error));
+  });
   // Heavy summaries the Overview asks for at once: served from a short-lived cache (response-cache.ts).
   router.get("/api/v1/projects/:projectId/insights/board", cachedSummaries());
   router.get("/api/v1/projects/:projectId/agents", cachedSummaries());
@@ -1006,7 +1024,16 @@ export function createInsightsRouter(pool: pg.Pool): Router {
     }
     try {
       const projectId = req.params["projectId"] as string;
-      res.json(await loadOverviewBoard(pool, projectId, window, await workspaceTimezone(pool, projectId)));
+      const timezone = await workspaceTimezone(pool, projectId);
+      // The console's long presets read a stored answer, where the job keeps one (board-snapshots.ts).
+      const key = options.boardSnapshots ? standardBoardWindow(window, timezone) : null;
+      if (!key) {
+        res.json(await loadOverviewBoard(pool, projectId, window, timezone));
+        return;
+      }
+      const answer = await standardBoard(pool, boardSource, projectId, key, window, timezone);
+      res.setHeader("X-CostKey-Board", answer.source);
+      res.json(answer.board);
     } catch (error) { fail(res, "Overview board", error); }
   });
 

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type pg from "pg";
-import { chargesCte } from "./charge-cohort.js";
+import { chargesCte, DAILY_ROLLUP_VERSION, SAFE_CONTEXT_KEYS } from "./charge-cohort.js";
 import { classifyError } from "./telemetry/errors.js";
 import { mapOtelSpan, otelSpanAttributes, otelSpanInput } from "./telemetry/otel.js";
 
@@ -1012,7 +1012,7 @@ export async function reconcileDailyCostAggregates(
   pool: pg.Pool,
   projectId: string,
   day: string,
-  options: { advanceCheckpoint?: boolean } = {},
+  options: { advanceCheckpoint?: boolean; skipIfCurrent?: boolean } = {},
 ): Promise<number> {
   const start = new Date(`${day}T00:00:00.000Z`);
   if (Number.isNaN(start.getTime())) throw new InvalidAccountingEventError("day must be an ISO date");
@@ -1034,17 +1034,29 @@ export async function reconcileDailyCostAggregates(
     timezone = String(timezoneResult.rows[0]?.timezone ?? "UTC");
     try { new Intl.DateTimeFormat("en-US", { timeZone: timezone }).format(); }
     catch { timezone = "UTC"; }
+    // Every instance runs the scheduler: the first to reach a day rebuilds it.
+    if (options.skipIfCurrent) {
+      const current = await client.query(
+        "SELECT 1 FROM daily_rollup_days WHERE project_id = $1 AND day = $2 AND timezone = $3 AND version = $4",
+        [projectId, day, timezone, DAILY_ROLLUP_VERSION],
+      );
+      if (current.rows.length > 0) {
+        await client.query("COMMIT");
+        return 0;
+      }
+    }
     await client.query("DELETE FROM daily_cost_aggregates WHERE project_id = $1 AND day = $2", [projectId, day]);
+    await client.query("DELETE FROM daily_lens_aggregates WHERE project_id = $1 AND day = $2", [projectId, day]);
     const rollup = await client.query(
       `${chargesCte({ project: "$1", from: "(($2::date - INTERVAL '1 day')::timestamp AT TIME ZONE $3::text)", to: "(($2::date + INTERVAL '2 days')::timestamp AT TIME ZONE $3::text)" })},
        scoped AS (
          SELECT c.*,
-                COALESCE(c.context->>'environment', '(unassigned)') AS environment,
-                COALESCE(c.context->>'feature', '(unassigned)') AS feature,
+                COALESCE(NULLIF(c.context->>'environment', ''), '(unassigned)') AS environment,
+                COALESCE(NULLIF(c.context->>'feature', ''), '(unassigned)') AS feature,
                 CASE WHEN c.bl_file IS NULL AND c.bl_function IS NULL THEN '(unassigned)'
                      WHEN NULLIF(c.context->>'service', '') IS NULL THEN COALESCE(NULLIF(c.bl_file || ':' || c.bl_function, ':'), '(unassigned)')
                      ELSE (c.context->>'service') || ':' || COALESCE(NULLIF(c.bl_file || ':' || c.bl_function, ':'), '(unassigned)') END AS function_key,
-                COALESCE(c.context->>'customer', '(unassigned)') AS customer,
+                COALESCE(NULLIF(c.context->>'customer', ''), '(unassigned)') AS customer,
                 COALESCE(NULLIF(c.service, ''), NULLIF(c.context->>'service', ''), '(unassigned)') AS service_key,
                 COALESCE(NULLIF(c.release, ''), NULLIF(c.context->>'release', ''), '(unassigned)') AS release_key,
                 COALESCE(NULLIF(c.provider, ''), '(unknown)') AS provider_key,
@@ -1073,7 +1085,13 @@ export async function reconcileDailyCostAggregates(
                 COUNT(*)::int AS observations,
                 COUNT(*) FILTER (WHERE record_type = 'call')::int AS call_count,
                 COUNT(*) FILTER (WHERE cost_usd IS NOT NULL)::int AS priced_observations,
-                COUNT(*) FILTER (WHERE cost_usd IS NULL)::int AS unpriced_observations,
+                -- A failed call without a price cost nothing: it is settled, not unpriced.
+                COUNT(*) FILTER (WHERE cost_usd IS NULL AND NOT no_charge)::int AS unpriced_observations,
+                COUNT(*) FILTER (WHERE cost_usd IS NULL AND no_charge)::int AS no_charge_observations,
+                COALESCE(SUM(duration_ms) FILTER (WHERE record_type = 'call' AND duration_ms IS NOT NULL), 0)::double precision AS duration_sum_ms,
+                COUNT(*) FILTER (WHERE record_type = 'call' AND duration_ms IS NOT NULL)::int AS duration_count,
+                COUNT(*) FILTER (WHERE trace_id IS NULL AND record_type = 'usage')::int AS untraced_usage_count,
+                SUM(cost_usd) FILTER (WHERE trace_id IS NULL AND record_type = 'usage' AND cost_usd IS NOT NULL) AS untraced_usage_cost_usd,
                 COUNT(*) FILTER (WHERE cost_usd IS NOT NULL AND cost_basis = 'reported')::int AS reported_observations,
                 COUNT(*) FILTER (WHERE cost_usd IS NOT NULL AND cost_basis = 'estimated')::int AS estimated_observations,
                 COUNT(*) FILTER (WHERE cost_usd IS NULL OR cost_basis NOT IN ('reported','estimated'))::int AS unknown_observations,
@@ -1082,6 +1100,51 @@ export async function reconcileDailyCostAggregates(
                 COALESCE(SUM(completion_tokens), 0)::bigint AS output_tokens
          FROM scoped
          GROUP BY environment, feature, function_key, customer, service_key, release_key, provider_key, model_key
+       ), lens_source AS (
+         SELECT 'window'::text AS lens, ''::text AS group_key, trace_id, cost_usd FROM scoped
+         UNION ALL SELECT 'feature', feature, trace_id, cost_usd FROM scoped
+         UNION ALL SELECT 'function', function_key, trace_id, cost_usd FROM scoped
+         UNION ALL SELECT 'customer', customer, trace_id, cost_usd FROM scoped
+         UNION ALL SELECT 'model', model_key, trace_id, cost_usd FROM scoped
+         UNION ALL SELECT 'provider', provider_key, trace_id, cost_usd FROM scoped
+         UNION ALL SELECT 'environment', environment, trace_id, cost_usd FROM scoped
+       ), lens_traces AS (
+         SELECT lens, group_key, trace_id,
+                BOOL_AND(cost_usd IS NOT NULL) AS fully_priced,
+                SUM(cost_usd) FILTER (WHERE cost_usd IS NOT NULL) AS trace_cost
+         FROM lens_source
+         WHERE trace_id IS NOT NULL
+         GROUP BY lens, group_key, trace_id
+       ), lens_trace_totals AS (
+         SELECT lens, group_key,
+                COUNT(*)::int AS trace_count,
+                COUNT(*) FILTER (WHERE fully_priced)::int AS fully_priced_trace_count,
+                SUM(trace_cost) FILTER (WHERE fully_priced) AS fully_priced_trace_cost_usd
+         FROM lens_traces
+         GROUP BY lens, group_key
+       ), lens_totals AS (
+         SELECT lens, group_key, COUNT(*)::int AS observations FROM lens_source GROUP BY lens, group_key
+       ), context_key_totals AS (
+         SELECT kv.key AS group_key, COUNT(*)::int AS observations
+         FROM scoped c
+         CROSS JOIN LATERAL jsonb_each_text(
+           CASE WHEN jsonb_typeof(COALESCE(c.context, '{}'::jsonb)) = 'object'
+                THEN COALESCE(c.context, '{}'::jsonb) ELSE '{}'::jsonb END
+         ) AS kv(key, value)
+         WHERE kv.key = ANY($4::text[])
+         GROUP BY kv.key
+       ), lens_written AS (
+         INSERT INTO daily_lens_aggregates (
+           project_id, day, lens, group_key, observations,
+           trace_count, fully_priced_trace_count, fully_priced_trace_cost_usd
+         )
+         SELECT $1, $2::date, l.lens, l.group_key, l.observations,
+                COALESCE(t.trace_count, 0), COALESCE(t.fully_priced_trace_count, 0), t.fully_priced_trace_cost_usd
+         FROM lens_totals l
+         LEFT JOIN lens_trace_totals t USING (lens, group_key)
+         UNION ALL
+         SELECT $1, $2::date, 'context_key', k.group_key, k.observations, 0, 0, NULL
+         FROM context_key_totals k
        )
        INSERT INTO daily_cost_aggregates (
          project_id, day, timezone, environment, feature, function_key, customer, service, release,
@@ -1089,7 +1152,8 @@ export async function reconcileDailyCostAggregates(
          unpriced_observations, trace_count, fully_priced_trace_count,
          fully_priced_trace_cost_usd,
          reported_observations, estimated_observations, unknown_observations,
-         input_tokens, output_tokens, reconciled_at, updated_at
+         input_tokens, output_tokens, no_charge_observations, duration_sum_ms, duration_count,
+         untraced_usage_count, untraced_usage_cost_usd, reconciled_at, updated_at
        )
        SELECT $1, $2::date, $3::text, g.environment, g.feature, g.function_key, g.customer,
               g.service_key, g.release_key, g.provider_key, g.model_key, g.known_cost_usd, g.observations, g.call_count,
@@ -1097,13 +1161,24 @@ export async function reconcileDailyCostAggregates(
               COALESCE(ts.trace_count, 0), COALESCE(ts.fully_priced_trace_count, 0),
               ts.fully_priced_trace_cost_usd,
               g.reported_observations, g.estimated_observations, g.unknown_observations,
-              g.input_tokens, g.output_tokens, NOW(), NOW()
+              g.input_tokens, g.output_tokens, g.no_charge_observations, g.duration_sum_ms, g.duration_count,
+              g.untraced_usage_count, g.untraced_usage_cost_usd, NOW(), NOW()
        FROM grouped g
        LEFT JOIN trace_summary ts USING (environment, feature, function_key, customer, service_key, release_key, provider_key, model_key)
        RETURNING environment, feature, function_key, customer, provider, model`,
-      [projectId, day, timezone],
+      [projectId, day, timezone, [...SAFE_CONTEXT_KEYS]],
     );
     aggregateRows = rollup.rowCount ?? 0;
+    // Only a rebuild after the day ended can answer for the whole day. Repricing
+    // refreshes today too, and that must not make summaries read it from here.
+    await client.query(
+      `INSERT INTO daily_rollup_days (project_id, day, timezone, version, reconciled_at)
+       SELECT $1, $2::date, $3::text, $4::int, NOW()
+       WHERE (($2::date + 1)::timestamp AT TIME ZONE $3::text) <= NOW()
+       ON CONFLICT (project_id, day) DO UPDATE SET
+         timezone = EXCLUDED.timezone, version = EXCLUDED.version, reconciled_at = EXCLUDED.reconciled_at`,
+      [projectId, day, timezone, DAILY_ROLLUP_VERSION],
+    );
     // Refreshing a day (a repricing, the scheduler's own runs) leaves the
     // checkpoint alone: only a caller publishing a completed day moves it.
     if (options.advanceCheckpoint !== false) await client.query(
@@ -1153,7 +1228,8 @@ function addDays(day: string, count: number): string {
  *  - completed days the checkpoint has not reached yet;
  *  - days whose calls or usage changed since they were reconciled
  *    (accounting_changed_periods, kept by triggers on every writer);
- *  - days whose rollup was taken before the day had ended.
+ *  - days whose rollup was taken before the day had ended;
+ *  - stored days not yet rebuilt in this rollup version and time zone.
  * Days retention may have started purging are never rebuilt: their rollup is
  * all that is left of them. The checkpoint's fence is the time this run
  * started, so a call that arrives mid-run is never counted as covered.
@@ -1206,11 +1282,26 @@ export async function reconcileDailyAccounting(pool: pg.Pool): Promise<void> {
     );
     const seenPeriods: string[] = [];
     const seenChangedAt: string[] = [];
+    const changedDays = new Set<string>();
     for (const period of changed.rows) {
       seenPeriods.push(String(period.period_start));
       seenChangedAt.push(String(period.changed_at));
       const day = String(period.day);
-      if (day >= firstDay && day <= yesterday) days.add(day);
+      if (day >= firstDay && day <= yesterday) {
+        days.add(day);
+        changedDays.add(day);
+      }
+    }
+    // A charge can have records either side of a midnight, and the record that
+    // wins decides its day: a change to one day can move a charge off the next.
+    const newlyCompleted = [...days].filter((day) => !changedDays.has(day));
+    for (const day of [...changedDays, ...newlyCompleted]) {
+      for (const neighbour of [addDays(day, -1), addDays(day, 1)]) {
+        if (neighbour >= firstDay && neighbour <= yesterday) {
+          days.add(neighbour);
+          changedDays.add(neighbour);
+        }
+      }
     }
 
     const early = await pool.query(
@@ -1222,8 +1313,34 @@ export async function reconcileDailyAccounting(pool: pg.Pool): Promise<void> {
     );
     for (const day of early.rows) days.add(String(day.day));
 
-    for (const day of [...days].sort()) {
-      await reconcileDailyCostAggregates(pool, projectId, day, { advanceCheckpoint: false });
+    // Stored days summaries can't read from the rollup yet: a new version of
+    // it, a changed time zone. From the project's first record, not its whole
+    // retention: earlier days have nothing to rebuild.
+    const firstSeen = (await pool.query(
+      `SELECT LEAST(
+         (SELECT MIN(timestamp) FROM events WHERE project_id = $1),
+         (SELECT MIN(COALESCE(accounting_at, observed_at)) FROM usage_components WHERE project_id = $1)
+       ) AS at`,
+      [projectId],
+    )).rows[0]?.at as Date | null | undefined;
+    if (firstSeen) {
+      const parts = localDateParts(new Date(firstSeen), timezone);
+      const firstSeenDay = dateKey(parts.year, parts.month, parts.day);
+      const outdated = await pool.query(
+        `SELECT gs.day::date::text AS day
+         FROM generate_series($2::date, $3::date, INTERVAL '1 day') AS gs(day)
+         WHERE NOT EXISTS (
+           SELECT 1 FROM daily_rollup_days d
+           WHERE d.project_id = $1 AND d.day = gs.day::date AND d.timezone = $4 AND d.version = $5
+         )`,
+        [projectId, firstSeenDay > firstDay ? firstSeenDay : firstDay, yesterday, timezone, DAILY_ROLLUP_VERSION],
+      );
+      for (const day of outdated.rows) days.add(String(day.day));
+    }
+
+    // Newest first: the days people look at most become fast soonest.
+    for (const day of [...days].sort().reverse()) {
+      await reconcileDailyCostAggregates(pool, projectId, day, { advanceCheckpoint: false, skipIfCurrent: !changedDays.has(day) });
     }
 
     // The changes this run has reconciled, or that fell in days already purged.

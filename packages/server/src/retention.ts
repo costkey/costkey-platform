@@ -104,6 +104,7 @@ export async function runRetention(pool: pg.Pool, now = new Date(), orgId?: stri
     const aggregateTable = await client.query("SELECT to_regclass('daily_cost_aggregates') AS table_name");
     const checkpointTable = await client.query("SELECT to_regclass('daily_cost_aggregate_checkpoints') AS table_name");
     const changeTable = await client.query("SELECT to_regclass('accounting_changed_periods') AS table_name");
+    const rollupReadable = Boolean((await client.query("SELECT to_regclass('daily_lens_aggregates') AS table_name")).rows[0]?.table_name);
     const contentStatusColumn = await client.query(
       `SELECT EXISTS (
          SELECT 1 FROM information_schema.columns
@@ -292,6 +293,15 @@ export async function runRetention(pool: pg.Pool, now = new Date(), orgId?: stri
         [project.id, now, Number(project.aggregate_retention_days)],
       ) : { rowCount: 0 };
       deletedAggregates += aggregateResult.rowCount ?? 0;
+      if (canPurgeDetail && aggregateOld && rollupReadable) {
+        // A day past its aggregate retention is no longer answered by the rollup.
+        for (const table of ["daily_lens_aggregates", "daily_rollup_days"]) {
+          await client.query(
+            `DELETE FROM ${table} WHERE project_id = $1 AND day < $2::date - $3::integer`,
+            [project.id, now, Number(project.aggregate_retention_days)],
+          );
+        }
+      }
     }
 
     const completedAt = new Date().toISOString();

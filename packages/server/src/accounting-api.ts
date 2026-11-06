@@ -44,11 +44,18 @@ import {
 import { invalidateProjectPrices } from "./billing.js";
 import {
   chargesCte,
+  detailOfPlan,
   dimensionExpression,
   financialFields,
   loadDailyAggregates,
   loadCanonicalCharges,
+  loadLensTotals,
+  loadRollupFilterValues,
+  rollupPlan,
+  SAFE_CONTEXT_KEYS,
   type ChargeBounds,
+  type LensTotalRow,
+  type RollupPlan,
   numeric,
   scopeClauses,
   type ChargeScope,
@@ -59,14 +66,6 @@ import { loadRetries } from "./retries.js";
 
 type ScopeDimension = "feature" | "function" | "customer" | "model" | "provider" | "context";
 type ExplorerSort = "newest" | "cost_desc" | "duration_desc" | "calls_desc";
-
-const SAFE_CONTEXT_KEYS = new Set([
-  "environment", "service", "release", "operation", "feature", "function", "functionName",
-  "group", "groupName", "groupType", "executionId", "execution_id", "phase", "caseId", "case_id",
-  "datasetRevision", "dataset_revision", "customer", "customerId", "customer_id", "traceId", "trace_id",
-  "traceName", "trace_name", "runtime", "task",
-  "agent", "tool", "userId", "conversationId", "voiceSessionId",
-]);
 
 interface ExplorerScope {
   from: string;
@@ -465,6 +464,61 @@ async function loadAvailableFilters(
   };
 }
 
+/**
+ * The filter values /costs returns beside its rows. Dimensions and context keys
+ * of rollup days come from the rollup; lifecycle, accounting, coverage, status
+ * and context values only from the part read from calls (the console asks
+ * /filter-options for those, which reads the whole window).
+ */
+async function loadCostFilters(
+  pool: pg.Pool,
+  projectId: string,
+  scope: ChargeScope,
+  plan: RollupPlan,
+  restricted: boolean,
+): Promise<AvailableFiltersResult> {
+  const options = { limit: 100, offset: 0 };
+  if (plan.rollupDays.length === 0) return loadAvailableFilters(pool, projectId, scope, restricted, options);
+  const [detail, rollup] = await Promise.all([
+    plan.readsDetail
+      ? loadAvailableFilters(pool, projectId, detailOfPlan(scope, plan), restricted, options)
+      : Promise.resolve<AvailableFiltersResult>({
+        filters: {
+          providers: [], models: [], environments: [], features: [], customers: [], lifecycles: [], accounting: [],
+          coverage: [], statuses: [], functions: [], contextKeys: [], contexts: {}, counts: {}, countUnits: {},
+        },
+        complete: true, nextCursor: null, limit: options.limit, offset: options.offset,
+      }),
+    loadRollupFilterValues(pool, projectId, plan.rollupDays),
+  ]);
+  const filters = detail.filters;
+  const lists: Record<string, string> = {
+    provider: "providers", model: "models", environment: "environments", feature: "features", customer: "customers", function: "functions",
+  };
+  const counts = filters.counts as Record<string, Record<string, number>>;
+  const countUnits = filters.countUnits as Record<string, string>;
+  const contextKeys = new Set(filters.contextKeys as string[]);
+  for (const row of rollup) {
+    if (row.lens === "context_key") { contextKeys.add(row.value); continue; }
+    const list = lists[row.lens];
+    if (!list || (row.lens === "function" && restricted)) continue;
+    const seen = counts[row.lens] ?? {};
+    if (!(row.value in seen)) (filters[list] as string[]).push(row.value);
+    seen[row.value] = (seen[row.value] ?? 0) + row.observations;
+    counts[row.lens] = seen;
+    countUnits[row.lens] = "charges";
+  }
+  filters.contextKeys = [...contextKeys].sort();
+  // Sorted and capped per dimension, as a read over calls returns them.
+  let complete = detail.complete;
+  for (const list of Object.values(lists)) {
+    const items = (filters[list] as string[]).sort();
+    if (items.length > options.limit) complete = false;
+    filters[list] = items.slice(0, options.limit);
+  }
+  return { ...detail, filters, complete, nextCursor: complete ? null : String(options.limit) };
+}
+
 function aggregateGroupKey(scope: ChargeScope, row: Record<string, unknown>): string {
   switch (scope.groupBy) {
     case "function": return String(row.function_key ?? "(unassigned)");
@@ -485,17 +539,31 @@ function aggregateGroupKey(scope: ChargeScope, row: Record<string, unknown>): st
   }
 }
 
+/** The one column of a daily row aggregateGroupKey reads for this scope. */
+function aggregateCollapse(scope: ChargeScope): Array<"provider" | "model" | "feature" | "function_key" | "customer"> {
+  switch (scope.groupBy) {
+    case "function": return ["function_key"];
+    case "customer": return ["customer"];
+    case "model": return ["model"];
+    case "provider": return ["provider"];
+    case "context": return []; // Any of several columns, by key.
+    default: return ["feature"];
+  }
+}
+
 /** Merge detail rollups with already-reconciled daily rows without exposing
  * aggregate-only rows as traces or pretending their trace evidence exists. */
 function mergeFinancialRollups(
   detailRows: Array<Record<string, unknown>>,
   aggregateRows: Array<Record<string, unknown>>,
   scope: ChargeScope,
+  lensRows: LensTotalRow[] = [],
 ): Array<Record<string, unknown>> {
   const merged = new Map<string, Record<string, unknown>>();
-  const add = (input: Record<string, unknown>, aggregate: boolean): void => {
-    const key = aggregate ? aggregateGroupKey(scope, input) : String(input.group_key);
-    const row = merged.get(key) ?? {
+  const entry = (key: string): Record<string, unknown> => {
+    const existing = merged.get(key);
+    if (existing) return existing;
+    const created: Record<string, unknown> = {
       group_key: key,
       observations: 0,
       call_count: 0,
@@ -508,6 +576,11 @@ function mergeFinancialRollups(
       untraced_usage_count: 0,
       untraced_usage_cost: null,
     };
+    merged.set(key, created);
+    return created;
+  };
+  const add = (input: Record<string, unknown>, aggregate: boolean): void => {
+    const row = entry(aggregate ? aggregateGroupKey(scope, input) : String(input.group_key));
     const value = (field: string, fallback = 0): number => {
       const parsed = Number(input[field]);
       return Number.isFinite(parsed) ? parsed : fallback;
@@ -527,14 +600,19 @@ function mergeFinancialRollups(
       row.fully_priced_trace_cost_usd = Number(row.fully_priced_trace_cost_usd) + Number(traceCost);
     }
     row.untraced_usage_count = Number(row.untraced_usage_count) + value("untraced_usage_count");
-    const untracedCost = aggregate ? null : input.untraced_usage_cost;
+    const untracedCost = input[aggregate ? "untraced_usage_cost_usd" : "untraced_usage_cost"];
     if (untracedCost !== null && untracedCost !== undefined && Number.isFinite(Number(untracedCost))) {
       row.untraced_usage_cost = Number(row.untraced_usage_cost ?? 0) + Number(untracedCost);
     }
-    merged.set(key, row);
   };
   for (const row of detailRows) add(row, false);
   for (const row of aggregateRows) add(row, true);
+  for (const lens of lensRows) {
+    const row = entry(lens.group_key);
+    row.trace_count = Number(row.trace_count) + lens.trace_count;
+    row.fully_priced_trace_count = Number(row.fully_priced_trace_count) + lens.fully_priced_trace_count;
+    row.fully_priced_trace_cost_usd = Number(row.fully_priced_trace_cost_usd) + Number(lens.fully_priced_trace_cost_usd ?? 0);
+  }
   for (const row of merged.values()) {
     row.mean_cost_per_charge = Number(row.priced_observations) > 0 && row.known_cost != null
       ? Number(row.known_cost) / Number(row.priced_observations) : null;
@@ -543,7 +621,11 @@ function mergeFinancialRollups(
     // Keep the queries' own count: it leaves out failed calls, which cost nothing.
     row.unpriced_observations = Number(row.unpriced_observations ?? Number(row.observations) - Number(row.priced_observations));
   }
-  return [...merged.values()];
+  // The order a single query returns them in: callers page through this list.
+  const cost = (row: Record<string, unknown>): number => (row.known_cost == null ? -Infinity : Number(row.known_cost));
+  return [...merged.values()].sort((a, b) => (cost(a) === cost(b) ? 0 : cost(b) > cost(a) ? 1 : -1)
+    || Number(b.observations) - Number(a.observations)
+    || String(a.group_key).localeCompare(String(b.group_key)));
 }
 
 interface FinancialTotals {
@@ -935,12 +1017,14 @@ export function createAccountingRouter(pool: pg.Pool): Router {
       const scope: ChargeScope = { ...input };
       scope.timezone = await workspaceTimezone(pool, projectId);
       const detailScope: ChargeScope = { ...scope, groupBy: undefined, groupValue: undefined };
+      // Completed days come from the rollup; only the rest is read from calls.
+      const plan = await rollupPlan(pool, projectId, detailScope, scope.timezone ?? "UTC", { traces: true });
       const detailParams: unknown[] = [projectId];
-      const detailClauses = scopeClauses(detailScope, detailParams, "c");
+      const detailClauses = scopeClauses(detailOfPlan(detailScope, plan), detailParams, "c");
       // Totals, models and providers from one build of the charges: each build
       // reads and de-duplicates every call of the window.
-      const [groupedResult, aggregateRows] = await Promise.all([
-        pool.query(
+      const [groupedResult, aggregateRows, windowTraces] = await Promise.all([
+        !plan.readsDetail ? Promise.resolve({ rows: [] as Array<Record<string, unknown>> }) : pool.query(
           `${chargesCte(detailParams)}
            SELECT GROUPING(c.provider, COALESCE(c.model, 'unknown')) AS grouping_level,
                   c.provider, COALESCE(c.model, 'unknown') AS model,
@@ -952,12 +1036,14 @@ export function createAccountingRouter(pool: pg.Pool): Router {
                   SUM(c.cost_usd) FILTER (WHERE c.cost_usd IS NOT NULL) AS known_cost,
                   COALESCE(SUM(c.prompt_tokens),0)::bigint AS input_tokens,
                   COALESCE(SUM(c.completion_tokens),0)::bigint AS output_tokens,
-                  AVG(c.duration_ms) FILTER (WHERE c.record_type = 'call' AND c.duration_ms IS NOT NULL) AS avg_duration_ms
+                  SUM(c.duration_ms) FILTER (WHERE c.record_type = 'call' AND c.duration_ms IS NOT NULL) AS duration_sum,
+                  COUNT(*) FILTER (WHERE c.record_type = 'call' AND c.duration_ms IS NOT NULL)::int AS duration_count
            FROM charges c WHERE ${detailClauses.join(" AND ")}
            GROUP BY GROUPING SETS ((), (c.provider), (c.provider, COALESCE(c.model, 'unknown')))`,
           detailParams,
         ),
-        loadDailyAggregates(pool, projectId, detailScope, scope.timezone ?? "UTC"),
+        loadDailyAggregates(pool, projectId, detailScope, scope.timezone ?? "UTC", plan.rollupDays, ["provider", "model"]),
+        loadLensTotals(pool, projectId, plan.rollupDays, "window"),
       ]);
       // GROUPING() sets a bit for each column a row is not grouped by:
       // 0 = provider and model, 1 = provider only, 3 = the whole window.
@@ -990,13 +1076,17 @@ export function createAccountingRouter(pool: pg.Pool): Router {
       const byModel = new Map<string, OverviewBucket>();
       const byProvider = new Map<string, OverviewBucket>();
       const addBucket = (map: Map<string, OverviewBucket>, key: string, row: Record<string, unknown>, aggregate: boolean): void => {
-        const provider = String(row.provider ?? "unknown");
-        const model = row.model == null ? undefined : String(row.model);
+        // A daily row spells a missing provider or model "(unknown)"; this view "unknown".
+        const named = (item: unknown): string => (aggregate && item === "(unknown)" ? "unknown" : String(item ?? "unknown"));
+        const provider = named(row.provider);
+        const model = row.model == null ? undefined : named(row.model);
         const bucketKey = model === undefined ? provider : `${provider}\u0000${model}`;
         const bucket = map.get(bucketKey) ?? { provider, model, observations: 0, calls: 0, priced: 0, cost: 0, input: 0, output: 0 };
         bucket.observations += Number(row[aggregate ? "observations" : "observations"] ?? 0);
         bucket.calls += Number(row[aggregate ? "call_count" : "calls"] ?? 0);
-        bucket.priced += Number(row.priced_observations ?? row.priced ?? 0);
+        bucket.priced += aggregate
+          ? Number(row.priced_observations ?? 0) + Number(row.no_charge_observations ?? 0)
+          : Number(row.priced ?? 0);
         bucket.cost += Number(row[aggregate ? "known_cost_usd" : "known_cost"] ?? 0);
         bucket.input += Number(row.input_tokens ?? 0);
         bucket.output += Number(row.output_tokens ?? 0);
@@ -1004,20 +1094,25 @@ export function createAccountingRouter(pool: pg.Pool): Router {
       };
       for (const row of modelResult.rows as Array<Record<string, unknown>>) addBucket(byModel, `${row.provider}\u0000${row.model}`, row, false);
       for (const row of providerResult.rows as Array<Record<string, unknown>>) addBucket(byProvider, String(row.provider), row, false);
+      let durationSum = Number(totalsResult.rows[0]?.duration_sum ?? 0);
+      let durationCount = Number(totalsResult.rows[0]?.duration_count ?? 0);
       for (const row of aggregateRows) {
         total.observations += Number(row.observations ?? 0);
         total.calls += Number(row.call_count ?? 0);
-        total.priced += Number(row.priced_observations ?? 0);
+        total.priced += Number(row.priced_observations ?? 0) + Number(row.no_charge_observations ?? 0);
         total.cost += Number(row.known_cost_usd ?? 0);
         total.input += Number(row.input_tokens ?? 0);
         total.output += Number(row.output_tokens ?? 0);
+        durationSum += Number(row.duration_sum_ms ?? 0);
+        durationCount += Number(row.duration_count ?? 0);
         addBucket(byModel, `${row.provider}\u0000${row.model}`, row as unknown as Record<string, unknown>, true);
-        addBucket(byProvider, String(row.provider), row as unknown as Record<string, unknown>, true);
+        const { model: _model, ...providerRow } = row;
+        addBucket(byProvider, String(row.provider), providerRow as unknown as Record<string, unknown>, true);
       }
       const knownCost = total.priced > 0 ? total.cost : null;
       const observations = total.observations;
       const unpriced = observations - total.priced;
-      const avgDuration = Number(totalsResult.rows[0]?.avg_duration_ms ?? 0);
+      const avgDuration = durationCount > 0 ? durationSum / durationCount : 0;
       // Of the calls with no cost, only a model the catalog doesn't know needs a price;
       // a priced model's calls with no cost reported no usage, and no price fixes that.
       let unpricedNoUsage = 0;
@@ -1037,7 +1132,7 @@ export function createAccountingRouter(pool: pg.Pool): Router {
           avg_ttft: 0,
           avg_tps: 0,
           observations,
-          trace_count: Number(totalsResult.rows[0]?.traces) || 0,
+          trace_count: (Number(totalsResult.rows[0]?.traces) || 0) + windowTraces.reduce((sum, row) => sum + row.trace_count, 0),
           priced_observations: total.priced,
           unpriced_count: unpriced,
           unpriced_no_price_count: unpriced - unpricedNoUsage,
@@ -2052,11 +2147,13 @@ export function createAccountingRouter(pool: pg.Pool): Router {
       const currentScope: ChargeScope = { ...scope, groupBy, from: currentFrom.toISOString(), to: currentTo.toISOString() };
       const previousScope: ChargeScope = { ...scope, groupBy, from: previousFrom.toISOString(), to: currentFrom.toISOString() };
       const traceLens = groupBy === "feature" || groupBy === "function" || groupBy === "customer" || groupBy === "context";
-      const load = async (period: ChargeScope): Promise<{ rows: Array<Record<string, unknown>> }> => {
+      const load = async (period: ChargeScope): Promise<{ plan: RollupPlan; rows: Array<Record<string, unknown>> }> => {
+        // Completed days come from the rollup; only the rest is read from calls.
+        const plan = await rollupPlan(pool, projectId, period, period.timezone ?? "UTC", { traces: true });
         const params: unknown[] = [projectId];
-        const clauses = scopeClauses(period, params, "c");
+        const clauses = scopeClauses(detailOfPlan(period, plan), params, "c");
         const expression = dimensionExpression(period, "c");
-        const detail = await pool.query(
+        const detail = !plan.readsDetail ? { rows: [] as Array<Record<string, unknown>> } : await pool.query(
           `${chargesCte(params)},
            scoped AS (
              SELECT c.*, ${expression} AS group_key
@@ -2100,8 +2197,11 @@ export function createAccountingRouter(pool: pg.Pool): Router {
            ORDER BY g.known_cost DESC NULLS LAST, g.observations DESC`,
           params,
         );
-        const aggregates = await loadDailyAggregates(pool, projectId, period, period.timezone ?? "UTC");
-        return { rows: mergeFinancialRollups(detail.rows as Array<Record<string, unknown>>, aggregates as unknown as Array<Record<string, unknown>>, period) };
+        const [aggregates, lensRows] = await Promise.all([
+          loadDailyAggregates(pool, projectId, period, period.timezone ?? "UTC", plan.rollupDays, aggregateCollapse(period)),
+          loadLensTotals(pool, projectId, plan.rollupDays, period.groupBy ?? "feature"),
+        ]);
+        return { plan, rows: mergeFinancialRollups(detail.rows as Array<Record<string, unknown>>, aggregates as unknown as Array<Record<string, unknown>>, period, lensRows) };
       };
       const [current, previous] = await Promise.all([load(currentScope), load(previousScope)]);
       const previousByKey = new Map<string, Record<string, unknown>>();
@@ -2154,7 +2254,7 @@ export function createAccountingRouter(pool: pg.Pool): Router {
       const totalFullyPricedTraceCount = contributors.reduce((sum, row) => sum + Number(row.fully_priced_trace_count ?? 0), 0);
       const totalUntracedUsage = contributors.reduce((sum, row) => sum + Number(row.untraced_usage_count ?? 0), 0);
       const filterOnlyScope: ChargeScope = { ...currentScope, groupBy: undefined, groupValue: undefined };
-      const filterOptions = await loadAvailableFilters(pool, projectId, filterOnlyScope, restricted, { limit: 100, offset: 0 });
+      const filterOptions = await loadCostFilters(pool, projectId, filterOnlyScope, current.plan, restricted);
       const filters = filterOptions.filters;
       const contextKeys = Array.isArray(filters.contextKeys) ? filters.contextKeys as string[] : [];
       const limit = Math.min(Math.max(number(req.query["limit"], 25), 1), 100);

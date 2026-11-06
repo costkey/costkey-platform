@@ -150,6 +150,36 @@ export async function ensureDailyAggregateSchema(
         EXECUTE 'ALTER TABLE daily_cost_aggregates ADD CONSTRAINT daily_cost_aggregates_full_pkey PRIMARY KEY (project_id, day, environment, feature, function_key, customer, service, release, provider, model)';
       END IF;
     END $daily_aggregate_compat$;
+
+    -- What summaries need to read a day from the rollup instead of its calls.
+    ALTER TABLE IF EXISTS daily_cost_aggregates ADD COLUMN IF NOT EXISTS no_charge_observations INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE IF EXISTS daily_cost_aggregates ADD COLUMN IF NOT EXISTS duration_sum_ms DOUBLE PRECISION NOT NULL DEFAULT 0;
+    ALTER TABLE IF EXISTS daily_cost_aggregates ADD COLUMN IF NOT EXISTS duration_count INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE IF EXISTS daily_cost_aggregates ADD COLUMN IF NOT EXISTS untraced_usage_count INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE IF EXISTS daily_cost_aggregates ADD COLUMN IF NOT EXISTS untraced_usage_cost_usd DOUBLE PRECISION;
+    -- One row per day the scheduler has rebuilt since it ended, rows or none:
+    -- only these days are read from the rollup (rollupPlan in charge-cohort.ts).
+    CREATE TABLE IF NOT EXISTS daily_rollup_days (
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      day DATE NOT NULL,
+      timezone TEXT NOT NULL,
+      version INTEGER NOT NULL,
+      reconciled_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (project_id, day)
+    );
+    -- Totals per dimension of a day. Traces can't be summed from
+    -- daily_cost_aggregates, which counts a trace once per model and feature.
+    CREATE TABLE IF NOT EXISTS daily_lens_aggregates (
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      day DATE NOT NULL,
+      lens TEXT NOT NULL,
+      group_key TEXT NOT NULL,
+      observations INTEGER NOT NULL DEFAULT 0,
+      trace_count INTEGER NOT NULL DEFAULT 0,
+      fully_priced_trace_count INTEGER NOT NULL DEFAULT 0,
+      fully_priced_trace_cost_usd DOUBLE PRECISION,
+      PRIMARY KEY (project_id, day, lens, group_key)
+    );
   `);
 }
 

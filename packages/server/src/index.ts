@@ -282,10 +282,12 @@ export function createApp(options: AppOptions = {}): Express & AppRuntime {
         await ensureReleaseSchema(pool);
         await ensurePolicySchema(pool);
         await ensureQualityCheckSchema(pool);
-        await ensureIngestQueueSchema(pool);
+        // Instances boot together, and CREATE TABLE IF NOT EXISTS races: the loser
+        // fails on the type the winner has just created, so these take turns.
+        await withMigrationLock(pool, (client) => ensureIngestQueueSchema(client));
         // Every table exists from the first boot; nothing is created on first use.
         await ensureSsoSchema(pool);
-        await ensureDailyAggregateSchema(pool);
+        await withMigrationLock(pool, (client) => ensureDailyAggregateSchema(client));
         await withMigrationLock(pool, (client) => ensureAccountingChangeSchema(client));
         if (schemaStamp) await pool.query("INSERT INTO migrations (name) VALUES ($1) ON CONFLICT (name) DO NOTHING", [schemaStamp]);
       }

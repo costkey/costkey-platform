@@ -1,6 +1,6 @@
 /**
  * A short-lived cache for the console's heavy summary endpoints (Overview,
- * Costs, the board, forecast, agents, workflows, users). Each builds the
+ * Costs, the board, forecast, spend series, agents, workflows, users). Each builds the
  * window's charges or runs, and opening the Overview asks for six of them at
  * once; on a small database they queue behind each other.
  *
@@ -65,7 +65,7 @@ function refreshInBackground(req: Request, key: string): void {
 export function cachedSummaries() {
   return (req: Request, res: Response, next: NextFunction): void => {
     if (req.method !== "GET") { next(); return; }
-    const projectId = String(req.params["projectId"] ?? "");
+    const projectId = String(req.params["projectId"] ?? req.params["id"] ?? "");
     const key = cacheKey(req);
     const refreshing = req.headers[REFRESH_HEADER] === "1";
     const hit = entries.get(key);

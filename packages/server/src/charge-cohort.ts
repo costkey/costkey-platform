@@ -31,6 +31,8 @@ export interface ChargeScope {
   timezone?: string | null;
   /** Internal role-aware opt-in for source-location q matching. */
   searchSource?: boolean;
+  /** Read only these parts of the window from calls and usage; rollupPlan decides them. */
+  ranges?: Array<{ from: string; to: string }> | null;
 }
 
 export interface CanonicalCharge {
@@ -100,6 +102,11 @@ export interface DailyAggregateRow {
   unknown_observations: number;
   input_tokens: number;
   output_tokens: number;
+  no_charge_observations: number;
+  duration_sum_ms: number;
+  duration_count: number;
+  untraced_usage_count: number;
+  untraced_usage_cost_usd: number | null;
 }
 
 /**
@@ -109,10 +116,10 @@ export interface DailyAggregateRow {
  * included. Unknown USD amounts stay NULL.
  */
 /** Placeholders for the project and, optionally, the window a charges query reads. */
-export interface ChargeBounds { project: string; from?: string; to?: string }
+export interface ChargeBounds { project: string; from?: string; to?: string; ranges?: Array<{ from: string; to: string }>; marginDays?: number }
 
 /** Where scopeClauses put a query's window, so chargesCte can read only that slice. */
-const queryBounds = new WeakMap<unknown[], { from?: string; to?: string }>();
+const queryBounds = new WeakMap<unknown[], Omit<ChargeBounds, "project">>();
 
 /**
  * The canonical charges. Given the params a scopeClauses call filled ($1 is the
@@ -126,16 +133,20 @@ export function chargesCte(scoped?: unknown[] | ChargeBounds, options: { marginD
     ? { project: "$1", ...(queryBounds.get(scoped) ?? {}) }
     : scoped;
   // A run's cost needs its calls just outside the window too: widen by a margin.
-  const widen = (bound: string | undefined, sign: "-" | "+") => bound && options.marginDays
-    ? `(${bound}::timestamptz ${sign} INTERVAL '${Math.max(0, Math.floor(options.marginDays))} days')` : bound;
-  const from = widen(given?.from, "-");
-  const to = widen(given?.to, "+");
-  const eventBounds = given
-    ? ` AND e.project_id = ${given.project}${from ? ` AND e.timestamp >= ${from}` : ""}${to ? ` AND e.timestamp < ${to}` : ""}`
-    : "";
-  const usageBounds = given
-    ? ` AND u.project_id = ${given.project}${from ? ` AND COALESCE(u.accounting_at, u.observed_at) >= ${from}` : ""}${to ? ` AND COALESCE(u.accounting_at, u.observed_at) < ${to}` : ""}`
-    : "";
+  const margin = options.marginDays ?? given?.marginDays;
+  const widen = (bound: string | undefined, sign: "-" | "+") => bound && margin
+    ? `(${bound}::timestamptz ${sign} INTERVAL '${Math.max(0, Math.floor(margin))} days')` : bound;
+  const within = (column: string): string => {
+    if (given?.ranges) {
+      if (given.ranges.length === 0) return " AND FALSE";
+      return ` AND (${given.ranges.map((range) => `(${column} >= ${widen(range.from, "-")} AND ${column} < ${widen(range.to, "+")})`).join(" OR ")})`;
+    }
+    const from = widen(given?.from, "-");
+    const to = widen(given?.to, "+");
+    return `${from ? ` AND ${column} >= ${from}` : ""}${to ? ` AND ${column} < ${to}` : ""}`;
+  };
+  const eventBounds = given ? ` AND e.project_id = ${given.project}${within("e.timestamp")}` : "";
+  const usageBounds = given ? ` AND u.project_id = ${given.project}${within("COALESCE(u.accounting_at, u.observed_at)")}` : "";
   return `
     WITH auto_raw AS (
       SELECT e.project_id, e.id AS record_id,
@@ -291,16 +302,32 @@ function addValues(params: unknown[], expression: string, item: ScopeValues | nu
 /** Add the same scope predicates to a `charges c` or `events e` relation. */
 export function scopeClauses(scope: ChargeScope, params: unknown[], alias = "c"): string[] {
   const clauses: string[] = [`${alias}.project_id = $1`];
-  const bounds: { from?: string; to?: string } = {};
-  if (scope.from) {
-    params.push(scope.from);
-    bounds.from = `$${params.length}`;
-    clauses.push(`${alias}.timestamp >= $${params.length}`);
-  }
-  if (scope.to) {
-    params.push(scope.to);
-    bounds.to = `$${params.length}`;
-    clauses.push(`${alias}.timestamp < $${params.length}`);
+  const bounds: Omit<ChargeBounds, "project"> = {};
+  if (scope.ranges) {
+    // Parts of a window beside rollup days. A charge's records can sit either
+    // side of a midnight and the rollup keeps it on its winning record's day,
+    // so read a day either way to de-duplicate it the same way here.
+    bounds.ranges = scope.ranges.map((range) => {
+      params.push(range.from);
+      const from = `$${params.length}`;
+      params.push(range.to);
+      return { from, to: `$${params.length}` };
+    });
+    bounds.marginDays = 1;
+    clauses.push(bounds.ranges.length > 0
+      ? `(${bounds.ranges.map((range) => `(${alias}.timestamp >= ${range.from} AND ${alias}.timestamp < ${range.to})`).join(" OR ")})`
+      : "FALSE");
+  } else {
+    if (scope.from) {
+      params.push(scope.from);
+      bounds.from = `$${params.length}`;
+      clauses.push(`${alias}.timestamp >= $${params.length}`);
+    }
+    if (scope.to) {
+      params.push(scope.to);
+      bounds.to = `$${params.length}`;
+      clauses.push(`${alias}.timestamp < $${params.length}`);
+    }
   }
   queryBounds.set(params, bounds);
   addValues(params, `${alias}.context->>'environment'`, scope.environment, clauses);
@@ -463,17 +490,177 @@ function aggregateValues(params: unknown[], expression: string, item: ScopeValue
   clauses.push(`${expression} = ANY($${params.length}::text[])`);
 }
 
+/** Bump when the rollup's meaning changes: days of older versions are rebuilt and read from detail until then. */
+export const DAILY_ROLLUP_VERSION = 1;
+
+/** Context keys the console may list and group by. */
+export const SAFE_CONTEXT_KEYS = new Set([
+  "environment", "service", "release", "operation", "feature", "function", "functionName",
+  "group", "groupName", "groupType", "executionId", "execution_id", "phase", "caseId", "case_id",
+  "datasetRevision", "dataset_revision", "customer", "customerId", "customer_id", "traceId", "trace_id",
+  "traceName", "trace_name", "runtime", "task",
+  "agent", "tool", "userId", "conversationId", "voiceSessionId",
+]);
+
+/** Which of a window's days the rollup answers, and what is left to read from calls and usage. */
+export interface RollupPlan {
+  rollupDays: string[];
+  /** The window around those days; empty when they cover all of it. Null when no day qualifies. */
+  ranges: Array<{ from: string; to: string }> | null;
+  /** False when the rollup answers the whole window, so no charges need building. */
+  readsDetail: boolean;
+}
+
+const READ_FROM_DETAIL: RollupPlan = { rollupDays: [], ranges: null, readsDetail: true };
+
+/** Can daily rows answer this scope exactly as calls would? */
+function rollupAnswers(scope: ChargeScope, needsTraces: boolean): boolean {
+  if (!scope.from || !scope.to || scope.q || scope.groupBy === "context") return false;
+  // Matched differently from calls (a function with or without its service, a
+  // release in the column or the context) or not kept in a daily row at all.
+  const unmatched = [scope.traceId, scope.executionId, scope.function, scope.file, scope.functionName, scope.release, scope.groupValue, scope.contextValue];
+  if (unmatched.some((item) => values(item).length > 0)) return false;
+  const filters = [scope.environment, scope.feature, scope.customer, scope.service, scope.model, scope.provider].flatMap((item) => values(item));
+  // Placeholders of a daily row: calls hold no such value, so a filter on one matches none.
+  if (filters.some((value) => value === "(unassigned)" || value === "(unknown)")) return false;
+  // Trace totals are kept per dimension, not per combination of filters.
+  return !needsTraces || filters.length === 0;
+}
+
 /**
- * Read durable daily rows only for workspace-local days whose detail is gone.
- * It is intentionally a separate seam: aggregates cannot fabricate
- * traces/content, but they can preserve financial totals after retention
- * removes detail.
+ * Split a window into days the rollup answers and the ranges calls must answer:
+ * today, any partial day at its edges, and days whose calls changed since they
+ * were reconciled. A day qualifies only if the scheduler rebuilt it, after it
+ * ended, in the workspace's current time zone (daily_rollup_days), so a day
+ * with no rollup rows reads as an empty day only when it really was one.
+ */
+export async function rollupPlan(
+  pool: pg.Pool | pg.PoolClient,
+  projectId: string,
+  scope: ChargeScope,
+  timezone: string,
+  options: { traces?: boolean } = {},
+): Promise<RollupPlan> {
+  if (!rollupAnswers(scope, options.traces === true)) return READ_FROM_DETAIL;
+  const from = new Date(scope.from!);
+  const to = new Date(scope.to!);
+  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || from >= to) return READ_FROM_DETAIL;
+  let days: Array<{ day: string; day_start: Date; day_end: Date }>;
+  try {
+    days = (await pool.query(
+      `SELECT d.day::text AS day,
+              (d.day::timestamp AT TIME ZONE $2::text) AS day_start,
+              ((d.day + 1)::timestamp AT TIME ZONE $2::text) AS day_end
+       FROM daily_rollup_days d
+       WHERE d.project_id = $1 AND d.timezone = $2::text AND d.version = $3::int
+         AND d.day >= ($4::timestamptz AT TIME ZONE $2::text)::date
+         AND d.day <= ($5::timestamptz AT TIME ZONE $2::text)::date
+         AND (d.day::timestamp AT TIME ZONE $2::text) >= $4::timestamptz
+         AND ((d.day + 1)::timestamp AT TIME ZONE $2::text) <= $5::timestamptz
+         AND NOT EXISTS (
+           SELECT 1 FROM accounting_changed_periods p
+           WHERE p.project_id = d.project_id
+             AND p.period_start >= (d.day::timestamp AT TIME ZONE $2::text)
+             AND p.period_start < ((d.day + 1)::timestamp AT TIME ZONE $2::text)
+         )
+       ORDER BY d.day`,
+      [projectId, timezone, DAILY_ROLLUP_VERSION, from.toISOString(), to.toISOString()],
+    )).rows;
+  } catch (error) {
+    // Before startup has applied the additive schema, detail remains valid.
+    const code = (error as { code?: string }).code;
+    if (code === "42P01" || code === "42703") return READ_FROM_DETAIL;
+    throw error;
+  }
+  if (days.length === 0) return READ_FROM_DETAIL;
+  const ranges: Array<{ from: string; to: string }> = [];
+  let cursor = from;
+  for (const day of days) {
+    const start = new Date(day.day_start);
+    if (start > cursor) ranges.push({ from: cursor.toISOString(), to: start.toISOString() });
+    cursor = new Date(day.day_end);
+  }
+  if (cursor < to) ranges.push({ from: cursor.toISOString(), to: to.toISOString() });
+  return { rollupDays: days.map((day) => day.day), ranges, readsDetail: ranges.length > 0 };
+}
+
+/** The scope a plan leaves to calls and usage. */
+export function detailOfPlan(scope: ChargeScope, plan: RollupPlan): ChargeScope {
+  return plan.ranges ? { ...scope, ranges: plan.ranges } : scope;
+}
+
+export interface LensTotalRow {
+  group_key: string;
+  observations: number;
+  trace_count: number;
+  fully_priced_trace_count: number;
+  fully_priced_trace_cost_usd: number | null;
+}
+
+/**
+ * Per-dimension totals of rollup days. A trace that spans models counts once
+ * here, as it does over calls; a trace that crosses a local midnight counts
+ * once on each of its days.
+ */
+export async function loadLensTotals(
+  pool: pg.Pool | pg.PoolClient,
+  projectId: string,
+  days: string[],
+  lens: string,
+): Promise<LensTotalRow[]> {
+  if (days.length === 0) return [];
+  const result = await pool.query(
+    `SELECT group_key, SUM(observations)::bigint AS observations, SUM(trace_count)::bigint AS trace_count,
+            SUM(fully_priced_trace_count)::bigint AS fully_priced_trace_count,
+            SUM(fully_priced_trace_cost_usd) AS fully_priced_trace_cost_usd
+     FROM daily_lens_aggregates
+     WHERE project_id = $1 AND lens = $2 AND day = ANY($3::date[])
+     GROUP BY group_key`,
+    [projectId, lens, days],
+  );
+  return result.rows.map((row) => ({
+    group_key: String(row.group_key),
+    observations: Number(row.observations),
+    trace_count: Number(row.trace_count),
+    fully_priced_trace_count: Number(row.fully_priced_trace_count),
+    fully_priced_trace_cost_usd: row.fully_priced_trace_cost_usd == null ? null : Number(row.fully_priced_trace_cost_usd),
+  }));
+}
+
+/** The values each filter dimension takes on rollup days, and the context keys seen. */
+export async function loadRollupFilterValues(
+  pool: pg.Pool | pg.PoolClient,
+  projectId: string,
+  days: string[],
+): Promise<Array<{ lens: string; value: string; observations: number }>> {
+  if (days.length === 0) return [];
+  const result = await pool.query(
+    `SELECT lens, group_key AS value, SUM(observations)::bigint AS observations
+     FROM daily_lens_aggregates
+     WHERE project_id = $1 AND day = ANY($2::date[]) AND lens <> 'window'
+     GROUP BY lens, group_key
+     ORDER BY lens, group_key`,
+    [projectId, days],
+  );
+  return result.rows.map((row) => ({ lens: String(row.lens), value: String(row.value), observations: Number(row.observations) }));
+}
+
+/**
+ * Read durable daily rows for the days rollupPlan chose and for workspace-local
+ * days whose detail is gone. It is intentionally a separate seam: aggregates
+ * cannot fabricate traces/content, but they can preserve financial totals
+ * after retention removes detail. Trace counts of chosen days are left out:
+ * a row per model counts a trace once per model, so they come from
+ * loadLensTotals instead.
  */
 export async function loadDailyAggregates(
   pool: pg.Pool | pg.PoolClient,
   projectId: string,
   scope: ChargeScope = {},
   timezone = scope.timezone ?? "UTC",
+  rollupDays: string[] = [],
+  /** Sum across every other dimension: a month of daily rows is thousands, and a view needs dozens. */
+  collapseBy: Array<"day" | "provider" | "model" | "feature" | "function_key" | "customer"> = [],
 ): Promise<DailyAggregateRow[]> {
   // IDs/names/source q cannot be reconstructed from a daily row. Returning no
   // aggregate rows keeps q semantics truthful; detail rows still answer it.
@@ -533,28 +720,54 @@ export async function loadDailyAggregates(
     const n = detailParams.length;
     aggregateClauses.push(`a.day < ($${n}::timestamptz AT TIME ZONE $${timezoneParam}::text)::date`);
   }
+  detailParams.push(rollupDays);
+  const chosenDays = `$${detailParams.length}::date[]`;
+  const tracesOutside = (column: string, zero: string): string => `CASE WHEN a.day = ANY(${chosenDays}) THEN ${zero} ELSE a.${column} END`;
+  const selectRows = collapseBy.length === 0
+    ? `SELECT a.project_id, a.day::text AS day, a.timezone,
+              a.environment, a.feature, a.function_key, a.customer, a.provider, a.model,
+              a.service, a.release,
+              a.known_cost_usd, a.observations, a.call_count, a.priced_observations, a.unpriced_observations,
+              ${tracesOutside("trace_count", "0")} AS trace_count,
+              ${tracesOutside("fully_priced_trace_count", "0")} AS fully_priced_trace_count,
+              ${tracesOutside("fully_priced_trace_cost_usd", "NULL")} AS fully_priced_trace_cost_usd,
+              a.reported_observations, a.estimated_observations, a.unknown_observations,
+              a.input_tokens, a.output_tokens, a.no_charge_observations,
+              a.duration_sum_ms, a.duration_count, a.untraced_usage_count, a.untraced_usage_cost_usd`
+    : `SELECT ${collapseBy.map((column) => (column === "day" ? "a.day::text AS day" : `a.${column}`)).join(", ")},
+              SUM(a.known_cost_usd) AS known_cost_usd, SUM(a.observations)::bigint AS observations,
+              SUM(a.call_count)::bigint AS call_count, SUM(a.priced_observations)::bigint AS priced_observations,
+              SUM(a.unpriced_observations)::bigint AS unpriced_observations,
+              SUM(${tracesOutside("trace_count", "0")})::bigint AS trace_count,
+              SUM(${tracesOutside("fully_priced_trace_count", "0")})::bigint AS fully_priced_trace_count,
+              SUM(${tracesOutside("fully_priced_trace_cost_usd", "NULL")}) AS fully_priced_trace_cost_usd,
+              SUM(a.reported_observations)::bigint AS reported_observations,
+              SUM(a.estimated_observations)::bigint AS estimated_observations,
+              SUM(a.unknown_observations)::bigint AS unknown_observations,
+              SUM(a.input_tokens)::bigint AS input_tokens, SUM(a.output_tokens)::bigint AS output_tokens,
+              SUM(a.no_charge_observations)::bigint AS no_charge_observations,
+              SUM(a.duration_sum_ms) AS duration_sum_ms, SUM(a.duration_count)::bigint AS duration_count,
+              SUM(a.untraced_usage_count)::bigint AS untraced_usage_count,
+              SUM(a.untraced_usage_cost_usd) AS untraced_usage_cost_usd`;
+  const groupRows = collapseBy.length === 0
+    ? "ORDER BY a.day ASC, a.feature ASC, a.function_key ASC, a.provider ASC, a.model ASC"
+    : `GROUP BY ${collapseBy.map((column) => `a.${column}`).join(", ")} ORDER BY ${collapseBy.map((column) => `a.${column}`).join(", ")}`;
   try {
     const result = await pool.query(
       `WITH matched AS (
          SELECT a.* FROM daily_cost_aggregates a
          WHERE ${aggregateClauses.join(" AND ")}
        ), expired_days AS (
-         SELECT d.day FROM (SELECT DISTINCT day FROM matched) d
+         SELECT d.day FROM (SELECT DISTINCT day FROM matched WHERE NOT (day = ANY(${chosenDays}))) d
          WHERE NOT EXISTS (SELECT 1 FROM events e WHERE e.project_id = $1 AND e.timestamp >= ${dayStart} AND e.timestamp < ${dayEnd}
                              AND COALESCE(e.event_type, 'call') = 'call')
            AND NOT EXISTS (SELECT 1 FROM usage_components u WHERE u.project_id = $1
                              AND COALESCE(u.accounting_at, u.observed_at) >= ${dayStart} AND COALESCE(u.accounting_at, u.observed_at) < ${dayEnd})
        )
-       SELECT a.project_id, a.day::text AS day, a.timezone,
-              a.environment, a.feature, a.function_key, a.customer, a.provider, a.model,
-              a.service, a.release,
-              a.known_cost_usd, a.observations, a.call_count, a.priced_observations, a.unpriced_observations,
-              a.trace_count, a.fully_priced_trace_count, a.fully_priced_trace_cost_usd,
-              a.reported_observations, a.estimated_observations, a.unknown_observations,
-              a.input_tokens, a.output_tokens
+       ${selectRows}
        FROM matched a
-       WHERE a.day IN (SELECT day FROM expired_days)
-       ORDER BY a.day ASC, a.feature ASC, a.function_key ASC, a.provider ASC, a.model ASC`,
+       WHERE a.day IN (SELECT day FROM expired_days) OR a.day = ANY(${chosenDays})
+       ${groupRows}`,
       detailParams,
     );
     return result.rows as DailyAggregateRow[];

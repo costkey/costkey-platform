@@ -3,10 +3,11 @@
  * heading by the end of its period, the names a budget can cover, and daily
  * spend for the Overview chart. Nothing here reserves, admits or mutates.
  */
-import type { Request, Response, Router } from "express";
+import type { NextFunction, Request, Response, Router } from "express";
 import type pg from "pg";
 import { isIdentityWindow, normalizeSpendingPolicy, policyScopeClauses, policyWindowBounds } from "./admission.js";
-import { chargesCte, loadDailyAggregates, scopeClauses, type ChargeScope } from "./charge-cohort.js";
+import { chargesCte, detailOfPlan, loadDailyAggregates, rollupPlan, scopeClauses, type ChargeScope } from "./charge-cohort.js";
+import { cachedSummaries } from "./response-cache.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 /** How far back the spending pace looks. */
@@ -213,11 +214,13 @@ export interface SpendPoint {
 /** Known spend per local day (or month), zero-filled, from the same records as every total. */
 export async function loadSpendSeries(pool: pg.Pool, projectId: string, input: { from: Date; to: Date; timezone: string; bucket: "day" | "month"; environment?: string | null }): Promise<SpendPoint[]> {
   const scope: ChargeScope = { from: input.from.toISOString(), to: input.to.toISOString(), timezone: input.timezone, environment: input.environment || undefined };
+  // Completed days come from the rollup; only the rest is read from calls.
+  const plan = await rollupPlan(pool, projectId, scope, input.timezone);
   const params: unknown[] = [projectId];
-  const clauses = scopeClauses(scope, params, "c");
+  const clauses = scopeClauses(detailOfPlan(scope, plan), params, "c");
   params.push(input.timezone);
   const timezoneParam = params.length;
-  const detail = await pool.query(
+  const detail = !plan.readsDetail ? { rows: [] } : await pool.query(
     `${chargesCte(params)}
      SELECT to_char(c.timestamp AT TIME ZONE $${timezoneParam}::text, 'YYYY-MM-DD') AS day,
             COALESCE(SUM(c.cost_usd), 0)::double precision AS cost,
@@ -234,8 +237,8 @@ export async function loadSpendSeries(pool: pg.Pool, projectId: string, input: {
     byDay.set(day, item);
   };
   for (const row of detail.rows as Array<Record<string, unknown>>) add(String(row.day), Number(row.cost) || 0, Number(row.calls) || 0, Number(row.unpriced) || 0);
-  // Days whose detail retention removed still count from their daily rollup.
-  for (const row of await loadDailyAggregates(pool, projectId, scope, input.timezone)) {
+  // Rollup days, and days whose detail retention removed.
+  for (const row of await loadDailyAggregates(pool, projectId, scope, input.timezone, plan.rollupDays, ["day"])) {
     add(String(row.day).slice(0, 10), Number(row.known_cost_usd) || 0, Number(row.call_count) || 0, Number(row.unpriced_observations) || 0);
   }
   const days = seriesDays(input.from, input.to, input.timezone);
@@ -273,11 +276,19 @@ export function registerBudgetViewRoutes(router: Router, pool: pg.Pool, deps: {
     }
   });
 
-  router.get("/api/v1/projects/:id/budget/spend-series", async (req: Request, res: Response) => {
+  // Access is checked on every request, before the cache can answer.
+  const projectAccess = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const user = (req as any).user;
+      if (await deps.ensureProjectInOrg(req.params["id"] as string, (req as any).user.orgId)) next();
+      else res.status(404).json({ error: "Project not found" });
+    } catch (err) {
+      console.error("[costkey] GET spend series access error:", err);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  };
+  router.get("/api/v1/projects/:id/budget/spend-series", projectAccess, cachedSummaries(), async (req: Request, res: Response) => {
+    try {
       const id = req.params["id"] as string;
-      if (!(await deps.ensureProjectInOrg(id, user.orgId))) { res.status(404).json({ error: "Project not found" }); return; }
       const now = new Date();
       const from = new Date(queryText(req.query["from"]) ?? new Date(now.getTime() - 30 * DAY_MS).toISOString());
       const to = new Date(queryText(req.query["to"]) ?? now.toISOString());

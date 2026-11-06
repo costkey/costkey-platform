@@ -501,6 +501,11 @@ export const dailyCostAggregates = pgTable("daily_cost_aggregates", {
   unknownObservations: integer("unknown_observations").notNull().default(0),
   inputTokens: bigint("input_tokens", { mode: "number" }).notNull().default(0),
   outputTokens: bigint("output_tokens", { mode: "number" }).notNull().default(0),
+  noChargeObservations: integer("no_charge_observations").notNull().default(0),
+  durationSumMs: doublePrecision("duration_sum_ms").notNull().default(0),
+  durationCount: integer("duration_count").notNull().default(0),
+  untracedUsageCount: integer("untraced_usage_count").notNull().default(0),
+  untracedUsageCostUsd: doublePrecision("untraced_usage_cost_usd"),
   reconciledAt: timestamp("reconciled_at", { withTimezone: true }).notNull().defaultNow(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
@@ -508,6 +513,27 @@ export const dailyCostAggregates = pgTable("daily_cost_aggregates", {
   primaryKey({ columns: [t.projectId, t.day, t.environment, t.feature, t.functionKey, t.customer, t.service, t.release, t.provider, t.model] }),
   index("idx_daily_cost_aggregates_project_day").on(t.projectId, t.day),
 ]);
+
+/** Days the scheduler rebuilt after they ended; only these are read from the rollup. */
+export const dailyRollupDays = pgTable("daily_rollup_days", {
+  projectId: text("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  day: date("day", { mode: "string" }).notNull(),
+  timezone: text("timezone").notNull(),
+  version: integer("version").notNull(),
+  reconciledAt: timestamp("reconciled_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [primaryKey({ columns: [t.projectId, t.day] })]);
+
+/** A day's totals per dimension, with traces counted once per group. */
+export const dailyLensAggregates = pgTable("daily_lens_aggregates", {
+  projectId: text("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  day: date("day", { mode: "string" }).notNull(),
+  lens: text("lens").notNull(),
+  groupKey: text("group_key").notNull(),
+  observations: integer("observations").notNull().default(0),
+  traceCount: integer("trace_count").notNull().default(0),
+  fullyPricedTraceCount: integer("fully_priced_trace_count").notNull().default(0),
+  fullyPricedTraceCostUsd: doublePrecision("fully_priced_trace_cost_usd"),
+}, (t) => [primaryKey({ columns: [t.projectId, t.day, t.lens, t.groupKey] })]);
 
 export const dailyCostAggregateCheckpoints = pgTable("daily_cost_aggregate_checkpoints", {
   projectId: text("project_id").primaryKey().references(() => projects.id, { onDelete: "cascade" }),

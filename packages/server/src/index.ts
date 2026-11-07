@@ -9,6 +9,8 @@ import { ensureAccountingChangeSchema, ensureDailyAggregateSchema, ensureQuality
 import { ensureSsoSchema } from "./sso/provision.js";
 import { createIngestRouter, loadCallGraphCache } from "./ingest.js";
 import { ensureIngestQueueSchema, startIngestWorker, type IngestWorker } from "./ingest-queue.js";
+import { ensureBoardSnapshotSchema, startBoardSnapshotWorker } from "./board-snapshots.js";
+import { boardSource } from "./insights-api.js";
 import { createAuthRouter, authMiddleware } from "./auth.js";
 import { createSsoRouter, ssoSessionMiddleware } from "./sso/router.js"; // single sign-on
 import { reportAuthSettingsAtStartup } from "./sso/config.js"; // single sign-on
@@ -165,6 +167,8 @@ export function createApp(options: AppOptions = {}): Express & AppRuntime {
   // workers; harnesses without schedulers store batches in the request.
   const ingestQueue = options.startSchedulers !== false && process.env["COSTKEY_INGEST_QUEUE"] !== "off";
   let ingestWorker: IngestWorker | null = null;
+  // Stored boards are only as current as the job that refreshes them, so without it they aren't read.
+  const boardSnapshots = options.startSchedulers !== false && process.env["COSTKEY_BOARD_SNAPSHOTS"] !== "off";
   let initialized = false;
   let initializationError: unknown = null;
   let initialization: Promise<void> | null = null;
@@ -289,6 +293,7 @@ export function createApp(options: AppOptions = {}): Express & AppRuntime {
         await ensureSsoSchema(pool);
         await withMigrationLock(pool, (client) => ensureDailyAggregateSchema(client));
         await withMigrationLock(pool, (client) => ensureAccountingChangeSchema(client));
+        await withMigrationLock(pool, (client) => ensureBoardSnapshotSchema(client));
         if (schemaStamp) await pool.query("INSERT INTO migrations (name) VALUES ($1) ON CONFLICT (name) DO NOTHING", [schemaStamp]);
       }
       // Rollups taken before changes were tracked may have missed late calls
@@ -331,7 +336,7 @@ export function createApp(options: AppOptions = {}): Express & AppRuntime {
       // SDK budget checks precede session-only routers. The legacy API is last
       // so platform project/export routes remain authoritative.
       app.use(createBudgetsRouter(pool));
-      app.use(createApiRouter(pool));
+      app.use(createApiRouter(pool, { boardSnapshots }));
       app.use("/api", (_req, res) => res.status(404).json({ error: "Not found" }));
       addSpaFallback(app, options.includeDashboard !== false, base);
 
@@ -369,6 +374,7 @@ export function createApp(options: AppOptions = {}): Express & AppRuntime {
         schedulerHandles.push(startQualityCheckWorker(pool));
         if (ingestQueue) ingestWorker = startIngestWorker(pool);
         schedulerHandles.push(startEmptyRunSweeper(pool));
+        if (boardSnapshots) schedulerHandles.push(startBoardSnapshotWorker(pool, boardSource));
         // Generate findings even when nobody opens the console. Ingest also
         // schedules a one-second project-local refresh; this startup pass
         // covers existing activity and the interval handles quiet projects.

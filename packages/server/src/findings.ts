@@ -821,9 +821,12 @@ export async function listFindings(
   includeAcknowledged = true,
 ): Promise<Finding[]> {
   const stateClause = includeAcknowledged ? "" : "AND f.state IN ('new', 'updated')";
+  // Trace ID lists run to hundreds per finding (2.6 MB of a 3 MB list) and only
+  // the finding's own page shows them, which reads them through getFinding.
   const result = await pool.query(
     `SELECT f.id, f.project_id, f.family, f.scope, f.state, f.observed_at, f.last_seen_at,
-            f.baseline, f.evidence, f.next_actions, f.occurrence_count,
+            f.baseline, f.evidence - '{supportingTraceIds,affectedTraceIds}'::text[] AS evidence,
+            f.next_actions, f.occurrence_count,
             f.acknowledged_at, f.acknowledged_by
      FROM findings f WHERE f.project_id = $1 ${stateClause}
      ORDER BY f.last_seen_at DESC LIMIT 100`,

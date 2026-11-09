@@ -131,7 +131,8 @@ test("platform PostgreSQL lifecycle and HTTP boundaries", { skip: !connectionStr
         feature_source TEXT, feature_mapping_id TEXT, feature_mapping_action_id TEXT, feature_original TEXT,
         request_body JSONB, response_body JSONB, system_prompt TEXT, metadata JSONB, configuration JSONB,
         context JSONB, usage_event JSONB, cost_usd DOUBLE PRECISION,
-        content_status TEXT NOT NULL DEFAULT 'unknown'
+        content_status TEXT NOT NULL DEFAULT 'unknown',
+        release TEXT, cache_read_tokens INTEGER, cache_creation_tokens INTEGER, reasoning_tokens INTEGER
       );
       CREATE TABLE call_site_stats (project_id TEXT NOT NULL, call_site_key TEXT NOT NULL, model TEXT, PRIMARY KEY(project_id, call_site_key, model));
       CREATE TABLE custom_providers (

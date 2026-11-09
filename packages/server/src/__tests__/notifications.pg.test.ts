@@ -175,7 +175,13 @@ async function createBaseTables(): Promise<void> {
       total_tokens INTEGER,
       bl_file TEXT,
       bl_function TEXT,
-      bl_line INTEGER
+      bl_line INTEGER,
+      release TEXT,
+      cache_read_tokens INTEGER,
+      cache_creation_tokens INTEGER,
+      reasoning_tokens INTEGER,
+      lifecycle_state TEXT,
+      status_code INTEGER
     );
     CREATE TABLE usage_components (
       id TEXT PRIMARY KEY,

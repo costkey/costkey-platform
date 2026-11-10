@@ -3,6 +3,7 @@ import { Router as createRouter } from "express";
 import { createHash } from "node:crypto";
 import type pg from "pg";
 import { onInvalidateSummaries } from "./response-cache.js";
+import { deleteProjectFrames } from "./frames.js";
 import { requireAuth } from "./auth.js";
 import {
   assertProjectAccess,
@@ -18,6 +19,7 @@ type PrivacySettings = {
   metadata_retention_days: number;
   aggregate_retention_days: number;
   source_access_enabled: boolean;
+  screen_capture_enabled: boolean;
   updated_by: string | null;
   created_at: string;
   updated_at: string;
@@ -33,6 +35,7 @@ function settingsResponse(row: PrivacySettings): Record<string, unknown> {
     metadataRetentionDays: row.metadata_retention_days,
     aggregateRetentionDays: row.aggregate_retention_days,
     sourceAccessEnabled: row.source_access_enabled,
+    screenCaptureEnabled: row.screen_capture_enabled === true,
     updatedBy: row.updated_by,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -232,12 +235,13 @@ export function privacyIngestGuard(pool: pg.Pool) {
       const authHeader = req.headers.authorization;
       if (!authHeader?.startsWith("Bearer ")) { next(); return; }
       const project = await pool.query(
-        `SELECT p.id, s.capture_mode, s.body_capture_enabled, s.redaction_enabled, s.source_access_enabled
+        `SELECT p.id, s.capture_mode, s.body_capture_enabled, s.redaction_enabled, s.source_access_enabled,
+                s.screen_capture_enabled
          FROM projects p LEFT JOIN project_settings s ON s.project_id = p.id
          WHERE p.auth_key = $1`,
         [authHeader.slice(7)],
       );
-      const settings = project.rows[0] as { capture_mode?: string; body_capture_enabled?: boolean; redaction_enabled?: boolean; source_access_enabled?: boolean } | undefined;
+      const settings = project.rows[0] as { capture_mode?: string; body_capture_enabled?: boolean; redaction_enabled?: boolean; source_access_enabled?: boolean; screen_capture_enabled?: boolean } | undefined;
       const payload = (req.body ?? {}) as Record<string, unknown>;
       const events = Array.isArray(payload.events) ? payload.events : [];
       // A project without a settings row is an incomplete/legacy migration,
@@ -252,6 +256,8 @@ export function privacyIngestGuard(pool: pg.Pool) {
           allowSource,
           redactionEnabled: settings?.redaction_enabled !== false,
         });
+        // Frame lists are kept only while the project has screen capture on.
+        if (settings?.screen_capture_enabled !== true) delete (event as Record<string, unknown>).frames;
       }
       next();
     } catch (error) {
@@ -262,6 +268,7 @@ export function privacyIngestGuard(pool: pg.Pool) {
       for (const event of events) {
         if (event && typeof event === "object") {
           stripIngestEventPrivacy(event as Record<string, unknown>, { allowBody: false, allowSource: false });
+          delete (event as Record<string, unknown>).frames;
         }
       }
       console.warn("[costkey] Privacy ingest guard unavailable:", error instanceof Error ? error.message : error);
@@ -289,7 +296,7 @@ onInvalidateSummaries((projectId) => {
 async function loadRuntimeConfig(pool: pg.Pool, projectId: string, authKey: string): Promise<RuntimeConfig | null> {
   const project = await pool.query(
     `SELECT p.id, s.capture_mode, s.body_capture_enabled, s.redaction_enabled,
-            s.body_retention_days, s.metadata_retention_days
+            s.body_retention_days, s.metadata_retention_days, s.screen_capture_enabled
      FROM projects p LEFT JOIN project_settings s ON s.project_id = p.id
      WHERE p.id = $1 AND p.auth_key = $2`,
     [projectId, authKey],
@@ -309,6 +316,7 @@ async function loadRuntimeConfig(pool: pg.Pool, projectId: string, authKey: stri
       redactionEnabled: row.redaction_enabled ?? true,
       bodyRetentionDays: row.body_retention_days ?? 7,
       metadataRetentionDays: row.metadata_retention_days ?? 30,
+      screenCaptureEnabled: row.screen_capture_enabled === true,
     },
     providers: providers.rows,
   };
@@ -353,7 +361,7 @@ async function getProjectSettings(pool: pg.Pool, projectId: string): Promise<Pri
   const result = await pool.query(
     `SELECT project_id, capture_mode, body_capture_enabled, redaction_enabled,
             body_retention_days, metadata_retention_days, aggregate_retention_days,
-            source_access_enabled, updated_by, created_at, updated_at
+            source_access_enabled, screen_capture_enabled, updated_by, created_at, updated_at
      FROM project_settings WHERE project_id = $1`,
     [projectId],
   );
@@ -418,9 +426,11 @@ export function createPrivacyRouter(pool: pg.Pool): Router {
         if (typeof body.bodyCaptureEnabled !== "boolean") {
           res.status(400).json({ error: "bodyCaptureEnabled must be boolean" }); return;
         }
-        updates.push(`body_capture_enabled = $${index++}`);
-        params.push(body.bodyCaptureEnabled);
+        // With captureMode given, both columns are already set from it (the
+        // checks above make them agree); setting a column twice is a SQL error.
         if (body.captureMode === undefined) {
+          updates.push(`body_capture_enabled = $${index++}`);
+          params.push(body.bodyCaptureEnabled);
           updates.push(`capture_mode = $${index++}`);
           params.push(body.bodyCaptureEnabled ? "text" : "metadata");
         }
@@ -438,6 +448,13 @@ export function createPrivacyRouter(pool: pg.Pool): Router {
         }
         updates.push(`source_access_enabled = $${index++}`);
         params.push(body.sourceAccessEnabled);
+      }
+      if (body.screenCaptureEnabled !== undefined) {
+        if (typeof body.screenCaptureEnabled !== "boolean") {
+          res.status(400).json({ error: "screenCaptureEnabled must be boolean" }); return;
+        }
+        updates.push(`screen_capture_enabled = $${index++}`);
+        params.push(body.screenCaptureEnabled);
       }
       for (const [field, column, min, max] of [
         ["bodyRetentionDays", "body_retention_days", 1, 7],
@@ -565,6 +582,8 @@ export function createPrivacyRouter(pool: pg.Pool): Router {
         );
         deletedContent += groups.rowCount ?? 0;
       }
+      // Screenshots are captured content too.
+      deletedContent += await deleteProjectFrames(pool, projectId);
       res.json({ deletedContent, projectId });
     } catch (error) {
       const status = (error as Error & { status?: number }).status;

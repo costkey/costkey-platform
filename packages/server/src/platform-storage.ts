@@ -1,5 +1,6 @@
 import type pg from "pg";
 import { ensureDailyAggregateSchema, withMigrationLock } from "./db.js";
+import { ensureFramesSchema } from "./frames.js";
 
 /**
  * Additive storage owned by the platform routes.
@@ -585,6 +586,8 @@ export async function ensurePlatformSchema(pool: pg.Pool): Promise<void> {
       throw error;
     }
   }
+  // Screen capture: the project setting and the frame store.
+  await ensureFramesSchema(client);
   });
 }
 

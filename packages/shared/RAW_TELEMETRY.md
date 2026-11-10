@@ -96,6 +96,38 @@ to their JSON payload (framing only) before the skeleton is taken.
   whose name contains `token` unless it is a count header (contains `count`).
   Keys are lowercased.
 
+## Screen capture: `frames` and frame uploads
+
+Off unless the app sets `captureScreens: true` **and** the project's runtime
+config reports `capture.screenCaptureEnabled: true` (absent means off; a
+missing or invalid config turns it off). It doesn't depend on body capture, so
+it works in metadata-only projects.
+
+When it's on, every base64 image in a call's request (data URIs, and parts
+with an `image/*` `media_type` / `mimeType` / `mime_type` and a `data` string)
+is listed on the call event in request order, newest last:
+
+```jsonc
+"frames": [
+  { "sha256": "9f2c…", "mediaType": "image/png", "bytes": 48211 },
+  { "sha256": "41aa…", "mediaType": "image/png", "bytes": 2300114, "omitted": "too_large" }
+]
+```
+
+- `sha256` is the hash of the decoded bytes. A history image that appears
+  several times is listed each time.
+- The bytes go separately: `PUT /api/v1/frames/:sha256` with the image as the
+  body, `Content-Type` set to its media type, and the DSN key as the bearer
+  token. Each hash is sent once per process. Images over 2 MB are listed with
+  `omitted: "too_large"` and never sent. A 404, 405 or 501 turns uploads off for
+  the process, so older servers are unaffected.
+- With body capture also on, the image placeholder in `requestBody` names the
+  frame: `[image data omitted: image/png; ~48211 bytes; frame 9f2c…]`.
+- `beforeSend` sees `frames` and can remove entries. Only frames still listed
+  after the hook are uploaded.
+- Which image is the frame for the step (the newest) is decided on the server.
+  The SDK doesn't resize, re-encode or compare images.
+
 ## What moves to the server
 
 | Was in the SDK | Server owns it now |

@@ -361,6 +361,23 @@ export interface TraceEvent {
   feature_source?: string | null;
   feature_mapping_id?: string | null;
   feature_original?: string | null;
+  /** Screen capture: the images this call's request carried, newest last. */
+  screen_frames?: FrameRef[] | null;
+  request_body?: unknown;
+  response_body?: unknown;
+}
+
+/** One image a call sent to the model; the bytes are fetched by hash. */
+export interface FrameRef {
+  sha256: string;
+  mediaType: string;
+  bytes: number;
+  omitted?: "too_large";
+}
+
+/** Where the console reads a stored frame (same-origin, signed-in). */
+export function frameUrl(projectId: string, sha256: string): string {
+  return `${API_BASE}/projects/${encodeURIComponent(projectId)}/frames/${encodeURIComponent(sha256)}`;
 }
 
 export interface TraceQuery {

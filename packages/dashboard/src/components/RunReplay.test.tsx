@@ -58,7 +58,7 @@ describe("replay model", () => {
 
 describe("run replay", () => {
   const render = (events: TraceEvent[], selectedId: string | null = null) => renderToString(createElement(RunReplay, {
-    projectId: "proj_1", events, selectedId, onSelectCall: () => undefined, currency: "USD",
+    projectId: "proj_1", traceId: "trace_1", events, selectedId, onSelectCall: () => undefined, currency: "USD",
   })).replace(/<!-- -->/g, "");
 
   it("renders nothing for runs without screenshots", () => {

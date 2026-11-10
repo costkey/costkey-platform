@@ -1,22 +1,27 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { ChevronLeft, ChevronRight, Pause, Play } from "lucide-react";
-import { frameUrl, type TraceEvent } from "../api";
+import { frameUrl, getTraceReplay, replayAssetUrl, type TraceEvent, type TraceReplay } from "../api";
 import { formatDuration } from "../utils";
 import { formatReportedAmount, type ReportingFx } from "./consoleFormatters";
 import { actionTitle, buildReplay, type ReplayStep } from "./replayModel";
 import { AddToDataset } from "./AddToDataset";
+import { DomReplay } from "./DomReplay";
+import { prepareRecording, timedCalls, type PreparedRecording } from "./domReplayModel";
 import "./RunReplay.css";
 
 const STEP_MS = 1200;
 
+type ReplayMode = "browser" | "steps";
+
 /**
- * Steps through the screenshots a computer-use or browser agent sent to the
- * model, one per call, beside what each call chose and cost. Selecting a step
- * selects its call; selecting a call elsewhere moves the replay to it.
- * Shown only for runs that have screenshots.
+ * A run's replay, shown only when there's something to replay: the browser
+ * recording from @costkey/replay (video of each page), and/or the screenshots
+ * a computer-use or browser agent sent to the model (one step per call).
+ * When a run has both, a switch picks between them.
  */
-export function RunReplay({ projectId, events, selectedId, onSelectCall, currency, fx }: {
+export function RunReplay({ projectId, traceId, events, selectedId, onSelectCall, currency, fx }: {
   projectId: string;
+  traceId: string;
   events: TraceEvent[];
   selectedId: string | null;
   onSelectCall: (eventId: string) => void;
@@ -24,6 +29,55 @@ export function RunReplay({ projectId, events, selectedId, onSelectCall, currenc
   fx?: ReportingFx | null;
 }) {
   const steps = useMemo(() => buildReplay(events), [events]);
+  const replay = useTraceReplay(projectId, traceId);
+  const recordings = useMemo(() => (replay?.recordings ?? [])
+    .map((recording) => prepareRecording(recording.id, recording.events, (sha) => replayAssetUrl(projectId, sha)))
+    .filter((recording): recording is PreparedRecording => recording !== null), [replay, projectId]);
+  const calls = useMemo(() => timedCalls(events), [events]);
+  const [chosen, setChosen] = useState<ReplayMode | null>(null);
+
+  if (recordings.length === 0 && steps.length === 0) return null;
+  const mode: ReplayMode = recordings.length === 0 ? "steps" : steps.length === 0 ? "browser" : chosen ?? "browser";
+  const modeSwitch = recordings.length > 0 && steps.length > 0
+    ? <div className="ck-replay-modes" role="group" aria-label="Replay view">
+      <button type="button" aria-pressed={mode === "browser"} className={mode === "browser" ? "is-on" : ""} onClick={() => setChosen("browser")}>Browser</button>
+      <button type="button" aria-pressed={mode === "steps"} className={mode === "steps" ? "is-on" : ""} onClick={() => setChosen("steps")}>Screenshots</button>
+    </div>
+    : null;
+  return mode === "browser"
+    ? <DomReplay recordings={recordings} calls={calls} selectedId={selectedId} onSelectCall={onSelectCall} currency={currency} fx={fx} modeSwitch={modeSwitch} truncated={replay?.truncated} />
+    : <StepReplay projectId={projectId} steps={steps} callCount={events.length} selectedId={selectedId} onSelectCall={onSelectCall} currency={currency} fx={fx} modeSwitch={modeSwitch} />;
+}
+
+/** The run's browser recordings, loaded once per run (not polled: they can be large). */
+function useTraceReplay(projectId: string, traceId: string): TraceReplay | null {
+  const key = `${projectId}:${traceId}`;
+  const [loaded, setLoaded] = useState<{ key: string; replay: TraceReplay | null } | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    getTraceReplay(projectId, traceId)
+      .then((replay) => { if (!cancelled) setLoaded({ key, replay }); })
+      .catch(() => { if (!cancelled) setLoaded({ key, replay: null }); });
+    return () => { cancelled = true; };
+  }, [key, projectId, traceId]);
+  return loaded?.key === key ? loaded.replay : null;
+}
+
+/**
+ * Steps through the screenshots an agent sent to the model, one per call,
+ * beside what each call chose and cost. Selecting a step selects its call;
+ * selecting a call elsewhere moves the replay to it.
+ */
+function StepReplay({ projectId, steps, callCount, selectedId, onSelectCall, currency, fx, modeSwitch }: {
+  projectId: string;
+  steps: ReplayStep[];
+  callCount: number;
+  selectedId: string | null;
+  onSelectCall: (eventId: string) => void;
+  currency: string;
+  fx?: ReportingFx | null;
+  modeSwitch?: ReactNode;
+}) {
   const [index, setIndex] = useState(() => Math.max(0, steps.findIndex((step) => step.eventId === selectedId)));
   const [wantsPlay, setWantsPlay] = useState(false);
   const [followed, setFollowed] = useState(selectedId);
@@ -69,9 +123,10 @@ export function RunReplay({ projectId, events, selectedId, onSelectCall, currenc
     <div className="ck-replay-head">
       <div>
         <h2 className="ck-replay-title">Replay</h2>
-        <div className="ck-replay-meta">Step {(index + 1).toLocaleString()} of {steps.length.toLocaleString()} · call {step.callNumber.toLocaleString()} of {events.length.toLocaleString()}</div>
+        <div className="ck-replay-meta">Step {(index + 1).toLocaleString()} of {steps.length.toLocaleString()} · call {step.callNumber.toLocaleString()} of {callCount.toLocaleString()}</div>
       </div>
       <div className="ck-replay-controls">
+        {modeSwitch}
         <button className="ck-button ck-button-quiet" type="button" aria-label="Previous step" disabled={index === 0} onClick={() => { setPlaying(false); go(index - 1); }}><ChevronLeft size={15} /></button>
         <button className="ck-button ck-button-secondary" type="button" aria-label={playing ? "Pause" : "Play"} onClick={() => {
           if (playing) { setPlaying(false); return; }

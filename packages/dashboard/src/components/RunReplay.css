@@ -62,3 +62,38 @@
   .ck-replay-body { grid-template-columns: minmax(0, 1fr); }
   .ck-replay-facts { flex-direction: row; flex-wrap: wrap; gap: 12px 20px; }
 }
+
+/* Replay view switch, when a run has both a browser recording and screenshots. */
+.ck-replay-modes { display: inline-flex; margin-right: 6px; padding: 2px; border: 1px solid var(--ck-border); border-radius: 8px; background: var(--ck-canvas); }
+.ck-replay-modes button { padding: 4px 10px; border: 0; border-radius: 6px; background: transparent; color: var(--ck-slate); font: inherit; font-size: 12px; cursor: pointer; }
+.ck-replay-modes button.is-on { background: var(--ck-raised); color: var(--ck-ink); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08); }
+
+/* Browser replay: the rrweb player scaled to the panel. */
+.ck-dom-speed { min-width: 38px; justify-content: center; font-variant-numeric: tabular-nums; }
+.ck-dom-pages { display: flex; gap: 6px; padding-top: 12px; overflow-x: auto; }
+.ck-dom-page { max-width: 220px; padding: 4px 10px; border: 1px solid var(--ck-border); border-radius: 999px; background: var(--ck-raised); color: var(--ck-slate); font: inherit; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+.ck-dom-page.is-current { border-color: var(--ck-ink); color: var(--ck-ink); }
+.ck-dom-frame { display: flex; justify-content: center; align-items: flex-start; min-width: 0; min-height: 200px; padding: 0; border-radius: 8px; background: var(--ck-canvas); overflow: hidden; }
+.ck-dom-viewport { position: relative; overflow: hidden; background: #fff; box-shadow: 0 0 0 1px var(--ck-border); }
+.ck-dom-stage { position: absolute; top: 0; left: 0; }
+.ck-dom-stage .replayer-wrapper { position: relative; transform: scale(var(--ck-dom-scale, 1)); transform-origin: 0 0; }
+.ck-dom-stage iframe { display: block; border: 0; pointer-events: none; }
+.ck-dom-call { padding: 0; border: 0; background: none; color: var(--ck-ink); font: inherit; text-align: left; text-decoration: underline; text-decoration-color: var(--ck-border); text-underline-offset: 3px; cursor: pointer; }
+.ck-dom-call:hover { text-decoration-color: currentColor; }
+
+.ck-dom-scrub { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; margin-top: 14px; }
+.ck-dom-clock { color: var(--ck-slate); font-size: 12px; font-variant-numeric: tabular-nums; }
+.ck-dom-track { position: relative; height: 34px; }
+.ck-dom-track input[type="range"] { position: absolute; inset: 0 0 auto; width: 100%; height: 18px; margin: 0; accent-color: var(--ck-ink); cursor: pointer; }
+.ck-dom-marks, .ck-dom-calls { position: absolute; left: 0; right: 0; pointer-events: none; }
+.ck-dom-marks { top: 20px; height: 6px; }
+.ck-dom-calls { top: 26px; height: 8px; }
+.ck-dom-mark { position: absolute; display: block; transform: translateX(-50%); }
+.ck-dom-mark.is-action { top: 0; width: 2px; height: 6px; border-radius: 1px; background: var(--ck-slate); opacity: 0.6; }
+.ck-dom-mark.is-call { top: 0; width: 8px; height: 8px; padding: 0; border: 1px solid var(--ck-raised); border-radius: 50%; background: var(--ck-chart, #476d9c); cursor: pointer; pointer-events: auto; }
+.ck-dom-mark.is-call.is-failed { background: var(--ck-critical); }
+.ck-dom-mark.is-call.is-current { box-shadow: 0 0 0 2px var(--ck-ink); }
+
+@media (max-width: 900px) {
+  .ck-replay-head { flex-wrap: wrap; align-items: flex-start; }
+}

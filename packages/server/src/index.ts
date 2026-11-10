@@ -33,6 +33,7 @@ import { createIngestRuntimeConfigRouter, createPrivacyRouter, privacyIngestGuar
 import { createReleasesRouter, ensureReleaseSchema } from "./releases.js";
 import { createRetentionRouter, runRetention } from "./retention.js";
 import { createFrameIngestRouter, createFramesRouter } from "./frames.js";
+import { createReplayIngestRouter, createReplayRouter } from "./replay.js";
 import { createDatasetsRouter } from "./datasets.js";
 import { createDashboardsRouter } from "./dashboards.js";
 import { createSavedViewsRouter } from "./saved-views.js";
@@ -239,6 +240,11 @@ export function createApp(options: AppOptions = {}): Express & AppRuntime {
     max: 600,
     keyFn: (req) => req.headers.authorization?.slice(7) ?? req.ip ?? "unknown",
   }));
+  app.use("/api/v1/replay", rateLimit({
+    windowMs: 60 * 1000,
+    max: 1200,
+    keyFn: (req) => req.headers.authorization?.slice(7) ?? req.ip ?? "unknown",
+  }));
 
   // Route-level guards for legacy API mutations. Personal/shared saved-view
   // actions use their own capability checks and are intentionally not covered
@@ -265,12 +271,14 @@ export function createApp(options: AppOptions = {}): Express & AppRuntime {
   app.use(createIngestRuntimeConfigRouter(pool));
   app.use(createIngestRouter(pool, { queue: ingestQueue }));
   app.use(createFrameIngestRouter(pool));
+  app.use(createReplayIngestRouter(pool));
   // Public, token-scoped routes go before routers that require auth globally.
   app.use(createInvitePreviewRouter(pool));
   app.use(createSubscriptionRouter(pool));
   app.use(createPlatformRouter(pool));
   app.use(createPrivacyRouter(pool));
   app.use(createFramesRouter(pool));
+  app.use(createReplayRouter(pool));
   app.use(createDatasetsRouter(pool));
   app.use(createDashboardsRouter(pool));
   app.use(createReleasesRouter(pool));

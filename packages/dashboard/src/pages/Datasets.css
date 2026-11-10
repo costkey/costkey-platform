@@ -1,0 +1,22 @@
+.ck-ds-back { display: inline-flex; align-items: center; gap: 6px; margin-bottom: 8px; color: var(--ck-slate); font-size: 13px; text-decoration: none; }
+.ck-ds-back:hover { color: var(--ck-ink); }
+.ck-ds-muted { color: var(--ck-slate); font-size: 12px; }
+.ck-ds-error { color: var(--ck-critical); font-size: 13px; padding: 12px 0; }
+.ck-ds-labels { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.ck-ds-label { padding: 2px 8px; border-radius: 999px; background: var(--ck-neutral-soft, var(--ck-canvas)); font-size: 12px; white-space: nowrap; }
+.ck-ds-label.is-good { background: var(--ck-good-soft); }
+.ck-ds-label.is-bad { background: var(--ck-critical-soft); }
+.ck-ds-thumb { display: block; width: 96px; height: 60px; object-fit: cover; object-position: top left; border: 1px solid var(--ck-border); border-radius: 6px; background: var(--ck-canvas); }
+.ck-ds-label-input {
+  width: 140px;
+  min-height: 30px;
+  padding: 4px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--ck-control-radius, 7px);
+  background: transparent;
+  color: var(--ck-ink);
+  font: inherit;
+}
+.ck-ds-label-input:hover, .ck-ds-label-input:focus { border-color: var(--ck-border); background: var(--ck-raised); }
+.ck-ds-note { max-width: 360px; white-space: pre-wrap; }
+.ck-page-actions .ck-button { display: inline-flex; align-items: center; gap: 6px; text-decoration: none; }

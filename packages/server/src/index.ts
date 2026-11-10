@@ -33,6 +33,7 @@ import { createIngestRuntimeConfigRouter, createPrivacyRouter, privacyIngestGuar
 import { createReleasesRouter, ensureReleaseSchema } from "./releases.js";
 import { createRetentionRouter, runRetention } from "./retention.js";
 import { createFrameIngestRouter, createFramesRouter } from "./frames.js";
+import { createDatasetsRouter } from "./datasets.js";
 import { createSavedViewsRouter } from "./saved-views.js";
 import { createNotificationsRouter, runWeeklyDigests } from "./notifications.js";
 import { createSubscriptionRouter } from "./subscription.js";
@@ -269,6 +270,7 @@ export function createApp(options: AppOptions = {}): Express & AppRuntime {
   app.use(createPlatformRouter(pool));
   app.use(createPrivacyRouter(pool));
   app.use(createFramesRouter(pool));
+  app.use(createDatasetsRouter(pool));
   app.use(createReleasesRouter(pool));
   app.use(createRetentionRouter(pool));
   app.use(createSavedViewsRouter(pool));

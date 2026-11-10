@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import type pg from "pg";
 import { onInvalidateSummaries } from "./response-cache.js";
 import { deleteProjectFrames } from "./frames.js";
+import { clearDatasetContent } from "./datasets.js";
 import { requireAuth } from "./auth.js";
 import {
   assertProjectAccess,
@@ -584,6 +585,7 @@ export function createPrivacyRouter(pool: pg.Pool): Router {
       }
       // Screenshots are captured content too.
       deletedContent += await deleteProjectFrames(pool, projectId);
+      deletedContent += await clearDatasetContent(pool, projectId);
       res.json({ deletedContent, projectId });
     } catch (error) {
       const status = (error as Error & { status?: number }).status;

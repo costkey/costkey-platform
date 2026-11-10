@@ -13,6 +13,8 @@ export interface AuthPrincipal {
 const RESTRICTED_KEYS = new Set([
   "request_body",
   "response_body",
+  // Screen capture: screenshots are captured content.
+  "screen_frames",
   "requestBody",
   "responseBody",
   "system_prompt",

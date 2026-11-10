@@ -21,8 +21,8 @@ describe("replay model", () => {
   it("makes one step per call with a screenshot, framed on the newest image", () => {
     const steps = buildReplay([
       call(0),
-      call(1, { frames: [{ sha256: sha("a"), mediaType: "image/png", bytes: 10 }, { sha256: sha("b"), mediaType: "image/png", bytes: 12 }] }),
-      call(2, { frames: [{ sha256: sha("c"), mediaType: "image/png", bytes: 12 }], cost_usd: null }),
+      call(1, { screen_frames: [{ sha256: sha("a"), mediaType: "image/png", bytes: 10 }, { sha256: sha("b"), mediaType: "image/png", bytes: 12 }] }),
+      call(2, { screen_frames: [{ sha256: sha("c"), mediaType: "image/png", bytes: 12 }], cost_usd: null }),
     ]);
     expect(steps.map((step) => [step.eventId, step.frame.sha256, step.callNumber])).toEqual([
       ["ev_1", sha("b"), 2],
@@ -35,7 +35,7 @@ describe("replay model", () => {
   });
 
   it("counts a failed call as no charge", () => {
-    const [step] = buildReplay([call(0, { status_code: 500, lifecycle_state: "failed", cost_usd: 0.5, frames: [{ sha256: sha("d"), mediaType: "image/png", bytes: 1 }] })]);
+    const [step] = buildReplay([call(0, { status_code: 500, lifecycle_state: "failed", cost_usd: 0.5, screen_frames: [{ sha256: sha("d"), mediaType: "image/png", bytes: 1 }] })]);
     expect(step!.failed).toBe(true);
     expect(step!.cost).toBe(0);
     expect(step!.costSoFar).toBe(0);
@@ -68,10 +68,10 @@ describe("run replay", () => {
   it("shows the current step, its frame, action and the run's cost so far", () => {
     const html = render([
       call(0, {
-        frames: [{ sha256: sha("e"), mediaType: "image/png", bytes: 10 }],
+        screen_frames: [{ sha256: sha("e"), mediaType: "image/png", bytes: 10 }],
         response_body: { content: [{ type: "tool_use", input: { action: "left_click", coordinate: [5, 6] } }] },
       }),
-      call(1, { frames: [{ sha256: sha("f"), mediaType: "image/png", bytes: 10, omitted: "too_large" }] }),
+      call(1, { screen_frames: [{ sha256: sha("f"), mediaType: "image/png", bytes: 10, omitted: "too_large" }] }),
     ]);
     expect(html).toContain("Replay");
     expect(html).toContain("Step 1 of 2");

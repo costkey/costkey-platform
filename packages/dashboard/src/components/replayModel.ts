@@ -35,7 +35,7 @@ export interface ReplayStep {
 }
 
 function frameOf(event: TraceEvent): FrameRef | null {
-  const frames = Array.isArray(event.frames) ? event.frames : [];
+  const frames = Array.isArray(event.screen_frames) ? event.screen_frames : [];
   for (let index = frames.length - 1; index >= 0; index--) {
     const ref = frames[index];
     if (ref && typeof ref.sha256 === "string") return ref;

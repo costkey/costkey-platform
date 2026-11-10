@@ -2,7 +2,7 @@ import express, { Router as createRouter, type Request, type Response, type Rout
 import { createHash } from "node:crypto";
 import type pg from "pg";
 import { requireAuth } from "./auth.js";
-import { assertProjectAccess } from "./permissions.js";
+import { assertProjectAccess, roleCanReadContent } from "./permissions.js";
 
 /**
  * Screen capture: images an agent sent to the model, uploaded once each by the
@@ -158,6 +158,8 @@ export function createFramesRouter(pool: pg.Pool, store: FrameStore = postgresFr
       const sha256 = String(req.params.sha256 ?? "").toLowerCase();
       if (!SHA256.test(sha256)) { res.status(404).json({ error: "Frame not found" }); return; }
       await assertProjectAccess(pool, user, projectId);
+      // Screenshots are captured content: Viewers don't get them.
+      if (!roleCanReadContent(user.role)) { res.status(404).json({ error: "Frame not found" }); return; }
       const frame = await store.get(projectId, sha256);
       if (!frame) { res.status(404).json({ error: "Frame not found" }); return; }
       res.set({

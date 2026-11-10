@@ -362,7 +362,7 @@ export interface TraceEvent {
   feature_mapping_id?: string | null;
   feature_original?: string | null;
   /** Screen capture: the images this call's request carried, newest last. */
-  frames?: FrameRef[] | null;
+  screen_frames?: FrameRef[] | null;
   request_body?: unknown;
   response_body?: unknown;
 }

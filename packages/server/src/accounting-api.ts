@@ -270,7 +270,7 @@ function exposeEvent(row: Record<string, unknown>, restricted: boolean): Record<
   const sanitized = { ...row };
   for (const field of [
     "request_body", "response_body", "system_prompt", "call_site_raw",
-    "call_site_frames", "bl_file", "bl_function", "bl_line", "frames",
+    "call_site_frames", "bl_file", "bl_function", "bl_line",
   ]) delete sanitized[field];
   delete sanitized.metadata;
   if (sanitized.context && typeof sanitized.context === "object" && !Array.isArray(sanitized.context)) {
@@ -1598,7 +1598,7 @@ export function createAccountingRouter(pool: pg.Pool): Router {
                 feature_mapping_action_id, feature_original,
                 call_site_raw, call_site_frames, bl_function, bl_file, bl_line,
                 context, metadata, system_prompt, request_body, response_body,
-                span_id, native_units, release, frames, url AS pricing_url
+                span_id, native_units, release, frames AS screen_frames, url AS pricing_url
          FROM events
          WHERE project_id = $1 AND trace_id = $2
            AND COALESCE(event_type, 'call') = 'call'

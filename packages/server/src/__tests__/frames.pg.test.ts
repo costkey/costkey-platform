@@ -135,6 +135,12 @@ test("screen capture: project setting, uploads, ingest, reads and retention", { 
       assert.equal((await fetch(`${base}/api/v1/projects/${projectId}/frames/${shot.sha256}`)).status, 404);
       currentUser = null;
       assert.equal((await fetch(`${base}/api/v1/projects/${projectId}/frames/${shot.sha256}`)).status, 401);
+      // Screenshots are content: a Viewer on the project can't read them, a Developer can.
+      await pool.query("INSERT INTO project_memberships (project_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING", [projectId, userId]);
+      currentUser = { id: userId, orgId, role: "viewer" };
+      assert.equal((await fetch(`${base}/api/v1/projects/${projectId}/frames/${shot.sha256}`)).status, 404);
+      currentUser = { id: userId, orgId, role: "developer" };
+      assert.equal((await fetch(`${base}/api/v1/projects/${projectId}/frames/${shot.sha256}`)).status, 200);
       currentUser = { id: userId, orgId, role: "owner" };
 
       // Retention: frames older than body retention go.

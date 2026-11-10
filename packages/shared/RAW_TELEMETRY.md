@@ -128,6 +128,36 @@ is listed on the call event in request order, newest last:
 - Which image is the frame for the step (the newest) is decided on the server.
   The SDK doesn't resize, re-encode or compare images.
 
+## Browser replay: `@costkey/replay` chunks and assets
+
+The recorder (costkey/costkey-replay) uses the same switch as screen capture:
+nothing is recorded or sent unless the app starts the recorder **and** the
+project's runtime config reports `capture.screenCaptureEnabled: true`. While
+the setting is off the endpoints below answer 422, and the recorder stops for
+the rest of the process.
+
+- `POST /api/v1/replay/chunks`, gzipped JSON, DSN bearer token:
+
+  ```jsonc
+  { "recordingId": "8a6033c8-…", "seq": 0, "traceId": "tr_…" /* or null */, "events": [ /* rrweb events */ ] }
+  ```
+
+  One recording per browser page; `seq` counts from 0 per recording and a
+  repeated `(recordingId, seq)` is ignored. `traceId` is the run the page's
+  actions happened in when the chunk was cut. When a page moves to another run,
+  the recorder closes the chunk and starts the next run with a full snapshot.
+- The recorder adds two rrweb custom events (type 5):
+  `{ tag: "costkey.action", payload: { name, selector?, url?, x?, y?, key?, button?, textLength? } }`
+  for the agent's actions (typed text is a length only), and
+  `{ tag: "costkey.asset", payload: { url, sha256, mediaType } }` for each image
+  or font it cached.
+- Assets: `HEAD /api/v1/replay/assets/:sha256` (200 when the project has it,
+  404 when it doesn't), then `PUT` with the bytes and their `Content-Type`.
+  Images and fonts only, 2 MB each, stored once per project.
+- The recorder only filters and masks: inputs are masked in the page, block-listed
+  URLs are dropped, sizes are capped. URL rewriting for playback happens in the
+  console.
+
 ## What moves to the server
 
 | Was in the SDK | Server owns it now |

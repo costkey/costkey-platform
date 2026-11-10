@@ -1,6 +1,7 @@
 import type pg from "pg";
 import { ensureDailyAggregateSchema, withMigrationLock } from "./db.js";
 import { ensureFramesSchema } from "./frames.js";
+import { ensureReplaySchema } from "./replay.js";
 import { ensureDatasetsSchema } from "./datasets.js";
 import { ensureDashboardsSchema } from "./dashboards.js";
 
@@ -590,6 +591,7 @@ export async function ensurePlatformSchema(pool: pg.Pool): Promise<void> {
   }
   // Screen capture: the project setting and the frame store.
   await ensureFramesSchema(client);
+  await ensureReplaySchema(client);
   // Labelled datasets (after frames: items point at screenshots).
   await ensureDatasetsSchema(client);
   await ensureDashboardsSchema(client);

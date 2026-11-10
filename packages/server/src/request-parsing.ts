@@ -10,6 +10,8 @@ export function configureRequestParsing(app: Express): void {
   // Bodies arrive whole, usually gzipped (inflated here); the limit is the unpacked size.
   // The SDKs send batches of at most 8 MB before compression.
   app.use("/api/v1/events", express.json({ limit: "64mb" }));
+  // Browser replay chunks (@costkey/replay): gzipped rrweb events, a full page snapshot can be a few MB.
+  app.use("/api/v1/replay/chunks", express.json({ limit: "16mb" }));
   app.use(express.json({ limit: "5mb" }));
 }
 

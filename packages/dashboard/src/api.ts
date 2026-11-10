@@ -380,6 +380,22 @@ export function frameUrl(projectId: string, sha256: string): string {
   return `${API_BASE}/projects/${encodeURIComponent(projectId)}/frames/${encodeURIComponent(sha256)}`;
 }
 
+/** A browser replay (@costkey/replay): one recording per page, each page's rrweb events in order. */
+export interface TraceReplay {
+  recordings: Array<{ id: string; startedAt: string | null; endedAt: string | null; events: unknown[] }>;
+  truncated: boolean;
+}
+
+export async function getTraceReplay(projectId: string, traceId: string): Promise<TraceReplay> {
+  return get(`/projects/${encodeURIComponent(projectId)}/traces/${encodeURIComponent(traceId)}/replay`);
+}
+
+/** Absolute, because the replay iframe resolves URLs against about:blank. */
+export function replayAssetUrl(projectId: string, sha256: string): string {
+  const path = `${API_BASE}/projects/${encodeURIComponent(projectId)}/replay-assets/${encodeURIComponent(sha256)}`;
+  return typeof window === "undefined" ? path : new URL(path, window.location.href).href;
+}
+
 export interface TraceQuery {
   limit?: number;
   offset?: number;

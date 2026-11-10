@@ -18,13 +18,59 @@ describe("browser replay model", () => {
       { type: 5, timestamp: 1900, data: { tag: "costkey.action", payload: { name: "locator.click", selector: "#buy", textLength: "x" } } },
     ], href);
     expect(prepared).not.toBeNull();
-    expect(prepared!.events.map((event) => event.type)).toEqual([4, 2, 3]);
+    // The click gets a cursor glide (a mouse move) just before it.
+    expect(prepared!.events.map((event) => event.type)).toEqual([4, 2, 3, 3]);
     expect([prepared!.startMs, prepared!.endMs, prepared!.firstFrameAt]).toEqual([1000, 2000, 2]);
     expect(prepared!.firstUrl).toBe("https://shop.test/");
     expect(prepared!.actions).toEqual([
       { name: "page.goto", url: "https://shop.test/", at: 100 },
       { name: "locator.click", selector: "#buy", at: 900 },
     ]);
+  });
+
+  it("glides the cursor to each click, from where it last was", () => {
+    const prepared = prepareRecording("rec", [
+      { type: 4, timestamp: 1000, data: { href: "https://a.test/", width: 1000, height: 600 } },
+      { type: 2, timestamp: 1001, data: { node: { type: 0, childNodes: [] } } },
+      { type: 3, timestamp: 3000, data: { source: 2, type: 2, id: 7, x: 900, y: 100 } },
+      { type: 3, timestamp: 3100, data: { source: 2, type: 2, id: 8, x: 905, y: 101 } }, // too close and too soon: no glide
+      { type: 3, timestamp: 6000, data: { source: 2, type: 5, id: 9 } }, // focus: no position
+      { type: 3, timestamp: 9000, data: { source: 2, type: 2, id: 10, x: 100, y: 500 } },
+    ], href)!;
+    const moves = prepared.events.filter((event) => event.type === 3 && (event.data as { source: number }).source === 1) as Array<{ timestamp: number; data: { positions: Array<{ x: number; y: number; id: number; timeOffset: number }> } }>;
+    expect(moves).toHaveLength(2);
+    const [first, second] = moves;
+    expect(first!.timestamp).toBe(2990);
+    const start = first!.data.positions[0]!;
+    const end = first!.data.positions[first!.data.positions.length - 1]!;
+    expect(start.x).toBeGreaterThanOrEqual(500); // leaves from the middle of the viewport
+    expect(start.x).toBeLessThan(520);
+    expect([end.x, end.y, end.id, end.timeOffset]).toEqual([900, 100, 7, 0]);
+    expect(first!.data.positions[0]!.timeOffset).toBeLessThan(-600);
+    // The second glide leaves from the last click, not the middle.
+    expect(second!.data.positions[0]!.x).toBeGreaterThan(850);
+    expect(second!.data.positions.at(-1)).toMatchObject({ x: 100, y: 500, id: 10 });
+    // Three still stretches (the focus splits one); each ends before the next glide starts.
+    expect(prepared.quiet.map((span) => [span.from, span.to])).toEqual([[301, 1100], [2400, 4100], [5300, 7100]]);
+    expect(prepared.quiet[2]!.to).toBeLessThan(9000 - 1000 - 650);
+  });
+
+  it("glides to a pointer jump from a mouse move, and leaves real mouse movement alone", () => {
+    const prepared = prepareRecording("rec", [
+      { type: 4, timestamp: 1000, data: { href: "https://a.test/", width: 1000, height: 600 } },
+      { type: 2, timestamp: 1001, data: { node: { type: 0, childNodes: [] } } },
+      // Playwright: one move straight onto the button, then the click there.
+      { type: 3, timestamp: 4000, data: { source: 1, positions: [{ x: 80, y: 380, id: 5, timeOffset: -5 }] } },
+      { type: 3, timestamp: 4010, data: { source: 2, type: 2, id: 5, x: 80, y: 380 } },
+      // A person: many small steps, no glide added.
+      { type: 3, timestamp: 8000, data: { source: 1, positions: [{ x: 90, y: 385, id: 5, timeOffset: -40 }, { x: 100, y: 390, id: 5, timeOffset: -20 }, { x: 110, y: 395, id: 5, timeOffset: 0 }] } },
+    ], href)!;
+    const moves = prepared.events.filter((event) => event.type === 3 && (event.data as { source: number }).source === 1);
+    expect(moves).toHaveLength(3); // one glide + the two recorded moves
+    const glide = moves[0] as { timestamp: number; data: { positions: Array<{ x: number; y: number; timeOffset: number }> } };
+    expect(glide.timestamp).toBe(3985);
+    expect(glide.data.positions.at(-1)).toMatchObject({ x: 80, y: 380, timeOffset: 0 });
+    expect(glide.data.positions.length).toBeGreaterThan(20);
   });
 
   it("is unplayable without a full snapshot", () => {

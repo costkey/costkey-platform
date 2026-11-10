@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { TrendBucket } from "../api";
 import type { WidgetSpec } from "../dashboardsApi";
-import { breakdownRows, defaultTitle, periodRange, requestsFor, totalOf } from "./dashboardWidgets";
+import { breakdownRows, bucketLabel, defaultTitle, periodRange, requestsFor, totalOf, withShares } from "./dashboardWidgets";
 
 const widget = (fields: Partial<WidgetSpec>): WidgetSpec => ({ id: "w", title: "", kind: "total", metric: "cost", period: "7d", width: "half", ...fields });
 const bucket = (cost: number | null, calls: number, tokens: number, unpriced = 0): TrendBucket =>
@@ -36,5 +36,11 @@ describe("dashboard widgets", () => {
     expect(defaultTitle({ kind: "breakdown", metric: "cost", groupBy: "feature" })).toBe("Spend by feature");
     const range = periodRange("24h", Date.UTC(2026, 10, 10, 12, 0, 30));
     expect([range.from, range.to, range.bucket]).toEqual(["2026-11-09T12:00:00.000Z", "2026-11-10T12:00:00.000Z", "hour"]);
+  });
+
+  it("labels buckets and shares", () => {
+    expect(bucketLabel("2026-11-03T00:00:00Z", false, "UTC")).toBe("3 Nov");
+    expect(bucketLabel("2026-11-03T14:00:00Z", true, "UTC")).toBe("14:00");
+    expect(withShares([{ label: "a", value: 3 }, { label: "b", value: 1 }]).map((row) => row.share)).toEqual([0.75, 0.25]);
   });
 });

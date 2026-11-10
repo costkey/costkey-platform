@@ -118,6 +118,18 @@ function datasetRow(row: Record<string, unknown>): Record<string, unknown> {
     labels: row.labels ?? {},
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    ...(row.eval_runs === undefined ? {} : {
+      evalRuns: Number(row.eval_runs ?? 0),
+      covers: Array.isArray(row.covers) ? row.covers : [],
+      lastEval: row.last_eval_id ? {
+        executionId: row.last_eval_id,
+        name: row.last_eval_name ?? null,
+        configuration: row.last_eval_configuration ?? null,
+        startedAt: row.last_eval_started_at ?? null,
+        passed: Number(row.last_eval_passed ?? 0),
+        failed: Number(row.last_eval_failed ?? 0),
+      } : null,
+    }),
   };
 }
 
@@ -176,12 +188,32 @@ export function createDatasetsRouter(pool: pg.Pool): Router {
   router.get(base, requireAuth, handle(async (req, res) => {
     const { projectId } = await contentUser(pool, req);
     const result = await pool.query(
-      `SELECT d.*, COALESCE(c.n, 0) AS item_count, COALESCE(c.labels, '{}'::jsonb) AS labels
+      `SELECT d.*, COALESCE(c.n, 0) AS item_count, COALESCE(c.labels, '{}'::jsonb) AS labels,
+              COALESCE(f.covers, '[]'::jsonb) AS covers, COALESCE(ev.runs, 0) AS eval_runs,
+              last.id AS last_eval_id, last.name AS last_eval_name, last.configuration AS last_eval_configuration,
+              last.started_at AS last_eval_started_at, lv.passed AS last_eval_passed, lv.failed AS last_eval_failed
        FROM datasets d
        LEFT JOIN LATERAL (
          SELECT SUM(n) AS n, jsonb_object_agg(label, n) AS labels
          FROM (SELECT label, COUNT(*) AS n FROM dataset_items i WHERE i.dataset_id = d.id GROUP BY label) l
        ) c ON TRUE
+       -- Up to three screenshots to show on the list.
+       LEFT JOIN LATERAL (
+         SELECT jsonb_agg(frame_sha256) AS covers
+         FROM (SELECT frame_sha256 FROM dataset_items i WHERE i.dataset_id = d.id AND frame_sha256 IS NOT NULL ORDER BY created_at LIMIT 3) x
+       ) f ON TRUE
+       LEFT JOIN LATERAL (
+         SELECT COUNT(*) AS runs FROM executions x WHERE x.project_id = d.project_id AND starts_with(x.dataset_revision, d.id || '@')
+       ) ev ON TRUE
+       LEFT JOIN LATERAL (
+         SELECT x.id, x.name, x.configuration, x.started_at FROM executions x
+         WHERE x.project_id = d.project_id AND starts_with(x.dataset_revision, d.id || '@')
+         ORDER BY x.started_at DESC NULLS LAST LIMIT 1
+       ) last ON TRUE
+       LEFT JOIN LATERAL (
+         SELECT COUNT(*) FILTER (WHERE s.value >= 1) AS passed, COUNT(*) FILTER (WHERE s.value < 1) AS failed
+         FROM scores s WHERE last.id IS NOT NULL AND s.project_id = d.project_id AND starts_with(s.id, 'eval_' || last.id || '_')
+       ) lv ON TRUE
        WHERE d.project_id = $1
        ORDER BY d.updated_at DESC`,
       [projectId],
@@ -206,11 +238,15 @@ export function createDatasetsRouter(pool: pg.Pool): Router {
     const dataset = await loadDataset(pool, projectId, String(req.params.datasetId));
     const items = await pool.query(
       `SELECT id, source_event_id, trace_id, provider, model, label, note, expected, frame_sha256,
-              (input IS NOT NULL) AS has_input, created_at, updated_at
+              (input IS NOT NULL) AS has_input, output, created_at, updated_at
        FROM dataset_items WHERE dataset_id = $1 ORDER BY created_at ASC, id ASC`,
       [dataset.id],
     );
-    res.json({ dataset: datasetRow(dataset), items: items.rows.map((row) => itemRow({ ...row, input: null } as Record<string, unknown>)) });
+    // The output (not the input, which can be large) lets the console show each call's action.
+    res.json({
+      dataset: datasetRow(dataset),
+      items: items.rows.map((row) => ({ ...itemRow({ ...row, input: null } as Record<string, unknown>), output: (row as { output?: unknown }).output ?? null })),
+    });
   }));
 
   router.patch(`${base}/:datasetId`, requireAuth, handle(async (req, res) => {

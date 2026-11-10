@@ -11,6 +11,10 @@ export interface Dataset {
   labels: Record<string, number>;
   createdAt: string;
   updatedAt: string;
+  /** On the list only: how many eval runs, the latest one's result, and up to three screenshots. */
+  evalRuns?: number;
+  covers?: string[];
+  lastEval?: { executionId: string; name: string | null; configuration: Record<string, unknown> | null; startedAt: string | null; passed: number; failed: number } | null;
 }
 
 export interface DatasetItem {
@@ -24,6 +28,8 @@ export interface DatasetItem {
   expected: unknown;
   frameSha256: string | null;
   hasInput: boolean;
+  /** The call's response, kept to show its action. */
+  output?: unknown;
   createdAt: string;
   updatedAt: string;
 }

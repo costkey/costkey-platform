@@ -34,6 +34,8 @@ export interface PreparedRecording {
    */
   firstFrameAt: number;
   actions: RecordedAction[];
+  /** Stretches where nothing happens on the page (the agent is waiting on the model), as offsets. */
+  quiet: QuietSpan[];
   /** URL of the first page shown. */
   firstUrl: string | null;
 }
@@ -148,6 +150,9 @@ export function prepareRecording(
   );
   const startMs = events[0]!.timestamp;
   const endMs = events[events.length - 1]!.timestamp;
+  // Quiet stretches come from the page's own events, before the cursor glides are added.
+  const quiet = quietSpans(events, startMs);
+  addCursorMotion(events);
   const meta = events.find((event) => event.type === META)?.data as { href?: unknown } | undefined;
   const actions = actionEvents
     .filter((action) => action.timestamp >= startMs - 2000 && action.timestamp <= endMs + 2000)
@@ -161,6 +166,7 @@ export function prepareRecording(
     endMs: Math.max(endMs, startMs + 1),
     firstFrameAt: snapshot.timestamp - startMs + 1,
     actions,
+    quiet,
     firstUrl: typeof meta?.href === "string" ? meta.href : null,
   };
 }
@@ -182,6 +188,91 @@ function cleanAction(payload: Record<string, unknown>): Omit<RecordedAction, "at
   if (y !== undefined) action.y = y;
   if (textLength !== undefined) action.textLength = textLength;
   return action;
+}
+
+export interface QuietSpan {
+  from: number;
+  to: number;
+}
+
+const INCREMENTAL = 3;
+const MOUSE_MOVE = 1;
+const MOUSE_INTERACTION = 2;
+/** MouseDown, Click, ContextMenu, DblClick, TouchStart: the moments a pointer lands somewhere. */
+const POINTER_LANDS = new Set([1, 2, 3, 4, 7]);
+const GLIDE_MAX_MS = 650;
+const GLIDE_MIN_MS = 140;
+const GLIDE_STEP_MS = 20;
+/** A pointer move farther than this in one step is a jump, not a person moving the mouse. */
+const JUMP_PX = 40;
+
+const easeInOut = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
+
+/**
+ * Agents don't move the mouse like people do: Playwright and Puppeteer put the
+ * pointer straight on the target (one mouse move, or none) and click, so the
+ * replay cursor would jump. Wherever the pointer jumps, add a short eased
+ * glide from where it last was, ending just before the jump. Real mouse
+ * movement moves in small steps and is left alone. Only the player sees the
+ * glides; the recording is unchanged.
+ */
+export function addCursorMotion(events: Array<{ type: number; timestamp: number; data?: unknown }>): void {
+  let pointer: { x: number; y: number } | null = null;
+  let lastAt = events[0]?.timestamp ?? 0;
+  const glides: Array<{ index: number; event: { type: number; timestamp: number; data: unknown } }> = [];
+  const glideTo = (index: number, target: { x: number; y: number; id: unknown }, arriveAt: number) => {
+    const from = pointer;
+    const duration = Math.min(GLIDE_MAX_MS, arriveAt - lastAt - 20);
+    if (!from || duration < GLIDE_MIN_MS || Math.hypot(target.x - from.x, target.y - from.y) <= JUMP_PX) return;
+    const steps = Math.max(4, Math.round(duration / GLIDE_STEP_MS));
+    const emitAt = arriveAt - 10;
+    const positions = Array.from({ length: steps }, (_, step) => {
+      const t = (step + 1) / steps;
+      const eased = easeInOut(t);
+      return {
+        x: Math.round((from.x + (target.x - from.x) * eased) * 10) / 10,
+        y: Math.round((from.y + (target.y - from.y) * eased) * 10) / 10,
+        id: target.id,
+        timeOffset: Math.round(-duration + duration * t),
+      };
+    });
+    glides.push({ index, event: { type: INCREMENTAL, timestamp: emitAt, data: { source: MOUSE_MOVE, positions } } });
+  };
+  events.forEach((event, index) => {
+    if (event.type === META) {
+      const meta = event.data as { width?: unknown; height?: unknown } | undefined;
+      if (!pointer && typeof meta?.width === "number" && typeof meta.height === "number") pointer = { x: meta.width / 2, y: meta.height / 2 };
+    } else if (event.type === INCREMENTAL) {
+      const data = event.data as { source?: number; type?: number; x?: unknown; y?: unknown; id?: unknown; positions?: Array<{ x: number; y: number; id?: unknown; timeOffset?: number }> } | undefined;
+      if (data?.source === MOUSE_MOVE && Array.isArray(data.positions) && data.positions.length > 0) {
+        const first = data.positions[0]!;
+        glideTo(index, { x: first.x, y: first.y, id: first.id }, event.timestamp + Math.min(0, Number(first.timeOffset) || 0));
+        const last = data.positions[data.positions.length - 1]!;
+        pointer = { x: last.x, y: last.y };
+      } else if (data?.source === MOUSE_INTERACTION && POINTER_LANDS.has(Number(data.type)) && typeof data.x === "number" && typeof data.y === "number") {
+        glideTo(index, { x: data.x, y: data.y, id: data.id }, event.timestamp);
+        pointer = { x: data.x, y: data.y };
+      }
+    }
+    if (event.type !== CUSTOM) lastAt = event.timestamp;
+  });
+  // Insert from the end so earlier indexes stay valid.
+  for (let at = glides.length - 1; at >= 0; at--) events.splice(glides[at]!.index, 0, glides[at]!.event);
+}
+
+/**
+ * Gaps of at least 1.5 s between page events. They're trimmed at both ends so
+ * what happens around them (including the cursor's glide to the next click)
+ * still plays at normal speed.
+ */
+export function quietSpans(events: Array<{ type: number; timestamp: number }>, startMs: number, minimumMs = 1500): QuietSpan[] {
+  const spans: QuietSpan[] = [];
+  const page = events.filter((event) => event.type !== CUSTOM);
+  for (let index = 1; index < page.length; index++) {
+    const gap = page[index]!.timestamp - page[index - 1]!.timestamp;
+    if (gap >= minimumMs) spans.push({ from: page[index - 1]!.timestamp - startMs + 300, to: page[index]!.timestamp - startMs - GLIDE_MAX_MS - 250 });
+  }
+  return spans.filter((span) => span.to - span.from >= 300);
 }
 
 /** "Clicked #buy", "Went to example.com/cart", "Typed 12 characters". */
@@ -213,8 +304,9 @@ export function shortUrl(url: string): string {
 export interface TimedCall {
   eventId: string;
   callNumber: number;
-  /** Epoch milliseconds when the call started. */
+  /** Epoch milliseconds when the call started and ended. */
   startMs: number;
+  endMs: number;
   model: string;
   cost: number | null;
   failed: boolean;
@@ -232,7 +324,7 @@ export function timedCalls(events: TraceEvent[]): TimedCall[] {
       const failed = callFailure(event) !== null;
       const cost = failed ? 0 : event.cost_usd == null ? null : Number(event.cost_usd);
       if (cost != null && Number.isFinite(cost)) costSoFar += cost;
-      return { eventId: event.id, callNumber: position + 1, startMs, model: event.model, cost, failed, costSoFar };
+      return { eventId: event.id, callNumber: position + 1, startMs, endMs: startMs + Math.max(0, Number(event.duration_ms) || 0), model: event.model, cost, failed, costSoFar };
     });
 }
 

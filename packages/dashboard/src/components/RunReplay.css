@@ -20,6 +20,15 @@
 .ck-replay-frame.is-empty { color: var(--ck-slate); font-size: 13px; }
 .ck-replay-canvas { position: relative; display: inline-block; max-width: 100%; line-height: 0; }
 .ck-replay-canvas img { display: block; max-width: 100%; max-height: 460px; height: auto; }
+.ck-replay-canvas img.is-current { position: relative; animation: ck-replay-fade 280ms var(--ck-ease) both; }
+.ck-replay-canvas img.is-previous { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill; }
+@keyframes ck-replay-fade { from { opacity: 0; } to { opacity: 1; } }
+.ck-replay-ripple { position: absolute; inset: -2px; border: 2px solid var(--ck-critical); border-radius: 50%; animation: ck-replay-ripple 700ms 380ms ease-out both; }
+@keyframes ck-replay-ripple { from { opacity: 0.9; transform: scale(1); } to { opacity: 0; transform: scale(2.6); } }
+@media (prefers-reduced-motion: reduce) {
+  .ck-replay-canvas img.is-current, .ck-replay-ripple { animation: none; }
+  .ck-replay-marker { transition: none; }
+}
 .ck-replay-marker {
   position: absolute;
   width: 18px;
@@ -30,6 +39,8 @@
   background: var(--ck-critical);
   box-shadow: 0 0 0 3px rgba(194, 65, 12, 0.35), 0 1px 4px rgba(0, 0, 0, 0.35);
   pointer-events: none;
+  z-index: 1;
+  transition: left 420ms var(--ck-ease), top 420ms var(--ck-ease);
 }
 
 .ck-replay-facts { margin: 0; display: flex; flex-direction: column; gap: 12px; font-size: 13px; }
@@ -90,9 +101,22 @@
 .ck-dom-calls { top: 26px; height: 8px; }
 .ck-dom-mark { position: absolute; display: block; transform: translateX(-50%); }
 .ck-dom-mark.is-action { top: 0; width: 2px; height: 6px; border-radius: 1px; background: var(--ck-slate); opacity: 0.6; }
-.ck-dom-mark.is-call { top: 0; width: 8px; height: 8px; padding: 0; border: 1px solid var(--ck-raised); border-radius: 50%; background: var(--ck-chart, #476d9c); cursor: pointer; pointer-events: auto; }
+.ck-dom-mark.is-call { top: 0; height: 8px; padding: 0; border: 1px solid var(--ck-raised); border-radius: 4px; background: var(--ck-chart, #476d9c); opacity: 0.75; transform: none; cursor: pointer; pointer-events: auto; transition: opacity var(--ck-motion) var(--ck-ease); }
+.ck-dom-mark.is-call:hover { opacity: 1; }
 .ck-dom-mark.is-call.is-failed { background: var(--ck-critical); }
-.ck-dom-mark.is-call.is-current { box-shadow: 0 0 0 2px var(--ck-ink); }
+.ck-dom-mark.is-call.is-current { opacity: 1; box-shadow: 0 0 0 2px var(--ck-ink); }
+
+/* What the agent is doing while the page sits still */
+.ck-dom-status { position: absolute; left: 12px; bottom: 12px; z-index: 2; display: inline-flex; align-items: center; gap: 8px; max-width: calc(100% - 24px); padding: 6px 12px; overflow: hidden; border-radius: 999px; background: rgba(19, 35, 58, 0.86); color: #e6edf5; font-size: 12px; white-space: nowrap; text-overflow: ellipsis; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18); backdrop-filter: blur(4px); pointer-events: none; animation: ck-dom-status-in 160ms var(--ck-ease); }
+.ck-dom-status b { color: #fff; font-weight: 600; }
+.ck-dom-status-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--ck-lamp, #f5cc68); animation: ck-dom-pulse 1.1s ease-in-out infinite; }
+@keyframes ck-dom-status-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+@keyframes ck-dom-pulse { 0%, 100% { opacity: 0.35; transform: scale(0.8); } 50% { opacity: 1; transform: scale(1); } }
+.ck-dom-skip { display: inline-flex; align-items: center; gap: 5px; color: var(--ck-slate); }
+.ck-dom-skip.is-on { color: var(--ck-ink); background: var(--ck-soft); }
+@media (prefers-reduced-motion: reduce) {
+  .ck-dom-status, .ck-dom-status-dot { animation: none; }
+}
 
 @media (max-width: 900px) {
   .ck-replay-head { flex-wrap: wrap; align-items: flex-start; }

@@ -137,7 +137,7 @@ function StepReplay({ projectId, steps, callCount, selectedId, onSelectCall, cur
       </div>
     </div>
     <div className="ck-replay-body">
-      <ReplayFrame key={step.eventId} projectId={projectId} step={step} />
+      <ReplayFrame projectId={projectId} step={step} />
       <dl className="ck-replay-facts">
         {step.action && <div><dt>Action</dt><dd>{actionTitle(step.action.label)}{step.action.x != null && step.action.y != null ? ` at ${Math.round(step.action.x)}, ${Math.round(step.action.y)}` : ""}{step.action.text ? <span className="ck-replay-text">“{step.action.text}”</span> : null}</dd></div>}
         <div><dt>Model</dt><dd>{step.model || "Unknown model"}</dd></div>
@@ -156,28 +156,39 @@ function StepReplay({ projectId, steps, callCount, selectedId, onSelectCall, cur
   </section>;
 }
 
+/**
+ * One step's screenshot. Moving to another step fades the new frame in over
+ * the last one and glides the click marker to its new spot, so stepping
+ * through reads as motion rather than a slideshow.
+ */
 function ReplayFrame({ projectId, step }: { projectId: string; step: ReplayStep }) {
+  const [shown, setShown] = useState<{ current: ReplayStep; previous: ReplayStep | null }>({ current: step, previous: null });
   const [size, setSize] = useState<{ width: number; height: number } | null>(null);
-  const [missing, setMissing] = useState(false);
-  if (step.frame.omitted) {
+  const [missing, setMissing] = useState<string | null>(null);
+  if (shown.current.eventId !== step.eventId) setShown({ current: step, previous: shown.current });
+  const { current, previous } = shown;
+  if (current.frame.omitted) {
     return <div className="ck-replay-frame is-empty">Screenshot over 2 MB, so it wasn't uploaded</div>;
   }
-  if (missing) {
+  if (missing === current.eventId) {
     return <div className="ck-replay-frame is-empty">Screenshot no longer stored</div>;
   }
-  const { action } = step;
+  const { action } = current;
   const marker = size && action?.x != null && action.y != null && action.x <= size.width && action.y <= size.height
     ? { left: `${(action.x / size.width) * 100}%`, top: `${(action.y / size.height) * 100}%` }
     : null;
   return <div className="ck-replay-frame">
     <div className="ck-replay-canvas">
+      {previous && !previous.frame.omitted && previous.eventId !== current.eventId && <img className="is-previous" src={frameUrl(projectId, previous.frame.sha256)} alt="" aria-hidden="true" />}
       <img
-        src={frameUrl(projectId, step.frame.sha256)}
-        alt={`What the model saw before call ${step.callNumber}`}
+        key={current.eventId}
+        className="is-current"
+        src={frameUrl(projectId, current.frame.sha256)}
+        alt={`What the model saw before call ${current.callNumber}`}
         onLoad={(event) => setSize({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight })}
-        onError={() => setMissing(true)}
+        onError={() => setMissing(current.eventId)}
       />
-      {marker && <span className="ck-replay-marker" style={marker} aria-hidden="true" />}
+      {marker && <span className="ck-replay-marker" style={marker} aria-hidden="true"><i key={current.eventId} className="ck-replay-ripple" /></span>}
     </div>
   </div>;
 }

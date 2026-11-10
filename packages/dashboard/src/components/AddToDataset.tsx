@@ -9,6 +9,7 @@ import {
   type Dataset,
   type DatasetMembership,
 } from "../datasetsApi";
+import { labelTone } from "./datasetView";
 import "./AddToDataset.css";
 
 const QUICK_LABELS = ["Good", "Bad"];
@@ -87,8 +88,8 @@ export function AddToDataset({ projectId, eventId, compact = false }: { projectI
 
   return <div className={`ck-add-dataset${compact ? " is-compact" : ""}`}>
     {!open && <div className="ck-add-dataset-row">
-      {memberships?.map((membership) => <Link key={membership.id} className="ck-add-dataset-chip" to={`/datasets/${membership.datasetId}`} title={membership.note ?? undefined}>
-        <Tag size={12} />{membership.datasetName} · {membership.label}
+      {memberships?.map((membership) => <Link key={membership.id} className={`ck-add-dataset-chip is-${labelTone(membership.label)}`} to={`/datasets/${membership.datasetId}`} title={membership.note ?? `Open ${membership.datasetName}`}>
+        <Tag size={12} aria-hidden="true" />{membership.datasetName}<b>{membership.label}</b>
       </Link>)}
       <button className="ck-button ck-button-quiet" type="button" onClick={() => void start()} disabled={memberships === null}>
         <Tag size={13} />{memberships && memberships.length > 0 ? "Relabel" : "Add to dataset"}
@@ -103,7 +104,7 @@ export function AddToDataset({ projectId, eventId, compact = false }: { projectI
       {datasetId === NEW_DATASET && <input aria-label="New dataset name" placeholder="e.g. checkout clicks" value={newName} maxLength={80} onChange={(event) => setNewName(event.target.value)} autoFocus />}
       <span className="ck-add-dataset-label">Label</span>
       <div className="ck-add-dataset-quick">
-        {QUICK_LABELS.map((quick) => <button key={quick} type="button" className={`ck-add-dataset-pill${label === quick ? " is-on" : ""}`} aria-pressed={label === quick} onClick={() => setLabel(quick)}>{quick}</button>)}
+        {QUICK_LABELS.map((quick) => <button key={quick} type="button" className={`ck-add-dataset-pill is-${labelTone(quick)}${label === quick ? " is-on" : ""}`} aria-pressed={label === quick} onClick={() => setLabel(quick)}>{quick}</button>)}
         <input aria-label="Custom label" placeholder="or type one, e.g. wrong click" value={QUICK_LABELS.includes(label) ? "" : label} maxLength={60} onChange={(event) => setLabel(event.target.value)} />
       </div>
       <label htmlFor={`${formId}-note`}>Note</label>
@@ -111,7 +112,7 @@ export function AddToDataset({ projectId, eventId, compact = false }: { projectI
       {error && <div className="ck-add-dataset-error" role="alert">{error}</div>}
       <div className="ck-add-dataset-actions">
         <button className="ck-button ck-button-quiet" type="button" onClick={() => setOpen(false)}>Cancel</button>
-        <button className="ck-button ck-button-secondary" type="submit" disabled={saving}>{saving ? "Saving" : "Save"}</button>
+        <button className="ck-button ck-button-primary" type="submit" disabled={saving || !label.trim()}>{saving ? "Saving…" : memberships && memberships.length > 0 ? "Save label" : "Add to dataset"}</button>
       </div>
     </form>}
   </div>;

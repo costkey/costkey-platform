@@ -432,6 +432,7 @@ export default function App() {
             <RouterRoute path="/quality" element={<Quality />} />
             <RouterRoute path="/datasets" element={<Datasets />} />
             <RouterRoute path="/datasets/:datasetId" element={<Datasets />} />
+            <RouterRoute path="/datasets/:datasetId/evals/:executionId" element={<Datasets />} />
             <RouterRoute path="/alerting" element={<Alerting />} />
             <RouterRoute path="/forecast" element={<Forecast />} />
             <RouterRoute path="/executions" element={<Executions />} />

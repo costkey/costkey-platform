@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, Download, Trash2 } from "lucide-react";
+import { ArrowLeft, Download, FlaskConical, Trash2 } from "lucide-react";
 import { useAuth } from "../contexts/useAuth";
 import { EmptyPanel, LoadingRows, PageHeader, Panel } from "../components/ConsolePrimitives";
 import { formatAbsoluteDate } from "../components/consoleFormatters";
 import { frameUrl } from "../api";
+import { EvalRunDetail, EvalRunsPanel, RunEvalPanel } from "../components/DatasetEvals";
+import type { ReportingFx } from "../components/consoleFormatters";
+import { useInsightScope } from "./useInsightScope";
 import {
   datasetExportUrl,
   deleteDataset,
@@ -19,14 +22,16 @@ import "./Datasets.css";
 
 /** Labelled calls kept as cases for evals. */
 export default function Datasets() {
-  const { datasetId } = useParams();
+  const { datasetId, executionId } = useParams();
   const { currentProjectId, projects, user } = useAuth();
+  const { currency, fx } = useInsightScope();
   const projectId = currentProjectId ?? projects[0]?.id ?? null;
   if (!projectId) return <EmptyPanel title="No project yet" />;
   if (user?.role === "viewer") {
     return <><PageHeader title="Datasets" /><EmptyPanel title="Datasets hold captured content" body="Ask an admin for Developer access to open them." /></>;
   }
-  return datasetId ? <DatasetDetail projectId={projectId} datasetId={datasetId} /> : <DatasetList projectId={projectId} />;
+  if (datasetId && executionId) return <EvalRunDetail projectId={projectId} datasetId={datasetId} executionId={executionId} currency={currency} fx={fx} />;
+  return datasetId ? <DatasetDetail projectId={projectId} datasetId={datasetId} currency={currency} fx={fx} /> : <DatasetList projectId={projectId} />;
 }
 
 function LabelCounts({ labels }: { labels: Record<string, number> }) {
@@ -63,8 +68,9 @@ function DatasetList({ projectId }: { projectId: string }) {
   </>;
 }
 
-function DatasetDetail({ projectId, datasetId }: { projectId: string; datasetId: string }) {
+function DatasetDetail({ projectId, datasetId, currency, fx }: { projectId: string; datasetId: string; currency: string; fx?: ReportingFx | null }) {
   const navigate = useNavigate();
+  const [showEval, setShowEval] = useState(false);
   const [state, setState] = useState<{ dataset: Dataset | null; items: DatasetItem[]; error: string | null; loading: boolean }>({ dataset: null, items: [], error: null, loading: true });
   const load = useCallback(() => getDataset(projectId, datasetId)
     .then((result) => setState({ dataset: result.dataset, items: result.items, error: null, loading: false }))
@@ -93,10 +99,12 @@ function DatasetDetail({ projectId, datasetId }: { projectId: string; datasetId:
       title={dataset?.name ?? "Dataset"}
       description={dataset ? `${dataset.description ? `${dataset.description} · ` : ""}${dataset.itemCount.toLocaleString()} call${dataset.itemCount === 1 ? "" : "s"} · revision ${dataset.revision}` : undefined}
       actions={dataset && <>
+        <button className="ck-button ck-button-primary" type="button" onClick={() => setShowEval((value) => !value)}><FlaskConical size={14} /> Run eval</button>
         <a className="ck-button ck-button-secondary" href={datasetExportUrl(projectId, datasetId)} download><Download size={14} /> Export JSONL</a>
         <button className="ck-button ck-button-quiet" type="button" onClick={() => void removeDataset()}><Trash2 size={14} /> Delete</button>
       </>}
     />
+    {showEval && dataset && <RunEvalPanel datasetName={dataset.name} onClose={() => setShowEval(false)} />}
     <Panel>
       {state.loading ? <LoadingRows count={4} columns={5} />
         : state.error ? <div className="ck-ds-error" role="alert">{state.error}</div>
@@ -113,5 +121,6 @@ function DatasetDetail({ projectId, datasetId }: { projectId: string; datasetId:
               </tr>)}</tbody>
             </table></div>}
     </Panel>
+    {dataset && <EvalRunsPanel projectId={projectId} datasetId={datasetId} currency={currency} fx={fx} />}
   </>;
 }

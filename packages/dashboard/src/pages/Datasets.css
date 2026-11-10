@@ -20,3 +20,8 @@
 .ck-ds-label-input:hover, .ck-ds-label-input:focus { border-color: var(--ck-border); background: var(--ck-raised); }
 .ck-ds-note { max-width: 360px; white-space: pre-wrap; }
 .ck-page-actions .ck-button { display: inline-flex; align-items: center; gap: 6px; text-decoration: none; }
+.ck-eval-snippet { position: relative; }
+.ck-eval-snippet pre { margin: 0; padding: 14px 16px; overflow-x: auto; border-radius: 8px; background: var(--ck-canvas); font-size: 12.5px; line-height: 1.55; }
+.ck-eval-snippet .ck-button { position: absolute; top: 8px; right: 8px; display: inline-flex; align-items: center; gap: 6px; }
+.ck-eval-notes { margin: 12px 0 0; padding-left: 18px; color: var(--ck-slate); font-size: 13px; line-height: 1.6; }
+.ck-eval-notes code, .ck-eval-snippet code { font-size: 12px; }

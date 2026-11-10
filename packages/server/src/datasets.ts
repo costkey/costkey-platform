@@ -301,6 +301,117 @@ export function createDatasetsRouter(pool: pg.Pool): Router {
     res.send(items.rows.map((row) => JSON.stringify(itemRow(row as Record<string, unknown>, true))).join("\n") + (items.rows.length ? "\n" : ""));
   }));
 
+  // Eval runs against this dataset: executions whose dataset revision names it
+  // (CostKey.runEval sends "<datasetId>@<revision>"), with their cost and verdicts.
+  router.get(`${base}/:datasetId/evals`, requireAuth, handle(async (req, res) => {
+    const { projectId } = await contentUser(pool, req);
+    const dataset = await loadDataset(pool, projectId, String(req.params.datasetId));
+    const runs = await pool.query(
+      `WITH runs AS (
+         SELECT id, name, configuration, dataset_revision, state, started_at, ended_at
+         FROM executions
+         WHERE project_id = $1 AND starts_with(dataset_revision, $2 || '@')
+       ), calls AS (
+         SELECT e.execution_id, COUNT(DISTINCT e.case_id) AS cases, SUM(e.cost_usd) AS cost
+         FROM events e JOIN runs r ON r.id = e.execution_id
+         WHERE e.project_id = $1 AND COALESCE(e.event_type, 'call') = 'call'
+         GROUP BY e.execution_id
+       ), original AS (
+         SELECT c.execution_id, SUM(src.cost_usd) AS original_cost
+         FROM (SELECT DISTINCT e.execution_id, e.case_id FROM events e JOIN runs r ON r.id = e.execution_id
+               WHERE e.project_id = $1 AND e.case_id IS NOT NULL) c
+         JOIN dataset_items di ON di.id = c.case_id AND di.dataset_id = $2
+         JOIN events src ON src.project_id = $1 AND src.id = di.source_event_id
+         GROUP BY c.execution_id
+       ), verdicts AS (
+         SELECT r.id AS execution_id,
+                COUNT(*) FILTER (WHERE s.value >= 1) AS passed,
+                COUNT(*) FILTER (WHERE s.value < 1) AS failed
+         FROM runs r JOIN scores s ON s.project_id = $1 AND starts_with(s.id, 'eval_' || r.id || '_')
+         GROUP BY r.id
+       )
+       SELECT r.*, COALESCE(c.cases, 0) AS cases, c.cost, o.original_cost,
+              COALESCE(v.passed, 0) AS passed, COALESCE(v.failed, 0) AS failed
+       FROM runs r
+       LEFT JOIN calls c ON c.execution_id = r.id
+       LEFT JOIN original o ON o.execution_id = r.id
+       LEFT JOIN verdicts v ON v.execution_id = r.id
+       ORDER BY r.started_at DESC NULLS LAST
+       LIMIT 50`,
+      [projectId, dataset.id],
+    );
+    res.json({
+      runs: runs.rows.map((row) => ({
+        executionId: row.id,
+        name: row.name,
+        configuration: row.configuration ?? null,
+        datasetRevision: row.dataset_revision,
+        state: row.state,
+        startedAt: row.started_at,
+        endedAt: row.ended_at,
+        cases: Number(row.cases),
+        passed: Number(row.passed),
+        failed: Number(row.failed),
+        cost: row.cost == null ? null : Number(row.cost),
+        originalCost: row.original_cost == null ? null : Number(row.original_cost),
+      })),
+    });
+  }));
+
+  // One eval run, case by case: the labelled call next to what the candidate did.
+  router.get(`${base}/:datasetId/evals/:executionId`, requireAuth, handle(async (req, res) => {
+    const { projectId } = await contentUser(pool, req);
+    const dataset = await loadDataset(pool, projectId, String(req.params.datasetId));
+    const executionId = String(req.params.executionId);
+    const run = await pool.query(
+      `SELECT id, name, configuration, dataset_revision, state, started_at, ended_at FROM executions
+       WHERE project_id = $1 AND id = $2 AND starts_with(dataset_revision, $3 || '@')`,
+      [projectId, executionId, dataset.id],
+    );
+    if (!run.rows[0]) throw new HttpError(404, "Eval run not found");
+    const cases = await pool.query(
+      `WITH candidate AS (
+         SELECT e.case_id, MIN(e.trace_id) AS trace_id, SUM(e.cost_usd) AS cost, COUNT(*) AS calls,
+                (ARRAY_AGG(e.response_body ORDER BY e.timestamp DESC))[1] AS response_body
+         FROM events e
+         WHERE e.project_id = $1 AND e.execution_id = $2 AND e.case_id IS NOT NULL
+           AND COALESCE(e.event_type, 'call') = 'call'
+         GROUP BY e.case_id
+       )
+       SELECT di.id, di.label, di.note, di.frame_sha256, di.output, di.source_event_id, di.trace_id AS source_trace_id,
+              src.cost_usd AS original_cost, src.model AS original_model,
+              c.trace_id, c.cost, c.calls, c.response_body,
+              s.value AS score, s.comment AS reason
+       FROM candidate c
+       JOIN dataset_items di ON di.id = c.case_id AND di.dataset_id = $3
+       LEFT JOIN events src ON src.project_id = $1 AND src.id = di.source_event_id
+       LEFT JOIN scores s ON s.project_id = $1 AND s.id = 'eval_' || $2 || '_' || di.id
+       ORDER BY di.created_at ASC, di.id ASC`,
+      [projectId, executionId, dataset.id],
+    );
+    const row = run.rows[0] as Record<string, unknown>;
+    res.json({
+      run: { executionId: row.id, name: row.name, configuration: row.configuration ?? null, datasetRevision: row.dataset_revision, state: row.state, startedAt: row.started_at, endedAt: row.ended_at },
+      cases: cases.rows.map((item) => ({
+        itemId: item.id,
+        label: item.label,
+        note: item.note ?? null,
+        frameSha256: item.frame_sha256 ?? null,
+        sourceEventId: item.source_event_id,
+        sourceTraceId: item.source_trace_id ?? null,
+        originalModel: item.original_model ?? null,
+        originalCost: item.original_cost == null ? null : Number(item.original_cost),
+        originalOutput: item.output ?? null,
+        traceId: item.trace_id,
+        calls: Number(item.calls),
+        cost: item.cost == null ? null : Number(item.cost),
+        candidateOutput: parseJson(item.response_body),
+        pass: item.score == null ? null : Number(item.score) >= 1,
+        reason: item.reason ?? null,
+      })),
+    });
+  }));
+
   // Which datasets a call is already in, for the "Add to dataset" control.
   router.get("/api/v1/projects/:projectId/dataset-items", requireAuth, handle(async (req, res) => {
     const { projectId } = await contentUser(pool, req);

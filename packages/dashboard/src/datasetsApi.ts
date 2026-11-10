@@ -90,3 +90,44 @@ export function datasetMemberships(projectId: string, eventId: string): Promise<
 export function datasetExportUrl(projectId: string, datasetId: string): string {
   return `${API_BASE}${project(projectId)}/datasets/${encodeURIComponent(datasetId)}/export`;
 }
+
+export interface EvalRun {
+  executionId: string;
+  name: string | null;
+  configuration: Record<string, unknown> | null;
+  datasetRevision: string;
+  state: string;
+  startedAt: string | null;
+  endedAt: string | null;
+  cases: number;
+  passed: number;
+  failed: number;
+  cost: number | null;
+  originalCost: number | null;
+}
+
+export interface EvalCase {
+  itemId: string;
+  label: string;
+  note: string | null;
+  frameSha256: string | null;
+  sourceEventId: string;
+  sourceTraceId: string | null;
+  originalModel: string | null;
+  originalCost: number | null;
+  originalOutput: unknown;
+  traceId: string;
+  calls: number;
+  cost: number | null;
+  candidateOutput: unknown;
+  pass: boolean | null;
+  reason: string | null;
+}
+
+export function listEvalRuns(projectId: string, datasetId: string): Promise<{ runs: EvalRun[] }> {
+  return request(`${project(projectId)}/datasets/${encodeURIComponent(datasetId)}/evals`);
+}
+
+export function getEvalRun(projectId: string, datasetId: string, executionId: string): Promise<{ run: Omit<EvalRun, "cases" | "passed" | "failed" | "cost" | "originalCost">; cases: EvalCase[] }> {
+  return request(`${project(projectId)}/datasets/${encodeURIComponent(datasetId)}/evals/${encodeURIComponent(executionId)}`);
+}

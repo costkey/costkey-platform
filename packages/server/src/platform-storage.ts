@@ -2,6 +2,7 @@ import type pg from "pg";
 import { ensureDailyAggregateSchema, withMigrationLock } from "./db.js";
 import { ensureFramesSchema } from "./frames.js";
 import { ensureDatasetsSchema } from "./datasets.js";
+import { ensureDashboardsSchema } from "./dashboards.js";
 
 /**
  * Additive storage owned by the platform routes.
@@ -591,6 +592,7 @@ export async function ensurePlatformSchema(pool: pg.Pool): Promise<void> {
   await ensureFramesSchema(client);
   // Labelled datasets (after frames: items point at screenshots).
   await ensureDatasetsSchema(client);
+  await ensureDashboardsSchema(client);
   });
 }
 

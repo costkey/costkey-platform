@@ -37,6 +37,7 @@ const ModelDetailPage = lazy(() => loadChunk(() => import("./pages/ModelDetail")
 const WorkflowDetailPage = lazy(() => loadChunk(() => import("./pages/RunGroups")).then((module) => ({ default: module.WorkflowDetailPage })));
 const Quality = lazy(() => loadChunk(() => import("./pages/Quality")));
 const Datasets = lazy(() => loadChunk(() => import("./pages/Datasets")));
+const Dashboards = lazy(() => loadChunk(() => import("./pages/Dashboards")));
 const Alerting = lazy(() => loadChunk(() => import("./pages/Alerting")));
 const ContributorPage = lazy(() => loadChunk(() => import("./pages/ProductParityRoutes")).then((module) => ({ default: module.ContributorPage })));
 const FindingDrawerPage = lazy(() => loadChunk(() => import("./pages/ProductParityRoutes")).then((module) => ({ default: module.FindingDrawerPage })));
@@ -288,6 +289,7 @@ function AppShell() {
   // Spend by model, budgets, forecasts and alerts are features inside the tabs.
   const navItems = useMemo(() => [
     { to: "/", label: "Overview", icon: "overview" as PrototypeIconName },
+    { to: "/dashboards", label: "Dashboards", icon: "activity" as PrototypeIconName },
     { to: "/workflows", label: "Workflows", icon: "workflow" as PrototypeIconName },
     { to: "/agents", label: "Agents", icon: "agent" as PrototypeIconName },
     { to: "/traces", label: "Traces", icon: "trace" as PrototypeIconName },
@@ -306,6 +308,7 @@ function AppShell() {
     if (pathname.startsWith("/executions") || pathname.startsWith("/group")) return "/workflows";
     if (pathname.startsWith("/quality")) return "/quality";
     if (pathname.startsWith("/datasets")) return "/datasets";
+    if (pathname.startsWith("/dashboards")) return "/dashboards";
     if (pathname.startsWith("/users")) return "/users";
     if (pathname.startsWith("/models") || pathname.startsWith("/costs") || pathname.startsWith("/contributor")) return "/costs";
     if (pathname.startsWith("/forecast")) return "/forecast";
@@ -431,6 +434,8 @@ export default function App() {
             <RouterRoute path="/errors" element={<Navigate to="/quality" replace />} />
             <RouterRoute path="/quality" element={<Quality />} />
             <RouterRoute path="/datasets" element={<Datasets />} />
+            <RouterRoute path="/dashboards" element={<Dashboards />} />
+            <RouterRoute path="/dashboards/:dashboardId" element={<Dashboards />} />
             <RouterRoute path="/datasets/:datasetId" element={<Datasets />} />
             <RouterRoute path="/datasets/:datasetId/evals/:executionId" element={<Datasets />} />
             <RouterRoute path="/alerting" element={<Alerting />} />

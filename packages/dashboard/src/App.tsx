@@ -36,6 +36,7 @@ const UserDetailPage = lazy(() => loadChunk(() => import("./pages/Users")).then(
 const ModelDetailPage = lazy(() => loadChunk(() => import("./pages/ModelDetail")).then((module) => ({ default: module.ModelDetailPage })));
 const WorkflowDetailPage = lazy(() => loadChunk(() => import("./pages/RunGroups")).then((module) => ({ default: module.WorkflowDetailPage })));
 const Quality = lazy(() => loadChunk(() => import("./pages/Quality")));
+const Datasets = lazy(() => loadChunk(() => import("./pages/Datasets")));
 const Alerting = lazy(() => loadChunk(() => import("./pages/Alerting")));
 const ContributorPage = lazy(() => loadChunk(() => import("./pages/ProductParityRoutes")).then((module) => ({ default: module.ContributorPage })));
 const FindingDrawerPage = lazy(() => loadChunk(() => import("./pages/ProductParityRoutes")).then((module) => ({ default: module.FindingDrawerPage })));
@@ -293,6 +294,7 @@ function AppShell() {
     { to: "/users", label: "Users", icon: "users" as PrototypeIconName },
     { to: "/costs", label: "Costs", icon: "cost" as PrototypeIconName },
     { to: "/quality", label: "Quality", icon: "quality" as PrototypeIconName },
+    { to: "/datasets", label: "Datasets", icon: "flask" as PrototypeIconName },
     { to: "/budgets", label: "Budgets", icon: "shield" as PrototypeIconName },
   ], []);
 
@@ -303,6 +305,7 @@ function AppShell() {
     if (pathname.startsWith("/traces") || pathname === "/trace" || pathname.startsWith("/compare")) return "/traces";
     if (pathname.startsWith("/executions") || pathname.startsWith("/group")) return "/workflows";
     if (pathname.startsWith("/quality")) return "/quality";
+    if (pathname.startsWith("/datasets")) return "/datasets";
     if (pathname.startsWith("/users")) return "/users";
     if (pathname.startsWith("/models") || pathname.startsWith("/costs") || pathname.startsWith("/contributor")) return "/costs";
     if (pathname.startsWith("/forecast")) return "/forecast";
@@ -427,6 +430,8 @@ export default function App() {
             <RouterRoute path="/users/:userId" element={<UserDetailPage />} />
             <RouterRoute path="/errors" element={<Navigate to="/quality" replace />} />
             <RouterRoute path="/quality" element={<Quality />} />
+            <RouterRoute path="/datasets" element={<Datasets />} />
+            <RouterRoute path="/datasets/:datasetId" element={<Datasets />} />
             <RouterRoute path="/alerting" element={<Alerting />} />
             <RouterRoute path="/forecast" element={<Forecast />} />
             <RouterRoute path="/executions" element={<Executions />} />

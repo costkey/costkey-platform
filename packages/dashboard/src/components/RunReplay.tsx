@@ -4,6 +4,7 @@ import { frameUrl, type TraceEvent } from "../api";
 import { formatDuration } from "../utils";
 import { formatReportedAmount, type ReportingFx } from "./consoleFormatters";
 import { actionTitle, buildReplay, type ReplayStep } from "./replayModel";
+import { AddToDataset } from "./AddToDataset";
 import "./RunReplay.css";
 
 const STEP_MS = 1200;
@@ -87,6 +88,7 @@ export function RunReplay({ projectId, events, selectedId, onSelectCall, currenc
         <div><dt>Model</dt><dd>{step.model || "Unknown model"}</dd></div>
         <div><dt>This call</dt><dd>{step.failed ? "No charge" : step.cost == null ? "Unpriced" : money(step.cost)} · {formatDuration(step.durationMs)}</dd></div>
         <div><dt>Run so far</dt><dd className="ck-replay-total">{money(step.costSoFar)}</dd></div>
+        <div><AddToDataset projectId={projectId} eventId={step.eventId} compact /></div>
       </dl>
     </div>
     <ol className="ck-replay-strip" ref={filmstrip} aria-label="Steps">

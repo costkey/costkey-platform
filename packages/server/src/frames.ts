@@ -87,14 +87,16 @@ export function cleanFrameRefs(value: unknown): FrameRef[] | null {
   return refs;
 }
 
-/** Delete frame bytes older than each project's body retention. */
+/** Delete frame bytes older than each project's body retention, except ones in a dataset. */
 export async function purgeExpiredFrames(pool: pg.Pool, now = new Date(), orgId?: string): Promise<number> {
   const result = await pool.query(
     `DELETE FROM frames f
      USING project_settings s, projects p
      WHERE f.project_id = s.project_id AND p.id = f.project_id
        AND ($2::text IS NULL OR p.org_id = $2)
-       AND f.created_at < $1::timestamptz - make_interval(days => s.body_retention_days)`,
+       AND f.created_at < $1::timestamptz - make_interval(days => s.body_retention_days)
+       -- A screenshot someone put in a dataset stays while the item does.
+       AND NOT EXISTS (SELECT 1 FROM dataset_items di WHERE di.project_id = f.project_id AND di.frame_sha256 = f.sha256)`,
     [now, orgId ?? null],
   );
   return result.rowCount ?? 0;

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Pause, Play } from "lucide-react";
+import { FastForward, Pause, Play } from "lucide-react";
 import { formatReportedAmount, type ReportingFx } from "./consoleFormatters";
 import { describeAction, formatClock, latestAt, shortUrl, type PreparedRecording, type TimedCall } from "./domReplayModel";
 import "./RunReplay.css";
@@ -14,6 +14,8 @@ interface ReplayerLike {
 }
 
 const SPEEDS = [1, 2, 4] as const;
+/** How much faster the player runs through stretches where the agent is waiting on the model. */
+const WAIT_SPEED = 8;
 
 /**
  * Plays a browser agent's pages as video (rrweb, in a sandboxed iframe with
@@ -38,6 +40,9 @@ export function DomReplay({ recordings, calls, selectedId, onSelectCall, currenc
   const [seek, setSeek] = useState({ offset, token: 0 });
   const [wantsPlay, setWantsPlay] = useState(false);
   const [speed, setSpeed] = useState<(typeof SPEEDS)[number]>(1);
+  const [skipWaits, setSkipWaits] = useState(true);
+  const [skipping, setSkipping] = useState(false);
+  const fastRef = useRef(false);
   const [viewport, setViewport] = useState<{ width: number; height: number } | null>(null);
   const [frameWidth, setFrameWidth] = useState(0);
   const [failed, setFailed] = useState(false);
@@ -92,11 +97,12 @@ export function DomReplay({ recordings, calls, selectedId, onSelectCall, currenc
         if (cancelled) return;
         instance = new Replayer(recording.events as never, {
           root,
-          skipInactive: true,
+          // Waits are skipped by the player below, so the skip is visible and short gaps count too.
+          skipInactive: false,
           showWarning: false,
           triggerFocus: false,
           UNSAFE_replayCanvas: false,
-          mouseTail: { strokeStyle: "rgba(194, 65, 12, 0.55)", lineWidth: 2, duration: 600 },
+          mouseTail: { strokeStyle: "rgba(71, 109, 156, 0.35)", lineWidth: 3, duration: 500 },
         }) as unknown as ReplayerLike;
         instance.on("resize", (size) => {
           const { width, height } = size as { width: number; height: number };
@@ -125,6 +131,7 @@ export function DomReplay({ recordings, calls, selectedId, onSelectCall, currenc
     else player.pause(seek.offset);
   }, [seek, playing]);
   useEffect(() => {
+    fastRef.current = false;
     replayer.current?.setConfig({ speed });
   }, [speed]);
   useEffect(() => {
@@ -132,12 +139,29 @@ export function DomReplay({ recordings, calls, selectedId, onSelectCall, currenc
     let handle = 0;
     const tick = () => {
       const player = replayer.current;
-      if (player) setOffset(Math.min(duration, player.getCurrentTime()));
+      if (player) {
+        const at = Math.min(duration, player.getCurrentTime());
+        setOffset(at);
+        // Run through waits at speed, and back to normal for the next action.
+        const fast = skipWaits && recording.quiet.some((span) => at >= span.from && at < span.to);
+        if (fast !== fastRef.current) {
+          fastRef.current = fast;
+          player.setConfig({ speed: fast ? Math.max(WAIT_SPEED, speed * 4) : speed });
+          setSkipping(fast);
+        }
+      }
       handle = requestAnimationFrame(tick);
     };
     handle = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(handle);
-  }, [playing, duration]);
+    return () => {
+      cancelAnimationFrame(handle);
+      if (fastRef.current) {
+        fastRef.current = false;
+        replayer.current?.setConfig({ speed });
+        setSkipping(false);
+      }
+    };
+  }, [playing, duration, skipWaits, speed, recording]);
 
   // Fit the recorded viewport to the panel's width.
   useEffect(() => {
@@ -151,6 +175,7 @@ export function DomReplay({ recordings, calls, selectedId, onSelectCall, currenc
 
   const now = recording.startMs + offset;
   const call = latestAt(calls, now, (item) => item.startMs);
+  const waitingOn = call && now < call.endMs ? call : null;
   const action = latestAt(recording.actions, offset, (item) => item.at);
   const callMarks = useMemo(
     () => calls.filter((item) => item.startMs >= recording.startMs && item.startMs <= recording.endMs),
@@ -180,6 +205,7 @@ export function DomReplay({ recordings, calls, selectedId, onSelectCall, currenc
       </div>
       <div className="ck-replay-controls">
         {modeSwitch}
+        <button className={`ck-button ck-button-quiet ck-dom-skip${skipWaits ? " is-on" : ""}`} type="button" aria-pressed={skipWaits} title="Run through the stretches where the agent is waiting on the model" onClick={() => setSkipWaits((value) => !value)}><FastForward size={13} aria-hidden="true" /> Skip waits</button>
         <button className="ck-button ck-button-quiet ck-dom-speed" type="button" aria-label={`Speed ${speed}x`} onClick={() => setSpeed(SPEEDS[(SPEEDS.indexOf(speed) + 1) % SPEEDS.length]!)}>{speed}×</button>
         <button className="ck-button ck-button-secondary" type="button" aria-label={playing ? "Pause" : "Play"} disabled={failed} onClick={togglePlay}>
           {playing ? <Pause size={14} /> : <Play size={14} />}{playing ? "Pause" : "Play"}
@@ -197,6 +223,10 @@ export function DomReplay({ recordings, calls, selectedId, onSelectCall, currenc
           ? <div className="ck-replay-frame is-empty">This recording couldn't be played</div>
           : <div className="ck-dom-viewport" style={viewport ? { width: viewport.width * scale, height: viewport.height * scale } : undefined}>
             <div className="ck-dom-stage" ref={stage} style={{ ["--ck-dom-scale" as string]: String(scale) }} />
+            {(skipping || waitingOn) && <div className="ck-dom-status" role="status">
+              <span className="ck-dom-status-dot" aria-hidden="true" />
+              {skipping ? "Skipping a wait" : "Waiting on"}{waitingOn ? <> <b>{waitingOn.model || "the model"}</b> · call {waitingOn.callNumber}</> : null}
+            </div>}
           </div>}
       </div>
       <dl className="ck-replay-facts">
@@ -229,7 +259,10 @@ export function DomReplay({ recordings, calls, selectedId, onSelectCall, currenc
             key={item.eventId}
             type="button"
             className={`ck-dom-mark is-call${item.eventId === selectedId ? " is-current" : ""}${item.failed ? " is-failed" : ""}`}
-            style={{ left: `${((item.startMs - recording.startMs) / Math.max(1, duration)) * 100}%` }}
+            style={{
+              left: `${((item.startMs - recording.startMs) / Math.max(1, duration)) * 100}%`,
+              width: `max(8px, ${((Math.min(item.endMs, recording.endMs) - item.startMs) / Math.max(1, duration)) * 100}%)`,
+            }}
             aria-label={`Call ${item.callNumber}: ${item.model}`}
             title={`Call ${item.callNumber} · ${item.model}`}
             onClick={() => { onSelectCall(item.eventId); jump(item.startMs - recording.startMs); }}

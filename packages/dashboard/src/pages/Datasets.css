@@ -1,27 +1,140 @@
-.ck-ds-back { display: inline-flex; align-items: center; gap: 6px; margin-bottom: 8px; color: var(--ck-slate); font-size: 13px; text-decoration: none; }
-.ck-ds-back:hover { color: var(--ck-ink); }
-.ck-ds-muted { color: var(--ck-slate); font-size: 12px; }
-.ck-ds-error { color: var(--ck-critical); font-size: 13px; padding: 12px 0; }
-.ck-ds-labels { display: inline-flex; flex-wrap: wrap; gap: 4px; }
-.ck-ds-label { padding: 2px 8px; border-radius: 999px; background: var(--ck-neutral-soft, var(--ck-canvas)); font-size: 12px; white-space: nowrap; }
-.ck-ds-label.is-good { background: var(--ck-good-soft); }
-.ck-ds-label.is-bad { background: var(--ck-critical-soft); }
-.ck-ds-thumb { display: block; width: 96px; height: 60px; object-fit: cover; object-position: top left; border: 1px solid var(--ck-border); border-radius: 6px; background: var(--ck-canvas); }
-.ck-ds-label-input {
-  width: 140px;
-  min-height: 30px;
-  padding: 4px 8px;
-  border: 1px solid transparent;
-  border-radius: var(--ck-control-radius, 7px);
-  background: transparent;
-  color: var(--ck-ink);
-  font: inherit;
-}
-.ck-ds-label-input:hover, .ck-ds-label-input:focus { border-color: var(--ck-border); background: var(--ck-raised); }
-.ck-ds-note { max-width: 360px; white-space: pre-wrap; }
+/* Datasets and evals: labelled calls, eval runs and their cases. */
+.ck-ds-page > .ck-metric-grid { margin-bottom: 16px; }
+.ck-ds-page > .ck-panel + .ck-panel { margin-top: 16px; }
+.ck-ds-muted { color: var(--ck-slate); font-size: 12px; font-weight: 400; }
+.ck-ds-clamp { display: -webkit-box; overflow: hidden; -webkit-line-clamp: 1; -webkit-box-orient: vertical; max-width: 420px; }
+.ck-ds-error { margin: 8px 0 0; color: var(--ck-critical); font-size: 13px; }
+.ck-ds-danger:hover { color: var(--ck-critical); }
 .ck-page-actions .ck-button { display: inline-flex; align-items: center; gap: 6px; text-decoration: none; }
-.ck-eval-snippet { position: relative; }
-.ck-eval-snippet pre { margin: 0; padding: 14px 16px; overflow-x: auto; border-radius: 8px; background: var(--ck-canvas); font-size: 12.5px; line-height: 1.55; }
-.ck-eval-snippet .ck-button { position: absolute; top: 8px; right: 8px; display: inline-flex; align-items: center; gap: 6px; }
-.ck-eval-notes { margin: 12px 0 0; padding-left: 18px; color: var(--ck-slate); font-size: 13px; line-height: 1.6; }
-.ck-eval-notes code, .ck-eval-snippet code { font-size: 12px; }
+
+/* Label pills and the stacked label bar */
+.ck-ds-pill { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border-radius: 999px; background: var(--ck-neutral-soft); color: var(--ck-ink); font-size: 12px; font-weight: 500; line-height: 18px; white-space: nowrap; }
+.ck-ds-pill b { font-weight: 600; font-variant-numeric: tabular-nums; opacity: 0.7; }
+.ck-ds-pill.is-good { background: var(--ck-good-soft); color: var(--ck-good); }
+.ck-ds-pill.is-critical { background: var(--ck-critical-soft); color: var(--ck-critical); }
+.ck-ds-labelbar { display: grid; gap: 6px; min-width: 150px; max-width: 260px; }
+.ck-ds-labelbar-track { display: flex; gap: 2px; height: 6px; overflow: hidden; border-radius: 3px; background: var(--ck-soft); }
+.ck-ds-labelbar-track i { display: block; min-width: 4px; background: var(--ck-sky); }
+.ck-ds-labelbar-track i.is-good { background: var(--ck-good); }
+.ck-ds-labelbar-track i.is-critical { background: var(--ck-critical); }
+.ck-ds-labelbar-keys { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+
+/* Pass rate: number and bar */
+.ck-ds-passbar { display: inline-flex; align-items: center; gap: 8px; color: var(--ck-ink); }
+.ck-ds-passbar b { min-width: 38px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.ck-ds-passbar-track { width: 72px; height: 6px; overflow: hidden; border-radius: 3px; background: var(--ck-critical-soft); }
+.ck-ds-passbar-track i { display: block; height: 100%; border-radius: 3px; background: var(--ck-good); }
+.ck-ds-passbar.is-warn b { color: var(--ck-warn); }
+.ck-ds-passbar.is-critical b { color: var(--ck-critical); }
+.ck-ds-change { font-size: 12px; font-weight: 500; }
+.ck-ds-change.is-good { color: var(--ck-good); }
+.ck-ds-change.is-warn { color: var(--ck-warn); }
+.ck-ds-change.is-neutral { color: var(--ck-slate); }
+
+/* List: covers next to the name */
+.ck-ds-table td { vertical-align: middle; }
+.ck-ds-name-cell { display: flex; align-items: center; gap: 12px; min-width: 220px; }
+.ck-ds-covers { position: relative; display: block; flex: none; width: 76px; height: 46px; }
+.ck-ds-covers .ck-ds-cover { position: absolute; top: 0; left: 0; width: 64px; height: 40px; box-shadow: 0 1px 3px rgba(24, 43, 69, 0.12); }
+.ck-ds-covers .ck-ds-cover:nth-child(2) { top: 3px; left: 6px; }
+.ck-ds-covers .ck-ds-cover:nth-child(3) { top: 6px; left: 12px; }
+.ck-ds-cover.is-empty { display: grid; flex: none; place-items: center; width: 64px; height: 40px; border-radius: 8px; background: var(--ck-mist); color: var(--ck-dusk); }
+.ck-ds-cover.ck-ds-shot.is-empty span { display: none; }
+.ck-ds-last { display: grid; gap: 3px; }
+
+/* A screenshot with markers */
+.ck-ds-shot { position: relative; overflow: hidden; border: 1px solid var(--ck-border); border-radius: 8px; background: var(--ck-canvas); line-height: 0; }
+.ck-ds-shot img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: top left; }
+.ck-ds-shot.is-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; color: var(--ck-slate); font-size: 12px; line-height: 1.3; }
+.ck-ds-marker { position: absolute; width: 16px; height: 16px; margin: -8px 0 0 -8px; border: 2px solid #fff; border-radius: 50%; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35); pointer-events: none; }
+.ck-ds-marker.is-original { background: var(--ck-critical); box-shadow: 0 0 0 3px rgba(163, 61, 50, 0.28), 0 1px 4px rgba(0, 0, 0, 0.35); }
+.ck-ds-marker.is-candidate { background: var(--ck-chart); box-shadow: 0 0 0 3px rgba(71, 109, 156, 0.3), 0 1px 4px rgba(0, 0, 0, 0.35); }
+
+/* Cards: one labelled call or one eval case */
+.ck-ds-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; padding: 4px 20px 20px; }
+.ck-ds-card { display: flex; flex-direction: column; min-width: 0; overflow: hidden; border: 1px solid var(--ck-border); border-radius: 12px; background: var(--ck-raised); transition: border-color var(--ck-motion) var(--ck-ease), box-shadow var(--ck-motion) var(--ck-ease); }
+.ck-ds-card:hover { border-color: var(--ck-border-strong); box-shadow: 0 6px 20px rgba(24, 43, 69, 0.06); }
+.ck-ds-card-shot { aspect-ratio: 16 / 10; border-width: 0 0 1px; border-radius: 0; }
+.ck-ds-card-body { display: flex; flex: 1; flex-direction: column; gap: 8px; padding: 12px 14px 14px; }
+.ck-ds-card-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.ck-ds-action { margin: 0; color: var(--ck-ink); font-size: 14px; font-weight: 500; }
+.ck-ds-note { margin: 0; color: var(--ck-slate); font-size: 13px; line-height: 1.45; white-space: pre-wrap; }
+.ck-ds-warn { margin: 0; padding: 6px 8px; border-radius: 8px; background: var(--ck-warn-soft); color: var(--ck-warn); font-size: 12px; line-height: 1.4; }
+.ck-ds-card-meta { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: auto; padding-top: 4px; color: var(--ck-slate); font-size: 12px; }
+.ck-ds-card-meta > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ck-ds-links { display: inline-flex; gap: 12px; flex: none; }
+.ck-ds-remove { display: inline-flex; align-items: center; gap: 4px; min-height: 28px; padding: 0 8px; color: var(--ck-slate); }
+.ck-ds-remove.is-confirming { background: var(--ck-critical-soft); color: var(--ck-critical); }
+
+/* Good / Bad / other switch */
+.ck-ds-switch { display: inline-flex; padding: 2px; border: 1px solid var(--ck-border); border-radius: 9px; background: var(--ck-canvas); }
+.ck-ds-switch button { max-width: 120px; padding: 3px 10px; overflow: hidden; border: 0; border-radius: 7px; background: transparent; color: var(--ck-slate); font: inherit; font-size: 12px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.ck-ds-switch button:hover { color: var(--ck-ink); }
+.ck-ds-switch button.is-on { background: var(--ck-raised); color: var(--ck-ink); box-shadow: 0 1px 2px rgba(24, 43, 69, 0.1); }
+.ck-ds-switch button.is-on.is-good { background: var(--ck-good-soft); color: var(--ck-good); }
+.ck-ds-switch button.is-on.is-bad { background: var(--ck-critical-soft); color: var(--ck-critical); }
+.ck-ds-label-edit input { width: 160px; min-height: 30px; padding: 4px 9px; border: 1px solid var(--ck-border-strong); border-radius: 8px; background: var(--ck-raised); color: var(--ck-ink); font: inherit; font-size: 13px; }
+
+/* Filter pills in a panel header */
+.ck-ds-filter { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.ck-ds-filter button { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border: 1px solid var(--ck-border); border-radius: 999px; background: var(--ck-raised); color: var(--ck-slate); font: inherit; font-size: 12px; cursor: pointer; }
+.ck-ds-filter button span { color: var(--ck-muted); font-variant-numeric: tabular-nums; }
+.ck-ds-filter button.is-on { border-color: var(--ck-ink); background: var(--ck-ink); color: #fff; }
+.ck-ds-filter button.is-on span { color: rgba(255, 255, 255, 0.7); }
+
+/* Configuration chips */
+.ck-ds-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.ck-ds-chips-header { margin: -8px 0 16px; }
+.ck-ds-chip { padding: 1px 8px; border: 1px solid var(--ck-border); border-radius: 6px; background: var(--ck-canvas); color: var(--ck-ink); font-size: 12px; font-weight: 400; }
+.ck-ds-chip em { color: var(--ck-slate); font-style: normal; }
+
+/* New dataset form */
+.ck-ds-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; padding: 0 20px 20px; }
+.ck-ds-form label { display: grid; gap: 5px; flex: 1 1 220px; color: var(--ck-slate); font-size: 12px; font-weight: 500; }
+.ck-ds-form label.is-wide { flex: 2 1 320px; }
+.ck-ds-form label em { color: var(--ck-muted); font-style: normal; font-weight: 400; }
+.ck-ds-form input { min-height: 38px; padding: 7px 11px; border: 1px solid var(--ck-border); border-radius: var(--ck-control-radius); background: var(--ck-raised); color: var(--ck-ink); font: inherit; font-size: 14px; }
+.ck-ds-form input:focus { outline: none; border-color: var(--ck-focus); box-shadow: 0 0 0 3px rgba(49, 95, 156, 0.15); }
+.ck-ds-form-actions { display: flex; gap: 8px; }
+.ck-ds-form .ck-ds-error { flex-basis: 100%; }
+
+/* First-run steps under the empty state */
+.ck-ds-steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin: 0; padding: 0 28px 28px; list-style: none; counter-reset: ck-ds-step; }
+.ck-ds-steps li { display: grid; gap: 4px; padding: 14px 16px; border: 1px solid var(--ck-rule); border-radius: 12px; background: var(--ck-canvas); counter-increment: ck-ds-step; }
+.ck-ds-steps li::before { content: counter(ck-ds-step); display: grid; place-items: center; width: 22px; height: 22px; margin-bottom: 4px; border-radius: 50%; background: var(--ck-ink); color: #fff; font-size: 12px; font-weight: 600; }
+.ck-ds-steps b { color: var(--ck-ink); font-size: 14px; font-weight: 600; }
+.ck-ds-steps span { color: var(--ck-slate); font-size: 13px; line-height: 1.5; }
+
+/* Run an eval */
+.ck-eval-layout { display: grid; grid-template-columns: minmax(240px, 0.8fr) minmax(0, 1.4fr); gap: 20px; padding: 0 20px 20px; }
+.ck-eval-steps { display: grid; align-content: start; gap: 14px; margin: 0; padding: 0; list-style: none; counter-reset: ck-eval-step; }
+.ck-eval-steps li { display: grid; grid-template-columns: 24px minmax(0, 1fr); column-gap: 10px; counter-increment: ck-eval-step; }
+.ck-eval-steps li::before { content: counter(ck-eval-step); grid-row: span 2; display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: var(--ck-mist); color: var(--ck-ink); font-size: 12px; font-weight: 600; }
+.ck-eval-steps b { color: var(--ck-ink); font-size: 14px; font-weight: 600; }
+.ck-eval-steps span { color: var(--ck-slate); font-size: 13px; line-height: 1.5; }
+.ck-eval-steps code, .ck-eval-snippet code { font-size: 12px; }
+.ck-eval-snippet { min-width: 0; overflow: hidden; border-radius: 12px; background: #13233a; color: #e6edf5; }
+.ck-eval-snippet-head { display: flex; align-items: center; justify-content: space-between; padding: 8px 10px 8px 14px; border-bottom: 1px solid rgba(255, 255, 255, 0.08); color: #9fb3c8; font-size: 12px; }
+.ck-eval-copy { display: inline-flex; align-items: center; gap: 6px; padding: 4px 9px; border: 1px solid rgba(255, 255, 255, 0.14); border-radius: 7px; background: transparent; color: #e6edf5; font: inherit; font-size: 12px; cursor: pointer; }
+.ck-eval-copy:hover { background: rgba(255, 255, 255, 0.08); }
+.ck-eval-snippet pre { margin: 0; padding: 14px 16px 16px; overflow-x: auto; font-size: 12.5px; line-height: 1.6; }
+.ck-eval-legend { display: flex; gap: 16px; padding: 0 20px 10px; color: var(--ck-slate); font-size: 12px; }
+.ck-eval-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.ck-eval-legend i { width: 10px; height: 10px; border-radius: 50%; }
+.ck-eval-legend i.is-original { background: var(--ck-critical); }
+.ck-eval-legend i.is-candidate { background: var(--ck-chart); }
+.ck-eval-action { display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 8px; color: var(--ck-ink); font-size: 13px; }
+.ck-eval-who { color: var(--ck-slate); font-size: 12px; line-height: 20px; }
+.ck-ds-card.is-critical { border-color: color-mix(in srgb, var(--ck-critical) 30%, var(--ck-border)); }
+
+@media (max-width: 900px) {
+  .ck-ds-steps, .ck-eval-layout { grid-template-columns: minmax(0, 1fr); }
+  .ck-ds-grid { grid-template-columns: minmax(0, 1fr); padding: 4px 16px 16px; }
+  .ck-ds-name-cell { min-width: 180px; }
+  .ck-ds-covers { display: none; }
+}
+
+/* Phones: the console makes the first tile full width; with four tiles, so is the last, so none is left on its own. */
+@media (max-width: 767px) {
+  .ck-ds-page .ck-metric-grid-4 > .ck-metric-card:last-child { grid-column: 1 / -1; }
+}

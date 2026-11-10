@@ -67,6 +67,14 @@ test("eval runs against a dataset: list with pass rate and cost, and case by cas
       assert.ok(Math.abs(Number(run!.originalCost) - 0.05) < 1e-9);
       assert.deepEqual(run!.configuration, { model: "claude-haiku-4-5" });
 
+      // The dataset list carries the latest run's result for the Datasets page.
+      const list = await (await fetch(base.replace(/\/ds_[^/]+$/, ""))).json() as { datasets: Array<Record<string, any>> };
+      const listed = list.datasets.find((dataset) => dataset.id === `ds_${suffix}`)!;
+      assert.equal(listed.evalRuns, 1);
+      assert.deepEqual([listed.lastEval.executionId, listed.lastEval.passed, listed.lastEval.failed], [executionId, 1, 1]);
+      assert.deepEqual(listed.lastEval.configuration, { model: "claude-haiku-4-5" });
+      assert.ok(Array.isArray(listed.covers));
+
       const detail = await (await fetch(`${base}/evals/${executionId}`)).json() as { cases: Array<Record<string, any>> };
       assert.deepEqual(detail.cases.map((item) => [item.label, item.pass, item.reason]), [
         ["Good", true, "Matched the good action"],

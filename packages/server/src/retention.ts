@@ -3,6 +3,7 @@ import { Router as createRouter } from "express";
 import type pg from "pg";
 import { requireAuth } from "./auth.js";
 import { roleCanManageWorkspace } from "./permissions.js";
+import { purgeExpiredFrames } from "./frames.js";
 
 export interface RetentionResult {
   runId: string;
@@ -12,6 +13,8 @@ export interface RetentionResult {
   deletedUsageComponents: number;
   deletedTraces: number;
   deletedExecutions: number;
+  /** Screen capture frames older than body retention. */
+  deletedFrames?: number;
   blockedProjects?: string[];
   completedAt: string;
 }
@@ -318,7 +321,12 @@ export async function runRetention(pool: pg.Pool, now = new Date(), orgId?: stri
         runId,
       ]);
     }
-    return { runId, redactedBodies, deletedEvents, deletedAggregates, deletedUsageComponents, deletedTraces, deletedExecutions, blockedProjects, completedAt };
+    // Frames are screen content: they follow body retention.
+    const deletedFrames = await purgeExpiredFrames(pool, now, orgId).catch((error) => {
+      console.warn("[costkey] Frame retention failed:", error instanceof Error ? error.message : error);
+      return 0;
+    });
+    return { runId, redactedBodies, deletedEvents, deletedAggregates, deletedUsageComponents, deletedTraces, deletedExecutions, deletedFrames, blockedProjects, completedAt };
   } catch (error) {
     await client.query("ROLLBACK").catch(() => undefined);
     await pool.query(

@@ -1100,6 +1100,13 @@ export async function initDatabase(): Promise<void> {
     ALTER TABLE events ADD COLUMN IF NOT EXISTS raw_telemetry JSONB;
   `));
 
+  // ── Screen capture frame lists ──
+  // The images a call's request carried (hashes, types, sizes), in order.
+  // The bytes are stored once per project in the frames table.
+  await withMigrationLock(p, (client) => client.query(`
+    ALTER TABLE events ADD COLUMN IF NOT EXISTS frames JSONB;
+  `));
+
   // Ingest sets content_status and feature_source on every new event, so only
   // rows stored before those columns existed need them. Run this once: as a
   // startup statement it rewrote every 'unknown' row on each boot while the

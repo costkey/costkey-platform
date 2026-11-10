@@ -24,6 +24,7 @@ import { assembleStreamBody, streamEvents } from "./telemetry/stream-assembly.js
 import { stripOtelContent } from "./telemetry/otel.js";
 import { recordRelease } from "./releases.js";
 import { enqueueIngestBatch } from "./ingest-queue.js";
+import { cleanFrameRefs } from "./frames.js";
 import type { ServerExtractor } from "./telemetry/types.js";
 
 function textFromContent(content: unknown): string | null {
@@ -767,6 +768,12 @@ function eventCostBasis(
   };
 }
 
+/** A call's screen capture frame list, when well formed (the privacy guard already dropped it for projects without screen capture). */
+function frameRefsJson(value: unknown): string | null {
+  const refs = cleanFrameRefs(value);
+  return refs ? JSON.stringify(refs) : null;
+}
+
 /** Non-token units a provider reported with a call, kept small and numeric. */
 export function nativeUnitsJson(usage: unknown): string | null {
   if (!usage || typeof usage !== "object") return null;
@@ -1118,8 +1125,8 @@ export async function ingestBatch(
               cost_basis, cost_source, cost_currency, unit_kind, unit_value,
               unit, aggregation, revision, entity_type, entity_id, pricing_id, pricing_date, sequence,
               content_status, feature_source, feature_mapping_id, feature_mapping_action_id, feature_original,
-              span_id, sdk_version, native_units, raw_telemetry
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,$51,$52,$53,$54,$55,$56,$57,$58,$59,$60,$61,$62,$63,$64,$65,$66,$67,$68,$69,$70,$71,$72,$73,$74,$75,$76)
+              span_id, sdk_version, native_units, raw_telemetry, frames
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,$51,$52,$53,$54,$55,$56,$57,$58,$59,$60,$61,$62,$63,$64,$65,$66,$67,$68,$69,$70,$71,$72,$73,$74,$75,$76,$77)
             ON CONFLICT (project_id, id) DO NOTHING`,
             [
               event.id, event.timestamp, projectId,
@@ -1189,6 +1196,7 @@ export async function ingestBatch(
               sdkVersion,
               nativeUnitsJson(event.usage),
               storedTelemetry,
+              frameRefsJson(rawEvent["frames"]),
             ],
           );
 

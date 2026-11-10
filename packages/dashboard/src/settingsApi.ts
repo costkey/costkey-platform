@@ -332,6 +332,8 @@ export interface PrivacySettings {
   metadataRetentionDays: number;
   aggregateRetentionDays: number;
   sourceAccessEnabled: boolean;
+  /** Keep the screenshots agents send to the model, for run replay. */
+  screenCaptureEnabled?: boolean;
   updatedBy: string | null;
   createdAt: string;
   updatedAt: string;
@@ -341,7 +343,7 @@ export function getPrivacySettings(projectId: string): Promise<{ settings: Priva
   return request(`/projects/${encodeURIComponent(projectId)}/privacy`);
 }
 
-export function updatePrivacySettings(projectId: string, input: Partial<Pick<PrivacySettings, "captureMode" | "bodyCaptureEnabled" | "redactionEnabled" | "bodyRetentionDays" | "metadataRetentionDays" | "aggregateRetentionDays" | "sourceAccessEnabled">>): Promise<{ settings: PrivacySettings }> {
+export function updatePrivacySettings(projectId: string, input: Partial<Pick<PrivacySettings, "captureMode" | "bodyCaptureEnabled" | "redactionEnabled" | "bodyRetentionDays" | "metadataRetentionDays" | "aggregateRetentionDays" | "sourceAccessEnabled" | "screenCaptureEnabled">>): Promise<{ settings: PrivacySettings }> {
   return request(`/projects/${encodeURIComponent(projectId)}/privacy`, { method: "PATCH", body: input });
 }
 

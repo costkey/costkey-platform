@@ -32,6 +32,7 @@ import { createSdkAdmissionRouter } from "./admission.js";
 import { createIngestRuntimeConfigRouter, createPrivacyRouter, privacyIngestGuard } from "./privacy.js";
 import { createReleasesRouter, ensureReleaseSchema } from "./releases.js";
 import { createRetentionRouter, runRetention } from "./retention.js";
+import { createFrameIngestRouter, createFramesRouter } from "./frames.js";
 import { createSavedViewsRouter } from "./saved-views.js";
 import { createNotificationsRouter, runWeeklyDigests } from "./notifications.js";
 import { createSubscriptionRouter } from "./subscription.js";
@@ -231,6 +232,11 @@ export function createApp(options: AppOptions = {}): Express & AppRuntime {
     keyFn: (req) => req.headers.authorization?.slice(7) ?? req.ip ?? "unknown",
   }));
   app.use("/api/v1/events", privacyIngestGuard(pool));
+  app.use("/api/v1/frames", rateLimit({
+    windowMs: 60 * 1000,
+    max: 600,
+    keyFn: (req) => req.headers.authorization?.slice(7) ?? req.ip ?? "unknown",
+  }));
 
   // Route-level guards for legacy API mutations. Personal/shared saved-view
   // actions use their own capability checks and are intentionally not covered
@@ -256,11 +262,13 @@ export function createApp(options: AppOptions = {}): Express & AppRuntime {
   app.use(createAuthRouter(pool));
   app.use(createIngestRuntimeConfigRouter(pool));
   app.use(createIngestRouter(pool, { queue: ingestQueue }));
+  app.use(createFrameIngestRouter(pool));
   // Public, token-scoped routes go before routers that require auth globally.
   app.use(createInvitePreviewRouter(pool));
   app.use(createSubscriptionRouter(pool));
   app.use(createPlatformRouter(pool));
   app.use(createPrivacyRouter(pool));
+  app.use(createFramesRouter(pool));
   app.use(createReleasesRouter(pool));
   app.use(createRetentionRouter(pool));
   app.use(createSavedViewsRouter(pool));

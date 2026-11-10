@@ -8,6 +8,7 @@ import { formatDuration } from "../utils";
 import { RunTree, SpanInspector } from "./RunTree";
 import { RunQualityChecks } from "./RunQualityChecks";
 import { RunTimeline } from "./RunTimeline";
+import { RunReplay } from "./RunReplay";
 import { useLiveQuery, type LiveQuery } from "../hooks/useLiveQuery";
 import { buildRunTree, defaultCollapsed, flattenRunTree, SPAN_KIND_LABEL, type RunTreeNode, type RunTreeSpanNode } from "./runTreeModel";
 import type { PrototypeState } from "./PrototypeState";
@@ -227,7 +228,7 @@ export function RunFlow({ projectId, traceId, model, role, currency, fx, explici
     }
   }
 
-  return <>{timeline && <RunTimeline traceId={traceId} runName={model.traceName} events={events} spans={spans} runCost={model.knownCost} unpriced={model.unpriced} runDurationMs={model.elapsed} selectedId={selectedSpan ? null : selectedId} onSelectCall={selectFromTimeline} currency={currency} fx={fx} />}<div ref={layoutRef} className={`ck-trace-layout prototype-trace-layout ${inline ? "ck-run-flow-inline" : ""} ${selected || selectedSpan ? "has-selection" : ""}`}>
+  return <>{timeline && <RunReplay projectId={projectId} events={events} selectedId={selectedSpan ? null : selectedId} onSelectCall={selectFromTimeline} currency={currency} fx={fx} />}{timeline && <RunTimeline traceId={traceId} runName={model.traceName} events={events} spans={spans} runCost={model.knownCost} unpriced={model.unpriced} runDurationMs={model.elapsed} selectedId={selectedSpan ? null : selectedId} onSelectCall={selectFromTimeline} currency={currency} fx={fx} />}<div ref={layoutRef} className={`ck-trace-layout prototype-trace-layout ${inline ? "ck-run-flow-inline" : ""} ${selected || selectedSpan ? "has-selection" : ""}`}>
     <Panel className="ck-trace-tree" title={spans.length > 0 ? (timeline ? "Steps and calls" : "Timeline") : "Calls"}>{events.length === 0 && spans.length === 0 ? <EmptyPanel title="No calls recorded" /> : <RunTree rows={treeRows} events={events} collapsed={collapsed} onToggle={toggleSpan} selectedId={selectedSpan ? `span:${selectedSpan.id}` : selectedId} onSelectRoot={selectRoot} onSelectCall={selectEvent} onSelectSpan={selectSpan} runName={model.traceName} runCost={model.knownCost} runDurationMs={model.elapsed} callCount={events.length} runStartMs={model.eventStartMs} runSpanMs={model.eventSpan} callName={eventDisplayName} currency={currency} fx={fx} showSplit={!timeline} />}</Panel>
     {selectedSpan
       ? <SpanInspector node={selectedSpan} currency={currency} fx={fx} />

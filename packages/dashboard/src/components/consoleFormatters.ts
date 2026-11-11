@@ -155,7 +155,7 @@ export function formatDateTime(value: string | null | undefined): string {
   if (!value) return "Unknown time";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "Unknown time";
-  // Prototype order ("20 Sep, 19:53") from design/console-prototype/app.js.
+  // Prototype order ("20 Sep, 19:53") from the console prototype.
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: displayTimeZone,
     day: "numeric",
@@ -172,7 +172,7 @@ export function formatAbsoluteDate(value: string | null | undefined): string {
   if (!value) return "Unknown date";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "Unknown date";
-  // Prototype order ("20 Sep 2026, 14:32:08") from design/console-prototype/app.js.
+  // Prototype order ("20 Sep 2026, 14:32:08") from the console prototype.
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: displayTimeZone,
     day: "numeric",
@@ -191,7 +191,7 @@ export function formatDayDate(value: string | null | undefined, timeZone?: strin
   if (!value) return "Unknown date";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "Unknown date";
-  // Prototype order ("7 Sep 2026") from design/console-prototype/app.js.
+  // Prototype order ("7 Sep 2026") from the console prototype.
   const parts = new Intl.DateTimeFormat("en-US", { timeZone: timeZone ?? displayTimeZone, day: "numeric", month: "short", year: "numeric" }).formatToParts(date);
   const get = (type: string): string => parts.find((part) => part.type === type)?.value ?? "";
   return `${get("day")} ${get("month")} ${get("year")}`;

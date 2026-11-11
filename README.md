@@ -1,6 +1,6 @@
 # CostKey
 
-[![GitHub stars](https://img.shields.io/github/stars/costkey/platform?style=social)](https://github.com/costkey/platform)
+[![GitHub stars](https://img.shields.io/github/stars/costkey/costkey-platform?style=social)](https://github.com/costkey/costkey-platform)
 [![TypeScript SDK](https://img.shields.io/npm/v/costkey?label=npm%20costkey)](https://www.npmjs.com/package/costkey)
 [![Python SDK](https://img.shields.io/pypi/v/costkey?label=PyPI%20costkey)](https://pypi.org/project/costkey/)
 
@@ -32,13 +32,13 @@ No proxy. No provider migration. No wrapper-first rewrite.
 - **Python SDK** - patches `httpx` and `requests`, supports setup CLI, FastAPI/Django/Flask detection, call graph analysis, traces, prompt/tool metadata, and custom providers.
 - **Server** - ingests events, validates DSNs, calculates costs, filters stack traces, resolves sourcemaps, stores data in PostgreSQL.
 - **Dashboard** - shows spend trends, cost by function, traces, event details, prompt/tool metadata, custom providers, budgets, alerts, and deploy comparisons.
-- **Docs and landing** - static docs and marketing site deployed to Firebase.
+- **Docs** - product docs in `docs-site/` (Docusaurus).
 
 ## Repositories
 
 | Repo | Purpose |
 | --- | --- |
-| [`costkey/platform`](https://github.com/costkey/platform) | SaaS app, server, dashboard, landing, docs, monorepo SDK copy |
+| [`costkey/costkey-platform`](https://github.com/costkey/costkey-platform) | Server, dashboard, product docs and deploy recipes |
 | [`costkey/costkey`](https://github.com/costkey/costkey) | TypeScript SDK published to npm |
 | [`costkey/costkey-python`](https://github.com/costkey/costkey-python) | Python SDK published to PyPI |
 
@@ -46,7 +46,7 @@ If you are using CostKey, starring the SDK repos helps other developers find it:
 
 - [Star the TypeScript SDK](https://github.com/costkey/costkey)
 - [Star the Python SDK](https://github.com/costkey/costkey-python)
-- [Star the platform](https://github.com/costkey/platform)
+- [Star the platform](https://github.com/costkey/costkey-platform)
 
 ## Quick Start
 
@@ -123,35 +123,11 @@ Local services:
 
 ## Deploy
 
-Railway deploys the server/dashboard app:
+To run CostKey on your own machines, see [self-hosting](docs-site/docs/self-hosting.md) and [deploy recipes](docs-site/docs/deploy.md). The one-container image is `ghcr.io/costkey/costkey`; Helm, Fly, Render, Railway and Cloud Run recipes are in `deploy/`.
 
-```bash
-railway up --service costkey-app --environment production
-```
+## Releases
 
-Firebase deploys the landing/docs site:
-
-```bash
-firebase deploy --only hosting --project costkey-dev
-```
-
-SDK publishing happens from GitHub Releases in the SDK repos, not from local machines.
-
-## Release Checklist
-
-For SDK releases:
-
-1. Update version in the SDK repo.
-2. Merge to `main`.
-3. Create GitHub Release tag `vX.Y.Z`.
-4. GitHub Actions runs tests/builds and publishes to npm or PyPI through trusted publishing.
-
-For platform deploys:
-
-1. Run `npm run build`.
-2. Deploy Railway.
-3. Deploy Firebase if landing/docs changed.
-4. Smoke test `https://app.costkey.dev/auth/me` and `https://costkey-dev.web.app`.
+SDKs are released from GitHub Releases in their own repos (`costkey/costkey`, `costkey/costkey-python`, `costkey/costkey-replay`): a `vX.Y.Z` release runs the tests and publishes to npm or PyPI through trusted publishing. A `v*` tag here publishes the self-host image and Helm chart.
 
 ## License
 

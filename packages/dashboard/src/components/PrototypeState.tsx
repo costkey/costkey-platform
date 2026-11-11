@@ -12,7 +12,7 @@ import { EmptyPanel, LoadingRows, PageHeader, Panel, StatusPill } from "./Consol
  * this component only owns the explicit state treatment.
  */
 /**
- * The named state contract is copied from `design/console-prototype/app.js`.
+ * The named state contract is copied from the console prototype.
  * Keeping the values as a tuple gives the URL parser a real allow-list instead
  * of silently accepting a typo and rendering an arbitrary partial state.
  */

@@ -180,7 +180,7 @@ function formatSettingsDate(value: string | null | undefined): string {
   if (!value) return "Unknown date";
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return "Unknown date";
-  // Prototype order ("20 Sep, 14:32") from design/console-prototype/app.js.
+  // Prototype order ("20 Sep, 14:32") from the console prototype.
   return formatDateTime(value);
 }
 
@@ -416,7 +416,7 @@ function ProjectRepository({ projects, role, currentProjectId }: { projects: Set
       {status && <div className={`settings-status-line ${status.tone}`} role={status.tone === "error" ? "alert" : "status"}>{status.text}</div>}
       <div className="settings-form-footer">
         <button className="ck-button ck-button-secondary" type="button" onClick={() => void save()} disabled={!canEdit || saving || value.trim() === (saved ?? "")}>{saving ? "Saving" : "Save repository"}</button>
-        {server?.version && <span className="settings-footnote ck-server-build">CostKey {server.version}{serverCommit && <> · <a href={`https://github.com/costkey/platform/commit/${serverCommit}`} target="_blank" rel="noreferrer" className="mono">{serverCommit.slice(0, 7)}</a></>}</span>}
+        {server?.version && <span className="settings-footnote ck-server-build">CostKey {server.version}{serverCommit && <> · <a href={`https://github.com/costkey/costkey-platform/commit/${serverCommit}`} target="_blank" rel="noreferrer" className="mono">{serverCommit.slice(0, 7)}</a></>}</span>}
       </div>
     </div>
   </Panel>;

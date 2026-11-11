@@ -41,7 +41,7 @@
   --ck-signal: #6e93ae;
   --ck-signal-soft: #dce8ee;
   --ck-sidebar-width: 224px;
-  /* prototype source of truth: design/console-prototype/refinements.css (.topbar 56px, .filters 44px). */
+  /* From the console prototype: .topbar 56px, .filters 44px. */
   --ck-header-height: 56px;
   --sidebar: 224px;
   --font: Inter, "Inter Display", -apple-system, BlinkMacSystemFont, "Segoe UI",
@@ -4764,7 +4764,7 @@ a.ck-metric-link > .ck-metric-card { height: 100%; }
 .ck-inline-link { color: inherit; text-decoration: underline; text-decoration-color: var(--ck-border); text-underline-offset: 2px; }
 .ck-inline-link:hover { color: var(--ck-ink); text-decoration-color: currentColor; }
 
-/* Overview, matched to the landing page's console mockup (docs/index.html, .mb-*). */
+/* Overview, matched to the landing page's console mockup. */
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .ck-board-kpis, .ck-board-row { gap: 12px; margin-bottom: 12px; }
 .ck-board-kpi { padding: 16px 18px; border-radius: 14px; }

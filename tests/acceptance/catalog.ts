@@ -1,5 +1,5 @@
 /**
- * Acceptance catalog derived from docs/PRD.md.
+ * Acceptance catalog derived from the product requirements.
  *
  * The catalog deliberately starts every item as INCOMPLETE. A passing local
  * fixture probe is useful evidence, but it is not representative supported

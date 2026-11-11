@@ -11,4 +11,8 @@ coverage/
 *.db-wal
 .gstack/
 .firebase/
+.DS_Store
+.claude/
+docs-site/build/
+docs-site/.docusaurus/
 !.env.example

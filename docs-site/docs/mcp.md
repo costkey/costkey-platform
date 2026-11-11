@@ -12,7 +12,7 @@ Every CostKey server has an MCP endpoint at `/mcp`. A coding agent connected to 
 - "Show run `tr_…` as a tree. Where did it first go wrong?"
 - "Did my change make the summarizer more expensive?"
 
-It works the same on CostKey Cloud (`https://app.costkey.dev/mcp`) and on a self-hosted server (`<PUBLIC_URL>/mcp`). The agent reads with a token you create. It can't change anything.
+The endpoint is `<PUBLIC_URL>/mcp` on your CostKey server, such as `http://localhost:4100/mcp`. The agent reads with a token you create. It can't change anything.
 
 ## Create a token
 
@@ -27,12 +27,12 @@ The console then shows the setup for each agent below with your server's address
 
 ## Connect your agent
 
-Replace `https://app.costkey.dev` with your `PUBLIC_URL` on a self-hosted server.
+The examples use `https://costkey.yourcompany.com`. Replace it with your server's `PUBLIC_URL`, such as `http://localhost:4100`.
 
 ### Claude Code
 
 ```bash
-claude mcp add --transport http costkey https://app.costkey.dev/mcp \
+claude mcp add --transport http costkey https://costkey.yourcompany.com/mcp \
   --header "Authorization: Bearer ck_pat_..."
 ```
 
@@ -43,7 +43,7 @@ To share the setup with your team in the repository, run `npx costkey mcp` in th
   "mcpServers": {
     "costkey": {
       "type": "http",
-      "url": "https://app.costkey.dev/mcp",
+      "url": "https://costkey.yourcompany.com/mcp",
       "headers": { "Authorization": "Bearer ${COSTKEY_TOKEN}" }
     }
   }
@@ -60,7 +60,7 @@ In `~/.cursor/mcp.json`:
 {
   "mcpServers": {
     "costkey": {
-      "url": "https://app.costkey.dev/mcp",
+      "url": "https://costkey.yourcompany.com/mcp",
       "headers": { "Authorization": "Bearer ck_pat_..." }
     }
   }
@@ -75,7 +75,7 @@ In `~/.codex/config.toml`:
 
 ```toml
 [mcp_servers.costkey]
-url = "https://app.costkey.dev/mcp"
+url = "https://costkey.yourcompany.com/mcp"
 bearer_token_env_var = "COSTKEY_TOKEN"
 ```
 
@@ -93,7 +93,7 @@ In `.vscode/mcp.json`. VS Code asks for the token the first time it starts the s
   "servers": {
     "costkey": {
       "type": "http",
-      "url": "https://app.costkey.dev/mcp",
+      "url": "https://costkey.yourcompany.com/mcp",
       "headers": { "Authorization": "Bearer ${input:costkey-token}" }
     }
   }
